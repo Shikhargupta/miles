@@ -536,8 +536,9 @@ def train_one_step(
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 
-            if args.enable_mtp_training:
-                forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
+            # MTP labels: Megatron's process_mtp_loss derives them from input_ids
+            # (== batch["tokens"]) when labels is None, so no mtp_kwargs is needed.
+            # MTP head detach is configured via config.mtp_detach_heads (model_provider).
 
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)

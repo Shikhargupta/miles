@@ -220,6 +220,14 @@ def get_model_provider_func(
         assert config is None, "miles builds the config from args, so it expects config to be None"
         config = core_transformer_config_from_args(args)
 
+        # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
+        # (e.g. the run_megatron debug worker) won't have it, so default to False.
+        if getattr(args, "enable_mtp_training", False):
+            # RL MTP training: detach the MTP heads so MTP gradients do not flow into the
+            # shared output layer / embedding (Megatron implements this via mtp_detach_heads;
+            # previously miles patched Megatron directly). See bump_docs/01-cherry-pick.md (#6).
+            config.mtp_detach_heads = True
+
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
             # Allow the spec to be a function so that user can use customized Megatron easier.
