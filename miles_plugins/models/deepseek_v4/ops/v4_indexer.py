@@ -7,6 +7,8 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+from miles.utils.replay_base import indexer_replay_manager
+
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
@@ -22,7 +24,7 @@ from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 class V4Indexer(MegatronModule):
     """DSA Indexer for DeepSeek-V4 C4 layers."""
 
-    def __init__(self, config: TransformerConfig, pg_collection=None):
+    def __init__(self, config: TransformerConfig, pg_collection=None, layer_id: int = 0):
         super().__init__(config=config)
 
         self.hidden_size = config.hidden_size
@@ -68,6 +70,11 @@ class V4Indexer(MegatronModule):
             rotate=True,
             cp_group=pg_collection.cp,
         )
+
+        # RL rollout-routing-replay (R3) seam for the sparse-attention indexer topk: lets the miles
+        # indexer_replay_manager record (on rollout) / replay (on train forward) the top-k KV picks,
+        # mirroring the MoE routing-replay seam. No-op unless the manager is enabled.
+        indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=layer_id)
 
     def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
         """Forward pass.
@@ -130,7 +137,14 @@ class V4Indexer(MegatronModule):
             cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
+        # index_scores: [batch, seqlen, n_kv]; topk over the KV dim. Route through the indexer
+        # replay manager (flattened to [n_tokens, n_kv], matching the record/replay convention) so
+        # RL replay can pin the rollout's top-k picks. get_topk_fn is transparent when disabled.
         topk_count = min(self.index_topk, index_scores.size(-1))
-        topk_indices = get_dsa_topk_fn(self.topk_backend)(index_scores, topk_count)
+        # The manager records and replays flattened [tokens, n_kv] scores, matching the MoE seam.
+        bsz, seqlen, n_kv = index_scores.shape
+        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
+        topk_indices = topk_fn(index_scores.reshape(bsz * seqlen, n_kv), topk_count)
+        topk_indices = topk_indices.reshape(bsz, seqlen, topk_count)
 
         return topk_indices

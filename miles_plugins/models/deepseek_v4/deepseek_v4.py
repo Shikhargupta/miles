@@ -172,7 +172,7 @@ class DeepSeekV4Attention(MegatronModule):
                 indexer_impl = os.environ.get("V4_INDEXER_IMPL", "tilelang")
                 topk_backend = config.miles_dsa_topk_backend
                 if indexer_impl == "tilelang":
-                    self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
+                    self.indexer = V4Indexer(config=config, pg_collection=pg_collection, layer_id=layer_id)
                 else:
                     if topk_backend != "torch":
                         raise ValueError(
