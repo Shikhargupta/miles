@@ -2607,6 +2607,9 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.compute_advantages_and_returns
     ), "the per-cycle restore runs in the compute_advantages_and_returns block; without it training would silently run on dropped weights"
+    assert (
+        args.num_critic_only_steps == 0
+    ), "critic-only steps run update_weights repeatedly without an intervening actor wake_up"
     args.disable_param_buffers_cpu_backup = True
 >>>>>>> c7f138df9 (Add unit tests for main-cast backuper and arg validation)
 
