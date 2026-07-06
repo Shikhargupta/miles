@@ -2587,6 +2587,10 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 def _validate_rematerialize_param_from_master_weight(args):
     if not args.rematerialize_param_from_master_weight:
         return
+    if args.debug_train_only:
+        # update_weights never runs, so the param buffer would never be paused.
+        args.rematerialize_param_from_master_weight = False
+        return
     assert args.colocate and args.offload_train
     assert args.use_distributed_optimizer
     assert args.enable_weights_backuper
@@ -2603,8 +2607,6 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.compute_advantages_and_returns
     ), "the per-cycle restore runs in the compute_advantages_and_returns block; without it training would silently run on dropped weights"
-    assert not args.use_critic, "the critic actor never runs update_weights, so its param buffer is never paused"
-    assert not args.debug_train_only, "--debug-train-only skips update_weights, so the param buffer is never paused"
     args.disable_param_buffers_cpu_backup = True
 >>>>>>> c7f138df9 (Add unit tests for main-cast backuper and arg validation)
 
