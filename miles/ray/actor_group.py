@@ -112,7 +112,7 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
-    async def update_weights(self, rollout_id: int | None = None):
+    async def update_weights(self, rollout_id: int | None = None, weights_unchanged: bool = False):
         """Broadcast weights from rank 0 to all other ranks."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
@@ -121,6 +121,10 @@ class RayTrainGroup:
             await self.rollout_manager.recover_updatable_engines.remote()
 
         info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
+
+        if weights_unchanged and not info.has_new_engines:
+            return
+
         await self.rollout_manager.health_monitoring_pause.remote()
 
         await self._broadcast("update_weights", info=info)
