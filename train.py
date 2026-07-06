@@ -133,7 +133,7 @@ async def train(args):
         # update already delivered them to the engines.
         await actor_model.update_weights(
             rollout_id=rollout_id,
-            weights_unchanged=args.use_critic and rollout_id < args.num_critic_only_steps,
+            should_update=not (args.use_critic and rollout_id < args.num_critic_only_steps),
         )
         if args.offload_rollout:
             await rollout_manager.onload_kv.remote()
