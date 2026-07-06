@@ -11,6 +11,7 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
+    _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
     validate_async_off_policy_correction,
@@ -586,3 +587,53 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
+class TestValidateRematerializeParamFromMasterWeight:
+    def _make_args(self, **overrides) -> SimpleNamespace:
+        args = SimpleNamespace(
+            rematerialize_param_from_master_weight=True,
+            colocate=True,
+            offload_train=True,
+            use_distributed_optimizer=True,
+            enable_weights_backuper=True,
+            keep_old_actor=False,
+            kl_coef=0,
+            use_kl_loss=False,
+            opd_teacher_load=None,
+            use_precision_aware_optimizer=False,
+            overlap_param_gather=False,
+            disable_param_buffers_cpu_backup=False,
+        )
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def test_valid_config_forces_no_param_buffer_cpu_backup(self):
+        args = self._make_args()
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.disable_param_buffers_cpu_backup is True
+
+    def test_noop_when_disabled(self):
+        args = self._make_args(rematerialize_param_from_master_weight=False, colocate=False)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.disable_param_buffers_cpu_backup is False
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"colocate": False},
+            {"offload_train": False},
+            {"use_distributed_optimizer": False},
+            {"enable_weights_backuper": False},
+            {"keep_old_actor": True},
+            {"kl_coef": 0.1},
+            {"use_kl_loss": True},
+            {"opd_teacher_load": "/path/to/teacher"},
+            {"use_precision_aware_optimizer": True},
+            {"overlap_param_gather": True},
+        ],
+    )
+    def test_rejects_unsupported_config(self, overrides):
+        with pytest.raises(AssertionError):
+            _validate_rematerialize_param_from_master_weight(self._make_args(**overrides))
