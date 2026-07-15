@@ -176,8 +176,6 @@ def _execute_train(args: ScriptArgs):
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         "--sglang-mem-fraction-static 0.75 "
         f"--sglang-ep-size {sglang_world_size} "
-        "--sglang-router-policy manual "
-        "--router-assignment-mode min_load "
         "--sglang-kv-cache-dtype fp8_e4m3 "
         "--sglang-nsa-decode-backend flashmla_kv "
         "--sglang-nsa-prefill-backend flashmla_sparse "
