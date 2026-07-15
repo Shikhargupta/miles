@@ -81,9 +81,9 @@ class AsyncRolloutWorker:
     """
 
     def __init__(self, args, data_buffer: DataSource):
-        if args.async_max_concurrent_tasks is not None:
-            assert args.async_max_concurrent_tasks <= args.sglang_server_concurrency, (
-                f"--async-max-concurrent-tasks ({args.async_max_concurrent_tasks}) must not exceed "
+        if args.async_max_concurrent_samples is not None:
+            assert args.async_max_concurrent_samples <= args.sglang_server_concurrency, (
+                f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must not exceed "
                 f"--sglang-server-concurrency ({args.sglang_server_concurrency})"
             )
         self.args = args
@@ -98,8 +98,8 @@ class AsyncRolloutWorker:
         print("Continuous async rollout worker started")
 
         active_tasks = set()
-        if self.args.async_max_concurrent_tasks is not None:
-            max_concurrent_tasks = max(1, self.args.async_max_concurrent_tasks // self.args.n_samples_per_prompt)
+        if self.args.async_max_concurrent_samples is not None:
+            max_concurrent_tasks = max(1, self.args.async_max_concurrent_samples // self.args.n_samples_per_prompt)
         else:
             max_concurrent_tasks = self.args.rollout_batch_size
         group_id_counter = 0

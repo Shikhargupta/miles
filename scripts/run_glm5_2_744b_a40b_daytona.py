@@ -61,7 +61,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_max_response_len: int = 8192
     # fully async: max concurrently generating trajectories (None = one batch worth);
     # also sizes the Daytona pool so every in-flight trajectory has a sandbox
-    async_max_concurrent_tasks: int | None = None
+    async_max_concurrent_samples: int | None = None
 
     # OpenEnv / Daytona
     prompt_data: str = ""  # default: <data_dir>/tbench2_train.jsonl
@@ -99,9 +99,9 @@ def _execute_train(args: ScriptArgs):
             "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
             "--pause-generation-mode in_place "
         )
-        if args.async_max_concurrent_tasks is not None:
-            rollout_args += f"--async-max-concurrent-tasks {args.async_max_concurrent_tasks} "
-            args.openenv_daytona_pool_size = args.async_max_concurrent_tasks
+        if args.async_max_concurrent_samples is not None:
+            rollout_args += f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
+            args.openenv_daytona_pool_size = args.async_max_concurrent_samples
     rollout_args += (
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
