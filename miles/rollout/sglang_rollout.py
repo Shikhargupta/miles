@@ -195,7 +195,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     # Use session_id for consistent hashing routing if router uses consistent_hashing policy
     headers = None
-    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
+    if args.sglang_router_policy in ("consistent_hashing", "manual") and sample.session_id:
         headers = {"X-SMG-Routing-Key": sample.session_id}
 
     output = await post(url, payload, headers=headers)
@@ -332,7 +332,7 @@ async def generate_and_rm_group(
         return group
 
     # Generate a unique session_id for each sample in the group (consistent hashing only)
-    if args.sglang_router_policy == "consistent_hashing":
+    if args.sglang_router_policy in ("consistent_hashing", "manual"):
         for sample in group:
             if sample.session_id is None:
                 sample.session_id = str(uuid.uuid4())

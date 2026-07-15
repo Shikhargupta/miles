@@ -26,6 +26,12 @@ def add_sglang_router_arguments(parser):
         help="Routing policy for the SGLang router (e.g., 'consistent_hashing', 'round_robin')",
     )
     parser.add_argument(
+        "--router-assignment-mode",
+        type=str,
+        default="random",
+        help="Routing-key assignment mode for the sglang router 'manual' policy: random, min_load, min_group",
+    )
+    parser.add_argument(
         "--sglang-router-request-timeout-secs",
         type=int,
         default=14400,
