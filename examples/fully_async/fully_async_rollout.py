@@ -98,8 +98,6 @@ class AsyncRolloutWorker:
         print("Continuous async rollout worker started")
 
         active_tasks = set()
-        # Concurrency is counted in trajectories; each in-flight group holds
-        # n_samples_per_prompt of them.
         if self.args.async_max_concurrent_tasks is not None:
             max_concurrent_tasks = max(1, self.args.async_max_concurrent_tasks // self.args.n_samples_per_prompt)
         else:
