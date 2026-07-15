@@ -133,6 +133,22 @@ def test_time_range_from_edge_stamps(tmp_path):
     assert t1 == BASE + 2 * HOUR + 3590.0  # last gpu sample
 
 
+def test_open_marker_sentinel_stays_out_of_time_range(tmp_path):
+    # an OPEN marker (t1=-1.0) partitioned by its start hour can be the first
+    # line of the oldest phases file; its sentinel must not become the range min
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="open", start_ts=BASE, args={}))
+    writer.append(
+        PhaseEvent(name="train", t0=BASE + 5.0, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    )
+    writer.append(
+        PhaseEvent(name="train", t0=BASE + 5.0, t1=BASE + 900.0, node="n", gpus=[0], rank=0, role=Role.TRAIN)
+    )
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+    assert store.time_range() == (BASE + 5.0, BASE + 900.0)
+
+
 def test_server_enforces_window_cap(tmp_path):
     dump_dummy_telemetry(tmp_path)
     client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
@@ -168,9 +184,7 @@ def test_open_marker_partitions_by_start_hour_and_is_found(tmp_path):
     writer.write_meta(Meta(run_name="open", start_ts=BASE, args={}))
     writer.append(GpuSample(ts=BASE + 2 * HOUR, node="n", gpu=0, util=1, mem_mb=1, power_w=1))
     writer.append(
-        PhaseEvent(
-            name="rollout", t0=BASE + 100, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN
-        )
+        PhaseEvent(name="rollout", t0=BASE + 100, t1=PhaseEvent.OPEN_T1, node="n", gpus=[0], rank=0, role=Role.TRAIN)
     )
     writer.flush()
     # the marker sits in hour 0 (keyed by t0, not by the -1 sentinel)

@@ -12,6 +12,19 @@ const COLORS = {
   stale: "#d85a30",
 };
 const M_TOP = 18;
+
+// sequential cyclic ring for weight versions: v0 is the familiar gen green
+// and each +1 steps 25° around a 320° ring that skips the tool-wait amber
+// band — neighbouring versions read as neighbouring colors (dark green →
+// light green → cyan → …) and the ring wraps back to the start every ~13
+const versionColor = (v) => `hsl(${55 + ((105 + v * 25) % 320)}, 69%, 37%)`;
+
+// spans carry the version stamped by the sink; older dumps may lack it on a
+// per-span basis, so fall back to the lane's (usually single) version
+const segmentVersion = (segment, lane) => {
+  const v = Number(segment.weight_version);
+  return Number.isFinite(v) && segment.weight_version !== "" ? v : (lane.versions[0] ?? 0);
+};
 // two densities, same philosophy as the rank carpet (§15): full detail only
 // while every row can carry text; above that the pane compresses to a carpet
 // and the sort chips + tooltip + table below carry identification
@@ -24,7 +37,7 @@ const MAX_PANE_PX = 640;
 export function createAnatomy({ lanes, consumeTs, rowsByIndex, onClickSample }) {
   const detailed = lanes.length <= DETAIL_MAX;
   const ROW = detailed ? 13 : lanes.length <= 512 ? 4 : 2;
-  const M_LEFT = detailed ? 150 : 64;
+  const M_LEFT = detailed ? 96 : 64;
   const M_RIGHT = detailed ? 64 : 14;
 
   const dumpRow = (lane) => rowsByIndex.get(lane.sample_index) ?? {};
@@ -74,10 +87,9 @@ export function createAnatomy({ lanes, consumeTs, rowsByIndex, onClickSample }) 
     ...(single ? [] : [sortRow]),
     wrap,
     el("div", { class: "legend" }, [
-      legendSwatch(COLORS.gen, "generating"),
+      legendSwatch(COLORS.gen, "generating (hue steps with weight version)"),
       legendSwatch(COLORS.tool, "tool wait"),
       legendSwatch(COLORS.attempt, "queue/attempt"),
-      el("span", { style: `color: ${COLORS.stale}` }, [detailed ? "" : "▏mixed versions"]),
       el("span", { style: `color: ${COLORS.consume}` }, ["│ consume"]),
     ]),
   ]);
@@ -116,18 +128,9 @@ export function createAnatomy({ lanes, consumeTs, rowsByIndex, onClickSample }) 
     order.forEach((lane, i) => {
       const y = M_TOP + i * ROW;
       const row = dumpRow(lane);
-      const mixed = lane.versions.length > 1;
       if (i % labelEvery === 0) {
         ctx.fillStyle = COLORS.text;
         ctx.fillText(`s${lane.sample_index}`, 8, y + Math.min(ROW, 10));
-      }
-      if (detailed) {
-        const versions = mixed ? `v${lane.versions[0]}–v${lane.versions.at(-1)}` : (row.versions ?? "");
-        ctx.fillStyle = mixed ? COLORS.stale : COLORS.muted;
-        ctx.fillText(versions, 52, y + 10);
-      } else if (mixed) {
-        ctx.fillStyle = COLORS.stale; // compact rows: staleness as a left tick
-        ctx.fillRect(M_LEFT - 5, y, 3, ROW);
       }
 
       const padAttempt = detailed ? 4 : ROW > 2 ? 1 : 0;
@@ -140,7 +143,7 @@ export function createAnatomy({ lanes, consumeTs, rowsByIndex, onClickSample }) 
       }
       for (const segment of lane.segments) {
         if ((segment.t1 ?? T1) < v0 || (segment.t0 ?? T0) > v1) continue;
-        ctx.fillStyle = segment.kind === "gen" ? COLORS.gen : COLORS.tool;
+        ctx.fillStyle = segment.kind === "gen" ? versionColor(segmentVersion(segment, lane)) : COLORS.tool;
         const x0 = X(segment.t0 ?? T0, W);
         ctx.fillRect(x0, y + padSegment, Math.max(X(segment.t1 ?? T1, W) - x0, 1.5), ROW - 2 * padSegment);
       }

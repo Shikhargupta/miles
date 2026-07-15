@@ -36,9 +36,27 @@ const fmt = (v) => {
 // points: [{x, y, label?, flag?}]; opts: {line: bool, onClick(point), color}
 // canvas._zoom = {x: [x0,x1]|null, y: [y0,y1]|null} — drag-selected domains;
 // a null axis autoscales (y re-fits the points inside the x window)
+const MAX_RAW_POINTS = 700;
+
 export function drawChart(canvas, points, opts = {}) {
   const zoom = canvas._zoom ?? null;
-  const pts = zoom?.x ? points.filter((p) => p.x >= zoom.x[0] && p.x <= zoom.x[1]) : points;
+  let pts = zoom?.x ? points.filter((p) => p.x >= zoom.x[0] && p.x <= zoom.x[1]) : points;
+  let bucketed = false;
+  if (opts.line !== false && pts.length > MAX_RAW_POINTS) {
+    bucketed = true;
+    const size = Math.ceil(pts.length / MAX_RAW_POINTS);
+    const buckets = [];
+    for (let i = 0; i < pts.length; i += size) {
+      const bucket = pts.slice(i, i + size);
+      const y = bucket.reduce((sum, p) => sum + p.y, 0) / bucket.length;
+      buckets.push({
+        x: bucket[0].x,
+        y,
+        label: `${fmt(bucket[0].x)}–${fmt(bucket.at(-1).x)}\nmean = ${fmt(y)} (${bucket.length} pts)`,
+      });
+    }
+    pts = buckets;
+  }
   const { ctx, width, height } = setupCanvas(canvas);
   const css = getComputedStyle(document.documentElement);
   const colText = css.getPropertyValue("--muted").trim();
@@ -99,17 +117,20 @@ export function drawChart(canvas, points, opts = {}) {
   ctx.rect(MARGIN.left, MARGIN.top, plotW, plotH);
   ctx.clip();
   if (opts.line !== false) {
+    const linePts = bucketed ? pts : points;
     ctx.strokeStyle = colMain;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    points.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
+    linePts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
     ctx.stroke();
   }
-  for (const p of points) {
-    ctx.fillStyle = p.flag ? colFlag : colMain;
-    ctx.beginPath();
-    ctx.arc(X(p.x), Y(p.y), opts.line !== false ? 3 : 3.5, 0, Math.PI * 2);
-    ctx.fill();
+  if (!bucketed) {
+    for (const p of points) {
+      ctx.fillStyle = p.flag ? colFlag : colMain;
+      ctx.beginPath();
+      ctx.arc(X(p.x), Y(p.y), opts.line !== false ? 3 : 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 

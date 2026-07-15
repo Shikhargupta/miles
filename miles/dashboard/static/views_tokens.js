@@ -48,10 +48,61 @@ export async function renderTokens(view, meta, route) {
   let windowSize = total <= 4096 ? total : 1024;
   let start = 0;
   let stat = "imp_ratio";
+  let chartMetric = "imp_ratio";
+  let chartData = null; // full-range payload: the chart spans the whole response
 
   const controls = el("div", { class: "controls" });
   const strip = el("div", { class: "panel" });
   const chartPanel = el("div", { class: "panel" });
+  const chartCanvas = el("canvas", { class: "chart" }); // persistent: zoom survives metric switches
+
+  function renderChart() {
+    const available = Object.keys(STATS).filter((s) => chartData[s] !== null && chartData[s] !== undefined);
+    if (!available.length) {
+      chartPanel.replaceChildren();
+      return;
+    }
+    if (!available.includes(chartMetric)) chartMetric = available[0];
+    const chips = available.map((s) =>
+      el(
+        "button",
+        {
+          class: s === chartMetric ? "active" : "",
+          onclick: () => {
+            chartMetric = s;
+            if (chartCanvas._zoom) chartCanvas._zoom = { x: chartCanvas._zoom.x, y: null };
+            renderChart();
+          },
+        },
+        [s],
+      ),
+    );
+    chartPanel.replaceChildren(
+      el("h3", {}, ["per-token metrics"]),
+      el("div", { class: "controls" }, [
+        ...chips,
+        el("span", { class: "muted" }, ["drag = zoom to token range · double-click = reset"]),
+      ]),
+      chartCanvas,
+    );
+    const values = chartData[chartMetric];
+    const points = [];
+    values.forEach((v, i) => {
+      if (v === null) return;
+      const pos = chartData.prompt_len + i;
+      points.push({ x: pos, y: v, label: `pos ${pos}\n${chartMetric} = ${fmtNum(v)}` });
+    });
+    queueMicrotask(() => drawChart(chartCanvas, points));
+  }
+
+  async function loadChart() {
+    chartData = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
+      start: 0,
+      end: total,
+      eval: evaluation,
+    });
+    renderChart();
+  }
 
   async function load() {
     const payload = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
@@ -126,19 +177,6 @@ export async function renderTokens(view, meta, route) {
       el("div", { class: "tokens" }, spans),
     );
 
-    // ---- per-token chart of the selected stat ----
-    const canvas = el("canvas", { class: "chart" });
-    chartPanel.replaceChildren(el("h3", {}, [`${stat} per token position`]), canvas);
-    queueMicrotask(() =>
-      drawChart(
-        canvas,
-        values.map((v, i) => ({
-          x: payload.prompt_len + Math.max(0, payload.start - payload.prompt_len) + i,
-          y: v,
-          label: `pos ${payload.prompt_len + Math.max(0, payload.start - payload.prompt_len) + i}\n${stat} = ${fmtNum(v)}`,
-        })).filter((p) => p.y !== null),
-      ),
-    );
   }
 
   // this sample's own lifecycle lane (train steps with the trajectory
@@ -162,5 +200,5 @@ export async function renderTokens(view, meta, route) {
     }
   }
   view.replaceChildren(...panels, controls, strip, chartPanel);
-  await load();
+  await Promise.all([load(), loadChart()]);
 }

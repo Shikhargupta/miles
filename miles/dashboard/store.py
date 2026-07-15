@@ -387,7 +387,6 @@ class MetricStore:
             )
         assert stream in (Stream.PHASES, Stream.TRAJECTORIES), stream
         record_type = _RECORD_TYPE_OF_STREAM[stream]
-        stamps = (lambda data: (data["t0"], data["t1"])) if stream is Stream.PHASES else (lambda data: (data["ts"],))
         return _PartitionReader(
             self.dir / stream.value,
             self.dir / stream.filename,
@@ -396,7 +395,8 @@ class MetricStore:
             ),
             concat=lambda blocks: [event for block in blocks for event in block],
             length=len,
-            line_stamps=stamps,
+            # the record's own timestamps() skips the open-interval t1 sentinel
+            line_stamps=lambda data, record_type=record_type: record_type.from_dict(data).timestamps(),
             max_blocks=self.PARTITION_CACHE_BLOCKS,
         )
 
@@ -626,6 +626,11 @@ class MetricStore:
                     # dangling spans must not render to the consume line
                     for segment in open_spans.values():
                         segment["t1"] = event.ts
+                        # coarse gen spans open before the first turn finished,
+                        # so their start event predates any weight_version; the
+                        # attempt_end event carries the version that generated them
+                        if not segment["weight_version"]:
+                            segment["weight_version"] = event.weight_version
                     open_spans.clear()
                 else:
                     base, is_start = span_kinds[TrajectoryEventKind(event.kind)]
