@@ -151,10 +151,6 @@ def validate_args(args):
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 
-    # Agentic multi-turn sessions (session server) need session-affine routing;
-    # load-blind consistent hashing accumulates load onto one worker under
-    # sustained concurrency, so default to the manual policy with min_load
-    # assignment. An explicit --sglang-router-policy always wins.
     if args.sglang_router_policy is None and args.use_session_server:
         args.sglang_router_policy = "manual"
         if args.router_assignment_mode == "random":
