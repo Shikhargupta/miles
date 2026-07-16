@@ -1985,6 +1985,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
     return add_miles_arguments
 
 
+_FT_CHOICES = ["rollout", "train"]
+
+
 def _add_merge_compat_arguments(parser):
     parser.add_argument(
                 "--control-server-port",
