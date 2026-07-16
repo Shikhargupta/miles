@@ -125,7 +125,9 @@ class RolloutManager:
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
-        return split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+        sample_indices = data.get("sample_indices")
+        data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+        return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(self, rollout_id):
         if self.args.debug_train_only:
