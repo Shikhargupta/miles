@@ -237,6 +237,7 @@ _CREATE_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_BASE_S"
 _CREATE_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_CAP_S", "30.0"))
 _READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
 _COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
+_SANDBOX_OWNER = os.getenv("OPENENV_DAYTONA_SANDBOX_OWNER", os.getenv("USER", "miles"))
 
 _create_sem: asyncio.Semaphore | None = None
 
@@ -285,6 +286,7 @@ def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
         command_timeout_s=_COMMAND_TIMEOUT_S,
         ready_timeout_s=_READY_TIMEOUT_S,
     )
+    sandbox.set_labels({**(sandbox.labels or {}), "miles-owner": _SANDBOX_OWNER})
     return (lambda: daytona.delete(sandbox)), url
 
 
