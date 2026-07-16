@@ -1958,6 +1958,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
+        parser = _add_merge_compat_arguments(parser)
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
@@ -1982,6 +1983,146 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         return parser
 
     return add_miles_arguments
+
+
+def _add_merge_compat_arguments(parser):
+    parser.add_argument(
+                "--control-server-port",
+                type=int,
+                default=0,
+                help="Port for HTTP control server. 0 = disabled.",
+            )
+    parser.add_argument(
+                "--custom-megatron-post-save-hook-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a custom function invoked on rank 0 after every checkpoint save. "
+                    "Signature: def hook(args, rollout_id: int, checkpoint_dir: str, "
+                    "hf_checkpoint_dir: str | None) -> None."
+                ),
+            )
+    parser.add_argument(
+                "--custom-update-weight-post-write-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a custom function called on each trainer rank after a disk-delta sync's "
+                    "files are written, before the engines read them — to publish the writes on a "
+                    "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
+                    "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
+                ),
+            )
+    parser.add_argument(
+                "--debug-deterministic-collective",
+                action="store_true",
+                default=False,
+                help="Debug/test only: run the training world on the det_nccl backend "
+                "(miles.utils.test_utils.det_process_group), which folds order-sensitive SUM/AVG "
+                "reductions in a fixed tree order so different reduction topologies become "
+                "bitwise-comparable. Slow; never enable in production.",
+            )
+    parser.add_argument(
+                "--debug-exit-after-rollout",
+                type=int,
+                default=None,
+                help="Exit training after this many rollouts (for testing checkpoint resume with consistent scheduler params).",
+            )
+    parser.add_argument(
+                "--enable-witness",
+                action="store_true",
+                help="Enable forward/backward pass witness.",
+            )
+    parser.add_argument(
+                "--ft-components",
+                nargs="+",
+                default=None,
+                choices=_FT_CHOICES,
+                help="FT components to enable (requires --use-fault-tolerance). "
+                "Choices: rollout, train. Default when omitted: rollout.",
+            )
+    parser.add_argument(
+                "--indep-dp",
+                action="store_true",
+                default=False,
+                help="Launch each DP replica as an independent Megatron instance instead of using Megatron-internal data parallelism.",
+            )
+    parser.add_argument(
+                "--mini-ft-controller-enable",
+                action="store_true",
+                default=False,
+                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells.",
+            )
+    parser.add_argument(
+                "--mini-ft-controller-poll-interval",
+                type=float,
+                default=10.0,
+                help="Interval in seconds between cell health polls.",
+            )
+    parser.add_argument(
+                "--mini-ft-controller-resume-delay",
+                type=float,
+                default=10.0,
+                help="Delay in seconds between suspending and resuming a cell during heal.",
+            )
+    parser.add_argument("--save-debug-event-data", type=str, default=None)
+    parser.add_argument(
+                "--save-local-weight-checksum",
+                action="store_true",
+                help="Save per-rank local weight checksum per-step.",
+            )
+    parser.add_argument(
+                "--update-weight-delta-checksum",
+                choices=["xxh3-128", "blake3", "adler32"],
+                default="xxh3-128",
+                help=(
+                    "Per-tensor integrity checksum for disk-delta apply. 'xxh3-128' (default): widest fast "
+                    "non-cryptographic digest. 'blake3': cryptographic, for untrusted storage. 'adler32': "
+                    "for interop. The engine reads the choice from each version's index metadata."
+                ),
+            )
+    parser.add_argument(
+                "--update-weight-delta-encoding",
+                choices=["xor", "overwrite"],
+                default="xor",
+                help=(
+                    "On-disk delta encoding for disk-delta weight sync. 'xor' (default): new ^ old — "
+                    "smallest wire and fastest, but an involution that must be applied exactly once "
+                    "against the correct base (applying it twice reverts). 'overwrite': changed positions "
+                    "+ new absolute values — larger, but idempotent. Both are byte-level and dtype-blind; "
+                    "the engine reads the choice from each version's index metadata."
+                ),
+            )
+    parser.add_argument(
+                "--update-weight-disk-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Filesystem directory disk-delta weight sync publishes to: one delta directory "
+                    "(changed tensors only) per sync, written by the trainer and read by every "
+                    "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                ),
+            )
+    parser.add_argument(
+                "--update-weight-local-checkpoint-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Rollout-host-local directory (e.g. NVMe) holding a full HF checkpoint kept in "
+                    "sync by each engine's /pull_weights: every host seeds it from the engine's model "
+                    "path and patches published deltas in place, and the engines reload from it. "
+                    "Required for --update-weight-transfer-mode=disk-delta. The read-side counterpart "
+                    "of --custom-update-weight-post-write-path is the engine's "
+                    "--sglang-custom-pull-weights-pre-read-hook."
+                ),
+            )
+    parser.add_argument(
+                "--witness-buffer-size",
+                type=int,
+                default=1048576,
+                help="Maximum number of unique witness IDs before recycling.",
+            )
+    return parser
 
 
 def parse_args(add_custom_arguments=None):
