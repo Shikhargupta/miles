@@ -274,7 +274,7 @@ def named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str
 
 
 def build_main_cast_context(args: Namespace, model: Sequence[torch.nn.Module], optimizer):
-    from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+    from miles.utils.lora import is_lora_enabled
     from miles.utils.tensor_backper import MainCastContext
 
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
