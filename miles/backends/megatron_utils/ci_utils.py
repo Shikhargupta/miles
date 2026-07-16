@@ -36,7 +36,7 @@ def _hash_tensor_bytes(tensor: torch.Tensor) -> bytes:
         data = data.cpu()
     if not data.is_contiguous():
         data = data.contiguous()
-    return data.view(torch.uint8).numpy().tobytes()
+    return data.reshape(-1).view(torch.uint8).numpy().tobytes()
 
 
 # copied from PR #1435
