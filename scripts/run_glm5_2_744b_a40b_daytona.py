@@ -71,6 +71,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     openenv_daytona_snapshot: str = os.environ.get("OPENENV_DAYTONA_SNAPSHOT", "tbench2-env-shi-10g")
     openenv_daytona_pool_size: int = int(os.environ.get("OPENENV_DAYTONA_POOL_SIZE", "16"))
     openenv_daytona_port: int = int(os.environ.get("OPENENV_DAYTONA_PORT", "8000"))
+    openenv_tb2_tasks_dir: str = os.environ.get("OPENENV_TB2_TASKS_DIR", "")
+    openenv_daytona_create_concurrency: int = int(os.environ.get("OPENENV_DAYTONA_CREATE_CONCURRENCY", "8"))
+    openenv_daytona_sandbox_owner: str = os.environ.get("OPENENV_DAYTONA_SANDBOX_OWNER", os.environ.get("USER", "miles"))
     daytona_api_key: str = os.environ.get("DAYTONA_API_KEY", "")
 
     def __post_init__(self):
@@ -255,6 +258,9 @@ def _execute_train(args: ScriptArgs):
         "OPENENV_MAX_ROLLOUT_TIME_SECONDS": str(args.openenv_max_rollout_time_seconds),
         "OPENENV_DAYTONA_SNAPSHOT": args.openenv_daytona_snapshot,
         "OPENENV_DAYTONA_POOL_SIZE": str(args.openenv_daytona_pool_size),
+        "OPENENV_TB2_TASKS_DIR": args.openenv_tb2_tasks_dir,
+        "OPENENV_DAYTONA_CREATE_CONCURRENCY": str(args.openenv_daytona_create_concurrency),
+        "OPENENV_DAYTONA_SANDBOX_OWNER": args.openenv_daytona_sandbox_owner,
         "OPENENV_DAYTONA_PORT": str(args.openenv_daytona_port),
         "DAYTONA_API_KEY": args.daytona_api_key,
     }
