@@ -271,9 +271,10 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     return len(batches)
 
 
-def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
+def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size, witness_info=None):
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
+    assert witness_info is None, "witness is not supported on this branch"
     assert len(rollout_data_ref) == dp_size
     rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
     return process_rollout_data_shard(args, rollout_data)
