@@ -285,8 +285,8 @@ def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
         Path(tasks_dir) / task_id,
         command_timeout_s=_COMMAND_TIMEOUT_S,
         ready_timeout_s=_READY_TIMEOUT_S,
+        extra_labels={"miles-owner": _SANDBOX_OWNER},
     )
-    sandbox.set_labels({**(sandbox.labels or {}), "miles-owner": _SANDBOX_OWNER})
     return (lambda: daytona.delete(sandbox)), url
 
 
