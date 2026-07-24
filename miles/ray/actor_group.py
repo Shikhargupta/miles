@@ -4,11 +4,14 @@
 # MILES_EXPERIMENTAL_FT_TRAINER (default off -> v1).
 
 import asyncio
+import logging
 
 from ray.util.placement_group import PlacementGroup
 
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+
+logger = logging.getLogger(__name__)
 
 
 class RayTrainGroup:
@@ -123,6 +126,7 @@ class RayTrainGroup:
         info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
 
         if not should_update and not info.has_new_engines:
+            logger.info("Skipping weight update: weights unchanged since the last update and no new engines")
             return
 
         await self.rollout_manager.health_monitoring_pause.remote()
