@@ -1,1 +1,1 @@
-"""Bundled fixed chat templates and vendored DeepSeek official encoders."""
+"""Bundled fixed chat templates and the vendored official DeepSeek V3.2 encoder."""
