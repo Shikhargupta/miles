@@ -111,6 +111,48 @@ class TestArchitectureGuards:
 
 
 # ---------------------------------------------------------------------------
+# Real checkpoints that need their own provider
+# ---------------------------------------------------------------------------
+
+
+class TestKnownUnsupportedCheckpoints:
+    """Lock in which shipped model registries the generic provider cannot serve.
+
+    Values mirror scripts/models/*.sh. These are not hypothetical: each is a
+    checkpoint someone will eventually point at --megatron-to-hf-mode raw, and the
+    failure has to be a startup assert naming --lora-provider-path rather than
+    silently wrong gradients.
+    """
+
+    @pytest.mark.parametrize(
+        "registry,kwargs,expected",
+        [
+            # qwen3.5-35B-A3B.sh: --attention-output-gate, GDN mixer layers, num-query-groups 2
+            ("qwen3.5-35B-A3B", dict(output_gate=True, num_query_groups=2), "attention_output_gate"),
+            # glm4.7-flash.sh: --multi-latent-attention --q-lora-rank 768 --kv-lora-rank 512
+            ("glm4.7-flash", dict(mla=True), "multi_latent_attention"),
+            # kimi-k25_2layer.sh -> kimi-k2-thinking.sh: --multi-latent-attention
+            ("kimi-k25_2layer", dict(mla=True), "multi_latent_attention"),
+            # glm5-744B-A40B_4layer.sh -> glm5-744B-A40B.sh: --multi-latent-attention
+            ("glm5-744B-A40B_4layer", dict(mla=True), "multi_latent_attention"),
+        ],
+    )
+    def test_rejected_with_actionable_message(self, registry, kwargs, expected):
+        model = _fake_model(**kwargs)
+        with pytest.raises(AssertionError) as excinfo:
+            _assert_supported_architecture(model.config, model, tp_size=2)
+        message = str(excinfo.value)
+        assert expected in message, f"{registry}: expected {expected} in the rejection reason"
+        assert "--lora-provider-path" in message, f"{registry}: rejection must name the escape hatch"
+
+    def test_gdn_layers_without_linear_qkv_are_named(self):
+        """Qwen3.5's linear-attention layers have no fused qkv at all."""
+        model = _fake_model(with_qkv=False)
+        with pytest.raises(AssertionError, match="no linear_qkv"):
+            _assert_supported_architecture(model.config, model)
+
+
+# ---------------------------------------------------------------------------
 # resolve_lora_provider
 # ---------------------------------------------------------------------------
 
