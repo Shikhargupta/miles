@@ -7,9 +7,6 @@ Used by:
 
 Class attributes consumed by chat_template_verify:
 
-- ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear *after*
-  the first assistant message (``tool`` / ``user`` / ``system``).  These are
-  compared with the selected FixedTemplate's append capability.
 - ``IS_THINKING: bool`` — ``True`` iff at least one assistant message carries
   ``reasoning_content``.  Drives ``--thinking`` filtering and whether the
   ``enable_thinking`` chat-template kwarg is passed.
@@ -119,7 +116,6 @@ class SingleToolTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3]
-    APPEND_ROLES = frozenset({"tool"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -151,7 +147,6 @@ class MultiTurnTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3, 5]
-    APPEND_ROLES = frozenset({"tool"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -202,7 +197,6 @@ class MultiToolSingleTurnTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3]
-    APPEND_ROLES = frozenset({"tool"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -247,7 +241,6 @@ class ParallelToolsTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3]
-    APPEND_ROLES = frozenset({"tool"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -305,7 +298,6 @@ class LongChainTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3, 5, 7]
-    APPEND_ROLES = frozenset({"tool"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -379,7 +371,6 @@ class RetrySystemTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3, 6]
-    APPEND_ROLES = frozenset({"tool", "system"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -436,7 +427,6 @@ class MultiUserToolChainTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3, 5, 7, 9]
-    APPEND_ROLES = frozenset({"tool", "user"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -516,7 +506,6 @@ class SimpleNoToolTrajectory:
 
     TOOLS = None
     PRETOKENIZE_POSITIONS = [3, 4, 5, 6]
-    APPEND_ROLES = frozenset({"user", "system"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -533,7 +522,6 @@ class MultiTurnNoToolTrajectory:
 
     TOOLS = None
     PRETOKENIZE_POSITIONS = [3, 5]
-    APPEND_ROLES = frozenset({"user"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -548,7 +536,6 @@ class MultiTurnNoToolThinkingTrajectory:
 
     TOOLS = None
     PRETOKENIZE_POSITIONS = [3, 5]
-    APPEND_ROLES = frozenset({"user"})
     IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -577,7 +564,6 @@ class SingleToolThinkingTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3, 4, 5, 6, 7, 8]
-    APPEND_ROLES = frozenset({"tool", "user"})
     IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -637,7 +623,6 @@ class MultiTurnThinkingTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [3, 5]
-    APPEND_ROLES = frozenset({"tool"})
     IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -690,7 +675,6 @@ class LongChainThinkingTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3, 5, 7]
-    APPEND_ROLES = frozenset({"tool"})
     IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -768,7 +752,6 @@ class MultiUserTurnThinkingTrajectory:
 
     TOOLS = WEATHER_TOOLS
     PRETOKENIZE_POSITIONS = [7]
-    APPEND_ROLES = frozenset({"tool", "user"})
     IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -834,7 +817,6 @@ class IntermediateSystemTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3, 6, 9]
-    APPEND_ROLES = frozenset({"tool", "system"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -906,7 +888,6 @@ class IntermediateSystemThinkingTrajectory:
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3, 6, 9]
-    APPEND_ROLES = frozenset({"tool", "system"})
     IS_THINKING = True
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -979,17 +960,14 @@ class IntermediateSystemThinkingTrajectory:
 class MultiRoleSequenceTrajectory:
     """sys, user, asst+tool, tool, user2, asst+tool, system_reminder, tool, asst-final.
 
-    Fills the {thinking=False, append_roles={tool, user, system}} matrix cell
-    that GLM47's tool+user+system append configuration otherwise has no
-    fixture for. Cuts exercise three boundaries: tool-append (N=3), user-after-tool
-    (N=4), system-after-asst (N=6). Cuts at N=5/N=7/N=8 are intentionally not
-    listed — they only exercise generation-prompt-only or repeat tool-append
-    which other trajectories already cover.
+    Exercises three concrete request boundaries: tool append (N=3),
+    user-after-tool (N=4), and system-after-assistant (N=6). Cuts at
+    N=5/N=7/N=8 are intentionally not listed because they only exercise a
+    generation prompt or repeat a tool append covered by other trajectories.
     """
 
     TOOLS = ALL_TOOLS
     PRETOKENIZE_POSITIONS = [3, 4, 6]
-    APPEND_ROLES = frozenset({"tool", "user", "system"})
     IS_THINKING = False
     MESSAGES = [
         {"role": "system", "content": "You are a helpful assistant."},

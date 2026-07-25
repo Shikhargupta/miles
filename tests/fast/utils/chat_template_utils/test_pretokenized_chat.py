@@ -12,8 +12,9 @@ from copy import deepcopy
 import pytest
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.template import apply_chat_template_from_str, load_hf_chat_template
+from miles.utils.chat_template_utils.template import load_hf_chat_template
 from miles.utils.test_utils.chat_template_verify import (
+    ALL_CASES,
     CaseSpec,
     assert_pretokenized_equals_standard,
     enable_thinking_variants,
@@ -37,131 +38,69 @@ def _load_fixed(tito_model: TITOTokenizerType) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-template capability declarations
+# Registered fixed-template matrix
 # ---------------------------------------------------------------------------
 #
-# Each entry: (name, content, supports_thinking, allowed_append_roles, extra_template_kwargs)
-#
-# Role sets only filter this test's shared non-assistant trajectories; template
-# resolution is role-independent. Rows without preserve-think kwargs are comparison
-# baselines, and system trajectories run only for rows that include ``system``.
+# Each entry is one production renderer contract:
+# (name, content, supports_thinking, extra_template_kwargs).
+# Append capabilities do not filter this broad prefix-regression corpus.
+# Unsupported raw renders remain parametrized as explicit expected rejections.
 
-_TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
-    # Qwen fixed-template comparison rows
-    ("qwen3_fixed", _load_fixed(TITOTokenizerType.QWEN3), True, frozenset({"tool"}), {}),
+_TEMPLATES: list[tuple[str, str, bool, dict]] = [
     (
-        "qwen3_fixed_clear_thinking_off",
+        "qwen3_fixed",
         _load_fixed(TITOTokenizerType.QWEN3),
         True,
-        frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
-    ("qwen3.5_fixed", _load_fixed(TITOTokenizerType.QWEN35), True, frozenset({"tool"}), {}),
     (
-        "qwen3.5_fixed_clear_thinking_off",
+        "qwen3.5_fixed",
         _load_fixed(TITOTokenizerType.QWEN35),
         True,
-        frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
-    ("qwen3_thinking_2507_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
-    ("qwen3_next_thinking_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
     (
-        "qwen3_next_thinking_fixed_clear_thinking_off",
+        "qwen3_next_thinking_fixed",
         _load_fixed(TITOTokenizerType.QWENNEXT),
         True,
-        frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
-    # GLM thinking: default (tool only) + user-append variant with clear_thinking=False
-    ("glm5", load_hf_chat_template("zai-org/GLM-5"), True, frozenset({"tool"}), {}),
     (
-        "glm5_clear_thinking_off",
-        load_hf_chat_template("zai-org/GLM-5"),
-        True,
-        frozenset({"tool", "user"}),
-        {"clear_thinking": False},
-    ),
-    ("glm47_flash", load_hf_chat_template("zai-org/GLM-4.7-Flash"), True, frozenset({"tool"}), {}),
-    (
-        "glm47_flash_clear_thinking_off",
+        "glm47_flash",
         load_hf_chat_template("zai-org/GLM-4.7-Flash"),
         True,
-        frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
     (
-        "glm47_flash_clear_thinking_off_with_system",
-        load_hf_chat_template("zai-org/GLM-4.7-Flash"),
-        True,
-        frozenset({"tool", "user", "system"}),
-        {"clear_thinking": False},
-    ),
-    # Kimi K2: K2.5 needs patched jinja gating the "drop reasoning of prior
-    # assistants once a non-tool-call assistant arrives" loop on
-    # preserve_thinking=True; K2.6 already exposes that gate natively.
-    # This matrix covers their tool/user trajectories.
-    (
-        "kimi_k25_fixed_preserve_thinking",
+        "kimi_k25_fixed",
         _load_fixed(TITOTokenizerType.KIMI25),
         True,
-        frozenset({"tool", "user"}),
         {"preserve_thinking": True},
     ),
     (
-        "kimi_k26_preserve_thinking",
+        "kimi_k26",
         load_hf_chat_template("moonshotai/Kimi-K2.6"),
         True,
-        frozenset({"tool", "user"}),
         {"preserve_thinking": True},
     ),
-    # MiniMax reasoning is gated by last_user_index, so user appends can strip
-    # prior thinking. The matrix keeps HF-native tool-only baselines for comparison;
-    # family auto-resolution uses FIXED_TEMPLATE with clear_thinking=False.
-    ("minimax_m25", load_hf_chat_template("MiniMaxAI/MiniMax-M2.5"), True, frozenset({"tool"}), {}),
     (
-        "minimax_m25_fixed_clear_thinking_off",
+        "minimax_m25_fixed",
         _load_fixed(TITOTokenizerType.MINIMAX_M25),
         True,
-        frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
-    ("minimax_m27", load_hf_chat_template("MiniMaxAI/MiniMax-M2.7"), True, frozenset({"tool"}), {}),
     (
-        "minimax_m27_fixed_clear_thinking_off",
+        "minimax_m27_fixed",
         _load_fixed(TITOTokenizerType.MINIMAX_M27),
         True,
-        frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
-    # Nemotron uses its HF-native template with fixed kwargs. Family auto-resolution
-    # pins truncate_history_thinking=False; the matrix keeps a native tool baseline.
     (
         "nemotron3",
         load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
         True,
-        frozenset({"tool"}),
-        {},
-    ),
-    (
-        "nemotron3_truncate_history_thinking_off",
-        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
-        True,
-        frozenset({"tool", "user"}),
         {"truncate_history_thinking": False},
     ),
-    (
-        "nemotron3_truncate_history_thinking_off_with_system",
-        load_hf_chat_template("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
-        True,
-        frozenset({"tool", "user", "system"}),
-        {"truncate_history_thinking": False},
-    ),
-    # Other HF-native comparison rows: tool-only trajectories
-    ("qwen3_instruct_2507", load_hf_chat_template("Qwen/Qwen3-4B-Instruct-2507"), False, frozenset({"tool"}), {}),
-    ("qwen3_next_instruct", load_hf_chat_template("Qwen/Qwen3-Next-80B-A3B-Instruct"), False, frozenset({"tool"}), {}),
-    ("qwen3_coder_next", load_hf_chat_template("Qwen/Qwen3-Coder-Next"), False, frozenset({"tool"}), {}),
-    ("glm4", load_hf_chat_template("THUDM/glm-4-9b-chat"), False, frozenset({"tool"}), {}),
 ]
 
 # Original (unfixed) HF templates referenced by negative tests
@@ -172,21 +111,32 @@ _ORIGINAL_TEMPLATES = {
 }
 
 
+def test_case_append_roles_are_derived_from_each_request_boundary():
+    by_name = {case.case_name: case for case in ALL_CASES}
+
+    assert by_name["multi_user_tool_chain-N3"].append_roles == frozenset({"tool"})
+    assert by_name["multi_user_tool_chain-N7"].append_roles == frozenset({"tool"})
+    assert by_name["retry_system-N6"].append_roles == frozenset({"tool"})
+    assert by_name["retry_system-N6"].prior_append_roles == frozenset({"tool", "system"})
+    assert by_name["multi_role_sequence-N4"].append_roles == frozenset({"user"})
+    assert sum(not case.has_appendix for case in ALL_CASES) == 6
+
+
 def _build_pretokenized_params():
-    # Thinking templates: every selected trajectory × {enable_thinking=True, False}.
-    # Non-thinking templates: only non-thinking trajectories, no enable_thinking kwarg.
     params = []
-    for name, content, supports_thinking, allowed_roles, extra_kwargs in _TEMPLATES:
-        cases = select_cases(
-            allowed_append_roles=allowed_roles,
-            is_thinking=None if supports_thinking else False,
-        )
+    for name, content, supports_thinking, extra_kwargs in _TEMPLATES:
+        cases = select_cases(is_thinking=None if supports_thinking else False)
         variants = enable_thinking_variants("both" if supports_thinking else "off")
         for case in cases:
             for variant in variants:
                 kwargs = {**variant, **extra_kwargs}
                 ident = f"{name}-{format_case_id(case, kwargs)}"
-                params.append(pytest.param(content, case, kwargs, id=ident))
+                expected_system_rejection = name == "qwen3.5_fixed" and any(
+                    message["role"] == "system" for message in case.request_messages[1:]
+                )
+                if expected_system_rejection:
+                    ident += "-EXPECTED_REJECT"
+                params.append(pytest.param(content, case, kwargs, expected_system_rejection, id=ident))
     return params
 
 
@@ -195,11 +145,35 @@ def _build_pretokenized_params():
 # ===========================================================================
 
 
-@pytest.mark.parametrize("chat_template, case, kwargs", _build_pretokenized_params())
-def test_pretokenized(chat_template: str, case: CaseSpec, kwargs: dict):
+@pytest.mark.parametrize(
+    "chat_template, case, kwargs, expected_system_rejection",
+    _build_pretokenized_params(),
+)
+def test_pretokenized(
+    chat_template: str,
+    case: CaseSpec,
+    kwargs: dict,
+    expected_system_rejection: bool,
+):
+    if not case.has_appendix:
+        assert case.append_roles == frozenset()
+        assert case.append_end == case.pretokenize_n
+        return
+
+    if expected_system_rejection:
+        with pytest.raises(ValueError, match="System message must be at the beginning"):
+            assert_pretokenized_equals_standard(
+                chat_template=chat_template,
+                messages=deepcopy(case.request_messages),
+                pretokenized_num_message=case.pretokenize_n,
+                tools=case.tools,
+                **kwargs,
+            )
+        return
+
     assert_pretokenized_equals_standard(
         chat_template=chat_template,
-        messages=deepcopy(case.traj_cls.MESSAGES),
+        messages=deepcopy(case.request_messages),
         pretokenized_num_message=case.pretokenize_n,
         tools=case.tools,
         **kwargs,
@@ -249,23 +223,7 @@ _CROSS_USER_THINKING_N = last_user_index(MultiUserTurnThinkingTrajectory.MESSAGE
 
 
 def _unique_thinking_templates():
-    seen: set[str] = set()
-    out = []
-    for name, content, supports_thinking, _, _ in _TEMPLATES:
-        if not supports_thinking:
-            continue
-        # Kimi K2.5/K2.6 compress reasoning at the "first non-tool-call assistant"
-        # boundary (single_tool_thinking trajectories), not at the "last user
-        # message" boundary like qwen3/glm — so MultiUserTurnThinking's
-        # cross-user pretokenize does not trip their compression.  This negative
-        # test only applies to templates whose compression keys off user index.
-        if name.startswith("kimi_"):
-            continue
-        if content in seen:
-            continue
-        seen.add(content)
-        out.append(pytest.param(content, id=name))
-    return out
+    return [pytest.param(template, id=name) for name, template in _ORIGINAL_TEMPLATES.items()]
 
 
 @pytest.mark.parametrize("chat_template", _unique_thinking_templates())
@@ -280,69 +238,3 @@ def test_cross_user_turn_thinking_prefix_mismatch(chat_template, enable_thinking
             tools=MultiUserTurnThinkingTrajectory.TOOLS,
             enable_thinking=enable_thinking,
         )
-
-
-# ---------------------------------------------------------------------------
-# Intermediate system / injected-assistant appends — role-independent surface
-# ---------------------------------------------------------------------------
-#
-# allowed_append_roles no longer participates in template resolution. Each
-# family/shape cell must either remain append-only or match its fixed-template
-# rejection contract.
-# DeepSeek V3.2/V4 ride the encoder bridge and are covered in their own files.
-
-_APPEND_ROLE_FAMILIES = [
-    (TITOTokenizerType.QWEN3, None),
-    (TITOTokenizerType.QWEN35, None),
-    (TITOTokenizerType.QWENNEXT, None),
-    (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
-    (TITOTokenizerType.KIMI25, None),
-    (TITOTokenizerType.KIMI26, "moonshotai/Kimi-K2.6"),
-    (TITOTokenizerType.MINIMAX_M25, None),
-    (TITOTokenizerType.MINIMAX_M27, None),
-    (TITOTokenizerType.NEMOTRON3, "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
-]
-
-_APPEND_SHAPES = {
-    "system": [{"role": "system", "content": "mid-session system"}],
-    "assistant": [{"role": "assistant", "content": "injected", "reasoning_content": ""}],
-    "assistant_then_user": [
-        {"role": "assistant", "content": "injected", "reasoning_content": ""},
-        {"role": "user", "content": "next question"},
-    ],
-    "consecutive_assistants_then_user": [
-        {"role": "assistant", "content": "first injected"},
-        {"role": "assistant", "content": "second injected"},
-        {"role": "user", "content": "next question"},
-    ],
-}
-
-
-@pytest.mark.parametrize("shape", list(_APPEND_SHAPES), ids=list(_APPEND_SHAPES))
-@pytest.mark.parametrize("family, hf_model_id", _APPEND_ROLE_FAMILIES, ids=[f.value for f, _ in _APPEND_ROLE_FAMILIES])
-def test_appends_are_append_only_on_family_template(family, hf_model_id, shape):
-    path, kwargs = resolve_fixed_chat_template(family)
-    if path is not None:
-        with open(path, encoding="utf-8") as f:
-            template = f.read()
-    else:
-        template = load_hf_chat_template(hf_model_id)
-    history = [
-        {"role": "user", "content": "q1"},
-        {"role": "assistant", "content": "a1", "reasoning_content": "r1"},
-    ]
-
-    base = apply_chat_template_from_str(template, history, add_generation_prompt=False, **kwargs)
-    if family is TITOTokenizerType.QWEN35 and shape == "system":
-        with pytest.raises(ValueError, match="System message must be at the beginning"):
-            apply_chat_template_from_str(
-                template,
-                history + _APPEND_SHAPES[shape],
-                add_generation_prompt=False,
-                **kwargs,
-            )
-        return
-    full = apply_chat_template_from_str(
-        template, history + _APPEND_SHAPES[shape], add_generation_prompt=False, **kwargs
-    )
-    assert full.startswith(base)

@@ -15,12 +15,11 @@ from miles.utils.test_utils.session_verify_agent import (
 )
 
 
-def test_all_role_schedule_places_assistant_input_last():
+def test_all_role_schedule_ends_with_assistant_input_then_rollback():
     schedule = select_schedule(VALID_APPEND_ROLES, cycles=2)
 
-    assert schedule[-1] is DriverAction.ASSISTANT_INPUT
+    assert schedule[-2:] == [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK]
     assert schedule.count(DriverAction.ASSISTANT_INPUT) == 1
-    assert DriverAction.ROLLBACK in schedule[:-1]
 
 
 def test_model_config_uses_family_fixed_template_capability():
@@ -34,7 +33,25 @@ def test_model_config_uses_family_fixed_template_capability():
     assert _fixed_template_append_roles(cfg.tito_model) == VALID_APPEND_ROLES
 
 
-def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
+def test_minimax_schedule_excludes_system_and_keeps_assistant_rollback():
+    roles = _fixed_template_append_roles("minimax_m27")
+    schedule = select_schedule(roles, cycles=1)
+
+    assert roles == ("tool", "user", "assistant")
+    assert DriverAction.SYSTEM_REMINDER not in schedule
+    assert schedule[-2:] == [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK]
+
+
+def test_qwen35_schedule_excludes_system_and_keeps_assistant_rollback():
+    roles = _fixed_template_append_roles("qwen35")
+    schedule = select_schedule(roles, cycles=1)
+
+    assert roles == ("tool", "user", "assistant")
+    assert DriverAction.SYSTEM_REMINDER not in schedule
+    assert schedule[-2:] == [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK]
+
+
+def test_assistant_input_generated_response_is_rolled_back_and_regenerated(monkeypatch):
     calls = []
 
     class FakeAsyncClient:
@@ -66,7 +83,7 @@ def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.ASSISTANT_INPUT],
+        lambda allowed_roles, *, cycles: [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK],
     )
 
     result = asyncio.run(
@@ -78,7 +95,10 @@ def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
         )
     )
 
-    assert [message["role"] for message in calls[1]] == [
+    injected_request = calls[1]
+    rollback_request = calls[2]
+
+    assert [message["role"] for message in injected_request] == [
         "system",
         "user",
         "assistant",
@@ -86,8 +106,12 @@ def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
         "assistant",
         "user",
     ]
-    assert [message["content"] for message in calls[1][-3:-1]] == list(ASSISTANT_INPUT_TEXTS)
-    assert calls[1][-1] == {"role": "user", "content": ASSISTANT_INPUT_FOLLOWUP_TEXT}
-    assert result["driver_events"] == ["initial", "append_assistant"]
+    assert injected_request[2]["content"] == "generated response 1"
+    assert [message["content"] for message in injected_request[-3:-1]] == list(ASSISTANT_INPUT_TEXTS)
+    assert injected_request[-1] == {"role": "user", "content": ASSISTANT_INPUT_FOLLOWUP_TEXT}
+    assert rollback_request == injected_request
+    assert all(message.get("content") != "generated response 2" for message in rollback_request)
+    assert result["driver_events"] == ["initial", "append_assistant", "rollback"]
     assert result["assistant_input_count"] == 2
     assert result["user_count"] == 1
+    assert result["rollback_count"] == 1

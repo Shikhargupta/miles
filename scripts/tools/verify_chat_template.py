@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """One-click verification: is a chat template append-only after last user message?
 
-The shared CLI trajectory matrix covers tool, user, and system appends.
-Injected assistant input is covered by dedicated per-family CPU tests and the
-session verifier.
+The shared CLI trajectory corpus covers tool, user, and system appends without
+capability filtering. The exhaustive fixed-template CPU matrix also covers
+injected assistant input and combinations; the session verifier exercises its
+generate/rollback lifecycle.
 
 Usage examples::
 
@@ -150,35 +151,21 @@ def main() -> int:
 
     from miles.utils.test_utils.chat_template_verify import (
         ALL_CASES,
-        check_coverage,
         run_all_checks,
         run_all_checks_via_tito,
         select_cases,
     )
 
     is_thinking_filter = {"off": False, "on": True, "both": None}[args.thinking]
-    selected = select_cases(allowed_append_roles=allowed_roles, is_thinking=is_thinking_filter)
+    selected = select_cases(is_thinking=is_thinking_filter)
 
     print(f"Template source:       {source_desc}")
     print(f"Append capability:     {sorted(allowed_roles)}")
     print(f"Thinking mode:         {args.thinking}")
     if extra_template_kwargs:
         print(f"Template kwargs:       {extra_template_kwargs}")
-    print(f"Selected trajectories: {len(selected)} of {len(ALL_CASES)} (after filtering)")
+    print(f"Selected trajectories: {len(selected)} of {len(ALL_CASES)} (thinking mode only)")
     print()
-
-    # Global coverage sanity check — reports gaps in the mock-trajectory pool,
-    # not gaps caused by the current CLI flags.  A gap here means some CLI
-    # setting exercises no trajectory; fixing it requires adding a trajectory
-    # in mock_trajectories.py.
-    coverage = check_coverage()
-    if coverage.missing:
-        print("Trajectory coverage gaps ((thinking, append_roles \\ {tool}) with no trajectory):")
-        for is_thinking, roles in coverage.missing:
-            label = "thinking    " if is_thinking else "non-thinking"
-            roles_str = "{" + ", ".join(roles) + "}" if roles else "{}"
-            print(f"  - {label}  x  {roles_str}")
-        print()
 
     # ── Run verification ───────────────────────────────────────────────
     if use_tito_instance:
@@ -187,23 +174,24 @@ def main() -> int:
             args.tito_model,
             thinking=args.thinking,
             extra_template_kwargs=extra_template_kwargs,
+            expected_append_roles=frozenset(allowed_roles),
         )
     else:
         results = run_all_checks(
             chat_template,
-            allowed_append_roles=allowed_roles,
             thinking=args.thinking,
             extra_template_kwargs=extra_template_kwargs,
         )
 
     # ── Print results ──────────────────────────────────────────────────
-    passed = sum(1 for r in results if r.passed)
+    passed = sum(1 for r in results if r.passed and not r.expected_rejection)
+    expected_rejections = sum(1 for r in results if r.expected_rejection)
     failed = sum(1 for r in results if not r.passed)
 
     max_name_len = max((len(r.case_name) for r in results), default=0)
 
     for r in results:
-        status = "PASS" if r.passed else "FAIL"
+        status = "EXPECTED_REJECT" if r.expected_rejection else ("PASS" if r.passed else "FAIL")
         line = f"  [{status}] {r.case_name:<{max_name_len}}"
         if r.error:
             first_line = r.error.split("\n")[0]
@@ -213,7 +201,10 @@ def main() -> int:
         print(line)
 
     print()
-    print(f"Results: {passed}/{len(results)} passed, {failed} failed")
+    print(
+        f"Results: attempted={len(results)}, pass={passed}, "
+        f"expected_reject={expected_rejections}, fail={failed}, skipped=0"
+    )
 
     if failed:
         if use_tito_instance:

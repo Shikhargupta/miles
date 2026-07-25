@@ -52,7 +52,16 @@ A full multi-turn agentic setup on the session-server TITO path lives in [`examp
 
 Models in the table are verified by Miles maintainers — just pick the family. To support a new model, register a `TITOTokenizer` subclass plus one `FIXED_TEMPLATE` containing its fixed Jinja path or HuggingFace-native kwargs in [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py). Its append capability starts with all four roles; narrow `allowed_append_roles` on that same registration only when verification proves a restriction.
 
-The CPU CLI derives its trajectory surface from the family registration and covers non-assistant `tool`, `user`, and `system` appends. Dedicated family CPU tests cover injected assistant input, and the GPU session verifier derives the same capability for real inference. Run both scripts below — either failing blocks the model. Each prints `Verdict: PASS/FAIL`.
+The verification design has four layers:
+
+1. An independent test manifest lists the expected capability of every non-default family. The oracle never derives its expected roles from the production `FixedTemplate`.
+2. A CPU matrix runs 10 actual appendix shapes — the four single roles plus tool/user/system/assistant combinations — against every family in two render modes. Every cell must be `PASS` or a specific `EXPECTED_REJECT`; marker checks catch templates that silently drop a message. The matrix has 220 attempted cells and zero skips.
+3. Production-shape CPU tests exercise TITO decode/merge round trips and explicitly account for invalid request boundaries and role-gate rejections. Session tests verify that client-injected assistant messages are not mistaken for generated rollback checkpoints.
+4. GPU tests cover the remaining runtime integration: real model output, parser and stop-token behavior, session HTTP state, rollback, and mismatch classification. They do not duplicate the exhaustive CPU matrix.
+
+For example, the CPU matrix keeps every system case for the restricted families. Qwen3.5 records them as `EXPECTED_REJECT(exception)`, while MiniMax M2.5/M2.7 records them as `EXPECTED_REJECT(dropped-message)`.
+
+Run both scripts below — either an unexpected CPU outcome or a GPU failure blocks the model.
 
 ```bash
 # CPU / fast — rendered token sequence is append-only

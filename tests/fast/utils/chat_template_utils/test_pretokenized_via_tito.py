@@ -1,7 +1,8 @@
-"""Unit tests for ``verify_append_only_via_tito_instance`` /
-``run_all_checks_via_tito``: PASS on registered TITO families, FAIL on the
-unfixed Qwen3 chat template, FAIL on a test-local ``_BuggyQwen3TITOTokenizer``
-that omits the ``\\n`` insertion at the ``<|im_end|>`` boundary.
+"""Production-shape TITO decode-roundtrip integration tests.
+
+Representative tokenizer families must pass every accounted trajectory case;
+the original Qwen3 template and a test-local boundary-bug subclass must fail.
+The renderer-only capability matrix covers all registered families.
 """
 
 from copy import deepcopy
@@ -15,8 +16,12 @@ register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=[])
 
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.tito_tokenizer import Qwen3TITOTokenizer
-from miles.utils.test_utils.chat_template_verify import run_all_checks_via_tito, verify_append_only_via_tito_instance
+from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplate, Qwen3TITOTokenizer
+from miles.utils.test_utils.chat_template_verify import (
+    ALL_CASES,
+    run_all_checks_via_tito,
+    verify_append_only_via_tito_instance,
+)
 from miles.utils.test_utils.mock_trajectories import SingleToolTrajectory
 
 # ---------------------------------------------------------------------------
@@ -51,16 +56,16 @@ def _setup_tokenizer_with_registered_template(
 
 
 _PASS_PARAMS = [
-    pytest.param(TITOTokenizerType.QWEN3, "Qwen/Qwen3-0.6B", id="qwen3"),
-    pytest.param(TITOTokenizerType.QWEN35, "Qwen/Qwen3.5-0.8B", id="qwen35"),
-    pytest.param(TITOTokenizerType.QWENNEXT, "Qwen/Qwen3-4B-Thinking-2507", id="qwennext"),
-    pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", id="glm47"),
+    pytest.param(TITOTokenizerType.QWEN3, "Qwen/Qwen3-0.6B", 12, id="qwen3"),
+    pytest.param(TITOTokenizerType.QWEN35, "Qwen/Qwen3.5-0.8B", 34, id="qwen35"),
+    pytest.param(TITOTokenizerType.QWENNEXT, "Qwen/Qwen3-4B-Thinking-2507", 12, id="qwennext"),
+    pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", 12, id="glm47"),
 ]
 
 
-@pytest.mark.parametrize("family,model_id", _PASS_PARAMS)
-def test_via_tito_pass_on_registered_families(family, model_id):
-    """All 4 registered TITO families round-trip cleanly via decode-roundtrip."""
+@pytest.mark.parametrize("family,model_id,expected_rejections", _PASS_PARAMS)
+def test_via_tito_pass_on_registered_families(family, model_id, expected_rejections):
+    """Representative TITO families round-trip every case without silent skips."""
     tokenizer, extra_kwargs = _setup_tokenizer_with_registered_template(model_id, family)
     results = run_all_checks_via_tito(
         tokenizer,
@@ -68,9 +73,11 @@ def test_via_tito_pass_on_registered_families(family, model_id):
         thinking="both",
         extra_template_kwargs=extra_kwargs,
     )
+    assert len(results) == len(ALL_CASES) * 2
+    assert sum(result.expected_rejection for result in results) == expected_rejections
     failures = [r for r in results if not r.passed]
     assert not failures, (
-        f"Expected all PASS for {family.value} via TITO primitive; "
+        f"Expected all accounted outcomes to pass for {family.value} via TITO primitive; "
         f"got {len(failures)} FAIL(s) out of {len(results)}:\n"
         + "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
     )
@@ -134,6 +141,44 @@ def test_via_tito_fail_on_original_qwen3_template():
     )
     failures = [r for r in results if not r.passed]
     assert failures, "Expected ≥1 FAIL on the original (unfixed) Qwen3 chat template; got all PASS."
+
+
+# ---------------------------------------------------------------------------
+# (2b) EXPECTED_REJECT on a synthetic restricted production contract
+# ---------------------------------------------------------------------------
+
+
+def test_via_tito_accounts_for_restricted_role_rejections(monkeypatch):
+    original = Qwen3TITOTokenizer.FIXED_TEMPLATE
+    restricted_roles = frozenset({"tool", "user", "assistant"})
+    monkeypatch.setattr(
+        Qwen3TITOTokenizer,
+        "FIXED_TEMPLATE",
+        FixedTemplate(
+            template=original.template,
+            extra_kwargs=dict(original.extra_kwargs),
+            allowed_append_roles=restricted_roles,
+        ),
+    )
+    tokenizer, extra_kwargs = _setup_tokenizer_with_registered_template(
+        "Qwen/Qwen3-0.6B",
+        TITOTokenizerType.QWEN3,
+    )
+
+    results = run_all_checks_via_tito(
+        tokenizer,
+        TITOTokenizerType.QWEN3,
+        thinking="off",
+        extra_template_kwargs=extra_kwargs,
+        expected_append_roles=restricted_roles,
+    )
+
+    role_rejections = [
+        result for result in results if result.expected_rejection and result.error and "allowed=" in result.error
+    ]
+    assert len(results) == 26
+    assert role_rejections
+    assert all(result.passed for result in results)
 
 
 # ---------------------------------------------------------------------------

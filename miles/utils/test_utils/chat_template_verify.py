@@ -12,7 +12,6 @@ Core functions are used by both the CLI script
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -94,11 +93,17 @@ def assert_pretokenized_equals_standard(chat_template, messages, pretokenized_nu
 
 @dataclass
 class VerifyResult:
-    """Result of a single append-only verification case."""
+    """Result of one accounted append-only verification case.
+
+    ``expected_rejection`` distinguishes a contract-preserving rejection from
+    a successful merge. Both have ``passed=True``; unexpected acceptance or
+    rejection has ``passed=False``.
+    """
 
     case_name: str
     passed: bool
     error: str | None = None
+    expected_rejection: bool = False
 
 
 def verify_append_only(
@@ -134,19 +139,13 @@ def verify_append_only(
 # Built-in test cases (shared between CLI and test suite)
 # ---------------------------------------------------------------------------
 #
-# Trajectories expose two class attributes used for verify-layer filtering:
+# Trajectories expose ``IS_THINKING`` so callers can select render-mode
+# variants.  Append roles are derived from each concrete pretokenize boundary:
+# copying a trajectory-wide role union would misclassify tool-only cuts inside
+# a trajectory that happens to use user or system elsewhere.
 #
-#   * ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear after
-#     the first assistant message.  Compared with FixedTemplate capability.
-#   * ``IS_THINKING: bool`` — any assistant carries ``reasoning_content``.
-#     Drives ``--thinking`` and whether ``enable_thinking`` kwarg is passed.
-#
-# This shared verifier intentionally covers only non-assistant append trajectories;
-# dedicated family CPU tests and the session verifier cover injected assistant input.
-#
-# Both are declared on the trajectory class (mock_trajectories.py), alongside
-# ``TOOLS`` / ``PRETOKENIZE_POSITIONS`` / ``MESSAGES``.  This file only lists
-# which trajectories to exercise and expands them into concrete cases.
+# Injected-assistant behavior is covered by the fixed-template capability
+# matrix and the session lifecycle tests.
 
 import re  # noqa: E402
 
@@ -203,30 +202,57 @@ _TRAJECTORIES: list[type] = [
 
 @dataclass(frozen=True)
 class CaseSpec:
-    """One verify case with classification metadata copied from its trajectory."""
+    """One concrete request boundary expanded from a trajectory."""
 
     case_name: str
     traj_cls: type
     pretokenize_n: int
+    append_end: int
     tools: list[dict] | None
     append_roles: frozenset[str]
     is_thinking: bool
+
+    @property
+    def has_appendix(self) -> bool:
+        return self.append_end > self.pretokenize_n
+
+    @property
+    def request_messages(self) -> list[dict]:
+        return self.traj_cls.MESSAGES[: self.append_end]
+
+    @property
+    def prior_append_roles(self) -> frozenset[str]:
+        """Return client roles appended after the initial request and before this boundary."""
+        roles: set[str] = set()
+        saw_generated_assistant = False
+        for message in self.traj_cls.MESSAGES[: self.pretokenize_n]:
+            if message["role"] == "assistant":
+                saw_generated_assistant = True
+            elif saw_generated_assistant:
+                roles.add(message["role"])
+        return frozenset(roles)
 
 
 def _expand(traj_cls: type) -> list[CaseSpec]:
     """Expand one trajectory into one CaseSpec per PRETOKENIZE_POSITIONS value."""
     short = _short_name(traj_cls)
-    return [
-        CaseSpec(
-            case_name=f"{short}-N{n}",
-            traj_cls=traj_cls,
-            pretokenize_n=n,
-            tools=traj_cls.TOOLS,
-            append_roles=traj_cls.APPEND_ROLES,
-            is_thinking=traj_cls.IS_THINKING,
+    cases = []
+    for n in traj_cls.PRETOKENIZE_POSITIONS:
+        append_end = n
+        while append_end < len(traj_cls.MESSAGES) and traj_cls.MESSAGES[append_end].get("role") != "assistant":
+            append_end += 1
+        cases.append(
+            CaseSpec(
+                case_name=f"{short}-N{n}",
+                traj_cls=traj_cls,
+                pretokenize_n=n,
+                append_end=append_end,
+                tools=traj_cls.TOOLS,
+                append_roles=frozenset(message["role"] for message in traj_cls.MESSAGES[n:append_end]),
+                is_thinking=traj_cls.IS_THINKING,
+            )
         )
-        for n in traj_cls.PRETOKENIZE_POSITIONS
-    ]
+    return cases
 
 
 ALL_CASES: list[CaseSpec] = [c for t in _TRAJECTORIES for c in _expand(t)]
@@ -236,27 +262,12 @@ THINKING_MODES: tuple[str, ...] = ("off", "on", "both")
 
 def select_cases(
     *,
-    allowed_append_roles: Iterable[str],
     is_thinking: bool | None = None,
 ) -> list[CaseSpec]:
-    """Select trajectory cases by append-role surface and (optionally) thinking flag.
-
-    A case is included iff ``case.append_roles`` is a subset of
-    *allowed_append_roles*, and (when *is_thinking* is not ``None``)
-    ``case.is_thinking`` matches.
-
-    The caller is responsible for including ``"tool"`` in *allowed_append_roles*
-    when the session is tool-capable; this function does not silently union it.
-    """
-    allowed = frozenset(allowed_append_roles)
-    out: list[CaseSpec] = []
-    for c in ALL_CASES:
-        if not c.append_roles.issubset(allowed):
-            continue
-        if is_thinking is not None and c.is_thinking != is_thinking:
-            continue
-        out.append(c)
-    return out
+    """Select only by render mode; append capabilities never hide a case."""
+    if is_thinking is None:
+        return list(ALL_CASES)
+    return [case for case in ALL_CASES if case.is_thinking == is_thinking]
 
 
 def enable_thinking_variants(thinking: str) -> list[dict]:
@@ -299,69 +310,13 @@ def format_case_id(case: CaseSpec, kwargs: dict) -> str:
     return f"{case.case_name}-{'-'.join(parts)}"
 
 
-@dataclass
-class CoverageReport:
-    """Coverage of cases across ``(is_thinking, append_roles \\ {tool})``.
-
-    ``covered`` maps each combination to the case names that fall in it;
-    ``missing`` lists combinations with no case.  ``tool`` is excluded from
-    the role axis because it is implicitly always allowed.
-    """
-
-    covered: dict[tuple[bool, tuple[str, ...]], list[str]]
-    missing: list[tuple[bool, tuple[str, ...]]]
-
-
-def check_coverage(
-    cases: list[CaseSpec] | None = None,
-    *,
-    role_universe: set[str] | None = None,
-) -> CoverageReport:
-    """Enumerate ``thinking × append-role-subset`` combinations and report gaps.
-
-    Used as a sanity check that every meaningful append-role and thinking
-    combination is backed by at least one trajectory.
-    """
-    if cases is None:
-        cases = ALL_CASES
-    if role_universe is None:
-        role_universe = {"user", "system"}
-
-    from itertools import chain, combinations
-
-    ordered_universe = sorted(role_universe)
-    all_subsets: list[tuple[str, ...]] = [
-        tuple(sub)
-        for sub in chain.from_iterable(combinations(ordered_universe, r) for r in range(len(ordered_universe) + 1))
-    ]
-
-    covered: dict[tuple[bool, tuple[str, ...]], list[str]] = {
-        (is_thinking, sub): [] for is_thinking in (False, True) for sub in all_subsets
-    }
-    for c in cases:
-        roles_key = tuple(sorted(c.append_roles - {"tool"}))
-        key = (c.is_thinking, roles_key)
-        if key in covered:
-            covered[key].append(c.case_name)
-
-    missing = [k for k, v in covered.items() if not v]
-    return CoverageReport(covered=covered, missing=missing)
-
-
 def run_all_checks(
     chat_template: str,
     *,
-    allowed_append_roles: set[str] | frozenset[str] | None = None,
     thinking: str = "off",
     extra_template_kwargs: dict | None = None,
 ) -> list[VerifyResult]:
-    """Run verification cases filtered by *allowed_append_roles* and *thinking*.
-
-    ``allowed_append_roles`` is the role surface the template may append after
-    an assistant turn; defaults to the maximal four-role surface.
-    Trajectories whose ``append_roles`` are not a subset are skipped.  Caller
-    must include ``"tool"`` explicitly when relevant — there is no implicit
-    union.
+    """Run every trajectory case selected by *thinking*.
 
     ``thinking`` selects which ``enable_thinking`` variants are exercised —
     see :func:`enable_thinking_variants`.  When ``"both"``, **every** selected
@@ -373,29 +328,39 @@ def run_all_checks(
     thread template-specific kwargs (e.g. GLM's ``clear_thinking=False``)
     through the CLI.
     """
-    if allowed_append_roles is None:
-        from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES
-
-        allowed_append_roles = ALL_APPEND_ROLES
     if thinking not in THINKING_MODES:
         raise ValueError(f"thinking must be one of {THINKING_MODES}; got {thinking!r}")
     extra = extra_template_kwargs or {}
 
     is_thinking_filter = {"off": False, "on": True, "both": None}[thinking]
-    selected = select_cases(allowed_append_roles=allowed_append_roles, is_thinking=is_thinking_filter)
+    selected = select_cases(is_thinking=is_thinking_filter)
     variants = enable_thinking_variants(thinking)
 
     results: list[VerifyResult] = []
     for case in selected:
         for variant in variants:
             kwargs = {**variant, **extra}
+            case_name = format_case_id(case, kwargs)
+            if not case.has_appendix:
+                results.append(
+                    VerifyResult(
+                        case_name=case_name,
+                        passed=True,
+                        error=(
+                            f"Invalid request boundary at N={case.pretokenize_n}: "
+                            "there are no client-appended messages before the next generated assistant"
+                        ),
+                        expected_rejection=True,
+                    )
+                )
+                continue
             results.append(
                 verify_append_only(
                     chat_template,
-                    deepcopy(case.traj_cls.MESSAGES),
+                    deepcopy(case.request_messages),
                     case.pretokenize_n,
                     tools=case.tools,
-                    case_name=format_case_id(case, kwargs),
+                    case_name=case_name,
                     **kwargs,
                 )
             )
@@ -543,20 +508,69 @@ def verify_append_only_via_tito(
     )
 
 
+def _verify_expected_role_rejection_via_tito(
+    tokenizer: Any,
+    tito_model: TITOTokenizerType | str,
+    messages: list[dict],
+    pretokenized_num_message: int,
+    tools: list[dict] | None,
+    case_name: str,
+    **template_kwargs,
+) -> VerifyResult:
+    """Exercise the production role gate without rendering an unsupported full prompt."""
+    from miles.utils.chat_template_utils import get_tito_tokenizer
+
+    tito = get_tito_tokenizer(
+        tokenizer,
+        tokenizer_type=tito_model,
+        chat_template_kwargs=dict(template_kwargs),
+    )
+    try:
+        tito.tokenize_additional_messages(
+            messages[:pretokenized_num_message],
+            messages,
+            tools,
+        )
+    except ValueError as error:
+        detail = f"{type(error).__name__}: {error}"
+        if "appended message" in detail and "allowed=" in detail:
+            return VerifyResult(
+                case_name=case_name,
+                passed=True,
+                error=detail,
+                expected_rejection=True,
+            )
+        return VerifyResult(case_name=case_name, passed=False, error=detail)
+
+    return VerifyResult(
+        case_name=case_name,
+        passed=False,
+        error="Expected the FixedTemplate role gate to reject the unsupported appendix, but it passed",
+    )
+
+
 def run_all_checks_via_tito(
     tokenizer: Any,
     tito_model: TITOTokenizerType | str,
     *,
     thinking: str = "off",
     extra_template_kwargs: dict | None = None,
+    expected_append_roles: frozenset[str] | None = None,
 ) -> list[VerifyResult]:
-    """Same shape as :func:`run_all_checks` but routes through TITO + tokenizer.
+    """Account for every selected case through TITO + tokenizer.
 
     Per-case TITO rebuild: each (case, ``enable_thinking`` variant) gets a fresh
     TITO instance constructed with the merged kwargs, so the dummy-context
     appendix render inside ``tokenize_additional_messages`` sees the same
     ``enable_thinking`` value as the reference render.  Construction is
     millisecond-level and runs ~50 times per CLI invocation; cheap.
+
+    ``expected_append_roles`` is an oracle input. Tests pass an independent
+    manifest so a mistaken production capability cannot validate itself; the
+    CLI passes the selected family's live contract for an operational report.
+    Unsupported roles must be rejected by the production gate, while malformed
+    empty boundaries are classified as explicit expected rejections. No case
+    is silently skipped.
 
     The caller is responsible for setting ``tokenizer.chat_template`` (e.g. via
     ``resolve_fixed_chat_template`` lookup or ``--template`` override) before
@@ -571,32 +585,68 @@ def run_all_checks_via_tito(
     if isinstance(tito_model, str):
         tito_model = TITOTokenizerType(tito_model)
     fixed_template = TITOTokenizerType.get_tokenizer_class(tito_model).FIXED_TEMPLATE
+    expected_roles = fixed_template.allowed_append_roles if expected_append_roles is None else expected_append_roles
     is_thinking_filter = {"off": False, "on": True, "both": None}[thinking]
-    selected = select_cases(
-        allowed_append_roles=fixed_template.allowed_append_roles,
-        is_thinking=is_thinking_filter,
-    )
+    selected = select_cases(is_thinking=is_thinking_filter)
     variants = enable_thinking_variants(thinking)
 
     results: list[VerifyResult] = []
     for case in selected:
-        # This shared verifier requires a non-empty non-assistant appendix. Cases
-        # ending at an assistant remain covered at the text-prefix layer; dedicated
-        # family CPU tests and the session verifier cover injected assistant input.
-        msgs = case.traj_cls.MESSAGES
-        n = case.pretokenize_n
-        if n >= len(msgs) or msgs[n].get("role") == "assistant":
-            continue
         for variant in variants:
             kwargs = {**variant, **extra}
+            case_name = format_case_id(case, kwargs)
+            if not case.has_appendix:
+                results.append(
+                    VerifyResult(
+                        case_name=case_name,
+                        passed=True,
+                        error=(
+                            f"Invalid request boundary at N={case.pretokenize_n}: "
+                            "there are no client-appended messages before the next generated assistant"
+                        ),
+                        expected_rejection=True,
+                    )
+                )
+                continue
+
+            expected_role_rejection = not case.append_roles.issubset(expected_roles)
+            if expected_role_rejection:
+                results.append(
+                    _verify_expected_role_rejection_via_tito(
+                        tokenizer,
+                        tito_model,
+                        deepcopy(case.request_messages),
+                        case.pretokenize_n,
+                        case.tools,
+                        case_name=case_name,
+                        **kwargs,
+                    )
+                )
+                continue
+
+            unsupported_prior_roles = case.prior_append_roles - expected_roles
+            if unsupported_prior_roles:
+                results.append(
+                    VerifyResult(
+                        case_name=case_name,
+                        passed=True,
+                        error=(
+                            f"Unreachable request boundary at N={case.pretokenize_n}: "
+                            f"an earlier appendix used unsupported roles {sorted(unsupported_prior_roles)}"
+                        ),
+                        expected_rejection=True,
+                    )
+                )
+                continue
+
             results.append(
                 verify_append_only_via_tito(
                     tokenizer,
                     tito_model,
-                    deepcopy(case.traj_cls.MESSAGES),
+                    deepcopy(case.request_messages),
                     case.pretokenize_n,
                     tools=case.tools,
-                    case_name=format_case_id(case, kwargs),
+                    case_name=case_name,
                     **kwargs,
                 )
             )

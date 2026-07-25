@@ -175,10 +175,11 @@ def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[Driv
     schedule = list(cycle) + [_R] + cycle * (cycles - 1)
     if "user" in key:
         schedule.append(_F)
-    # Keep injected assistants after every rollback: they are prompt messages,
-    # not generated checkpoints, so rollback across them is a separate contract.
+    # Generate once from the injected-assistant request, then resend that exact
+    # request without the generated response. This distinguishes client-supplied
+    # assistants from session-generated checkpoints during rollback.
     if "assistant" in key:
-        schedule.append(_A)
+        schedule.extend((_A, _R))
     return schedule
 
 
@@ -464,10 +465,10 @@ def _add_arguments(parser):
         default=DEFAULT_CYCLES,
         help="Number of driver schedule cycles per sample for session-server "
         "TITO verification.  Each cycle exercises recurrent role actions plus "
-        "a rollback; assistant input is exercised once as the terminal action. "
-        "More cycles stress the TITO accumulator longer but expand context "
-        "length.  Drop to 2 on tighter-context models (e.g. Qwen3 32K with 4K "
-        "response budget).",
+        "a rollback; assistant input is exercised once and immediately retried "
+        "by rolling back its generated response. More cycles stress the TITO "
+        "accumulator longer but expand context length. Drop to 2 on tighter-context "
+        "models (e.g. Qwen3 32K with 4K response budget).",
     )
     parser.add_argument(
         "--tool-call-failure-mode",

@@ -186,22 +186,17 @@ def _load_fixed_or_none(tito_model: TITOTokenizerType | None) -> str | None:
 # Per-model declarations
 # ---------------------------------------------------------------------------
 #
-# (model_id, supports_thinking, fixed_template_tito_model, allowed_append_roles)
+# (model_id, supports_thinking, fixed_template_tito_model)
 #
 # ``fixed_template_tito_model`` is ``None`` when the model uses its native HF
 # template; set to a ``TITOTokenizerType`` when the test should swap in the
-# bundled fixed template registered for that family.  ``allowed_append_roles``
-# reflects the set of append-role combinations the model's template can render
-# without raising — test asserts that the sglang path and our path produce
-# identical tokens on all such cases.  Qwen3.5-4B uses the bundled fixed
-# template which raises on intermediate system post-revert, so the role set
-# is narrowed to {tool} only.
+# bundled fixed template registered for that family.
 
-_MODELS: list[tuple[str, bool, TITOTokenizerType | None, frozenset[str]]] = [
-    ("Qwen/Qwen3-4B", True, None, frozenset({"tool", "user", "system"})),
-    ("zai-org/GLM-4.7-Flash", True, None, frozenset({"tool", "user", "system"})),
-    ("Qwen/Qwen3.5-4B", True, TITOTokenizerType.QWEN35, frozenset({"tool"})),
-    ("Qwen/Qwen3-Coder-Next", False, None, frozenset({"tool", "user", "system"})),
+_MODELS: list[tuple[str, bool, TITOTokenizerType | None]] = [
+    ("Qwen/Qwen3-4B", True, None),
+    ("zai-org/GLM-4.7-Flash", True, None),
+    ("Qwen/Qwen3.5-4B", True, TITOTokenizerType.QWEN35),
+    ("Qwen/Qwen3-Coder-Next", False, None),
 ]
 
 
@@ -209,12 +204,9 @@ def _build_align_params():
     # Thinking templates: every selected trajectory × {enable_thinking=True, False}.
     # Non-thinking templates: only non-thinking trajectories, no enable_thinking kwarg.
     params = []
-    for model_id, supports_thinking, fixed_tito, allowed_roles in _MODELS:
+    for model_id, supports_thinking, fixed_tito in _MODELS:
         short = model_id.split("/")[-1]
-        cases = select_cases(
-            allowed_append_roles=allowed_roles,
-            is_thinking=None if supports_thinking else False,
-        )
+        cases = select_cases(is_thinking=None if supports_thinking else False)
         variants = enable_thinking_variants("both" if supports_thinking else "off")
         for case in cases:
             # Trajectories ending with a plain assistant message (no tool_calls):
@@ -230,12 +222,17 @@ def _build_align_params():
                 continue
             for variant in variants:
                 ident = f"{short}-{format_case_id(case, variant)}"
-                params.append(pytest.param(model_id, fixed_tito, case, variant, id=ident))
+                expected_system_rejection = fixed_tito is TITOTokenizerType.QWEN35 and any(
+                    message["role"] == "system" for message in case.traj_cls.MESSAGES[1:]
+                )
+                if expected_system_rejection:
+                    ident += "-EXPECTED_REJECT"
+                params.append(pytest.param(model_id, fixed_tito, case, variant, expected_system_rejection, id=ident))
     return params
 
 
 def _per_model_params():
-    return [pytest.param(model_id, fixed_tito, id=model_id.split("/")[-1]) for model_id, _, fixed_tito, _ in _MODELS]
+    return [pytest.param(model_id, fixed_tito, id=model_id.split("/")[-1]) for model_id, _, fixed_tito in _MODELS]
 
 
 # ---------------------------------------------------------------------------
@@ -261,13 +258,36 @@ def _assert_aligned(tokenizer, case: CaseSpec, kwargs: dict, chat_template: str 
     assert actual == expected
 
 
+def _assert_mid_session_system_rejected(tokenizer, case: CaseSpec, kwargs: dict, chat_template: str) -> None:
+    extra = {"chat_template": chat_template}
+    error = "System message must be at the beginning"
+    with pytest.raises(ValueError, match=error):
+        sglang_prompt_ids(tokenizer, case.traj_cls.MESSAGES, case.traj_cls.TOOLS, **kwargs, **extra)
+    with pytest.raises(ValueError, match=error):
+        apply_chat_template(
+            case.traj_cls.MESSAGES,
+            tokenizer=tokenizer,
+            tools=case.traj_cls.TOOLS,
+            tokenize=True,
+            **kwargs,
+            **extra,
+        )
+
+
 class TestAlignWithSGLang:
     """apply_chat_template must produce identical prompt_ids to SGLang's pipeline."""
 
-    @pytest.mark.parametrize("model_id, fixed_tito, case, kwargs", _build_align_params())
-    def test_align(self, model_id, fixed_tito, case, kwargs):
+    @pytest.mark.parametrize(
+        "model_id, fixed_tito, case, kwargs, expected_system_rejection",
+        _build_align_params(),
+    )
+    def test_align(self, model_id, fixed_tito, case, kwargs, expected_system_rejection):
         tokenizer = _get_tokenizer(model_id)
         chat_template = _load_fixed_or_none(fixed_tito)
+        if expected_system_rejection:
+            assert chat_template is not None
+            _assert_mid_session_system_rejected(tokenizer, case, kwargs, chat_template)
+            return
         _assert_aligned(tokenizer, case, kwargs, chat_template)
 
     @pytest.mark.parametrize("model_id, fixed_tito", _per_model_params())
