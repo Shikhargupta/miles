@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.lora import is_lora_enabled
+from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,60 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
+_marked_lora_grad_params_cache: dict[int, list] = {}
+
+
+def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
+    """Sum partial grads of replicated native-LoRA params over their tagged group, pre-DP-reduce.
+
+    A native adapter's ``A`` on a column-parallel module (and ``B`` on a row-parallel
+    one under sequence parallelism) is replicated across the TP group while each rank
+    only sees a partial product, so the grads must be summed over TP; grouped-expert
+    adapters carry the analogous ``ep`` tag. Params are tagged at creation with
+    ``_lora_grad_sum_group`` and this is a no-op for every other setup.
+    """
+    from megatron.core import parallel_state as ps
+
+    key = id(model[0]) if model else 0
+    marked = _marked_lora_grad_params_cache.get(key)
+    if marked is None:
+        marked = []
+        for chunk in model:
+            for param in chunk.parameters():
+                group_name = getattr(param, "_lora_grad_sum_group", None)
+                if group_name is not None and param.requires_grad:
+                    marked.append((param, group_name))
+        _marked_lora_grad_params_cache[key] = marked
+    if not marked:
+        return
+    groups = {
+        "tp": (ps.get_tensor_model_parallel_group(), ps.get_tensor_model_parallel_world_size()),
+        "ep": (ps.get_expert_model_parallel_group(), ps.get_expert_model_parallel_world_size()),
+    }
+    for group_name in ("tp", "ep"):
+        group, size = groups[group_name]
+        if size <= 1:
+            continue
+        grads = []
+        for param, g_name in marked:
+            if g_name != group_name:
+                continue
+            grad = getattr(param, "main_grad", None)
+            if grad is None:
+                grad = param.grad
+            if grad is not None:
+                grads.append(grad)
+        for dt in {g.dtype for g in grads}:
+            gs = [g for g in grads if g.dtype == dt]
+            if len(gs) == 1:
+                dist.all_reduce(gs[0], op=dist.ReduceOp.SUM, group=group)
+                continue
+            flat = torch._utils._flatten_dense_tensors(gs)
+            dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=group)
+            for g, red in zip(gs, torch._utils._unflatten_dense_tensors(flat, gs), strict=False):
+                g.copy_(red)
+
+
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     """Check if model has LoRA layers applied."""
     for model_chunk in model:
@@ -134,6 +188,12 @@ def is_lora_weight_name(name: str) -> bool:
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
+
+
+def _native_adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int) -> str:
+    """Per-rank adapter shard filename. EP is only in the name when it actually shards."""
+    suffix = f"_ep{ep_rank}" if ep_rank > 0 else ""
+    return f"adapter_megatron_tp{tp_rank}_pp{pp_rank}{suffix}.pt"
 
 
 _param_grad_buffer_patched = False
@@ -365,9 +425,10 @@ def save_lora_checkpoint(
     1. **HF PEFT format** (``adapter_model.bin`` + ``adapter_config.json``) for
        external tool compatibility. Uses Megatron-Bridge's ``export_adapter_weights``
        which correctly handles fused QKV / gate-up weight splitting and TP gathering.
-    2. **Megatron-native format** (``adapter_megatron_tp{tp}_pp{pp}.pt``) for fast
-       checkpoint resume without name/weight conversion. Each TP/PP rank saves its
-       own shard with original parameter names.
+    2. **Megatron-native format** (``adapter_megatron_tp{tp}_pp{pp}_ep{ep}.pt``) for
+       fast checkpoint resume without name/weight conversion. Each TP/PP/EP rank saves
+       its own shard with original parameter names (ranks sharing ``(tp, pp)`` hold
+       different local experts once EP > 1, so the shard key includes the EP rank).
 
     When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
     also saved per-rank for checkpoint resume. Base model weights are frozen and
@@ -387,14 +448,15 @@ def save_lora_checkpoint(
     is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
     tp_rank = parallel_state.tp.rank
     pp_rank = parallel_state.pp.rank
+    ep_rank = parallel_state.ep.rank
 
-    # Create directory on dp_rank=0, then synchronize
-    if is_dp_cp_rank_0:
-        save_path.mkdir(parents=True, exist_ok=True)
+    # EVERY rank creates the directory: the save dir may be node-local storage, where a
+    # dp0-only mkdir misses the other nodes.
+    save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
         dist.barrier()
 
-    # ---- Megatron-native format (per TP/PP rank, fast resume) ----
+    # ---- Megatron-native format (per TP/PP/EP rank, fast resume) ----
     if is_dp_cp_rank_0:
         adapter_state: dict[str, torch.Tensor] = {}
         for model_chunk in model:
@@ -402,7 +464,7 @@ def save_lora_checkpoint(
                 if _is_adapter_param_name(name):
                     adapter_state[name] = param.data.cpu()
 
-        native_path = save_path / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
+        native_path = save_path / _native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
         torch.save(adapter_state, native_path)
         logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
@@ -498,9 +560,10 @@ def load_lora_adapter(
 
     tp_rank = get_parallel_state().tp.rank
     pp_rank = get_parallel_state().pp.rank
+    ep_rank = get_parallel_state().ep.rank
 
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
-    native_path = adapter_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
+    native_path = adapter_dir / _native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
     if native_path.exists():
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
         loaded = 0

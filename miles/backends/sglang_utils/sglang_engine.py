@@ -17,7 +17,7 @@ from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_h
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
@@ -749,7 +749,7 @@ def _compute_server_args(
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
         kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
-    elif is_lora_enabled(args):
+    elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)

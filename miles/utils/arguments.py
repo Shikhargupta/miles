@@ -1405,6 +1405,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--lora-provider-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted module path implementing the native-LoRA provider protocol "
+                    "(wrap_model_provider_with_lora / load_lora_adapter_hf / export_lora_hf_named). "
+                    "Defaults to miles.backends.megatron_utils.lora_native, which covers standard "
+                    "Megatron-core GPT models; point this at a model plugin whose module structure "
+                    "diverges from plain mcore. Only used with --megatron-to-hf-mode raw."
+                ),
+            )
+            parser.add_argument(
+                "--lora-train-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train LoRA adapters in Megatron but keep the rollout engines on the frozen "
+                    "base policy: SGLang LoRA serving and adapter weight sync are disabled (only "
+                    "base weights are synced). For models whose adapters the rollout engine cannot "
+                    "serve yet, and for isolating training-side numerics."
+                ),
+            )
+            parser.add_argument(
                 "--experts-shared-outer-loras",
                 action="store_true",
                 default=False,
