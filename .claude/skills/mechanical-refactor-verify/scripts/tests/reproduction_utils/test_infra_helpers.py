@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from pathlib import Path
 
@@ -8,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import mechanical_refactor_reproduction_utils as rr
 from mechanical_refactor_reproduction_utils import (
-    Repro,
     _def_span,
     _find_class,
     _find_def,
@@ -17,7 +15,6 @@ from mechanical_refactor_reproduction_utils import (
     dedent,
     exec_command,
     git_add_and_commit,
-    verify_mechanical_refactor,
 )
 from reproduction_testlib import _apply, _commit, _git, _write  # noqa: F401
 
@@ -70,9 +67,7 @@ def test_git_add_and_commit_stages_and_commits(repo: Path) -> None:
         "trailing parens (a, b) and pipe | semicolon ;",
     ],
 )
-def test_git_add_and_commit_message_round_trips_with_metacharacters(
-    repo: Path, message: str
-) -> None:
+def test_git_add_and_commit_message_round_trips_with_metacharacters(repo: Path, message: str) -> None:
     """Messages with shell metacharacters are quoted safely and survive verbatim."""
     _write(repo, **{"file.txt": "content\n"})
     git_add_and_commit(message, cwd=str(repo))

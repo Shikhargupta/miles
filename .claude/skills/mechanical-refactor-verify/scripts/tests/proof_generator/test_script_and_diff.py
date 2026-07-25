@@ -2,8 +2,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from generator_testlib import (  # noqa: F401
@@ -13,10 +11,7 @@ from generator_testlib import (  # noqa: F401
     _method_onto_class,
     _write,
 )
-from mechanical_refactor_proof_generator import (
-    infer_recipe,
-    recipe_to_script,
-)
+from mechanical_refactor_proof_generator import infer_recipe, recipe_to_script
 
 
 def test_recipe_to_script_is_self_contained_and_ordered(repo: Path) -> None:
@@ -45,30 +40,22 @@ def _emit_runnable_script(repo: Path, out: Path, commit: str, subject: str) -> P
     """Write the emitted script plus its util dependency into a proof-folder layout."""
     scripts_dir = out / "repro_scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    utils_src = Path(__file__).resolve().parents[2] / (
-        "mechanical_refactor_reproduction_utils.py"
-    )
-    (out / "mechanical_refactor_reproduction_utils.py").write_text(
-        utils_src.read_text()
-    )
+    utils_src = Path(__file__).resolve().parents[2] / ("mechanical_refactor_reproduction_utils.py")
+    (out / "mechanical_refactor_reproduction_utils.py").write_text(utils_src.read_text())
     script = recipe_to_script(infer_recipe(commit, str(repo)), subject)
     script_path = scripts_dir / f"{commit[:9]}.py"
     script_path.write_text(script)
     return script_path
 
 
-def test_emitted_script_exits_zero_on_faithful_commit(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_emitted_script_exits_zero_on_faithful_commit(repo: Path, tmp_path: Path) -> None:
     """Running the emitted script on a clean move exits 0 and prints the PASS verdict."""
     _write(
         repo,
         **{
             "model.py": "def keep():\n    return 0\n\n\ndef resolve(m):\n    return m\n",
             "util.py": "import os\n",
-            "caller.py": (
-                "from model import resolve\n\n\ndef run(m):\n    return resolve(m)\n"
-            ),
+            "caller.py": ("from model import resolve\n\n\ndef run(m):\n    return resolve(m)\n"),
         },
     )
     _commit(repo, "base")
@@ -79,25 +66,19 @@ def test_emitted_script_exits_zero_on_faithful_commit(
         **{
             "model.py": "def keep():\n    return 0\n\n\n",
             "util.py": "import os\n\ndef resolve(m):\n    return m\n",
-            "caller.py": (
-                "from util import resolve\n\n\ndef run(m):\n    return resolve(m)\n"
-            ),
+            "caller.py": ("from util import resolve\n\n\ndef run(m):\n    return resolve(m)\n"),
         },
     )
     commit = _commit(repo, "move resolve to util")
     script_path = _emit_runnable_script(repo, tmp_path / "out", commit, "move")
 
-    result = subprocess.run(
-        [sys.executable, str(script_path)], cwd=repo, capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, str(script_path)], cwd=repo, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS" in result.stdout
 
 
-def test_emitted_script_exits_nonzero_on_bundled_change(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_emitted_script_exits_nonzero_on_bundled_change(repo: Path, tmp_path: Path) -> None:
     """A commit bundling a non-move change makes the emitted script exit non-zero."""
     _write(
         repo,
@@ -117,25 +98,19 @@ def test_emitted_script_exits_nonzero_on_bundled_change(
     commit = _commit(repo, "move resolve AND change keep")
     script_path = _emit_runnable_script(repo, tmp_path / "out", commit, "dirty move")
 
-    result = subprocess.run(
-        [sys.executable, str(script_path)], cwd=repo, capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, str(script_path)], cwd=repo, capture_output=True, text=True)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "RESIDUAL" in result.stdout
 
 
-def test_emitted_script_passes_on_move_above_typechecking_guard(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_emitted_script_passes_on_move_above_typechecking_guard(repo: Path, tmp_path: Path) -> None:
     """A module-level def relocated to just above an ``if TYPE_CHECKING:`` guard reproduces
     via an inferred after= anchor and the emitted script exits 0."""
     _write(
         repo,
         **{
-            "model.py": (
-                "def keep():\n    return 0\n\n\ndef helper(x):\n    return x + 1\n"
-            ),
+            "model.py": ("def keep():\n    return 0\n\n\ndef helper(x):\n    return x + 1\n"),
             "util.py": (
                 "from u import is_hip\n"
                 "\n"
@@ -166,13 +141,9 @@ def test_emitted_script_passes_on_move_above_typechecking_guard(
         },
     )
     commit = _commit(repo, "move helper above the TYPE_CHECKING guard")
-    script_path = _emit_runnable_script(
-        repo, tmp_path / "out", commit, "after-anchor move"
-    )
+    script_path = _emit_runnable_script(repo, tmp_path / "out", commit, "after-anchor move")
 
-    result = subprocess.run(
-        [sys.executable, str(script_path)], cwd=repo, capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, str(script_path)], cwd=repo, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS" in result.stdout

@@ -1,17 +1,10 @@
-import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from generator_testlib import _commit, _git, _write  # noqa: F401
-from mechanical_refactor_proof_generator import (
-    build_repro,
-    infer_recipe,
-    recipe_to_script,
-)
+from mechanical_refactor_proof_generator import build_repro, infer_recipe, recipe_to_script
 
 
 def test_infer_extract_function_with_returned_local(repo: Path) -> None:

@@ -1,20 +1,12 @@
 import subprocess
 from pathlib import Path
 
-_PASSING_PROOF = (
-    "import sys\n"
-    'print("PASS: reproduces the commit byte-for-byte.")\n'
-    "sys.exit(0)\n"
-)
-_FAILING_PROOF = (
-    "import sys\n" 'print("RESIDUAL (2 lines):\\n+x\\n-y")\n' "sys.exit(1)\n"
-)
+_PASSING_PROOF = "import sys\n" 'print("PASS: reproduces the commit byte-for-byte.")\n' "sys.exit(0)\n"
+_FAILING_PROOF = "import sys\n" 'print("RESIDUAL (2 lines):\\n+x\\n-y")\n' "sys.exit(1)\n"
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def _write(repo: Path, **files: "str | None") -> None:
@@ -39,7 +31,7 @@ def _chain(repo: Path, messages: "list[str]") -> "tuple[str, list[str]]":
     _write(repo, **{"seed.py": "SEED = 0\n"})
     base = _commit(repo, "base")
     _git(repo, "switch", "-q", "-c", "chain")
-    shas: "list[str]" = []
+    shas: list[str] = []
     for i, message in enumerate(messages):
         _write(repo, **{f"file_{i}.py": f"VALUE = {i}\n"})
         shas.append(_commit(repo, message))

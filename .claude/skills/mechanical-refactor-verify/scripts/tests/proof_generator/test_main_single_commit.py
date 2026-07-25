@@ -59,9 +59,7 @@ def test_single_commit_extract_function_reproduces_instead_of_unsupported(
     assert _main([sha]) == 0
 
 
-def test_single_commit_pure_rename_is_unsupported(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_single_commit_pure_rename_is_unsupported(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A commit that relocates no definition (a bare rename) stays UNSUPPORTED with exit 1."""
     _write(repo, **{"m.py": "def foo():\n    return 1\n"})
     _commit(repo, "base")

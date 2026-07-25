@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from pathlib import Path
 
@@ -6,19 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import mechanical_refactor_reproduction_utils as rr
-from mechanical_refactor_reproduction_utils import (
-    Repro,
-    _def_span,
-    _find_class,
-    _find_def,
-    _replace_span,
-    _slice_span,
-    dedent,
-    exec_command,
-    git_add_and_commit,
-    verify_mechanical_refactor,
-)
+from mechanical_refactor_reproduction_utils import Repro
 from reproduction_testlib import _apply, _commit, _git, _write  # noqa: F401
 
 
@@ -48,9 +35,7 @@ def test_delete_file_on_a_missing_path_is_a_no_op(tmp_path: Path) -> None:
 
 def test_delete_file_allows_a_bare_module_logger(tmp_path: Path) -> None:
     """A leftover module holding only imports and a `logger` is deletable scaffolding."""
-    (tmp_path / "gone.py").write_text(
-        "import logging\n\nlogger = logging.getLogger(__name__)\n"
-    )
+    (tmp_path / "gone.py").write_text("import logging\n\nlogger = logging.getLogger(__name__)\n")
     r = Repro("b", "t").delete_file("gone.py")
     _apply(r, tmp_path)
     assert not (tmp_path / "gone.py").exists()

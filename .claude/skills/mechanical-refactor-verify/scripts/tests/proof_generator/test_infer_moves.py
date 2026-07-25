@@ -1,8 +1,5 @@
-import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -13,10 +10,7 @@ from generator_testlib import (  # noqa: F401
     _method_onto_class,
     _write,
 )
-from mechanical_refactor_proof_generator import (
-    infer_recipe,
-    recipe_to_script,
-)
+from mechanical_refactor_proof_generator import infer_recipe, recipe_to_script
 
 
 def test_infer_recipe_method_onto_class(repo: Path) -> None:
@@ -25,16 +19,11 @@ def test_infer_recipe_method_onto_class(repo: Path) -> None:
     _method_onto_class(repo)
     recipe = infer_recipe("HEAD", str(repo))
     assert recipe.supported
-    assert [
-        (m["name"], m["src"], m["dst"], m["into_class"], m["dedent"])
-        for m in recipe.moves
-    ] == [("foo", "model.py", "comp.py", "C", 0)]
-    assert recipe.lowerings == [
-        {"name": "foo", "owner": "M", "path": "caller.py", "kind": "lower"}
+    assert [(m["name"], m["src"], m["dst"], m["into_class"], m["dedent"]) for m in recipe.moves] == [
+        ("foo", "model.py", "comp.py", "C", 0)
     ]
-    assert recipe.import_removals == [
-        {"path": "caller.py", "text": "from model import M", "in_function": "run"}
-    ]
+    assert recipe.lowerings == [{"name": "foo", "owner": "M", "path": "caller.py", "kind": "lower"}]
+    assert recipe.import_removals == [{"path": "caller.py", "text": "from model import M", "in_function": "run"}]
     assert recipe.import_additions == []
 
 
@@ -45,9 +34,7 @@ def test_infer_recipe_move_before_typechecking_uses_after_anchor(repo: Path) -> 
     _write(
         repo,
         **{
-            "model.py": (
-                "def keep():\n    return 0\n\n\ndef helper(x):\n    return x + 1\n"
-            ),
+            "model.py": ("def keep():\n    return 0\n\n\ndef helper(x):\n    return x + 1\n"),
             "util.py": (
                 "from u import is_hip\n"
                 "\n"
@@ -105,11 +92,7 @@ def test_infer_recipe_free_function_move_uses_requalify(repo: Path) -> None:
             ),
             "util.py": "import os\n",
             "caller.py": (
-                "class K:\n"
-                "    def run(self):\n"
-                "        from model import M\n"
-                "\n"
-                "        return M.foo(9)\n"
+                "class K:\n" "    def run(self):\n" "        from model import M\n" "\n" "        return M.foo(9)\n"
             ),
         },
     )
@@ -124,12 +107,8 @@ def test_infer_recipe_free_function_move_uses_requalify(repo: Path) -> None:
     )
     _commit(repo, "move foo to util as a free function")
     recipe = infer_recipe("HEAD", str(repo))
-    assert [(m["name"], m["into_class"], m["dedent"]) for m in recipe.moves] == [
-        ("foo", None, 4)
-    ]
-    assert recipe.lowerings == [
-        {"name": "foo", "owner": "M", "path": "caller.py", "kind": "requalify"}
-    ]
+    assert [(m["name"], m["into_class"], m["dedent"]) for m in recipe.moves] == [("foo", None, 4)]
+    assert recipe.lowerings == [{"name": "foo", "owner": "M", "path": "caller.py", "kind": "requalify"}]
 
 
 def test_infer_recipe_excludes_the_moved_bodys_own_call(repo: Path) -> None:
@@ -313,13 +292,7 @@ def test_infer_recipe_records_the_source_class_for_disambiguation(repo: Path) ->
         repo,
         **{
             "model.py": (
-                "class M:\n"
-                "    pass\n"
-                "\n"
-                "\n"
-                "class Other:\n"
-                "    def foo(self, x):\n"
-                "        return x + 2\n"
+                "class M:\n" "    pass\n" "\n" "\n" "class Other:\n" "    def foo(self, x):\n" "        return x + 2\n"
             ),
             "comp.py": (
                 "class C:\n"
@@ -362,21 +335,9 @@ def test_infer_recipe_module_level_def_shadowed_by_method_name(repo: Path) -> No
         repo,
         **{
             "model.py": (
-                "from util import foo\n"
-                "\n"
-                "\n"
-                "class M:\n"
-                "    def foo(self):\n"
-                "        return foo(x=self.x)\n"
+                "from util import foo\n" "\n" "\n" "class M:\n" "    def foo(self):\n" "        return foo(x=self.x)\n"
             ),
-            "util.py": (
-                "def keep():\n"
-                "    return 1\n"
-                "\n"
-                "\n"
-                "def foo(*, x):\n"
-                "    return x + 1\n"
-            ),
+            "util.py": ("def keep():\n" "    return 1\n" "\n" "\n" "def foo(*, x):\n" "    return x + 1\n"),
         },
     )
     commit = _commit(repo, "move module-level foo to util")
@@ -437,9 +398,7 @@ def test_infer_recipe_move_leaving_a_forwarding_delegate(repo: Path) -> None:
     _write(
         repo,
         **{
-            "model.py": (
-                "class M:\n" "    def work(self, x):\n" "        return x + 1\n"
-            ),
+            "model.py": ("class M:\n" "    def work(self, x):\n" "        return x + 1\n"),
             "comp.py": "class C:\n    def keep(self):\n        return 1\n",
         },
     )
@@ -447,11 +406,7 @@ def test_infer_recipe_move_leaving_a_forwarding_delegate(repo: Path) -> None:
     _write(
         repo,
         **{
-            "model.py": (
-                "class M:\n"
-                "    def work(self, x):\n"
-                "        return self.comp.work(x)\n"
-            ),
+            "model.py": ("class M:\n" "    def work(self, x):\n" "        return self.comp.work(x)\n"),
             "comp.py": (
                 "class C:\n"
                 "    def keep(self):\n"

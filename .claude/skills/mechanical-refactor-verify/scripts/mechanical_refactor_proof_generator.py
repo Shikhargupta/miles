@@ -59,11 +59,7 @@ def _repo_root() -> str:
 def _removed_symbol_names(lines: list[str]) -> set[str]:
     """Names of top-level defs and classes among removed diff lines (the extract's source
     relinquishes these), so a moved class is found, not just a moved def."""
-    return {
-        m.group(2)
-        for ln in lines
-        if (m := re.match(r"\s*(?:async\s+)?(def|class)\s+(\w+)", ln))
-    }
+    return {m.group(2) for ln in lines if (m := re.match(r"\s*(?:async\s+)?(def|class)\s+(\w+)", ln))}
 
 
 def _def_indent(lines: list[str], name: str) -> int | None:
@@ -76,9 +72,7 @@ def _def_indent(lines: list[str], name: str) -> int | None:
 
 def _per_file_diff(commit: str, root: str) -> dict[str, dict]:
     """Per-file removed/added content lines (whitespace intact) and a new-file flag."""
-    out = _git_output(
-        ["show", commit, "--format=", "--no-color", "--no-ext-diff"], root
-    )
+    out = _git_output(["show", commit, "--format=", "--no-color", "--no-ext-diff"], root)
     files: dict[str, dict] = {}
     path: str | None = None
     in_hunk = False
@@ -115,10 +109,7 @@ def _enclosing_class_of_def(tree: ast.AST, name: str) -> str | None:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             for child in node.body:
-                if (
-                    isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and child.name == name
-                ):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == name:
                     return node.name
     return None
 
@@ -128,10 +119,7 @@ def _delegate_stub_attr(tree: ast.AST, name: str) -> tuple[str, str] | None:
     delegates through, with the forwarded method name -- None when no such stub exists.
     """
     for node in ast.walk(tree):
-        if not (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == name
-        ):
+        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name):
             continue
         if (
             len(node.body) == 1
@@ -182,9 +170,7 @@ def _import_pairs(text: str) -> dict:
             module = "." * node.level + (node.module or "")
             for alias in node.names:
                 name = alias.name + (f" as {alias.asname}" if alias.asname else "")
-                pairs[(module, alias.name, alias.asname)] = (
-                    f"from {module} import {name}"
-                )
+                pairs[(module, alias.name, alias.asname)] = f"from {module} import {name}"
     return pairs
 
 
@@ -194,19 +180,14 @@ def _typechecking_pairs(text: str) -> dict:
     inferable separately from the runtime imports."""
     pairs: dict = {}
     for node in ast.parse(text).body:
-        if not (
-            isinstance(node, ast.If)
-            and ast.unparse(node.test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING")
-        ):
+        if not (isinstance(node, ast.If) and ast.unparse(node.test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING")):
             continue
         for stmt in node.body:
             if isinstance(stmt, ast.ImportFrom):
                 module = "." * stmt.level + (stmt.module or "")
                 for alias in stmt.names:
                     name = alias.name + (f" as {alias.asname}" if alias.asname else "")
-                    pairs[(module, alias.name, alias.asname)] = (
-                        f"from {module} import {name}"
-                    )
+                    pairs[(module, alias.name, alias.asname)] = f"from {module} import {name}"
             elif isinstance(stmt, ast.Import):
                 for alias in stmt.names:
                     stmt_text = "import " + alias.name
@@ -216,9 +197,7 @@ def _typechecking_pairs(text: str) -> dict:
     return pairs
 
 
-def _local_import_of(
-    tree: ast.AST, fn_name: str, module: str, symbol: str
-) -> str | None:
+def _local_import_of(tree: ast.AST, fn_name: str, module: str, symbol: str) -> str | None:
     fn = rr._find_def(tree, fn_name)
     if fn is None:
         return None
@@ -254,17 +233,13 @@ def _module_assign_names(text: str) -> set:
     names: set = set()
     for node in ast.parse(text).body:
         targets = (
-            node.targets
-            if isinstance(node, ast.Assign)
-            else [node.target] if isinstance(node, ast.AnnAssign) else []
+            node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
         )
         names |= {t.id for t in targets if isinstance(t, ast.Name)}
     return names
 
 
-def _import_additions(
-    path: str, after: str, before_pairs: dict, after_pairs: dict
-) -> list:
+def _import_additions(path: str, after: str, before_pairs: dict, after_pairs: dict) -> list:
     """The module-level imports a file gained, as ``add_import`` texts. A name gained from a
     module the file already imported is added per-name (the sorter merges it); a name from a
     wholly new module is added as the target's *verbatim* statement, so a multi-line or
@@ -283,10 +258,7 @@ def _import_additions(
     if verbatim_modules:
         after_lines = after.splitlines(keepends=True)
         for node in ast.parse(after).body:
-            if (
-                isinstance(node, ast.ImportFrom)
-                and "." * node.level + (node.module or "") in verbatim_modules
-            ):
+            if isinstance(node, ast.ImportFrom) and "." * node.level + (node.module or "") in verbatim_modules:
                 text = "".join(after_lines[node.lineno - 1 : node.end_lineno])
                 additions.append({"path": path, "text": text.rstrip("\n")})
     return additions
@@ -350,15 +322,11 @@ def _infer_call_adaptations(
                     caller_fns.add(fn)
         if not caller_fns:
             continue
-        recipe.lowerings.append(
-            {"name": name, "owner": src_class, "path": path, "kind": kind}
-        )
+        recipe.lowerings.append({"name": name, "owner": src_class, "path": path, "kind": kind})
         for fn in sorted(caller_fns):
             imp = _local_import_of(tree, fn, src_module, src_class)
             if imp is not None and any(imp in r for r in f["removed"]):
-                recipe.import_removals.append(
-                    {"path": path, "text": imp, "in_function": fn}
-                )
+                recipe.import_removals.append({"path": path, "text": imp, "in_function": fn})
 
 
 def _infer_function_scoped_repaths(
@@ -426,9 +394,7 @@ def _wants_future_import(files: dict[str, dict], src: str, dst: str) -> bool:
     return gained and not travelled
 
 
-def _next_sibling_def_name(
-    dst_tree: ast.AST, name: str, into_class: str | None
-) -> str | None:
+def _next_sibling_def_name(dst_tree: ast.AST, name: str, into_class: str | None) -> str | None:
     """The name of the def that immediately follows ``name`` at its scope in the destination
     (module level, or inside ``into_class``), or None when ``name`` is the last def there. Lets
     a move reinsert the relocated def in the chain's order instead of appending at the end.
@@ -439,11 +405,7 @@ def _next_sibling_def_name(
         container = cls.body if cls is not None else []
     else:
         container = getattr(dst_tree, "body", [])
-    defs = [
-        n
-        for n in container
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-    ]
+    defs = [n for n in container if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
     for i, node in enumerate(defs):
         if node.name == name:
             return defs[i + 1].name if i + 1 < len(defs) else None
@@ -457,11 +419,7 @@ def _next_sibling_assign_or_def(dst_tree: ast.AST, name: str) -> str | None:
     def stmt_name(node: ast.AST) -> str | None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             return node.name
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-        ):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             return node.targets[0].id
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             return node.target.id
@@ -480,20 +438,14 @@ def _stmt_symbol_name(node: ast.AST) -> str | None:
     """
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return node.name
-    if (
-        isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-    ):
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
         return node.targets[0].id
     if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         return node.target.id
     return None
 
 
-def _module_move_anchor(
-    dst_tree: ast.AST, name: str, into_class: str | None
-) -> tuple[str | None, str | None]:
+def _module_move_anchor(dst_tree: ast.AST, name: str, into_class: str | None) -> tuple[str | None, str | None]:
     """The ``(before, after)`` anchor for reinserting the moved def ``name``. Normally
     ``before=<next sibling def>``. But when a module-level def lands immediately above an
     unnameable statement (e.g. an ``if TYPE_CHECKING:`` guard) with a nameable statement
@@ -507,17 +459,14 @@ def _module_move_anchor(
         (
             i
             for i, n in enumerate(body)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and n.name == name
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == name
         ),
         None,
     )
     if idx is None:
         return before, None
     following = body[idx + 1] if idx + 1 < len(body) else None
-    next_is_named_def = isinstance(
-        following, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-    )
+    next_is_named_def = isinstance(following, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     if following is None or next_is_named_def:
         return before, None
     preceding = body[idx - 1] if idx > 0 else None
@@ -549,18 +498,13 @@ def _symbols_form_tail(src_text: str, symbols: list[str]) -> bool:
     cut = len(body)
     while cut > 0:
         node = body[cut - 1]
-        is_symbol = (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.name in wanted
-        )
+        is_symbol = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in wanted
         if is_symbol or is_scaffolding(node):
             cut -= 1
         else:
             break
     present = {
-        node.name
-        for node in body[cut:]
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        node.name for node in body[cut:] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     return wanted <= present
 
@@ -576,10 +520,7 @@ def _scatter_extract_layout(dst_after: str, symbols: list[str]) -> dict | None:
     wanted = set(symbols)
 
     def is_wanted(node: ast.AST) -> bool:
-        return (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.name in wanted
-        )
+        return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in wanted
 
     sym_nodes = [node for node in body if is_wanted(node)]
     if len(sym_nodes) != len(wanted):
@@ -634,20 +575,14 @@ def _common_prefix_suffix(a: list[str], b: list[str]) -> tuple[int, int]:
     while prefix < len(a) and prefix < len(b) and a[prefix] == b[prefix]:
         prefix += 1
     suffix = 0
-    while (
-        suffix < len(a) - prefix
-        and suffix < len(b) - prefix
-        and a[-1 - suffix] == b[-1 - suffix]
-    ):
+    while suffix < len(a) - prefix and suffix < len(b) - prefix and a[-1 - suffix] == b[-1 - suffix]:
         suffix += 1
     while suffix > 0 and not (
-        _statements_parse(a[prefix : len(a) - suffix])
-        and _statements_parse(b[prefix : len(b) - suffix])
+        _statements_parse(a[prefix : len(a) - suffix]) and _statements_parse(b[prefix : len(b) - suffix])
     ):
         suffix -= 1
     while prefix > 0 and not (
-        _statements_parse(a[prefix : len(a) - suffix])
-        and _statements_parse(b[prefix : len(b) - suffix])
+        _statements_parse(a[prefix : len(a) - suffix]) and _statements_parse(b[prefix : len(b) - suffix])
     ):
         prefix -= 1
     return prefix, suffix
@@ -665,9 +600,7 @@ def _call_names_in(node: ast.AST) -> set[str]:
     return names
 
 
-def _infer_extract_functions(
-    recipe: Recipe, files: dict[str, dict], commit: str, root: str
-) -> None:
+def _infer_extract_functions(recipe: Recipe, files: dict[str, dict], commit: str, root: str) -> None:
     """Infer intra-file extract_function ops: a new helper ``H`` whose body is a verbatim block
     cut from another function ``F`` of the same file, with ``F``'s block replaced by a call to
     ``H`` (optionally an ``lhs = self.H(...)`` assignment mirrored by a ``return lhs`` the helper
@@ -698,18 +631,12 @@ def _infer_extract_functions(
             # extracted body, not the authored signature.
             helper_text = "".join(after_lines[helper.lineno - 1 : helper.end_lineno])
             header_len = rr._def_header_end(helper_text)
-            header_text = "".join(
-                after_lines[helper.lineno - 1 : helper.lineno - 1 + header_len]
-            )
+            header_text = "".join(after_lines[helper.lineno - 1 : helper.lineno - 1 + header_len])
             # F is the one sibling function that changed and now calls the helper.
             candidates = []
             for cont, node in before_defs:
                 after_node = next(
-                    (
-                        n
-                        for c, n in _iter_defs_with_container(after_tree)
-                        if c == cont and n.name == node.name
-                    ),
+                    (n for c, n in _iter_defs_with_container(after_tree) if c == cont and n.name == node.name),
                     None,
                 )
                 if after_node is None or node.name == helper.name:
@@ -741,13 +668,9 @@ def _infer_extract_functions(
                 continue
             helper_stmts = helper.body
             return_text: str | None = None
-            if len(helper_stmts) == len(block_stmts) + 1 and isinstance(
-                helper_stmts[-1], ast.Return
-            ):
+            if len(helper_stmts) == len(block_stmts) + 1 and isinstance(helper_stmts[-1], ast.Return):
                 ret = helper_stmts[-1]
-                return_text = "".join(
-                    after_lines[ret.lineno - 1 : ret.end_lineno]
-                ).strip("\n")
+                return_text = "".join(after_lines[ret.lineno - 1 : ret.end_lineno]).strip("\n")
             elif len(helper_stmts) != len(block_stmts):
                 continue
             recipe.extract_functions.append(
@@ -761,9 +684,7 @@ def _infer_extract_functions(
                     "call": "".join(call_lines),
                     "return_text": return_text,
                     "into_class": container,
-                    "before": _next_sibling_def_name(
-                        after_tree, helper.name, container
-                    ),
+                    "before": _next_sibling_def_name(after_tree, helper.name, container),
                 }
             )
 
@@ -781,16 +702,10 @@ def infer_recipe(commit: str, root: str) -> Recipe:
     files = {path: f for path, f in all_files.items() if path.endswith(".py")}
     recipe = Recipe(base=f"{commit}~1", target=commit)
     for path in sorted(set(all_files) - set(files)):
-        recipe.notes.append(
-            f"non-Python file changed: {path} (left to the residual diff)"
-        )
+        recipe.notes.append(f"non-Python file changed: {path} (left to the residual diff)")
 
     def def_names(lines: list[str]) -> set[str]:
-        return {
-            m.group(1)
-            for ln in lines
-            if (m := re.match(r"\s*(?:async\s+)?def\s+(\w+)", ln))
-        }
+        return {m.group(1) for ln in lines if (m := re.match(r"\s*(?:async\s+)?def\s+(\w+)", ln))}
 
     def class_names(lines: list[str]) -> set[str]:
         return {m.group(1) for ln in lines if (m := re.match(r"class\s+(\w+)", ln))}
@@ -808,9 +723,7 @@ def infer_recipe(commit: str, root: str) -> Recipe:
         except SyntaxError:
             continue
         symbols = [
-            node.name
-            for node in dst_body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            node.name for node in dst_body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         ]
         if not symbols:
             continue
@@ -822,9 +735,7 @@ def infer_recipe(commit: str, root: str) -> Recipe:
         }
         if len(srcs) != 1:
             recipe.supported = False
-            recipe.notes.append(
-                f"{dst}: extract source not a single file ({sorted(srcs)})"
-            )
+            recipe.notes.append(f"{dst}: extract source not a single file ({sorted(srcs)})")
             continue
         src = next(iter(srcs))
         src_before = _git_output(["show", f"{commit}^:{src}"], root)
@@ -868,8 +779,7 @@ def infer_recipe(commit: str, root: str) -> Recipe:
         # source too -- its copy is reproduced in the authored header.
         src_after = _git_output(["show", f"{commit}:{src}"], root)
         drop_assigns = sorted(
-            (_module_assign_names(src_before) - _module_assign_names(src_after))
-            & _module_assign_names(dst_after)
+            (_module_assign_names(src_before) - _module_assign_names(src_after)) & _module_assign_names(dst_after)
         )
         recipe.scatter_extracts.append(
             {
@@ -889,21 +799,13 @@ def infer_recipe(commit: str, root: str) -> Recipe:
     # cuts the ClassDef; its methods are excluded from the per-def loop below.
     moved_classes: set[str] = set()
     for cname in sorted(class_names(all_removed) & class_names(all_added)):
-        csrc = next(
-            (p for p, f in files.items() if cname in class_names(f["removed"])), None
-        )
-        cdst = next(
-            (p for p, f in files.items() if cname in class_names(f["added"])), None
-        )
+        csrc = next((p for p, f in files.items() if cname in class_names(f["removed"])), None)
+        cdst = next((p for p, f in files.items() if cname in class_names(f["added"])), None)
         if csrc is None or cdst is None or csrc == cdst or cdst in new_files:
             continue
         cdst_tree = ast.parse(_git_output(["show", f"{commit}:{cdst}"], root))
         cdst_def = rr._find_def(cdst_tree, cname) or next(
-            (
-                n
-                for n in ast.walk(cdst_tree)
-                if isinstance(n, ast.ClassDef) and n.name == cname
-            ),
+            (n for n in ast.walk(cdst_tree) if isinstance(n, ast.ClassDef) and n.name == cname),
             None,
         )
         moved_classes.add(cname)
@@ -924,9 +826,7 @@ def infer_recipe(commit: str, root: str) -> Recipe:
     # A move whose destination already exists becomes a move_symbol (the def relocated in
     # order).
     for name in sorted(def_names(all_removed) & def_names(all_added)):
-        src = next(
-            (p for p, f in files.items() if name in def_names(f["removed"])), None
-        )
+        src = next((p for p, f in files.items() if name in def_names(f["removed"])), None)
         dst = next(
             (p for p, f in files.items() if name in def_names(f["added"]) and p != src),
             None,
@@ -953,16 +853,10 @@ def infer_recipe(commit: str, root: str) -> Recipe:
         if src_class in moved_classes:
             recipe.notes.append(f"skip {name}: method of relocated class {src_class}")
             continue
-        into_class = (
-            None if dst_indent == 0 else _enclosing_class_of_def(dst_tree, name)
-        )
+        into_class = None if dst_indent == 0 else _enclosing_class_of_def(dst_tree, name)
         try:
-            src_def = rr._find_unique_def(
-                src_tree, name, from_class=src_class, where=src
-            )
-            dst_def = rr._find_unique_def(
-                dst_tree, name, from_class=into_class, where=dst
-            )
+            src_def = rr._find_unique_def(src_tree, name, from_class=src_class, where=src)
+            dst_def = rr._find_unique_def(dst_tree, name, from_class=into_class, where=dst)
         except AssertionError as exc:
             recipe.supported = False
             recipe.notes.append(f"{name}: cannot disambiguate moved def ({exc})")
@@ -1010,9 +904,7 @@ def infer_recipe(commit: str, root: str) -> Recipe:
                 root=root,
             )
         else:
-            _infer_function_scoped_repaths(
-                recipe, files, name=name, src=src, dst=dst, commit=commit, root=root
-            )
+            _infer_function_scoped_repaths(recipe, files, name=name, src=src, dst=dst, commit=commit, root=root)
 
     # A method whose signature line never changed leaves no def-line in the removed set:
     # the body was replaced by a forwarding stub in place while the full body landed in
@@ -1047,16 +939,10 @@ def infer_recipe(commit: str, root: str) -> Recipe:
         dst_tree = ast.parse(_git_output(["show", f"{commit}:{dst}"], root))
         src_class = _enclosing_class_of_def(src_tree, name)
         dst_indent = _def_indent(files[dst]["added"], name)
-        into_class = (
-            None if dst_indent == 0 else _enclosing_class_of_def(dst_tree, name)
-        )
+        into_class = None if dst_indent == 0 else _enclosing_class_of_def(dst_tree, name)
         try:
-            src_def = rr._find_unique_def(
-                src_tree, name, from_class=src_class, where=src
-            )
-            dst_def = rr._find_unique_def(
-                dst_tree, name, from_class=into_class, where=dst
-            )
+            src_def = rr._find_unique_def(src_tree, name, from_class=src_class, where=src)
+            dst_def = rr._find_unique_def(dst_tree, name, from_class=into_class, where=dst)
         except AssertionError as exc:
             recipe.supported = False
             recipe.notes.append(f"{name}: cannot disambiguate moved def ({exc})")
@@ -1087,26 +973,20 @@ def infer_recipe(commit: str, root: str) -> Recipe:
     texts_after: dict = {}
     for p in changed_paths:
         try:
-            texts_before[p] = (
-                "" if files[p]["new"] else _git_output(["show", f"{commit}^:{p}"], root)
-            )
+            texts_before[p] = "" if files[p]["new"] else _git_output(["show", f"{commit}^:{p}"], root)
             texts_after[p] = _git_output(["show", f"{commit}:{p}"], root)
         except Exception:
             continue
     for p_src in changed_paths:
         if p_src not in texts_before:
             continue
-        lost = _module_assign_names(texts_before[p_src]) - _module_assign_names(
-            texts_after.get(p_src, "")
-        )
+        lost = _module_assign_names(texts_before[p_src]) - _module_assign_names(texts_after.get(p_src, ""))
         if not lost:
             continue
         for p_dst in changed_paths:
             if p_dst == p_src or p_dst in new_files or p_dst not in texts_after:
                 continue
-            gained = _module_assign_names(texts_after[p_dst]) - _module_assign_names(
-                texts_before.get(p_dst, "")
-            )
+            gained = _module_assign_names(texts_after[p_dst]) - _module_assign_names(texts_before.get(p_dst, ""))
             for cname in sorted(lost & gained):
                 dst_tree = ast.parse(texts_after[p_dst])
                 recipe.assign_moves.append(
@@ -1134,9 +1014,7 @@ def infer_recipe(commit: str, root: str) -> Recipe:
         after = _git_output(["show", f"{commit}:{path}"], root)
         before_pairs = _import_pairs(before) if before.strip() else {}
         after_pairs = _import_pairs(after) if after.strip() else {}
-        recipe.import_additions.extend(
-            _import_additions(path, after, before_pairs, after_pairs)
-        )
+        recipe.import_additions.extend(_import_additions(path, after, before_pairs, after_pairs))
         if path not in extract_srcs:
             for key in before_pairs:
                 if key not in after_pairs:
@@ -1159,17 +1037,10 @@ def infer_recipe(commit: str, root: str) -> Recipe:
         if f.get("deleted") and path in move_srcs:
             recipe.deletes.append(path)
 
-    if (
-        not recipe.moves
-        and not recipe.extracts
-        and not recipe.scatter_extracts
-        and not recipe.extract_functions
-    ):
+    if not recipe.moves and not recipe.extracts and not recipe.scatter_extracts and not recipe.extract_functions:
         recipe.supported = False
         if not recipe.notes:
-            recipe.notes.append(
-                "no def relocated (rename or statement-level change): review as prep"
-            )
+            recipe.notes.append("no def relocated (rename or statement-level change): review as prep")
     return recipe
 
 
@@ -1188,9 +1059,7 @@ def _recipe_ops(recipe: Recipe) -> list:
     further down) is already present when the move is inserted."""
     ops: list = []
     for lo in recipe.lowerings:
-        method = (
-            "requalify_call_sites" if lo["kind"] == "requalify" else "lower_call_sites"
-        )
+        method = "requalify_call_sites" if lo["kind"] == "requalify" else "lower_call_sites"
         ops.append((method, (lo["name"], lo["owner"]), {"paths": [lo["path"]]}))
     for rp in recipe.repaths:
         ops.append(
@@ -1357,9 +1226,7 @@ def generate_range(
     out = Path(out_dir)
     scripts_dir = out / "repro_scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    (out / "mechanical_refactor_reproduction_utils.py").write_text(
-        Path(rr.__file__).read_text()
-    )
+    (out / "mechanical_refactor_reproduction_utils.py").write_text(Path(rr.__file__).read_text())
 
     results: list[GenResult] = []
     for commit in commits:
@@ -1371,12 +1238,7 @@ def generate_range(
             recipe = infer_recipe(commit, root)
             script = recipe_to_script(recipe, subject)
             (scripts_dir / f"{commit[:9]}.py").write_text(script)
-            relocates = bool(
-                recipe.moves
-                or recipe.extracts
-                or recipe.scatter_extracts
-                or recipe.extract_functions
-            )
+            relocates = bool(recipe.moves or recipe.extracts or recipe.scatter_extracts or recipe.extract_functions)
             supported = recipe.supported and relocates
             notes = recipe.notes
             if supported:
@@ -1429,11 +1291,7 @@ def _write_html(path: Path, rev_range: str, results: list[GenResult]) -> None:
         "results": [asdict(r) for r in results],
     }
     data = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
-    path.write_text(
-        _HTML_TEMPLATE.replace("__TITLE__", html.escape(rev_range)).replace(
-            "__DATA_JSON__", data
-        )
-    )
+    path.write_text(_HTML_TEMPLATE.replace("__TITLE__", html.escape(rev_range)).replace("__DATA_JSON__", data))
 
 
 _HTML_TEMPLATE = """<!doctype html>
@@ -1530,17 +1388,8 @@ def _main(argv: list[str]) -> int:
         return 0
     root = _repo_root()
     recipe = infer_recipe(target, root)
-    print(
-        recipe_to_script(
-            recipe, _git_output(["log", "-1", "--format=%s", target], root)
-        )
-    )
-    relocates = bool(
-        recipe.moves
-        or recipe.extracts
-        or recipe.scatter_extracts
-        or recipe.extract_functions
-    )
+    print(recipe_to_script(recipe, _git_output(["log", "-1", "--format=%s", target], root)))
+    relocates = bool(recipe.moves or recipe.extracts or recipe.scatter_extracts or recipe.extract_functions)
     if not (recipe.supported and relocates):
         print("UNSUPPORTED: " + "; ".join(recipe.notes), file=sys.stderr)
         return 1

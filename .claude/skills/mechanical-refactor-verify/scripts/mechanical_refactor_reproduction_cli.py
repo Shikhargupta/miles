@@ -44,9 +44,7 @@ _OK_VERDICTS = (VERDICT_PASS, VERDICT_HUMAN_REVIEW)
 
 # The words are matched standalone: delimited by any non-[0-9A-Za-z_] character or the
 # string boundary, so `non_mechanical_provable` never also counts as the bare word.
-_KIND_WORD_RE = re.compile(
-    r"(?<![0-9A-Za-z_])(non_)?mechanical_provable(?![0-9A-Za-z_])"
-)
+_KIND_WORD_RE = re.compile(r"(?<![0-9A-Za-z_])(non_)?mechanical_provable(?![0-9A-Za-z_])")
 
 # The arbiter's verdict line (Repro.run / verify_mechanical_refactor both print `PASS:`).
 _PASS_LINE_RE = re.compile(r"^PASS:", re.MULTILINE)
@@ -97,9 +95,7 @@ class ChainResult:
 
 
 def main(argv: "list[str]") -> int:
-    parser = argparse.ArgumentParser(
-        description="Verify a whole mechanical-refactor chain against its proof folder."
-    )
+    parser = argparse.ArgumentParser(description="Verify a whole mechanical-refactor chain against its proof folder.")
     parser.add_argument("--base", required=True, help="base commit of the chain")
     parser.add_argument("--branch", required=True, help="PR branch name (chain tip)")
     parser.add_argument("--proof", required=True, help="proof folder path")
@@ -136,9 +132,7 @@ def main(argv: "list[str]") -> int:
         return 2
 
     report = render_report(result)
-    report_path = (
-        Path(args.report) if args.report else result.proof_dir / _REPORT_FILENAME
-    )
+    report_path = Path(args.report) if args.report else result.proof_dir / _REPORT_FILENAME
     report_path.write_text(report)
     print(report)
     print(f"report written to: {report_path}")
@@ -168,25 +162,19 @@ def verify_chain(
     branch_sha = _rev_parse(branch, root)
     commits = _linear_commits(base_sha=base_sha, branch_sha=branch_sha, root=root)
 
-    resolved: "list[CommitVerdict | _PendingProof]" = []
+    resolved: list[CommitVerdict | _PendingProof] = []
     for sha in commits:
         subject = _git_output(["log", "-1", "--format=%s", sha], root).strip()
         message = _git_output(["log", "-1", "--format=%B", sha], root)
-        resolved.append(
-            _resolve_commit(sha=sha, subject=subject, message=message, proof=proof)
-        )
+        resolved.append(_resolve_commit(sha=sha, subject=subject, message=message, proof=proof))
 
     cache_path = _passed_cache_path(root)
     cache = _load_passed_cache(cache_path)
     if skip_passed:
         resolved = [_reuse_cached_pass(item, cache=cache) for item in resolved]
 
-    pending_by_sha = {
-        item.sha: item for item in resolved if isinstance(item, _PendingProof)
-    }
-    verdicts: "list[CommitVerdict]" = _run_pending_proofs(
-        resolved=resolved, root=root, jobs=jobs
-    )
+    pending_by_sha = {item.sha: item for item in resolved if isinstance(item, _PendingProof)}
+    verdicts: list[CommitVerdict] = _run_pending_proofs(resolved=resolved, root=root, jobs=jobs)
     _record_passes(
         cache=cache,
         cache_path=cache_path,
@@ -221,11 +209,7 @@ def render_report(result: ChainResult) -> str:
         f"- commits: {len(result.verdicts)} total — {n_mech} {KIND_MECHANICAL}, "
         f"{n_non_mech} {KIND_NON_MECHANICAL}, {n_unclassified} classification error(s)",
         f"- proofs: {n_pass}/{n_mech} PASS",
-        *(
-            [f"- reused from the passed-proof cache (--skip-passed): {n_cached}"]
-            if n_cached
-            else []
-        ),
+        *([f"- reused from the passed-proof cache (--skip-passed): {n_cached}"] if n_cached else []),
         "",
         "| # | commit | kind | verdict | subject |",
         "|---|--------|------|---------|---------|",
@@ -248,9 +232,7 @@ def render_report(result: ChainResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _reuse_cached_pass(
-    item: "CommitVerdict | _PendingProof", *, cache: dict
-) -> "CommitVerdict | _PendingProof":
+def _reuse_cached_pass(item: "CommitVerdict | _PendingProof", *, cache: dict) -> "CommitVerdict | _PendingProof":
     """Turn a pending proof into a cached PASS verdict on an exact cache-key match."""
     if not isinstance(item, _PendingProof):
         return item
@@ -275,17 +257,11 @@ def _record_passes(
     pending_by_sha: "dict[str, _PendingProof]",
 ) -> None:
     """Record every freshly-run PASS into the cache (a FAIL is never recorded)."""
-    fresh = [
-        v
-        for v in verdicts
-        if v.verdict == VERDICT_PASS and not v.cached and v.sha in pending_by_sha
-    ]
+    fresh = [v for v in verdicts if v.verdict == VERDICT_PASS and not v.cached and v.sha in pending_by_sha]
     if not fresh:
         return
     for v in fresh:
-        cache.setdefault("passed", {})[v.sha] = _proof_cache_key(
-            pending_by_sha[v.sha].script
-        )
+        cache.setdefault("passed", {})[v.sha] = _proof_cache_key(pending_by_sha[v.sha].script)
     try:
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n")
     except OSError as exc:
@@ -329,21 +305,14 @@ def _run_pending_proofs(
     *, resolved: "list[CommitVerdict | _PendingProof]", root: str, jobs: int
 ) -> "list[CommitVerdict]":
     """Execute the pending proofs on a bounded thread pool; keep chain order."""
-    pending = [
-        (i, item) for i, item in enumerate(resolved) if isinstance(item, _PendingProof)
-    ]
-    finished: "dict[int, CommitVerdict]" = {}
+    pending = [(i, item) for i, item in enumerate(resolved) if isinstance(item, _PendingProof)]
+    finished: dict[int, CommitVerdict] = {}
     if pending:
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-            futures = {
-                i: pool.submit(_proof_verdict, item, root=root) for i, item in pending
-            }
+            futures = {i: pool.submit(_proof_verdict, item, root=root) for i, item in pending}
             for i, future in futures.items():
                 finished[i] = future.result()
-    return [
-        finished[i] if isinstance(item, _PendingProof) else item
-        for i, item in enumerate(resolved)
-    ]
+    return [finished[i] if isinstance(item, _PendingProof) else item for i, item in enumerate(resolved)]
 
 
 def _proof_verdict(pending: _PendingProof, *, root: str) -> CommitVerdict:
@@ -363,18 +332,13 @@ def _proof_verdict(pending: _PendingProof, *, root: str) -> CommitVerdict:
             subject=pending.subject,
             kind=pending.kind,
             verdict=VERDICT_FAIL,
-            detail=(
-                f"proof `{pending.script}` did not PASS; output tail:\n\n"
-                f"```\n{tail}\n```"
-            ),
+            detail=(f"proof `{pending.script}` did not PASS; output tail:\n\n" f"```\n{tail}\n```"),
         )
     print(f"proof {pending.sha[:9]}  {verdict.verdict}", flush=True)
     return verdict
 
 
-def _resolve_commit(
-    *, sha: str, subject: str, message: str, proof: Path
-) -> "CommitVerdict | _PendingProof":
+def _resolve_commit(*, sha: str, subject: str, message: str, proof: Path) -> "CommitVerdict | _PendingProof":
     kind, classification_error = _classify(message)
     if kind is None:
         return CommitVerdict(
@@ -426,10 +390,7 @@ def _classify(message: str) -> "tuple[str | None, str]":
 
     Exactly one of the two words must appear (any number of times, but only one of the
     two): zero occurrences is UNCLASSIFIED, both words present is AMBIGUOUS_KIND."""
-    kinds = {
-        KIND_NON_MECHANICAL if match.group(1) else KIND_MECHANICAL
-        for match in _KIND_WORD_RE.finditer(message)
-    }
+    kinds = {KIND_NON_MECHANICAL if match.group(1) else KIND_MECHANICAL for match in _KIND_WORD_RE.finditer(message)}
     if not kinds:
         return None, VERDICT_UNCLASSIFIED
     if len(kinds) > 1:
@@ -440,7 +401,7 @@ def _classify(message: str) -> "tuple[str | None, str]":
 def _find_proof_scripts(*, proof: Path, sha: str) -> "list[Path]":
     """Proof scripts naming this commit: a ``<sha-prefix>.py`` (lowercase hex, >= 7 chars)
     under ``<proof>/repro_scripts/`` or flat in ``<proof>/``."""
-    found: "list[Path]" = []
+    found: list[Path] = []
     for directory in (proof / "repro_scripts", proof):
         if not directory.is_dir():
             continue
@@ -473,26 +434,14 @@ def _run_proof(*, script: Path, root: str) -> "tuple[bool, str]":
 
 def _linear_commits(*, base_sha: str, branch_sha: str, root: str) -> "list[str]":
     if not _is_ancestor(base_sha=base_sha, branch_sha=branch_sha, root=root):
-        raise ChainVerificationError(
-            f"base {base_sha[:12]} is not an ancestor of branch {branch_sha[:12]}"
-        )
-    commits = _git_output(
-        ["rev-list", "--reverse", f"{base_sha}..{branch_sha}"], root
-    ).split()
+        raise ChainVerificationError(f"base {base_sha[:12]} is not an ancestor of branch {branch_sha[:12]}")
+    commits = _git_output(["rev-list", "--reverse", f"{base_sha}..{branch_sha}"], root).split()
     if not commits:
-        raise ChainVerificationError(
-            f"no commits in {base_sha[:12]}..{branch_sha[:12]}"
-        )
-    merges = [
-        sha
-        for sha in commits
-        if len(_git_output(["rev-list", "--parents", "-n", "1", sha], root).split()) > 2
-    ]
+        raise ChainVerificationError(f"no commits in {base_sha[:12]}..{branch_sha[:12]}")
+    merges = [sha for sha in commits if len(_git_output(["rev-list", "--parents", "-n", "1", sha], root).split()) > 2]
     if merges:
         listing = ", ".join(sha[:9] for sha in merges)
-        raise ChainVerificationError(
-            f"the chain must be linear, but it contains merge commit(s): {listing}"
-        )
+        raise ChainVerificationError(f"the chain must be linear, but it contains merge commit(s): {listing}")
     return commits
 
 
@@ -518,9 +467,7 @@ def _rev_parse(ref: str, root: str) -> str:
 
 
 def _git_output(args: "list[str]", root: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, text=True, check=True
-    )
+    result = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True)
     return result.stdout
 
 

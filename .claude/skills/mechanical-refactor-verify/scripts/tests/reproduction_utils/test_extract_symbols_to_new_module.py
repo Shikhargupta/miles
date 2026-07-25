@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from pathlib import Path
 
@@ -6,19 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import mechanical_refactor_reproduction_utils as rr
-from mechanical_refactor_reproduction_utils import (
-    Repro,
-    _def_span,
-    _find_class,
-    _find_def,
-    _replace_span,
-    _slice_span,
-    dedent,
-    exec_command,
-    git_add_and_commit,
-    verify_mechanical_refactor,
-)
+from mechanical_refactor_reproduction_utils import Repro
 from reproduction_testlib import _apply, _commit, _git, _write  # noqa: F401
 
 # --- extract_symbols_to_new_module ---------------------------------------------
@@ -47,11 +34,7 @@ def test_extract_symbols_to_new_module_gathers_scattered_defs(tmp_path: Path) ->
         "    return 4\n"
     )
     header = (
-        "from __future__ import annotations\n"
-        "\n"
-        "import logging\n"
-        "\n"
-        "logger = logging.getLogger(__name__)\n"
+        "from __future__ import annotations\n" "\n" "import logging\n" "\n" "logger = logging.getLogger(__name__)\n"
     )
     r = Repro("b", "t").extract_symbols_to_new_module(
         "src.py",
@@ -75,12 +58,8 @@ def test_extract_symbols_to_new_module_asserts_order_permutes_symbols(
     tmp_path: Path,
 ) -> None:
     """An order that is not a permutation of the symbols raises, so a wrong recipe fails."""
-    (tmp_path / "src.py").write_text(
-        "def a():\n    return 1\n\n\ndef b():\n    return 2\n"
-    )
-    r = Repro("b", "t").extract_symbols_to_new_module(
-        "src.py", "n.py", symbols=["a", "b"], header="", order=["a"]
-    )
+    (tmp_path / "src.py").write_text("def a():\n    return 1\n\n\ndef b():\n    return 2\n")
+    r = Repro("b", "t").extract_symbols_to_new_module("src.py", "n.py", symbols=["a", "b"], header="", order=["a"])
     with pytest.raises(AssertionError):
         _apply(r, tmp_path)
 
@@ -101,22 +80,9 @@ def test_extract_symbols_to_new_module_drops_relocated_assigns(tmp_path: Path) -
     """A module-level constant that moved into the new module's header is deleted from the
     source (its copy lives in the authored header); a kept assignment stays."""
     (tmp_path / "src.py").write_text(
-        "import os\n"
-        "\n"
-        "_FLAG = os.cpu_count()\n"
-        "stay = 1\n"
-        "\n"
-        "\n"
-        "def moved():\n"
-        "    return _FLAG\n"
+        "import os\n" "\n" "_FLAG = os.cpu_count()\n" "stay = 1\n" "\n" "\n" "def moved():\n" "    return _FLAG\n"
     )
-    header = (
-        "from __future__ import annotations\n"
-        "\n"
-        "import os\n"
-        "\n"
-        "_FLAG = os.cpu_count()\n"
-    )
+    header = "from __future__ import annotations\n" "\n" "import os\n" "\n" "_FLAG = os.cpu_count()\n"
     r = Repro("b", "t").extract_symbols_to_new_module(
         "src.py",
         "new.py",
@@ -175,9 +141,7 @@ def test_extract_symbols_to_new_module_joins_blocks_with_two_blank_lines(
     tmp_path: Path,
 ) -> None:
     """Relocated blocks are joined with exactly two blank lines (the formatter's spacing)."""
-    (tmp_path / "src.py").write_text(
-        "def moved_a():\n    return 1\n\n\n\n\ndef moved_b():\n    return 2\n"
-    )
+    (tmp_path / "src.py").write_text("def moved_a():\n    return 1\n\n\n\n\ndef moved_b():\n    return 2\n")
     r = Repro("b", "t").extract_symbols_to_new_module(
         "src.py",
         "new.py",
@@ -186,18 +150,14 @@ def test_extract_symbols_to_new_module_joins_blocks_with_two_blank_lines(
         order=["moved_a", "moved_b"],
     )
     _apply(r, tmp_path)
-    assert (tmp_path / "new.py").read_text() == (
-        "def moved_a():\n    return 1\n\n\ndef moved_b():\n    return 2\n"
-    )
+    assert (tmp_path / "new.py").read_text() == ("def moved_a():\n    return 1\n\n\ndef moved_b():\n    return 2\n")
 
 
 def test_extract_symbols_to_new_module_leaves_a_comment_above_a_moved_def(
     tmp_path: Path,
 ) -> None:
     """A section comment directly above a moved def stays behind in the source."""
-    (tmp_path / "src.py").write_text(
-        "x = 1\n\n\n# --- movers ---\ndef moved():\n    return 2\n"
-    )
+    (tmp_path / "src.py").write_text("x = 1\n\n\n# --- movers ---\ndef moved():\n    return 2\n")
     r = Repro("b", "t").extract_symbols_to_new_module(
         "src.py", "new.py", symbols=["moved"], header="", order=["moved"]
     )
@@ -230,13 +190,7 @@ def test_extract_symbols_to_new_module_allows_a_rederived_surviving_constant(
     e.g. `_is_hip = is_hip()`) is allowed: it is provably not fiction because the same
     statement remains in the source."""
     (tmp_path / "src.py").write_text(
-        "from pkg import is_hip\n"
-        "\n"
-        "_is_hip = is_hip()\n"
-        "\n"
-        "\n"
-        "def moved():\n"
-        "    return _is_hip\n"
+        "from pkg import is_hip\n" "\n" "_is_hip = is_hip()\n" "\n" "\n" "def moved():\n" "    return _is_hip\n"
     )
     header = "from pkg import is_hip\n\n_is_hip = is_hip()\n"
     r = Repro("b", "t").extract_symbols_to_new_module(

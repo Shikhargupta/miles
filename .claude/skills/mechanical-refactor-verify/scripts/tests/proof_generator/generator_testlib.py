@@ -2,20 +2,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from mechanical_refactor_proof_generator import (
-    infer_recipe,
-    recipe_to_script,
-)
-
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def _write(repo: Path, **files: str | None) -> None:
@@ -71,9 +63,7 @@ def _method_onto_class(repo: Path) -> None:
                 "    def foo(self, x):\n"
                 "        return x + 1\n"
             ),
-            "caller.py": (
-                "class K:\n    def run(self):\n        return self.c.foo(9)\n"
-            ),
+            "caller.py": ("class K:\n    def run(self):\n        return self.c.foo(9)\n"),
         },
     )
     _commit(repo, "move foo onto C")
@@ -87,9 +77,7 @@ def _free_function_move_with_module_level_caller(repo: Path) -> None:
         **{
             "model.py": "def keep():\n    return 0\n\n\ndef resolve(m):\n    return m\n",
             "util.py": "import os\n",
-            "caller.py": (
-                "from model import resolve\n\n\ndef run(m):\n    return resolve(m)\n"
-            ),
+            "caller.py": ("from model import resolve\n\n\ndef run(m):\n    return resolve(m)\n"),
         },
     )
     _commit(repo, "base")
@@ -98,9 +86,7 @@ def _free_function_move_with_module_level_caller(repo: Path) -> None:
         **{
             "model.py": "def keep():\n    return 0\n",
             "util.py": "import os\n\n\ndef resolve(m):\n    return m\n",
-            "caller.py": (
-                "from util import resolve\n\n\ndef run(m):\n    return resolve(m)\n"
-            ),
+            "caller.py": ("from util import resolve\n\n\ndef run(m):\n    return resolve(m)\n"),
         },
     )
     _commit(repo, "move resolve to util")

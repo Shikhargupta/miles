@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from pathlib import Path
 
@@ -7,18 +6,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import mechanical_refactor_reproduction_utils as rr
-from mechanical_refactor_reproduction_utils import (
-    Repro,
-    _def_span,
-    _find_class,
-    _find_def,
-    _replace_span,
-    _slice_span,
-    dedent,
-    exec_command,
-    git_add_and_commit,
-    verify_mechanical_refactor,
-)
+from mechanical_refactor_reproduction_utils import Repro, verify_mechanical_refactor
 from reproduction_testlib import _apply, _commit, _git, _write  # noqa: F401
 
 # --- verify_mechanical_refactor ------------------------------------------------
@@ -35,9 +23,7 @@ def _silence_precommit(monkeypatch) -> None:
     monkeypatch.setattr(rr, "exec_command", fake)
 
 
-def test_reproduce_passes_when_transform_matches_target(
-    repo: Path, tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_reproduce_passes_when_transform_matches_target(repo: Path, tmp_path: Path, monkeypatch, capsys) -> None:
     """A transform that recreates the target tree reports PASS and does not exit."""
     _write(repo, **{"src.py": "line1\nline2\nline3\n"})
     base = _commit(repo, "base")
@@ -59,9 +45,7 @@ def test_reproduce_passes_when_transform_matches_target(
     assert "PASS" in capsys.readouterr().out
 
 
-def test_reproduce_exits_when_transform_diverges(
-    repo: Path, tmp_path: Path, monkeypatch
-) -> None:
+def test_reproduce_exits_when_transform_diverges(repo: Path, tmp_path: Path, monkeypatch) -> None:
     """A transform that produces a different tree fails with a non-zero exit."""
     _write(repo, **{"src.py": "line1\nline2\nline3\n"})
     base = _commit(repo, "base")
@@ -82,9 +66,7 @@ def test_reproduce_exits_when_transform_diverges(
         verify_mechanical_refactor(base, target, wrong_transform)
 
 
-def test_reproduce_creates_verify_branch_on_pass(
-    repo: Path, tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_reproduce_creates_verify_branch_on_pass(repo: Path, tmp_path: Path, monkeypatch, capsys) -> None:
     """A PASS run leaves a verify-mechanical-<base[:8]> branch in the repo."""
     _write(repo, **{"src.py": "line1\nline2\nline3\n"})
     base = _commit(repo, "base")
@@ -148,9 +130,7 @@ def test_reproduce_commits_pre_commit_fixes_when_tree_left_dirty(
 # --- Repro.run end-to-end ------------------------------------------------------
 
 
-def test_repro_run_passes_on_a_faithful_call_site_lowering(
-    repo: Path, monkeypatch, capsys
-) -> None:
+def test_repro_run_passes_on_a_faithful_call_site_lowering(repo: Path, monkeypatch, capsys) -> None:
     """End-to-end: a lowering reproduces the commit byte-for-byte (pre-commit stubbed)."""
     _write(repo, **{"c.py": "r = Old.foo(self.n, 5)\n"})
     base = _commit(repo, "base")
@@ -164,9 +144,7 @@ def test_repro_run_passes_on_a_faithful_call_site_lowering(
     assert "PASS" in capsys.readouterr().out
 
 
-def test_repro_run_reports_residual_when_a_change_is_bundled(
-    repo: Path, monkeypatch, capsys
-) -> None:
+def test_repro_run_reports_residual_when_a_change_is_bundled(repo: Path, monkeypatch, capsys) -> None:
     """A bundled non-relocation change surfaces as a non-empty residual diff."""
     _write(repo, **{"c.py": "r = Old.foo(self.n, 5)\nUNRELATED = 1\n"})
     base = _commit(repo, "base")

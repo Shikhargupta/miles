@@ -107,9 +107,7 @@ def verify_mechanical_refactor(
         ).split()
         if changed:
             files = " ".join(shlex.quote(path) for path in changed)
-            exec_command(
-                f"pre-commit run --files {files}", cwd=worktree_dir, check=False
-            )
+            exec_command(f"pre-commit run --files {files}", cwd=worktree_dir, check=False)
         if exec_command("git status --porcelain", cwd=worktree_dir):
             git_add_and_commit("pre-commit fixes", cwd=worktree_dir)
 
@@ -139,17 +137,12 @@ _MOVE_DECORATORS = {"@staticmethod", "@classmethod"}
 
 def _find_def(tree: ast.AST, name: str) -> ast.AST | None:
     for node in ast.walk(tree):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == name
-        ):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
     return None
 
 
-def _find_unique_def(
-    tree: ast.AST, name: str, *, from_class: str | None = None, where: str
-) -> ast.AST:
+def _find_unique_def(tree: ast.AST, name: str, *, from_class: str | None = None, where: str) -> ast.AST:
     """Resolve ``def name`` (or ``class name``) and refuse ambiguity: with same-named defs in
     scope the first-match lookup could silently cut the wrong body, so the caller must scope
     the search with ``from_class``."""
@@ -160,22 +153,12 @@ def _find_unique_def(
         assert cls is not None, f"class {from_class} not found in {where}"
         root = cls
     elif isinstance(tree, ast.Module):
-        top_level = [
-            node
-            for node in tree.body
-            if isinstance(node, definition) and node.name == name
-        ]
+        top_level = [node for node in tree.body if isinstance(node, definition) and node.name == name]
         if len(top_level) == 1:
             return top_level[0]
-    matches = [
-        node
-        for node in ast.walk(root)
-        if isinstance(node, definition) and node.name == name
-    ]
+    matches = [node for node in ast.walk(root) if isinstance(node, definition) and node.name == name]
     assert matches, f"{name} not found in {where}"
-    assert (
-        len(matches) == 1
-    ), f"{len(matches)} defs named {name} in {where}; pass from_class to disambiguate"
+    assert len(matches) == 1, f"{len(matches)} defs named {name} in {where}; pass from_class to disambiguate"
     return matches[0]
 
 
@@ -239,33 +222,21 @@ def _slice_span(text: str, sl: int, sc: int, el: int, ec: int) -> str:
     lines = _split_keepends(text)
     if sl == el:
         return _byte_slice(lines[sl - 1], sc, ec)
-    return (
-        _byte_slice(lines[sl - 1], sc, None)
-        + "".join(lines[sl : el - 1])
-        + _byte_slice(lines[el - 1], None, ec)
-    )
+    return _byte_slice(lines[sl - 1], sc, None) + "".join(lines[sl : el - 1]) + _byte_slice(lines[el - 1], None, ec)
 
 
 def _node_slice(text: str, node: ast.AST) -> str:
-    return _slice_span(
-        text, node.lineno, node.col_offset, node.end_lineno, node.end_col_offset
-    )
+    return _slice_span(text, node.lineno, node.col_offset, node.end_lineno, node.end_col_offset)
 
 
-def _rewrite_matching_calls(
-    text: str, predicate: "Callable", rewrite: "Callable"
-) -> str:
+def _rewrite_matching_calls(text: str, predicate: "Callable", rewrite: "Callable") -> str:
     """Rewrite every call ``predicate`` accepts by splicing the original source text
     (never ``ast.unparse``, which would re-spell literals and drop comments). One call is
     rewritten per pass and the text re-parsed, so a matching call nested inside another
     match is rewritten on a later pass instead of being overwritten."""
     while True:
         node = next(
-            (
-                n
-                for n in ast.walk(ast.parse(text))
-                if isinstance(n, ast.Call) and predicate(n)
-            ),
+            (n for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Call) and predicate(n)),
             None,
         )
         if node is None:
@@ -370,11 +341,7 @@ def _audit_extract_header(
     for stmt in ast.parse(header).body:
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
             continue
-        if (
-            isinstance(stmt, ast.Expr)
-            and isinstance(stmt.value, ast.Constant)
-            and isinstance(stmt.value.value, str)
-        ):
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
             continue
         if (
             isinstance(stmt, ast.If)
@@ -388,14 +355,10 @@ def _audit_extract_header(
             value_src = ast.unparse(stmt.value) if stmt.value is not None else None
             if value_src == "logging.getLogger(__name__)":
                 continue
-            if names and all(
-                n in removed_assigns and removed_assigns[n] == value_src for n in names
-            ):
+            if names and all(n in removed_assigns and removed_assigns[n] == value_src for n in names):
                 header_assigned.update(names)
                 continue
-            if names and all(
-                n in rederivable and rederivable[n] == value_src for n in names
-            ):
+            if names and all(n in rederivable and rederivable[n] == value_src for n in names):
                 continue
         raise AssertionError(
             f"unverifiable header statement in {where}: {ast.unparse(stmt)!r} is "
@@ -403,8 +366,7 @@ def _audit_extract_header(
         )
     missing = set(removed_assigns) - header_assigned
     assert not missing, (
-        f"drop_assigns {sorted(missing)} deleted from the source but not reproduced "
-        f"in the header of {where}"
+        f"drop_assigns {sorted(missing)} deleted from the source but not reproduced " f"in the header of {where}"
     )
 
 
@@ -440,17 +402,13 @@ class Repro:
 
                 _write_source(
                     path,
-                    _rewrite_matching_calls(
-                        _read_source(path), predicate, _lowered_call_text
-                    ),
+                    _rewrite_matching_calls(_read_source(path), predicate, _lowered_call_text),
                 )
 
         self.ops.append(op)
         return self
 
-    def requalify_call_sites(
-        self, name: str, owner: str, *, paths: list[str]
-    ) -> "Repro":
+    def requalify_call_sites(self, name: str, owner: str, *, paths: list[str]) -> "Repro":
         """Rewrite ``owner.name(args)`` to ``name(args)`` -- dropping the qualifier when
         ``name`` moves to a module-level free function."""
 
@@ -495,10 +453,7 @@ class Repro:
                     return (
                         isinstance(node.func, ast.Attribute)
                         and node.func.attr == name
-                        and not (
-                            isinstance(node.func.value, ast.Attribute)
-                            and node.func.value.attr == field
-                        )
+                        and not (isinstance(node.func.value, ast.Attribute) and node.func.value.attr == field)
                         and (owner is None or ast.unparse(node.func.value) == owner)
                     )
 
@@ -516,9 +471,7 @@ class Repro:
         self.ops.append(op)
         return self
 
-    def remove_import(
-        self, rel: str, import_text: str, *, in_function: str | None = None
-    ) -> "Repro":
+    def remove_import(self, rel: str, import_text: str, *, in_function: str | None = None) -> "Repro":
         """Remove every import statement whose text contains ``import_text`` (and a trailing
         blank), optionally scoped to one function so a same-text module-level import (e.g. a
         ``TYPE_CHECKING`` guard) is left untouched."""
@@ -568,10 +521,7 @@ class Repro:
             whole: list[tuple[int, int]] = []
             shared: list[ast.stmt] = []
             for node in matched:
-                alone = all(
-                    simple_stmt_lines[lineno] == 1
-                    for lineno in range(node.lineno, node.end_lineno + 1)
-                )
+                alone = all(simple_stmt_lines[lineno] == 1 for lineno in range(node.lineno, node.end_lineno + 1))
                 if alone:
                     lo, hi = node.lineno, node.end_lineno
                     if hi < len(lines) and lines[hi].strip() == "":
@@ -580,9 +530,7 @@ class Repro:
                 else:
                     shared.append(node)
             text = "".join(lines)
-            for node in sorted(
-                shared, key=lambda n: (n.lineno, n.col_offset), reverse=True
-            ):
+            for node in sorted(shared, key=lambda n: (n.lineno, n.col_offset), reverse=True):
                 text = _replace_span(
                     text,
                     node.lineno,
@@ -659,9 +607,7 @@ class Repro:
                 stmt_lines = lines[node.lineno - 1 : node.end_lineno]
                 own = dropped_alias.lineno
                 own_line = lines[own - 1]
-                on_own_line = own_line.strip().rstrip(",").strip() == alias_text(
-                    dropped_alias
-                )
+                on_own_line = own_line.strip().rstrip(",").strip() == alias_text(dropped_alias)
                 has_comments = any("#" in ln for ln in stmt_lines)
                 # Preserve the exploded form -- delete just this alias's line -- when the
                 # import stays multi-line: 2+ surviving names keep the magic trailing comma
@@ -692,9 +638,7 @@ class Repro:
         self.ops.append(op)
         return self
 
-    def add_imported_name(
-        self, rel: str, *, module: str, name: str, asname: str | None = None
-    ) -> "Repro":
+    def add_imported_name(self, rel: str, *, module: str, name: str, asname: str | None = None) -> "Repro":
         """Add a single ``name`` to an existing module-level ``from module import a, b`` --
         the dual of ``remove_imported_name``. A relocated symbol gains a new importer that
         already imports other names from the same module, so the target extends that line
@@ -722,9 +666,7 @@ class Repro:
                     )
                 existing = [alias_text(a.name, a.asname) for a in node.names]
                 added = alias_text(name, asname)
-                assert (
-                    added not in existing
-                ), f"{name!r} already imported from {module!r} in {rel}"
+                assert added not in existing, f"{name!r} already imported from {module!r} in {rel}"
                 rebuilt = f"from {module} import " + ", ".join(existing + [added]) + nl
                 lines[node.lineno - 1 : node.end_lineno] = [rebuilt]
                 _write_source(path, "".join(lines))
@@ -734,9 +676,7 @@ class Repro:
         self.ops.append(op)
         return self
 
-    def add_import(
-        self, rel: str, import_stmt: str, *, after: str | None = None
-    ) -> "Repro":
+    def add_import(self, rel: str, import_stmt: str, *, after: str | None = None) -> "Repro":
         """Append an import after the last top-level import; the formatter's import sorter
         places it (so the exact insertion point does not matter). When ``after`` is given,
         insert immediately after the top-level import statement whose source text contains
@@ -753,19 +693,15 @@ class Repro:
             if after is not None:
                 anchor = None
                 for node in body:
-                    if isinstance(
-                        node, (ast.Import, ast.ImportFrom)
-                    ) and after in "".join(lines[node.lineno - 1 : node.end_lineno]):
+                    if isinstance(node, (ast.Import, ast.ImportFrom)) and after in "".join(
+                        lines[node.lineno - 1 : node.end_lineno]
+                    ):
                         anchor = node
                         break
                 if anchor is None:
-                    raise AssertionError(
-                        f"no top-level import containing {after!r} in {rel}"
-                    )
+                    raise AssertionError(f"no top-level import containing {after!r} in {rel}")
                 at = anchor.end_lineno
-                _write_source(
-                    path, "".join(lines[:at] + [import_stmt + nl] + lines[at:])
-                )
+                _write_source(path, "".join(lines[:at] + [import_stmt + nl] + lines[at:]))
                 return
             last = 0
             if (
@@ -778,9 +714,7 @@ class Repro:
             for node in body:
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     last = max(last, node.end_lineno)
-            _write_source(
-                path, "".join(lines[:last] + [import_stmt + nl] + lines[last:])
-            )
+            _write_source(path, "".join(lines[:last] + [import_stmt + nl] + lines[last:]))
 
         self.ops.append(op)
         return self
@@ -805,29 +739,17 @@ class Repro:
                     "typing.TYPE_CHECKING",
                 ):
                     indent = " " * node.body[0].col_offset
-                    lone_pass = len(node.body) == 1 and isinstance(
-                        node.body[0], ast.Pass
-                    )
+                    lone_pass = len(node.body) == 1 and isinstance(node.body[0], ast.Pass)
                     if lone_pass:
                         placeholder = node.body[0]
-                        lines[placeholder.lineno - 1 : placeholder.end_lineno] = [
-                            indent + import_stmt + nl
-                        ]
+                        lines[placeholder.lineno - 1 : placeholder.end_lineno] = [indent + import_stmt + nl]
                     else:
-                        lines.insert(
-                            node.body[-1].end_lineno, indent + import_stmt + nl
-                        )
+                        lines.insert(node.body[-1].end_lineno, indent + import_stmt + nl)
                     _write_source(path, "".join(lines))
                     return
             tree = ast.parse("".join(lines))
-            imports = [
-                node
-                for node in tree.body
-                if isinstance(node, (ast.Import, ast.ImportFrom))
-            ]
-            assert (
-                imports
-            ), f"no imports to anchor a new `if TYPE_CHECKING:` block in {rel}"
+            imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+            assert imports, f"no imports to anchor a new `if TYPE_CHECKING:` block in {rel}"
             insert_at = imports[-1].end_lineno
             lines[insert_at:insert_at] = [
                 nl,
@@ -839,9 +761,7 @@ class Repro:
         self.ops.append(op)
         return self
 
-    def repath_import(
-        self, rel: str, *, old_module: str, new_module: str, name: str
-    ) -> "Repro":
+    def repath_import(self, rel: str, *, old_module: str, new_module: str, name: str) -> "Repro":
         """Repath every function-scoped ``from old_module import ... name ...`` to
         ``from new_module import ...`` in place -- the moved symbol's home changed, so its
         importer adjusts. Only imports nested below module level are touched; a module-level
@@ -861,9 +781,7 @@ class Repro:
                     and any(alias.name == name for alias in node.names)
                 ):
                     spelled = "." * node.level + (node.module or "")
-                    replaced = lines[node.lineno - 1].replace(
-                        f"from {spelled} import", f"from {new_module} import", 1
-                    )
+                    replaced = lines[node.lineno - 1].replace(f"from {spelled} import", f"from {new_module} import", 1)
                     assert (
                         replaced != lines[node.lineno - 1]
                     ), f"import spelling {spelled!r} not found on its line in {rel}"
@@ -900,9 +818,7 @@ class Repro:
                     and isinstance(cand.targets[0], ast.Name)
                     and cand.targets[0].id == name
                 ) or (
-                    isinstance(cand, ast.AnnAssign)
-                    and isinstance(cand.target, ast.Name)
-                    and cand.target.id == name
+                    isinstance(cand, ast.AnnAssign) and isinstance(cand.target, ast.Name) and cand.target.id == name
                 ):
                     node = cand
             assert node is not None, f"module assignment {name} not found in {src}"
@@ -937,11 +853,7 @@ class Repro:
                 assert at is not None, f"before={before!r} not found in {dst}"
                 dst_lines[at:at] = [block, dst_nl]
             else:
-                imports = [
-                    n
-                    for n in dst_tree.body
-                    if isinstance(n, (ast.Import, ast.ImportFrom))
-                ]
+                imports = [n for n in dst_tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
                 at = imports[-1].end_lineno if imports else 0
                 dst_lines[at:at] = [dst_nl, block]
             _write_source(dst_path, "".join(dst_lines))
@@ -974,32 +886,22 @@ class Repro:
         ``self: Target`` annotation is dropped (redundant inside the class). The body is moved
         verbatim; the formatter normalises the surrounding blank lines.
         """
-        assert (
-            before is None or after is None
-        ), "move_symbol: before and after are mutually exclusive"
+        assert before is None or after is None, "move_symbol: before and after are mutually exclusive"
 
         def op(root: Path) -> None:
             src_path = root / src
             dst_path = root / dst
             src_lines = _split_keepends(_read_source(src_path))
             src_nl = _newline_style("".join(src_lines))
-            node = _find_unique_def(
-                ast.parse("".join(src_lines)), name, from_class=from_class, where=src
-            )
+            node = _find_unique_def(ast.parse("".join(src_lines)), name, from_class=from_class, where=src)
             start, end = _def_span(node)
             block = src_lines[start - 1 : end]
             decorator_lines = node.lineno - start
             if leave_delegate is not None:
                 args = node.args
-                has_move_decorator = any(
-                    ln.strip() in _MOVE_DECORATORS for ln in block[:decorator_lines]
-                )
+                has_move_decorator = any(ln.strip() in _MOVE_DECORATORS for ln in block[:decorator_lines])
                 arg_list = args.posonlyargs + args.args
-                self_annotated = (
-                    bool(arg_list)
-                    and arg_list[0].arg == "self"
-                    and arg_list[0].annotation is not None
-                )
+                self_annotated = bool(arg_list) and arg_list[0].arg == "self" and arg_list[0].annotation is not None
                 assert not has_move_decorator or self_annotated, (
                     f"leave_delegate on a {_MOVE_DECORATORS} method has no self to "
                     "forward (a de-self'd staticmethod must annotate its self param)"
@@ -1014,11 +916,7 @@ class Repro:
                 # colon opens the body). node.body[0].lineno would skip over any leading
                 # comment/blank lines (not AST nodes), wrongly absorbing them into the
                 # delegate, so the header end is found by tokenizing the def.
-                header_end = (
-                    node.lineno
-                    - 1
-                    + _def_header_end("".join(src_lines[node.lineno - 1 : end]))
-                )
+                header_end = node.lineno - 1 + _def_header_end("".join(src_lines[node.lineno - 1 : end]))
                 sig_start = node.lineno - 1 if has_move_decorator else start - 1
                 signature_text = "".join(src_lines[sig_start:header_end])
                 # The stub drops the self annotation only when it names the class the
@@ -1037,15 +935,9 @@ class Repro:
                     parsable = signature_text + " " * sig_indent + "    pass" + src_nl
                     stripped = _drop_self_annotation(parsable, name)
                     assert stripped.endswith(" " * sig_indent + "    pass" + src_nl)
-                    signature_text = stripped[
-                        : -len(" " * sig_indent + "    pass" + src_nl)
-                    ]
+                    signature_text = stripped[: -len(" " * sig_indent + "    pass" + src_nl)]
                 body_indent = " " * node.body[0].col_offset
-                returning = (
-                    "return await"
-                    if isinstance(node, ast.AsyncFunctionDef)
-                    else "return"
-                )
+                returning = "return await" if isinstance(node, ast.AsyncFunctionDef) else "return"
                 forward = (
                     f"{body_indent}{returning} self.{leave_delegate}."
                     f"{delegate_name or name}({', '.join(parts)})" + src_nl
@@ -1056,9 +948,7 @@ class Repro:
                     "".join(src_lines[: start - 1] + [delegate] + src_lines[end:]),
                 )
             else:
-                _write_source(
-                    src_path, "".join(src_lines[: start - 1] + src_lines[end:])
-                )
+                _write_source(src_path, "".join(src_lines[: start - 1] + src_lines[end:]))
 
             kept = [
                 ln
@@ -1066,9 +956,7 @@ class Repro:
                 if not (index < decorator_lines and ln.strip() in _MOVE_DECORATORS)
             ]
             if dedent > 0:
-                kept = [
-                    ln[dedent:] if ln[:dedent] == " " * dedent else ln for ln in kept
-                ]
+                kept = [ln[dedent:] if ln[:dedent] == " " * dedent else ln for ln in kept]
             elif dedent < 0:
                 pad = " " * -dedent
                 kept = [pad + ln if ln.strip() else ln for ln in kept]
@@ -1117,11 +1005,7 @@ class Repro:
                     "".join(dst_lines[:at] + [method_text, dst_nl] + dst_lines[at:]),
                 )
             else:
-                at = (
-                    container[-1].end_lineno
-                    if into_class is not None
-                    else len(dst_lines)
-                )
+                at = container[-1].end_lineno if into_class is not None else len(dst_lines)
                 _write_source(
                     dst_path,
                     "".join(dst_lines[:at] + [dst_nl, method_text] + dst_lines[at:]),
@@ -1169,10 +1053,7 @@ class Repro:
             while cut > 0:
                 node = body[cut - 1]
                 is_symbol = (
-                    isinstance(
-                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                    )
-                    and node.name in wanted
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in wanted
                 )
                 if is_symbol or is_scaffolding(node):
                     cut -= 1
@@ -1180,11 +1061,7 @@ class Repro:
                     break
             tail = body[cut:]
             present = {
-                node.name
-                for node in tail
-                if isinstance(
-                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                )
+                node.name for node in tail if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
             }
             assert wanted <= present, f"{wanted - present} not in the cut tail of {src}"
 
@@ -1235,18 +1112,12 @@ class Repro:
             nodes = {
                 node.name: node
                 for node in tree.body
-                if isinstance(
-                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                )
-                and node.name in wanted
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in wanted
             }
             missing = wanted - set(nodes)
             assert not missing, f"{missing} not top-level defs/classes in {src}"
             spans = {name: _def_span(node) for name, node in nodes.items()}
-            blocks = {
-                name: "".join(src_lines[start - 1 : end])
-                for name, (start, end) in spans.items()
-            }
+            blocks = {name: "".join(src_lines[start - 1 : end]) for name, (start, end) in spans.items()}
             assign_spans: list[tuple[int, int]] = []
             assign_rewrites: list[tuple[int, int, str]] = []
             removed_assigns: dict[str, str] = {}
@@ -1261,17 +1132,11 @@ class Repro:
                 hit = names & dropped
                 if not hit:
                     continue
-                assert len(names) == len(
-                    targets
-                ), f"drop_assigns {sorted(hit)}: non-name targets in {src}"
+                assert len(names) == len(targets), f"drop_assigns {sorted(hit)}: non-name targets in {src}"
                 value_src = ast.unparse(node.value) if node.value is not None else None
                 for dropped_name in hit:
                     removed_assigns[dropped_name] = value_src
-                surviving = [
-                    x.id
-                    for x in targets
-                    if isinstance(x, ast.Name) and x.id not in dropped
-                ]
+                surviving = [x.id for x in targets if isinstance(x, ast.Name) and x.id not in dropped]
                 if surviving:
                     kept_stmt = (
                         " = ".join(surviving)
@@ -1289,9 +1154,7 @@ class Repro:
                 else:
                     assign_spans.append((node.lineno, node.end_lineno))
                 found_assigns |= hit
-            assert (
-                found_assigns == dropped
-            ), f"{dropped - found_assigns} not assigned in {src}"
+            assert found_assigns == dropped, f"{dropped - found_assigns} not assigned in {src}"
             rederivable: dict[str, str | None] = {}
             for node in tree.body:
                 targets = (
@@ -1306,15 +1169,11 @@ class Repro:
                 for kept_name in names:
                     rederivable[kept_name] = value_src
             if header.strip() or removed_assigns:
-                _audit_extract_header(
-                    header, removed_assigns, where=dst, rederivable=rederivable
-                )
+                _audit_extract_header(header, removed_assigns, where=dst, rederivable=rederivable)
             cuts = [(start, end, None) for start, end in spans.values()]
             cuts += [(start, end, None) for start, end in assign_spans]
             cuts += assign_rewrites
-            for start, end, repl in sorted(
-                cuts, key=lambda c: (c[0], c[1]), reverse=True
-            ):
+            for start, end, repl in sorted(cuts, key=lambda c: (c[0], c[1]), reverse=True):
                 if repl is None:
                     del src_lines[start - 1 : end]
                 else:
@@ -1365,17 +1224,12 @@ class Repro:
             lines = _split_keepends(text)
             if shift < 0:
                 return "".join(
-                    (
-                        line[-shift:]
-                        if index + 1 not in interior and line[:-shift] == " " * -shift
-                        else line
-                    )
+                    (line[-shift:] if index + 1 not in interior and line[:-shift] == " " * -shift else line)
                     for index, line in enumerate(lines)
                 )
             pad = " " * shift
             return "".join(
-                pad + line if line.strip() and index + 1 not in interior else line
-                for index, line in enumerate(lines)
+                pad + line if line.strip() and index + 1 not in interior else line for index, line in enumerate(lines)
             )
 
         def op(root: Path) -> None:
@@ -1393,11 +1247,7 @@ class Repro:
             dst_nl = _newline_style("".join(dst_lines))
             sig_first = _split_keepends(signature)[0]
             sig_indent = len(sig_first) - len(sig_first.lstrip(" "))
-            function = (
-                signature.rstrip("\r\n")
-                + dst_nl
-                + reindent(body, sig_indent + 4 - body_indent)
-            )
+            function = signature.rstrip("\r\n") + dst_nl + reindent(body, sig_indent + 4 - body_indent)
             if return_text is not None:
                 function = function.rstrip("\r\n") + dst_nl + return_text
             function = function.rstrip("\r\n") + dst_nl
@@ -1429,11 +1279,7 @@ class Repro:
                     "".join(dst_lines[:at] + [function, dst_nl] + dst_lines[at:]),
                 )
             else:
-                at = (
-                    container[-1].end_lineno
-                    if into_class is not None
-                    else len(dst_lines)
-                )
+                at = container[-1].end_lineno if into_class is not None else len(dst_lines)
                 _write_source(
                     dst_path,
                     "".join(dst_lines[:at] + [dst_nl, function] + dst_lines[at:]),
@@ -1471,16 +1317,12 @@ class Repro:
                     )
                     or (
                         isinstance(stmt, ast.If)
-                        and ast.unparse(stmt.test)
-                        in ("TYPE_CHECKING", "typing.TYPE_CHECKING")
+                        and ast.unparse(stmt.test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING")
                     )
                     or is_module_logger(stmt)
                 )
             ]
-            assert not leftover, (
-                f"{path} still holds non-scaffolding code, refusing to delete: "
-                f"{leftover[:3]}"
-            )
+            assert not leftover, f"{path} still holds non-scaffolding code, refusing to delete: " f"{leftover[:3]}"
             target.unlink()
 
         self.ops.append(op)
@@ -1493,9 +1335,7 @@ class Repro:
         worktree = tempfile.mkdtemp(prefix="repro-")
         branch = Path(worktree).name
         try:
-            exec_command(
-                f"git worktree add -b {branch} {worktree} {self.base}", cwd=repo_root
-            )
+            exec_command(f"git worktree add -b {branch} {worktree} {self.base}", cwd=repo_root)
             for op in self.ops:
                 op(Path(worktree))
             exec_command("git add -A", cwd=worktree)
@@ -1505,21 +1345,15 @@ class Repro:
             ).split()
             if changed:
                 files = " ".join(shlex.quote(path) for path in changed)
-                exec_command(
-                    f"pre-commit run --files {files}", cwd=worktree, check=False
-                )
+                exec_command(f"pre-commit run --files {files}", cwd=worktree, check=False)
             if exec_command("git status --porcelain", cwd=worktree):
                 git_add_and_commit("repro", cwd=worktree)
-            diff = exec_command(
-                f"git diff {self.target} -- .", cwd=worktree, check=False
-            )
+            diff = exec_command(f"git diff {self.target} -- .", cwd=worktree, check=False)
             if diff:
                 print(f"\nRESIDUAL ({len(diff.splitlines())} lines):\n{diff}")
             else:
                 print("\nPASS: reproduces the commit byte-for-byte.")
             return diff
         finally:
-            exec_command(
-                f"git worktree remove --force {worktree}", cwd=repo_root, check=False
-            )
+            exec_command(f"git worktree remove --force {worktree}", cwd=repo_root, check=False)
             exec_command(f"git branch -D {branch}", cwd=repo_root, check=False)

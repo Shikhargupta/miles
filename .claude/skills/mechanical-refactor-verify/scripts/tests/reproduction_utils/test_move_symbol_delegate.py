@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from pathlib import Path
 
@@ -6,19 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import mechanical_refactor_reproduction_utils as rr
-from mechanical_refactor_reproduction_utils import (
-    Repro,
-    _def_span,
-    _find_class,
-    _find_def,
-    _replace_span,
-    _slice_span,
-    dedent,
-    exec_command,
-    git_add_and_commit,
-    verify_mechanical_refactor,
-)
+from mechanical_refactor_reproduction_utils import Repro
 from reproduction_testlib import _apply, _commit, _git, _write  # noqa: F401
 
 
@@ -26,13 +13,9 @@ def test_move_symbol_leave_delegate_keeps_forwarding_stub(tmp_path: Path) -> Non
     """With leave_delegate, the source keeps a forwarding stub through the named field and the
     destination gets the full method body."""
     (tmp_path / "src.py").write_text(
-        "class Mixin:\n"
-        "    def compute(self, n: int) -> int:\n"
-        "        return n + self.cfg.base\n"
+        "class Mixin:\n" "    def compute(self, n: int) -> int:\n" "        return n + self.cfg.base\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Cfg:\n    def existing(self):\n        return 0\n"
-    )
+    (tmp_path / "dst.py").write_text("class Cfg:\n    def existing(self):\n        return 0\n")
     r = Repro("b", "t").move_symbol(
         "compute",
         src="src.py",
@@ -62,21 +45,13 @@ def test_move_symbol_leave_delegate_does_not_absorb_leading_comments(
         "        # second comment line\n"
         "        return n + self.cfg.base\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Cfg:\n    def existing(self):\n        return 0\n"
-    )
-    r = Repro("b", "t").move_symbol(
-        "compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg"
-    )
+    (tmp_path / "dst.py").write_text("class Cfg:\n    def existing(self):\n        return 0\n")
+    r = Repro("b", "t").move_symbol("compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg")
     _apply(r, tmp_path)
     src_out = (tmp_path / "src.py").read_text()
     dst_out = (tmp_path / "dst.py").read_text()
     assert "# explain the maths" not in src_out
-    assert (
-        src_out == "class Mixin:\n"
-        "    def compute(self, n: int) -> int:\n"
-        "        return self.cfg.compute(n)\n"
-    )
+    assert src_out == "class Mixin:\n" "    def compute(self, n: int) -> int:\n" "        return self.cfg.compute(n)\n"
     assert "# explain the maths" in dst_out
 
 
@@ -101,9 +76,7 @@ def test_move_symbol_leave_delegate_keeps_a_multiline_signature_verbatim(
         "        return int(n * scale) + self.cfg.base\n"
     )
     (tmp_path / "dst.py").write_text("class Cfg:\n    def e(self):\n        return 0\n")
-    r = Repro("b", "t").move_symbol(
-        "compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg"
-    )
+    r = Repro("b", "t").move_symbol("compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg")
     _apply(r, tmp_path)
     assert (tmp_path / "src.py").read_text() == (
         "class Mixin:\n"
@@ -135,16 +108,10 @@ def test_move_symbol_leave_delegate_forwards_posonly_vararg_kwonly_kwargs(
 ) -> None:
     """Every parameter kind is forwarded correctly in the delegate's return call."""
     (tmp_path / "src.py").write_text(
-        "class Mixin:\n"
-        "    def compute(self, a, /, b, *args, c, d=3, **kw):\n"
-        "        return a\n"
+        "class Mixin:\n" "    def compute(self, a, /, b, *args, c, d=3, **kw):\n" "        return a\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Cfg:\n    def keep(self):\n        return 0\n"
-    )
-    r = Repro("b", "t").move_symbol(
-        "compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg"
-    )
+    (tmp_path / "dst.py").write_text("class Cfg:\n    def keep(self):\n        return 0\n")
+    r = Repro("b", "t").move_symbol("compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg")
     _apply(r, tmp_path)
     assert (tmp_path / "src.py").read_text() == (
         "class Mixin:\n"
@@ -166,12 +133,8 @@ def test_move_symbol_leave_delegate_survives_paren_in_string_default(
         "    ) -> int:\n"
         "        return n + self.cfg.base\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Cfg:\n    def keep(self):\n        return 0\n"
-    )
-    r = Repro("b", "t").move_symbol(
-        "compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg"
-    )
+    (tmp_path / "dst.py").write_text("class Cfg:\n    def keep(self):\n        return 0\n")
+    r = Repro("b", "t").move_symbol("compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg")
     _apply(r, tmp_path)
     src_out = (tmp_path / "src.py").read_text()
     compile(src_out, "src.py", "exec")
@@ -183,14 +146,10 @@ def test_move_symbol_async_leave_delegate_awaits_the_forwarded_call(
 ) -> None:
     """An async method's delegate stub must await the forwarded coroutine."""
     (tmp_path / "src.py").write_text(
-        "class Mixin:\n"
-        "    async def compute(self, n):\n"
-        "        return n + self.cfg.base\n"
+        "class Mixin:\n" "    async def compute(self, n):\n" "        return n + self.cfg.base\n"
     )
     (tmp_path / "dst.py").write_text("class Cfg:\n    def e(self):\n        return 0\n")
-    r = Repro("b", "t").move_symbol(
-        "compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg"
-    )
+    r = Repro("b", "t").move_symbol("compute", src="src.py", dst="dst.py", into_class="Cfg", leave_delegate="cfg")
     _apply(r, tmp_path)
     assert "return await self.cfg.compute(n)" in (tmp_path / "src.py").read_text()
 
@@ -206,9 +165,7 @@ def test_move_symbol_leave_delegate_on_self_annotated_staticmethod(
         "    def work(self: Comp, n: int) -> int:\n"
         "        return n + self.base\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Comp:\n    def existing(self):\n        return 0\n"
-    )
+    (tmp_path / "dst.py").write_text("class Comp:\n    def existing(self):\n        return 0\n")
     r = Repro("b", "t").move_symbol(
         "work",
         src="src.py",
@@ -220,9 +177,7 @@ def test_move_symbol_leave_delegate_on_self_annotated_staticmethod(
     )
     _apply(r, tmp_path)
     assert (tmp_path / "src.py").read_text() == (
-        "class Runner:\n"
-        "    def work(self, n: int) -> int:\n"
-        "        return self.comp.work(n)\n"
+        "class Runner:\n" "    def work(self, n: int) -> int:\n" "        return self.comp.work(n)\n"
     )
     assert (tmp_path / "dst.py").read_text() == (
         "class Comp:\n"
@@ -239,13 +194,9 @@ def test_move_symbol_leave_delegate_keeps_unrelated_self_annotation(
 ) -> None:
     """A self annotation naming a class other than the destination survives in the stub."""
     (tmp_path / "src.py").write_text(
-        "class Mixin:\n"
-        "    def work(self: Runner, n: int) -> int:\n"
-        "        return n + self.base\n"
+        "class Mixin:\n" "    def work(self: Runner, n: int) -> int:\n" "        return n + self.base\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Comp:\n    def existing(self):\n        return 0\n"
-    )
+    (tmp_path / "dst.py").write_text("class Comp:\n    def existing(self):\n        return 0\n")
     r = Repro("b", "t").move_symbol(
         "work",
         src="src.py",
@@ -257,9 +208,7 @@ def test_move_symbol_leave_delegate_keeps_unrelated_self_annotation(
     )
     _apply(r, tmp_path)
     assert (tmp_path / "src.py").read_text() == (
-        "class Mixin:\n"
-        "    def work(self: Runner, n: int) -> int:\n"
-        "        return self.comp.work(n)\n"
+        "class Mixin:\n" "    def work(self: Runner, n: int) -> int:\n" "        return self.comp.work(n)\n"
     )
 
 
@@ -268,13 +217,9 @@ def test_move_symbol_delegate_name_forwards_to_the_renamed_collaborator_method(
 ) -> None:
     """delegate_name makes the stub call a differently-named method on the collaborator."""
     (tmp_path / "src.py").write_text(
-        "class Mixin:\n"
-        "    def compute(self, n: int) -> int:\n"
-        "        return n + self.cfg.base\n"
+        "class Mixin:\n" "    def compute(self, n: int) -> int:\n" "        return n + self.cfg.base\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Cfg:\n    def existing(self):\n        return 0\n"
-    )
+    (tmp_path / "dst.py").write_text("class Cfg:\n    def existing(self):\n        return 0\n")
     r = Repro("b", "t").move_symbol(
         "compute",
         src="src.py",
@@ -294,14 +239,9 @@ def test_move_symbol_leave_delegate_on_unannotated_staticmethod_raises(
     """A staticmethod with no self: Target annotation has no receiver to forward through, so
     leave_delegate refuses rather than author a bogus self.<field>.<name>(...) stub."""
     (tmp_path / "src.py").write_text(
-        "class Runner:\n"
-        "    @staticmethod\n"
-        "    def work(x: int) -> int:\n"
-        "        return x + 1\n"
+        "class Runner:\n" "    @staticmethod\n" "    def work(x: int) -> int:\n" "        return x + 1\n"
     )
-    (tmp_path / "dst.py").write_text(
-        "class Comp:\n    def existing(self):\n        return 0\n"
-    )
+    (tmp_path / "dst.py").write_text("class Comp:\n    def existing(self):\n        return 0\n")
     r = Repro("b", "t").move_symbol(
         "work",
         src="src.py",

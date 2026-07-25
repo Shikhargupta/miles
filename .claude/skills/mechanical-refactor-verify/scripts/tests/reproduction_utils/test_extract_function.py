@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from pathlib import Path
 
@@ -6,19 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import mechanical_refactor_reproduction_utils as rr
-from mechanical_refactor_reproduction_utils import (
-    Repro,
-    _def_span,
-    _find_class,
-    _find_def,
-    _replace_span,
-    _slice_span,
-    dedent,
-    exec_command,
-    git_add_and_commit,
-    verify_mechanical_refactor,
-)
+from mechanical_refactor_reproduction_utils import Repro
 from reproduction_testlib import _apply, _commit, _git, _write  # noqa: F401
 
 # --- extract_function ----------------------------------------------------------
@@ -63,9 +50,7 @@ def test_extract_function_relocates_body_and_replaces_with_call(tmp_path: Path) 
 def test_extract_function_inserts_before_named_sibling(tmp_path: Path) -> None:
     """With before=, the new function lands immediately above that sibling at module level."""
     (tmp_path / "src.py").write_text("x = compute()\n")
-    (tmp_path / "dst.py").write_text(
-        "def a():\n    return 1\n\n\ndef c():\n    return 3\n"
-    )
+    (tmp_path / "dst.py").write_text("def a():\n    return 1\n\n\ndef c():\n    return 3\n")
     r = Repro("b", "t").extract_function(
         "src.py",
         "dst.py",
@@ -121,18 +106,14 @@ def test_extract_function_does_not_pad_blank_lines_in_the_body(tmp_path: Path) -
     )
     _apply(r, tmp_path)
     assert (tmp_path / "src.py").read_text() == "        g()\n"
-    assert (tmp_path / "dst.py").read_text() == (
-        "def z():\n    return 0\n\ndef g():\n    a = 1\n\n    b = 2\n"
-    )
+    assert (tmp_path / "dst.py").read_text() == ("def z():\n    return 0\n\ndef g():\n    a = 1\n\n    b = 2\n")
 
 
 def test_extract_function_does_not_reindent_string_literal_interiors(
     tmp_path: Path,
 ) -> None:
     """Triple-quoted string interior lines keep their exact bytes through the extraction."""
-    (tmp_path / "src.py").write_text(
-        "TEMPLATE = '''\nliteral line\n'''\nx = TEMPLATE\n"
-    )
+    (tmp_path / "src.py").write_text("TEMPLATE = '''\nliteral line\n'''\nx = TEMPLATE\n")
     (tmp_path / "dst.py").write_text("def existing():\n    return 0\n")
     r = Repro("b", "t").extract_function(
         "src.py",
@@ -170,9 +151,7 @@ def test_extract_function_into_class_indents_body_to_method_depth(
 ) -> None:
     """Extracting into a class must indent the relocated body to method depth."""
     (tmp_path / "src.py").write_text("val = compute_thing()\n")
-    (tmp_path / "dst.py").write_text(
-        "class H:\n    def last(self):\n        return 0\n"
-    )
+    (tmp_path / "dst.py").write_text("class H:\n    def last(self):\n        return 0\n")
     r = Repro("b", "t").extract_function(
         "src.py",
         "dst.py",

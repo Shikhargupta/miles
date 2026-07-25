@@ -1,8 +1,5 @@
-import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -13,10 +10,7 @@ from generator_testlib import (  # noqa: F401
     _method_onto_class,
     _write,
 )
-from mechanical_refactor_proof_generator import (
-    infer_recipe,
-    recipe_to_script,
-)
+from mechanical_refactor_proof_generator import infer_recipe
 
 
 def test_infer_recipe_infers_added_module_imports(repo: Path) -> None:
@@ -75,9 +69,7 @@ def test_infer_recipe_module_level_import_repoint_realised_by_diff(repo: Path) -
         "name": "resolve",
         "asname": None,
     } in recipe.module_import_removals
-    assert {"path": "caller.py", "text": "from util import resolve"} in (
-        recipe.import_additions
-    )
+    assert {"path": "caller.py", "text": "from util import resolve"} in (recipe.import_additions)
 
 
 def test_infer_recipe_removes_an_import_the_source_no_longer_uses(repo: Path) -> None:
@@ -138,9 +130,7 @@ def test_infer_recipe_adds_wholly_new_module_import_verbatim(repo: Path) -> None
         **{
             "model.py": "def keep():\n    return 0\n\n\ndef solve(x):\n    return x\n",
             "util.py": "import os\n",
-            "caller.py": (
-                "from model import solve\n\n\ndef run():\n    return solve(1)\n"
-            ),
+            "caller.py": ("from model import solve\n\n\ndef run():\n    return solve(1)\n"),
         },
     )
     _commit(repo, "base")
@@ -149,16 +139,12 @@ def test_infer_recipe_adds_wholly_new_module_import_verbatim(repo: Path) -> None
         **{
             "model.py": "def keep():\n    return 0\n",
             "util.py": "import os\n\n\ndef solve(x):\n    return x\n",
-            "caller.py": (
-                "from util import (\n    solve,\n)\n\n\ndef run():\n    return solve(1)\n"
-            ),
+            "caller.py": ("from util import (\n    solve,\n)\n\n\ndef run():\n    return solve(1)\n"),
         },
     )
     _commit(repo, "move solve to util")
     recipe = infer_recipe("HEAD", str(repo))
-    caller_adds = [
-        a["text"] for a in recipe.import_additions if a["path"] == "caller.py"
-    ]
+    caller_adds = [a["text"] for a in recipe.import_additions if a["path"] == "caller.py"]
     assert "from util import (\n    solve,\n)" in caller_adds
     assert {
         "path": "caller.py",

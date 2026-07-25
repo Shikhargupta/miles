@@ -17,9 +17,7 @@ from mechanical_refactor_reproduction_cli import (
 )
 
 
-def test_chain_of_proved_and_declared_commits_passes(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_chain_of_proved_and_declared_commits_passes(repo: Path, tmp_path: Path) -> None:
     """A proved mechanical commit plus a declared non-mechanical one verifies as PASS."""
     proof = tmp_path / "proof"
     base, shas = _chain(
@@ -34,9 +32,7 @@ def test_chain_of_proved_and_declared_commits_passes(
     assert result.passed
 
 
-def test_failing_proof_fails_the_commit_and_the_chain(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_failing_proof_fails_the_commit_and_the_chain(repo: Path, tmp_path: Path) -> None:
     """A proof that exits non-zero yields FAIL with the output tail in the detail."""
     proof = tmp_path / "proof"
     base, shas = _chain(repo, ["mechanical_provable: move foo"])
@@ -49,9 +45,7 @@ def test_failing_proof_fails_the_commit_and_the_chain(
     assert not result.passed
 
 
-def test_proof_exiting_zero_without_a_pass_line_is_a_fail(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_proof_exiting_zero_without_a_pass_line_is_a_fail(repo: Path, tmp_path: Path) -> None:
     """PASS needs exit 0 AND the PASS: verdict line, so a residual under exit 0 fails."""
     proof = tmp_path / "proof"
     base, shas = _chain(repo, ["mechanical_provable: move foo"])
@@ -85,18 +79,14 @@ def test_main_exit_codes_reflect_the_chain_verdict(repo: Path, tmp_path: Path) -
     assert main(args) == 1
 
 
-def test_unresolvable_refs_and_missing_proof_folder_are_setup_errors(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_unresolvable_refs_and_missing_proof_folder_are_setup_errors(repo: Path, tmp_path: Path) -> None:
     """Bad --base/--branch/--proof inputs raise ChainVerificationError (exit code 2)."""
     proof = tmp_path / "proof"
     proof.mkdir()
     base, _ = _chain(repo, ["mechanical_provable: move"])
 
     with pytest.raises(ChainVerificationError):
-        verify_chain(
-            base=base, branch="no-such-branch", proof=proof, repo_root=str(repo)
-        )
+        verify_chain(base=base, branch="no-such-branch", proof=proof, repo_root=str(repo))
     with pytest.raises(ChainVerificationError):
         verify_chain(
             base=base,
@@ -121,9 +111,7 @@ def test_unresolvable_refs_and_missing_proof_folder_are_setup_errors(
     )
 
 
-def test_non_ancestor_base_and_empty_range_are_setup_errors(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_non_ancestor_base_and_empty_range_are_setup_errors(repo: Path, tmp_path: Path) -> None:
     """A base off the branch or an empty base..branch range refuses to verify."""
     proof = tmp_path / "proof"
     proof.mkdir()
@@ -157,9 +145,7 @@ def test_proofs_run_concurrently_up_to_jobs(repo: Path, tmp_path: Path) -> None:
     """With jobs>=2 a proof that waits on a sibling proof's sentinel still completes."""
     proof = tmp_path / "proof"
     sentinel = tmp_path / "sentinel"
-    base, shas = _chain(
-        repo, ["mechanical_provable: move a", "mechanical_provable: move b"]
-    )
+    base, shas = _chain(repo, ["mechanical_provable: move a", "mechanical_provable: move b"])
     waiter = _write_stub_proof(proof, shas[0])
     waiter.write_text(
         "import sys, time\n"
@@ -179,9 +165,7 @@ def test_proofs_run_concurrently_up_to_jobs(repo: Path, tmp_path: Path) -> None:
         "sys.exit(0)\n"
     )
 
-    result = verify_chain(
-        base=base, branch="chain", proof=proof, repo_root=str(repo), jobs=2
-    )
+    result = verify_chain(base=base, branch="chain", proof=proof, repo_root=str(repo), jobs=2)
 
     assert [v.verdict for v in result.verdicts] == [VERDICT_PASS, VERDICT_PASS]
     assert [v.sha for v in result.verdicts] == shas

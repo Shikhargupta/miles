@@ -1,8 +1,5 @@
-import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -13,10 +10,7 @@ from generator_testlib import (  # noqa: F401
     _method_onto_class,
     _write,
 )
-from mechanical_refactor_proof_generator import (
-    infer_recipe,
-    recipe_to_script,
-)
+from mechanical_refactor_proof_generator import infer_recipe, recipe_to_script
 
 
 def test_infer_recipe_new_file_extract_from_class_method_unsupported(
@@ -139,15 +133,7 @@ def test_infer_recipe_scattered_new_module_extract(repo: Path) -> None:
         repo,
         **{
             "common.py": (
-                "import os\n"
-                "\n"
-                "\n"
-                "def keep():\n"
-                "    return 0\n"
-                "\n"
-                "\n"
-                "def stay():\n"
-                "    return 9\n"
+                "import os\n" "\n" "\n" "def keep():\n" "    return 0\n" "\n" "\n" "def stay():\n" "    return 9\n"
             ),
             "alloc.py": (
                 "from __future__ import annotations\n"

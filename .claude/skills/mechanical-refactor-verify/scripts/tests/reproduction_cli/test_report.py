@@ -22,9 +22,7 @@ def _mixed_chain_result(repo: Path, tmp_path: Path):
     return proof, base, shas, result
 
 
-def test_report_has_header_table_row_per_commit_and_chain_verdict(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_report_has_header_table_row_per_commit_and_chain_verdict(repo: Path, tmp_path: Path) -> None:
     """The report carries base/branch/proof, one table row per commit, and the verdict."""
     proof, base, shas, result = _mixed_chain_result(repo, tmp_path)
     report = render_report(result)
@@ -40,9 +38,7 @@ def test_report_has_header_table_row_per_commit_and_chain_verdict(
     assert "| mechanical_provable | MISSING_PROOF |" in report
 
 
-def test_report_lists_failure_details_for_each_non_ok_commit(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_report_lists_failure_details_for_each_non_ok_commit(repo: Path, tmp_path: Path) -> None:
     """Every non-ok commit gets a failure-details section with its explanation."""
     proof, base, shas, result = _mixed_chain_result(repo, tmp_path)
     report = render_report(result)
@@ -52,9 +48,7 @@ def test_report_lists_failure_details_for_each_non_ok_commit(
     assert "no proof script found" in report
 
 
-def test_passing_report_has_no_failure_details_section(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_passing_report_has_no_failure_details_section(repo: Path, tmp_path: Path) -> None:
     """A fully verified chain renders a PASS report without a failure section."""
     proof = tmp_path / "proof"
     base, shas = _chain(repo, ["mechanical_provable: move foo"])
@@ -67,9 +61,7 @@ def test_passing_report_has_no_failure_details_section(
     assert "## Failure details" not in report
 
 
-def test_main_writes_the_report_into_the_proof_folder_by_default(
-    repo: Path, tmp_path: Path, capsys
-) -> None:
+def test_main_writes_the_report_into_the_proof_folder_by_default(repo: Path, tmp_path: Path, capsys) -> None:
     """main prints the report and writes <proof>/chain_report.md (or --report PATH)."""
     proof = tmp_path / "proof"
     base, shas = _chain(repo, ["mechanical_provable: move foo"])

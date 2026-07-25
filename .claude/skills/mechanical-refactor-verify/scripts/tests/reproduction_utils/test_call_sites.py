@@ -1,24 +1,9 @@
-import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import mechanical_refactor_reproduction_utils as rr
-from mechanical_refactor_reproduction_utils import (
-    Repro,
-    _def_span,
-    _find_class,
-    _find_def,
-    _replace_span,
-    _slice_span,
-    dedent,
-    exec_command,
-    git_add_and_commit,
-    verify_mechanical_refactor,
-)
+from mechanical_refactor_reproduction_utils import Repro
 from reproduction_testlib import _apply, _commit, _git, _write  # noqa: F401
 
 
@@ -82,9 +67,7 @@ def test_requalify_call_sites_drops_the_qualifier(tmp_path: Path) -> None:
 def test_route_call_sites_through_field_inserts_the_field(tmp_path: Path) -> None:
     """recv.bar(a) becomes recv.updater.bar(a) when bar moves onto a collaborator field."""
     (tmp_path / "m.py").write_text("y = self.worker.runner.bar(a)\n")
-    r = Repro("b", "t").route_call_sites_through_field(
-        "bar", field="updater", paths=["m.py"]
-    )
+    r = Repro("b", "t").route_call_sites_through_field("bar", field="updater", paths=["m.py"])
     _apply(r, tmp_path)
     assert (tmp_path / "m.py").read_text() == "y = self.worker.runner.updater.bar(a)\n"
 
@@ -94,9 +77,7 @@ def test_route_call_sites_through_field_skips_an_already_routed_call(
 ) -> None:
     """A call already going through the field is left alone, so the pass converges."""
     (tmp_path / "m.py").write_text("y = self.runner.updater.bar(a)\n")
-    r = Repro("b", "t").route_call_sites_through_field(
-        "bar", field="updater", paths=["m.py"]
-    )
+    r = Repro("b", "t").route_call_sites_through_field("bar", field="updater", paths=["m.py"])
     _apply(r, tmp_path)
     assert (tmp_path / "m.py").read_text() == "y = self.runner.updater.bar(a)\n"
 
@@ -104,9 +85,7 @@ def test_route_call_sites_through_field_skips_an_already_routed_call(
 def test_route_call_sites_through_field_honors_owner_filter(tmp_path: Path) -> None:
     """With owner set, only calls on that exact receiver are routed through the field."""
     (tmp_path / "m.py").write_text("a = x.bar(1)\nb = y.bar(2)\n")
-    r = Repro("b", "t").route_call_sites_through_field(
-        "bar", field="updater", paths=["m.py"], owner="x"
-    )
+    r = Repro("b", "t").route_call_sites_through_field("bar", field="updater", paths=["m.py"], owner="x")
     _apply(r, tmp_path)
     assert (tmp_path / "m.py").read_text() == "a = x.updater.bar(1)\nb = y.bar(2)\n"
 
@@ -129,9 +108,7 @@ def test_lower_call_sites_preserves_comments_inside_a_multiline_call(
     tmp_path: Path,
 ) -> None:
     """A comment between arguments of the rewritten call must survive."""
-    (tmp_path / "m.py").write_text(
-        "x = Old.foo(\n    self.r,\n    a,  # keep me\n    b,\n)\n"
-    )
+    (tmp_path / "m.py").write_text("x = Old.foo(\n    self.r,\n    a,  # keep me\n    b,\n)\n")
     r = Repro("b", "t").lower_call_sites("foo", "Old", paths=["m.py"])
     _apply(r, tmp_path)
     assert "# keep me" in (tmp_path / "m.py").read_text()
