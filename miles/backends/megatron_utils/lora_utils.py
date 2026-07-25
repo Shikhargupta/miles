@@ -121,11 +121,14 @@ _marked_lora_grad_params_cache: dict[int, list] = {}
 def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
     """Sum partial grads of replicated native-LoRA params over their tagged group, pre-DP-reduce.
 
-    A native adapter's ``A`` on a column-parallel module (and ``B`` on a row-parallel
-    one under sequence parallelism) is replicated across the TP group while each rank
-    only sees a partial product, so the grads must be summed over TP; grouped-expert
-    adapters carry the analogous ``ep`` tag. Params are tagged at creation with
-    ``_lora_grad_sum_group`` and this is a no-op for every other setup.
+    A native adapter's ``A`` on a column-parallel module is replicated across the TP
+    group while each rank only holds its slice of ``B``, so every rank computes a
+    partial ``dL/dA`` and the true gradient is their sum. The same applies to a
+    replicated ``B`` (row-parallel) or to both sides (MLA's replicated
+    down-projections) once sequence parallelism gives each rank a different sequence
+    shard. Params are tagged at creation with ``_lora_grad_sum_group``; ``ep`` is
+    accepted as a tag for providers whose adapters are expert-parallel, and this is a
+    no-op when nothing is tagged.
     """
     from megatron.core import parallel_state as ps
 
