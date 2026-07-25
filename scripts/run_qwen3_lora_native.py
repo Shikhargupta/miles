@@ -117,9 +117,9 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     TP must stay <= num_query_groups (see _NUM_QUERY_GROUPS).
     """
     groups = _NUM_QUERY_GROUPS[args.model_name]
-    assert args.tensor_model_parallel_size <= groups, (
-        f"{args.model_name} has num_query_groups={groups}; native LoRA needs TP <= {groups}"
-    )
+    assert (
+        args.tensor_model_parallel_size <= groups
+    ), f"{args.model_name} has num_query_groups={groups}; native LoRA needs TP <= {groups}"
     perf = (
         f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
         "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
