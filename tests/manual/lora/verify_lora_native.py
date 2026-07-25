@@ -36,7 +36,7 @@ from megatron.core import parallel_state as ps
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
 from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
-from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
 
 from miles.backends.megatron_utils.lora_native import (
     NativeLoRAAdapter,
@@ -61,8 +61,10 @@ def check(name, ok, detail=""):
         print(f"[{tag}] {name} {detail}", flush=True)
 
 
-def build(tp, seq_parallel, seed=1234):
+def build(tp, seq_parallel, seed=1234, mla=False):
     torch.manual_seed(seed)
+    if mla:
+        return _build_mla(tp, seq_parallel)
     cfg = TransformerConfig(
         num_layers=2,
         hidden_size=256,
@@ -92,12 +94,63 @@ def build(tp, seq_parallel, seed=1234):
     return model, cfg
 
 
+def _build_mla(tp, seq_parallel):
+    """Small DeepSeek/GLM/Kimi-style MLA model: compressed q and kv paths."""
+    from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec as _spec_fn
+
+    cfg = MLATransformerConfig(
+        num_layers=2,
+        hidden_size=256,
+        num_attention_heads=8,
+        ffn_hidden_size=512,
+        use_cpu_initialization=False,
+        tensor_model_parallel_size=tp,
+        sequence_parallel=seq_parallel,
+        bf16=False,
+        params_dtype=torch.float32,
+        gated_linear_unit=True,
+        add_bias_linear=False,
+        normalization="RMSNorm",
+        pipeline_dtype=torch.float32,
+        multi_latent_attention=True,
+        q_lora_rank=64,
+        kv_lora_rank=32,
+        qk_head_dim=32,
+        qk_pos_emb_head_dim=16,
+        v_head_dim=32,
+        rotary_scaling_factor=1.0,
+        mscale=1.0,
+        mscale_all_dim=1.0,
+    )
+    spec = _spec_fn(num_experts=None, moe_grouped_gemm=False, multi_latent_attention=True)
+    model = GPTModel(
+        config=cfg,
+        transformer_layer_spec=spec,
+        vocab_size=512,
+        max_sequence_length=64,
+        pre_process=True,
+        post_process=True,
+    ).cuda()
+    return model, cfg
+
+
 class Args:
     lora_rank = 8
     lora_alpha = 16
     lora_dropout = 0.0
     lora_A_init_method = "xavier"
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    # MLA attention surface plus the same MLP targets as the dense case
+    mla_target_modules = [
+        "q_a_proj",
+        "q_b_proj",
+        "kv_a_proj_with_mqa",
+        "kv_b_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
     lora_provider_path = None
 
 
@@ -109,13 +162,20 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--tp", type=int, default=1)
     p.add_argument("--sp", action="store_true")
+    p.add_argument("--mla", action="store_true", help="build multi-latent attention instead of GQA")
     a = p.parse_args()
 
     dist.init_process_group("nccl")
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     ps.initialize_model_parallel(tensor_model_parallel_size=a.tp)
     model_parallel_cuda_manual_seed(1234)
-    label = f"TP{a.tp}{'+SP' if a.sp else ''}"
+    label = f"TP{a.tp}{'+SP' if a.sp else ''}{'+MLA' if a.mla else ''}"
+    if a.mla:
+        Args.target_modules = Args.mla_target_modules
+    # per-layer adapter modules and exported tensors
+    # MLA: q_a, q_b, kv_a, kv_b, o, fc1, fc2 -> 2+2+2+2+2+4+2 tensors
+    # GQA: qkv, o, fc1, fc2                   -> 6+2+4+2 tensors
+    n_mods_per_layer, n_tensors_per_layer = (7, 16) if a.mla else (4, 14)
 
     torch.manual_seed(7)
     b, s = 2, 16
@@ -124,7 +184,7 @@ def main():
     mask = torch.ones(b, 1, s, s, dtype=torch.bool, device="cuda").tril().logical_not()
 
     # ---- 1. fresh adapter is a no-op -------------------------------------
-    lora_model, _ = build(a.tp, a.sp)
+    lora_model, _ = build(a.tp, a.sp, mla=a.mla)
     lora_model.eval()
     with torch.no_grad():
         out_base = fwd(lora_model, tokens, pos, mask).clone()
@@ -136,9 +196,18 @@ def main():
     torch.manual_seed(31337)
     x_fc1 = torch.randn(4, 1, fc1_mod.weight.shape[1], device="cuda")
     x_fc2 = torch.randn(4, 1, fc2_mod.weight.shape[1], device="cuda")
+    mla_pre = {}
+    if a.mla:
+        attn0 = layer0.self_attention
+        kv_up, kv_down = attn0.linear_kv_up_proj, attn0.linear_kv_down_proj
+        mla_pre["x_kv"] = torch.randn(4, 1, kv_up.weight.shape[1], device="cuda")
+        mla_pre["x_h"] = torch.randn(4, 1, kv_down.weight.shape[1], device="cuda")
     with torch.no_grad():
         y0_fc1 = fc1_mod(x_fc1)[0].clone()
         y0_fc2 = fc2_mod(x_fc2)[0].clone()
+        if a.mla:
+            mla_pre["y0_kv_up"] = kv_up(mla_pre["x_kv"])[0].clone()
+            mla_pre["y0_kv_down"] = kv_down(mla_pre["x_h"])[0].clone()
 
     apply_native_lora(lora_model, Args())
     with torch.no_grad():
@@ -150,7 +219,8 @@ def main():
     )
 
     n_adapters = sum(1 for m in lora_model.modules() if isinstance(m, NativeLoRAAdapter))
-    check(f"{label} adapters attached", n_adapters == 2 * 4, f"count={n_adapters} (expect 8)")
+    expect_mods = 2 * n_mods_per_layer
+    check(f"{label} adapters attached", n_adapters == expect_mods, f"count={n_adapters} (expect {expect_mods})")
 
     trainable = [n for n, q in lora_model.named_parameters() if q.requires_grad]
     check(
@@ -203,9 +273,36 @@ def main():
     r2 = e2 / max(ref2.abs().max().item(), 1e-9)
     check(f"{label} row-parallel (fc2) delta == dense reference", r2 < 1e-5, f"max|d|={e2:.3e} rel={r2:.2e}")
 
+    if a.mla:
+        # kv_b_proj: column-parallel, and its input is the already-normed latent
+        # (kv_layernorm runs before it), so the branch must NOT recompute a norm.
+        attn0 = layer0.self_attention
+        ad_kvb, kv_up = attn0.lora_mla_kv_b_adapter, attn0.linear_kv_up_proj
+        with torch.no_grad():
+            got_kv = kv_up(mla_pre["x_kv"])[0] - mla_pre["y0_kv_up"]
+            xin = gather_cat(mla_pre["x_kv"], 0) if a.sp else mla_pre["x_kv"]
+            ref_kv = scale * F.linear(F.linear(xin, ad_kvb.b_A), ad_kvb.b_B)
+        e_kv = (got_kv - ref_kv).abs().max().item()
+        r_kv = e_kv / max(ref_kv.abs().max().item(), 1e-9)
+        check(f"{label} MLA kv_b_proj delta == dense reference", r_kv < 1e-5, f"max|d|={e_kv:.3e} rel={r_kv:.2e}")
+
+        # kv_a_proj_with_mqa: fully replicated, so no gather and no reduce.
+        ad_kva, kv_down = attn0.lora_mla_kv_a_adapter, attn0.linear_kv_down_proj
+        with torch.no_grad():
+            got_a = kv_down(mla_pre["x_h"])[0] - mla_pre["y0_kv_down"]
+            ref_a = scale * F.linear(F.linear(mla_pre["x_h"], ad_kva.a_A), ad_kva.a_B)
+        e_a = (got_a - ref_a).abs().max().item()
+        r_a = e_a / max(ref_a.abs().max().item(), 1e-9)
+        check(f"{label} MLA kv_a_proj delta == dense reference", r_a < 1e-5, f"max|d|={e_a:.3e} rel={r_a:.2e}")
+
     # ---- 3/4. export: agreement across TP + round-trip through load ------
     exported = export_lora_hf_named([lora_model])
-    check(f"{label} export covers all adapters", len(exported) == 2 * 14, f"n={len(exported)} (expect 28)")
+    expect_tensors = 2 * n_tensors_per_layer
+    check(
+        f"{label} export covers all adapters",
+        len(exported) == expect_tensors,
+        f"n={len(exported)} (expect {expect_tensors})",
+    )
 
     flat = torch.cat([t.float().reshape(-1) for _, t in exported])
     gathered = [torch.empty_like(flat) for _ in range(a.tp)]
@@ -227,7 +324,7 @@ def main():
     tmp = obj[0]
     dist.barrier()
 
-    fresh, _ = build(a.tp, a.sp)
+    fresh, _ = build(a.tp, a.sp, mla=a.mla)
     apply_native_lora(fresh, Args())
     # copy the base (non-adapter) weights so only the adapter differs
     base_state = {k: v for k, v in lora_model.state_dict().items() if "lora" not in k}
@@ -238,7 +335,7 @@ def main():
         f"missing={len(missing)} unexpected={len(unexpected)}",
     )
     n_loaded = load_lora_adapter_hf([fresh], tmp)
-    check(f"{label} load consumed every adapter tensor", n_loaded == 2 * 14, f"loaded={n_loaded}")
+    check(f"{label} load consumed every adapter tensor", n_loaded == expect_tensors, f"loaded={n_loaded}")
 
     max_d = 0.0
     for (n1, p1), (n2, p2) in zip(
@@ -262,7 +359,7 @@ def main():
     # ---- 5. gradients: nonzero, TP-consistent, and honor B's zero init ----
     # Fresh-adapter invariant: with B == 0, dL/dA == 0 and dL/dB != 0. Check that
     # first on a clean model, then check the general case on the randomized one.
-    fresh2, _ = build(a.tp, a.sp)
+    fresh2, _ = build(a.tp, a.sp, mla=a.mla)
     apply_native_lora(fresh2, Args())
     fresh2.train()
     fwd(fresh2, tokens, pos, mask).square().mean().backward()

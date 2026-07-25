@@ -16,6 +16,19 @@ gate_proj / up_proj          ``mlp.linear_fc1`` (fused ``[gate; up]``)   column-
 down_proj                    ``mlp.linear_fc2``                          row-parallel
 ===========================  ==========================================  ===============
 
+Multi-latent attention (DeepSeek / GLM / Kimi) is covered too, with its own
+projection set -- see ``_attach_mla_attention``:
+
+===========================  ==========================================  ===============
+target                       megatron module                             kind
+===========================  ==========================================  ===============
+q_a_proj                     ``self_attention.linear_q_down_proj``       replicated
+q_b_proj                     ``self_attention.linear_q_up_proj``         column-parallel
+q_proj (no q_lora_rank)      ``self_attention.linear_q_proj``            column-parallel
+kv_a_proj_with_mqa           ``self_attention.linear_kv_down_proj``      replicated
+kv_b_proj                    ``self_attention.linear_kv_up_proj``        column-parallel
+===========================  ==========================================  ===============
+
 ``mlp.shared_experts`` (a plain MLP) follows the same MLP targets. Routed MoE
 experts are deliberately out of scope here: their adapters need a serving-side
 layout contract of their own, so a MoE model supplies them through its own
@@ -29,6 +42,9 @@ Parallelism contract, mirroring the module each adapter wraps:
 * row-parallel: ``A`` is column-sharded to this rank's input slice and the
   partial products are TP-reduced (reduce-scatter under sequence parallelism);
   ``B`` is replicated, and its grads are TP-summed when sequence parallel.
+* replicated (MLA down-projections): both ``A`` and ``B`` are replicated, so their
+  grads only diverge per rank -- and therefore only need summing -- under sequence
+  parallelism, where each rank feeds a different sequence shard.
 
 Models whose modules diverge from plain mcore plug in their own implementation
 via ``--lora-provider-path``. A provider module must expose the three entry
@@ -52,9 +68,22 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
-# Adapter kinds. The wrapped module determines the sharding, so kinds map 1:1 to
-# the four rows of the table above.
+# Adapter kinds. The wrapped module determines the sharding, so each kind carries a
+# fixed sharding contract (see the tables above).
 _QKV, _O, _FC1, _FC2 = "qkv", "o", "fc1", "fc2"
+# MLA kinds: a replicated down-projection ("_A") feeding a column-parallel
+# up-projection ("_B"), plus the un-compressed query path when q_lora_rank is unset.
+_MLA_Q_A, _MLA_Q_B, _MLA_KV_A, _MLA_KV_B, _MLA_Q = "mla_q_a", "mla_q_b", "mla_kv_a", "mla_kv_b", "mla_q"
+
+# Column-parallel kinds: A is replicated but each rank holds only its slice of B, so
+# every rank computes a partial dL/dA and the true gradient is their sum over TP.
+# Row-parallel and replicated kinds: B (resp. both) is replicated and only differs per
+# rank under sequence parallelism, where each rank owns a different sequence shard.
+_COLUMN_PARALLEL_KINDS = frozenset({_QKV, _FC1, _MLA_Q_B, _MLA_KV_B, _MLA_Q})
+
+# MLA kind -> HF leaf name, split by how the adapter is sharded.
+_MLA_REPLICATED_HF = {_MLA_Q_A: "q_a_proj", _MLA_KV_A: "kv_a_proj_with_mqa"}
+_MLA_COLUMN_HF = {_MLA_Q_B: "q_b_proj", _MLA_KV_B: "kv_b_proj", _MLA_Q: "q_proj"}
 
 
 class NativeLoRAAdapter(nn.Module):
@@ -280,6 +309,127 @@ def _attach_attention(attn: nn.Module, hf_prefix: str, spec: _Spec) -> int:
     return n
 
 
+def _is_replicated_linear(module: nn.Module, full_out: int) -> bool:
+    """True when this linear holds the whole output dim (TELinear parallel_mode='duplicated')."""
+    if getattr(module, "parallel_mode", None) == "duplicated":
+        return True
+    return module.weight.shape[0] == full_out
+
+
+def _attach_mla_attention(attn: nn.Module, hf_prefix: str, spec: _Spec, config) -> int:
+    """Adapters on multi-latent attention (DeepSeek / GLM / Kimi style).
+
+    MLA has no fused qkv. The query and key/value paths each compress to a latent and
+    then expand, so the adapter surface is four projections plus the output one:
+
+    ==========================  ==============================  =================
+    target                      megatron module                 sharding
+    ==========================  ==============================  =================
+    q_a_proj                    ``linear_q_down_proj``          replicated
+    q_b_proj                    ``linear_q_up_proj``            column-parallel
+    kv_a_proj_with_mqa          ``linear_kv_down_proj``         replicated
+    kv_b_proj                   ``linear_kv_up_proj``           column-parallel
+    o_proj                      ``linear_proj``                 row-parallel
+    ==========================  ==============================  =================
+
+    When ``q_lora_rank`` is unset there is no compression on the query path and
+    ``linear_q_proj`` (column-parallel, straight from hidden) takes ``q_proj`` instead.
+
+    The latent layernorms (``q_layernorm`` / ``kv_layernorm``) are separate modules
+    applied *before* the up-projections, so an up-projection's adapter sees an
+    already-normed input and does not recompute anything -- unlike the fused-layernorm
+    linears on the GQA path.
+    """
+    from megatron.core import parallel_state as ps
+
+    n = 0
+    tp_rank = ps.get_tensor_model_parallel_rank()
+    heads_local = attn.num_attention_heads_per_partition
+    q_head_dim = attn.q_head_dim
+    v_head_dim = config.v_head_dim
+    kv_lora_rank = config.kv_lora_rank
+    kv_down_out = kv_lora_rank + config.qk_pos_emb_head_dim
+
+    def add_replicated(module, kind, hf_name, full_out):
+        """Down-projection: weight, A and B are all replicated across TP."""
+        assert _is_replicated_linear(module, full_out), (
+            f"native MLA LoRA expects a replicated {hf_name} (TELinear parallel_mode='duplicated'); "
+            f"this build shards it ({tuple(module.weight.shape)} vs full out {full_out}). "
+            "Use --lora-provider-path for this variant."
+        )
+        # Replicated on both sides, so a partial gradient only appears under sequence
+        # parallelism, where each rank feeds a different sequence shard.
+        tag = "tp" if spec.sequence_parallel else None
+        ad = NativeLoRAAdapter(kind, hf_prefix, tp_rank=tp_rank)
+        ad.register_parameter(
+            "a_A", _new_param(module.weight, (spec.rank, spec.hidden), init=spec.a_init, grad_sum_group=tag)
+        )
+        ad.register_parameter("a_B", _new_param(module.weight, (full_out, spec.rank), init="zero", grad_sum_group=tag))
+        setattr(attn, f"lora_{kind}_adapter", ad)
+
+        def delta(x, _m=module, _ad=ad):
+            return F.linear(F.linear(_dropout(x, spec, _m.training), _ad.a_A), _ad.a_B)
+
+        _wrap_forward(module, delta, spec.scale)
+        return 1
+
+    def add_column_parallel(module, kind, in_dim, out_local):
+        """Up-projection (or plain q_proj): A replicated, B sharded to this rank's heads."""
+        ad = NativeLoRAAdapter(kind, hf_prefix, out_local=out_local, tp_rank=tp_rank)
+        ad.register_parameter(
+            "b_A", _new_param(module.weight, (spec.rank, in_dim), init=spec.a_init, grad_sum_group="tp")
+        )
+        ad.register_parameter("b_B", _new_param(module.weight, (out_local, spec.rank), init="zero"))
+        setattr(attn, f"lora_{kind}_adapter", ad)
+
+        def delta(x, _m=module, _ad=ad):
+            # _branch_input handles the sequence-parallel gather; there is no fused
+            # layernorm on these modules, so nothing is recomputed.
+            return F.linear(F.linear(_branch_input(x, _m, spec), _ad.b_A), _ad.b_B)
+
+        _wrap_forward(module, delta, spec.scale)
+        return 1
+
+    if hasattr(attn, "linear_q_down_proj"):
+        if spec.wants("q_a_proj"):
+            n += add_replicated(attn.linear_q_down_proj, _MLA_Q_A, "q_a_proj", config.q_lora_rank)
+        if spec.wants("q_b_proj"):
+            n += add_column_parallel(attn.linear_q_up_proj, _MLA_Q_B, config.q_lora_rank, heads_local * q_head_dim)
+    elif spec.wants("q_proj") and hasattr(attn, "linear_q_proj"):
+        n += add_column_parallel(attn.linear_q_proj, _MLA_Q, spec.hidden, heads_local * q_head_dim)
+
+    if spec.wants("kv_a_proj_with_mqa"):
+        n += add_replicated(attn.linear_kv_down_proj, _MLA_KV_A, "kv_a_proj_with_mqa", kv_down_out)
+    if spec.wants("kv_b_proj"):
+        n += add_column_parallel(
+            attn.linear_kv_up_proj, _MLA_KV_B, kv_lora_rank, heads_local * (config.qk_head_dim + v_head_dim)
+        )
+
+    if spec.wants("o_proj"):
+        proj = attn.linear_proj
+        in_local = heads_local * v_head_dim
+        ad = NativeLoRAAdapter(_O, hf_prefix, in_local=in_local, tp_rank=tp_rank)
+        ad.register_parameter("o_A", _new_param(proj.weight, (spec.rank, in_local), init=spec.a_init))
+        ad.register_parameter(
+            "o_B",
+            _new_param(
+                proj.weight,
+                (spec.hidden, spec.rank),
+                init="zero",
+                grad_sum_group="tp" if spec.sequence_parallel else None,
+            ),
+        )
+        attn.lora_o_adapter = ad
+
+        def o_delta(x, _m=proj, _ad=ad):
+            partial = F.linear(_dropout(x, spec, _m.training), _ad.o_A)
+            return F.linear(_reduce_row_parallel(partial, spec), _ad.o_B)
+
+        _wrap_forward(proj, o_delta, spec.scale)
+        n += 1
+    return n
+
+
 def _attach_mlp(mlp: nn.Module, hf_prefix: str, spec: _Spec) -> int:
     """Adapters on a gated MLP: fused ``[gate; up]`` fc1 and row-parallel fc2."""
     from megatron.core import parallel_state as ps
@@ -343,24 +493,25 @@ def _assert_supported_architecture(config, model, tp_size: int = 1) -> None:
             "attention_output_gate=True (Qwen3.5 / Qwen3-Next): linear_qkv emits a 4th gate "
             "slice, so the per-projection row split here does not hold"
         )
-    if getattr(config, "multi_latent_attention", False):
-        unsupported.append("multi_latent_attention=True (MLA): q/kv down+up projections, not a fused qkv")
+    is_mla = bool(getattr(config, "multi_latent_attention", False))
     num_query_groups = getattr(config, "num_query_groups", None)
-    if num_query_groups is not None and num_query_groups < tp_size:
+    # The fused-qkv regime below is a GQA concern; MLA has no fused qkv to slice.
+    if not is_mla and num_query_groups is not None and num_query_groups < tp_size:
         # mcore re-gathers the full qkv and re-slices per group in this regime, so this
         # rank's weight rows are not a per-group slice of its own output.
         unsupported.append(
             f"num_query_groups ({num_query_groups}) < tensor parallel size ({tp_size}): mcore splits "
             "a single query group across ranks, so the local qkv rows are not a per-group slice"
         )
-    missing_qkv = [
-        layer.layer_number - 1
-        for layer in model.decoder.layers
-        if getattr(layer, "self_attention", None) is not None and not hasattr(layer.self_attention, "linear_qkv")
-    ]
-    if missing_qkv:
-        shown = f"{missing_qkv[:4]}{'...' if len(missing_qkv) > 4 else ''}"
-        unsupported.append(f"layers {shown} have no linear_qkv (linear-attention / GDN mixer)")
+    if not is_mla:
+        missing_qkv = [
+            layer.layer_number - 1
+            for layer in model.decoder.layers
+            if getattr(layer, "self_attention", None) is not None and not hasattr(layer.self_attention, "linear_qkv")
+        ]
+        if missing_qkv:
+            shown = f"{missing_qkv[:4]}{'...' if len(missing_qkv) > 4 else ''}"
+            unsupported.append(f"layers {shown} have no linear_qkv (linear-attention / GDN mixer)")
     assert not unsupported, (
         "native LoRA (--megatron-to-hf-mode raw) does not support this architecture: "
         + "; ".join(unsupported)
@@ -386,7 +537,10 @@ def apply_native_lora(model, args):
         hf_layer = f"model.layers.{layer.layer_number - 1}."
         attn = getattr(layer, "self_attention", None)
         if attn is not None:
-            wrapped += _attach_attention(attn, hf_layer + "self_attn.", spec)
+            if getattr(config, "multi_latent_attention", False):
+                wrapped += _attach_mla_attention(attn, hf_layer + "self_attn.", spec, config)
+            else:
+                wrapped += _attach_attention(attn, hf_layer + "self_attn.", spec)
 
         mlp = layer.mlp
         # A dense MLP, or the shared expert of an MoE layer: both are plain gated MLPs.
@@ -516,6 +670,15 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
         elif adapter.kind == _FC2:
             plan.append((f"{prefix}down_proj.lora_A.weight", gather.request(adapter.down_A, 1)))
             plan.append((f"{prefix}down_proj.lora_B.weight", adapter.down_B))  # replicated
+        elif adapter.kind in _MLA_REPLICATED_HF:
+            # Both sides replicated: nothing to gather.
+            hf = _MLA_REPLICATED_HF[adapter.kind]
+            plan.append((f"{prefix}{hf}.lora_A.weight", adapter.a_A))
+            plan.append((f"{prefix}{hf}.lora_B.weight", adapter.a_B))
+        elif adapter.kind in _MLA_COLUMN_HF:
+            hf = _MLA_COLUMN_HF[adapter.kind]
+            plan.append((f"{prefix}{hf}.lora_A.weight", adapter.b_A))  # replicated
+            plan.append((f"{prefix}{hf}.lora_B.weight", gather.request(adapter.b_B, 0)))
         else:
             raise ValueError(f"unknown adapter kind {adapter.kind}")
 
@@ -594,6 +757,15 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
                 cols = take(f"{prefix}down_proj.lora_A.weight")
                 copy_into(adapter.down_A, cols[:, tp_rank * inter : (tp_rank + 1) * inter])
                 copy_into(adapter.down_B, take(f"{prefix}down_proj.lora_B.weight"))
+            elif adapter.kind in _MLA_REPLICATED_HF:
+                hf = _MLA_REPLICATED_HF[adapter.kind]
+                copy_into(adapter.a_A, take(f"{prefix}{hf}.lora_A.weight"))
+                copy_into(adapter.a_B, take(f"{prefix}{hf}.lora_B.weight"))
+            elif adapter.kind in _MLA_COLUMN_HF:
+                hf, out_local = _MLA_COLUMN_HF[adapter.kind], meta["out_local"]
+                copy_into(adapter.b_A, take(f"{prefix}{hf}.lora_A.weight"))
+                rows_full = take(f"{prefix}{hf}.lora_B.weight")
+                copy_into(adapter.b_B, rows_full[tp_rank * out_local : (tp_rank + 1) * out_local])
             else:
                 raise ValueError(f"unknown adapter kind {adapter.kind}")
     logger.info("[lora-native] loaded %d adapter tensors from %s", loaded, adapter_path)
