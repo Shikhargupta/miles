@@ -7,11 +7,11 @@ are exported under HF/PEFT names and shipped to SGLang with the same adapter syn
 the bridge path uses, so a run here exercises the whole loop: frozen base +
 adapter grads, TP/EP grad summation, adapter-only weight sync, and LoRA serving.
 
-Qwen3-8B / Qwen3-4B are dense GQA models (32 heads, 8 query groups) with a SwiGLU
-MLP, which is exactly the layout the generic implementation covers. TP2 with
-sequence parallelism is the interesting configuration: it exercises both the
-column-parallel (A replicated, B row-sharded) and row-parallel (A col-sharded,
-B replicated) grad-summation paths.
+Qwen3-8B / Qwen3-4B / Qwen3-0.6B are dense GQA models with a SwiGLU MLP, which is
+exactly the layout the generic implementation covers. TP2 with sequence parallelism
+is the interesting configuration: it exercises both the column-parallel (A
+replicated, B row-sharded) and row-parallel (A col-sharded, B replicated)
+grad-summation paths. Qwen3-0.6B on 2 GPUs is the cheapest end-to-end check.
 
 Note on Qwen3.5: those checkpoints set ``attention_output_gate`` (linear_qkv emits a
 4th gate slice) and the 35B-A3B is a GDN hybrid, so neither fits the generic fused-qkv
@@ -36,13 +36,14 @@ app = typer.Typer()
 _MEGATRON_MODEL_TYPE = {
     "Qwen3-8B": "qwen3-8B",
     "Qwen3-4B": "qwen3-4B",
+    "Qwen3-0.6B": "qwen3-0.6B",  # cheapest config that still exercises the whole loop
 }
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
-    model_name: Literal["Qwen3-8B", "Qwen3-4B"] = "Qwen3-8B"
+    model_name: Literal["Qwen3-8B", "Qwen3-4B", "Qwen3-0.6B"] = "Qwen3-8B"
     task: Literal["gsm8k", "dapo-math"] = "gsm8k"
 
     hf_checkpoint: str | None = None
