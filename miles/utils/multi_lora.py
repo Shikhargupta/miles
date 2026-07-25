@@ -46,6 +46,25 @@ def define_new_adapter_metrics(snapshot: dict) -> None:
         define_step_key_metric_group(prefix=f"{name}/perf", step_key="rollout/step")
 
 
+# MLP leaf names match both the dense MLP and the MoE experts, so their presence
+# in target_modules is the signal that adapters may land inside the experts.
+_EXPERT_LEAF_NAMES = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
+# Bulk selectors that expand to include those leaves. "all-linear" is expanded to
+# concrete names during argument validation, but "all" is only resolved later by
+# the target-module conversion, so match it here too.
+_ALL_MODULE_ALIASES = ("all", "all-linear", "all_linear")
+
+
+def targets_expert_leaves(target_modules: Any) -> bool:
+    """Whether ``target_modules`` can put adapters on MoE expert linears."""
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+    entries = [str(tm) for tm in (target_modules or [])]
+    if any(entry.strip().lower() in _ALL_MODULE_ALIASES for entry in entries):
+        return True
+    return any(leaf in entry for entry in entries for leaf in _EXPERT_LEAF_NAMES)
+
+
 def validate_multi_lora_args(args: Any) -> None:
     """Set ``args.multi_lora``, then validate and default the multi-LoRA arg
     surface. Called from ``miles_validate_args``; a no-op for normal runs."""
@@ -68,6 +87,39 @@ def validate_multi_lora_args(args: Any) -> None:
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
+    # Multi-LoRA expert adapters use the per-expert layout only: every slot shares
+    # one max-rank buffer and an adapter's tensors are all sliced to a single rank,
+    # which the shared-outer layout's [1, r, dim] outer weights do not fit. Without
+    # this check --experts-shared-outer-loras still forces
+    # --sglang-experts-shared-outer-loras, so serving would expect a layout training
+    # never produces.
+    # Enforced at launch rather than only when the weight-sync mixin is built, and
+    # load-bearing beyond sync: per-forward adapter routing is read from state set
+    # before the forward, which an activation recompute only sees correctly while
+    # no later micro-batch's forward has run in between — true without pipelining.
+    assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
+        "Multi-LoRA requires --pipeline-model-parallel-size 1: no single rank holds a "
+        "complete adapter to push to the rollout engines, and a pipelined schedule would "
+        "recompute activations against a later micro-batch's adapter routing."
+    )
+    # Per-slot token spans address the micro-batch flattened the way Megatron
+    # flattens hidden states, which is sequence-major. Only 'thd' packs samples
+    # end-to-end so that sorting samples by slot makes each slot's tokens
+    # contiguous there; with 'bshd' the [b, s] batch interleaves samples in that
+    # flattening and every slot's span would cover the wrong tokens.
+    assert getattr(args, "qkv_format", "thd") == "thd", (
+        "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
+        f"micro-batch packs samples contiguously, which bshd does not (got {args.qkv_format!r})."
+    )
+    assert not getattr(args, "experts_shared_outer_loras", False), (
+        "Multi-LoRA does not support --experts-shared-outer-loras; MoE expert adapters "
+        "use the per-expert layout. Drop the flag (and --sglang-experts-shared-outer-loras)."
+    )
+    # Expert-parallel sizes are NOT validated here: --expert-tensor-parallel-size
+    # defaults to None and Megatron only resolves it to tensor_model_parallel_size
+    # in its own validate_args, which runs after this. Those checks live in
+    # _validate_multi_lora_moe_support, where the provider values are concrete and
+    # the model is known to be MoE.
     assert "muon" not in str(getattr(args, "optimizer", "")).lower(), (
         "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "
         "implemented for Adam-family per-slot optimizers"

@@ -6,15 +6,18 @@ forward / backward / optimizer logic.
 
 from __future__ import annotations
 
+import logging
 from argparse import Namespace
 from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.utils.hf_config import load_hf_config
-from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
-from .lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
+from .lora_utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,6 +69,67 @@ def _get_model_config_from_wrapped(model):
     return get_attr_wrapped_model(model, "config", allow_none=False)
 
 
+def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
+    """Reject MoE configs the multi-slot grouped-expert adapter cannot serve.
+
+    These depend on the resolved Megatron config rather than the CLI, so they are
+    checked here instead of in ``validate_multi_lora_args``. Each would otherwise
+    fail deep in the first forward, or — for a non-grouped expert implementation
+    — silently leave the experts without adapters.
+    """
+    if not getattr(provider, "num_moe_experts", None):
+        return
+    if not targets_expert_leaves(args.target_modules):
+        logger.info("[multilora] MoE model with no expert leaves in --target-modules; experts stay frozen")
+        return
+
+    # Checked against the provider rather than the CLI: --expert-tensor-parallel-size
+    # defaults to None and is only resolved to tensor_model_parallel_size later, so a
+    # launch-time check on args would reject runs that simply omit the flag.
+    expert_tp = getattr(provider, "expert_tensor_parallel_size", 1) or 1
+    assert expert_tp == 1, (
+        f"Multi-LoRA on MoE experts requires expert_tensor_parallel_size=1 (resolved to "
+        f"{expert_tp}): expert TP would shard the adapter rank axis and need ETP collectives "
+        f"between the two adapter GEMMs, which the multi-slot grouped-expert layer does not "
+        f"implement. Set --expert-tensor-parallel-size 1."
+    )
+    assert getattr(provider, "moe_grouped_gemm", False), (
+        "Multi-LoRA on MoE experts requires a grouped expert implementation "
+        "(moe_grouped_gemm=True). With SequentialMLP the per-expert linears are skipped, "
+        "so the experts would train no adapter at all."
+    )
+    assert not getattr(provider, "fp8", None) and not getattr(provider, "fp4", None), (
+        "Multi-LoRA on MoE experts does not support fp8/fp4 expert quantization: the grouped "
+        "MLP pads its input to the quantization alignment, which desynchronizes the dispatched "
+        "token order the adapter's slot routing is built from."
+    )
+    # sglang applies the expert LoRA delta after gate_up and after down together, so
+    # it wraps a fused MoE layer only when both projections are served. Training just
+    # one of them would leave those expert weights loaded and never applied — the
+    # rollout policy would silently differ from the trained one.
+    served = set(convert_target_modules_to_hf(list(args.target_modules)))
+    expert_pair = {"gate_proj", "up_proj", "down_proj"}
+    if served & expert_pair:
+        assert expert_pair <= served, (
+            f"Multi-LoRA on MoE experts requires all of {sorted(expert_pair)} in "
+            f"--target-modules (got {sorted(served & expert_pair)}): sglang cannot apply an "
+            f"expert delta for only one of the two expert projections, so the missing side's "
+            f"trained weights would be dropped at rollout time."
+        )
+    assert not getattr(provider, "moe_pad_expert_input_to_capacity", False), (
+        "Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity "
+        "(the drop-and-pad dispatch path has no slot-routing implementation)."
+    )
+    # Set above, before finalize(); assert here so a provider default that survives
+    # (or a future finalize that re-enables it) fails at build time rather than
+    # silently mis-routing every expert token.
+    assert not getattr(provider, "moe_permute_fusion", False), (
+        "Multi-LoRA on MoE experts requires moe_permute_fusion=False: the fused permute "
+        "records a row_id_map instead of a token gather index, so expert adapters cannot "
+        "follow the dispatcher's permutation."
+    )
+
+
 def _setup_lora_model_via_bridge(args: Namespace) -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
@@ -104,6 +168,17 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
+        # Multi-LoRA expert adapters follow the dispatcher's token permutation, and
+        # the fused permute records TE's row_id_map instead of a token gather index
+        # (so the adapter cannot replay it). Most bridge MoE providers default this
+        # on — e.g. Qwen3-MoE — so turn it off here rather than refusing to build.
+        if getattr(provider, "moe_permute_fusion", False):
+            logger.info(
+                "[multilora] disabling moe_permute_fusion: expert adapters replay the "
+                "dispatcher's permutation, which the fused kernel does not expose"
+            )
+        provider.moe_permute_fusion = False
     if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
@@ -113,6 +188,8 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.finalize()
 
     if is_multi_lora_enabled(args):
+        _validate_multi_lora_moe_support(args, provider)
+
         from miles.backends.megatron_utils.multi_lora_utils import create_multi_lora_instance
 
         lora = create_multi_lora_instance(args)

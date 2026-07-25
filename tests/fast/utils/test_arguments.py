@@ -251,6 +251,43 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
             miles_validate_args(args)
 
+    def test_rejects_pipeline_parallelism(self):
+        # No single rank holds a complete adapter to push, and a pipelined schedule
+        # would recompute activations against a later micro-batch's adapter routing.
+        args = self._parse([])
+        args.pipeline_model_parallel_size = 2
+        with pytest.raises(AssertionError, match="pipeline-model-parallel-size 1"):
+            miles_validate_args(args)
+
+    def test_rejects_bshd_qkv_format(self):
+        # Per-slot token spans address the micro-batch as Megatron flattens hidden
+        # states (sequence-major); a [b, s] batch interleaves samples there, so every
+        # span would cover the wrong tokens.
+        args = self._parse([])
+        args.qkv_format = "bshd"
+        with pytest.raises(AssertionError, match="qkv-format thd"):
+            miles_validate_args(args)
+
+    def test_rejects_shared_outer_expert_loras(self):
+        # Multi-LoRA expert adapters are per-expert only; the flag would otherwise
+        # still switch sglang to a layout training never produces.
+        args = self._parse([])
+        args.experts_shared_outer_loras = True
+        with pytest.raises(AssertionError, match="experts-shared-outer-loras"):
+            miles_validate_args(args)
+
+    def test_accepts_expert_leaf_targets_without_expert_tp_flag(self):
+        # --expert-tensor-parallel-size defaults to None and is only resolved to
+        # tensor_model_parallel_size by Megatron's own validate_args, which runs
+        # after this. Comparing the raw value here rejected every run that simply
+        # omitted the flag, including dense ones.
+        args = self._parse(["--target-modules", "gate_proj,up_proj,down_proj"])
+        args.expert_tensor_parallel_size = None
+
+        miles_validate_args(args)
+
+        assert args.multi_lora is True
+
 
 class TestResolveFtComponents:
     def test_disabled_with_no_components_returns_empty_without_warning(self, caplog) -> None:
