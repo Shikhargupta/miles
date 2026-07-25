@@ -17,8 +17,10 @@ import copy
 import json
 
 import pytest
+from sglang.srt.entrypoints.openai import encoding_dsv32 as upstream
 
 from miles.utils.chat_template_utils import apply_chat_template, deepseek
+from miles.utils.chat_template_utils.templates import encoding_dsv32 as vendored
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
@@ -43,9 +45,7 @@ def _tok_with_model_type(tmp_path, model_type: str) -> _FakeTokenizer:
 def _reference_encode(messages, *, thinking: bool = False, drop_thinking: bool = True) -> str:
     """The canonical V3.2 rendering: a direct ``encode_messages`` call. Locks
     ``render_messages`` to this thin-bridge contract (no preprocessing of its own)."""
-    from miles.utils.chat_template_utils.templates import encoding_dsv32
-
-    return encoding_dsv32.encode_messages(
+    return vendored.encode_messages(
         messages, thinking_mode="thinking" if thinking else "chat", drop_thinking=drop_thinking
     )
 
@@ -250,8 +250,6 @@ _UPSTREAM_PARITY_SCENARIOS = {
 @pytest.mark.parametrize("scenario", list(_UPSTREAM_PARITY_SCENARIOS), ids=list(_UPSTREAM_PARITY_SCENARIOS))
 @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
 def test_drop_thinking_true_matches_upstream_sglang(scenario, thinking):
-    from sglang.srt.entrypoints.openai import encoding_dsv32 as upstream
-
     messages = _UPSTREAM_PARITY_SCENARIOS[scenario]
     thinking_mode = "thinking" if thinking else "chat"
     assert _reference_encode(messages, thinking=thinking, drop_thinking=True) == upstream.encode_messages(
@@ -262,10 +260,6 @@ def test_drop_thinking_true_matches_upstream_sglang(scenario, thinking):
 def test_drop_thinking_true_raise_parity_with_upstream():
     # thinking mode + a post-last-user assistant without reasoning_content or
     # tool_calls raises upstream; the vendored copy keeps that contract.
-    from sglang.srt.entrypoints.openai import encoding_dsv32 as upstream
-
-    from miles.utils.chat_template_utils.templates import encoding_dsv32 as vendored
-
     bad = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
     with pytest.raises(vendored.DS32EncodingError):
         vendored.encode_messages(bad, thinking_mode="thinking", drop_thinking=True)
