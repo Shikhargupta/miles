@@ -48,7 +48,6 @@ def router_env():
                 chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                tito_allowed_append_roles=["tool"],
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
             )
@@ -154,6 +153,39 @@ class TestSessionProxy:
         )
         assert resp.status_code == 400
         assert resp.json()["error"].startswith("invalid JSON body:")
+
+    @pytest.mark.parametrize(
+        "request_kwargs",
+        [
+            {"enable_thinking": True},
+            {"unknown": False},
+        ],
+        ids=["conflicting", "unknown"],
+    )
+    def test_chat_rejects_template_kwargs_outside_server_contract(self, router_env, request_kwargs):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        resp = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": request_kwargs,
+            },
+            timeout=10.0,
+        )
+        assert resp.status_code == 400
+        assert "chat_template_kwargs must match the TITO FixedTemplate contract" in resp.json()["error"]
+
+    def test_chat_accepts_template_kwargs_matching_server_contract(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        resp = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
 
     def test_chat_upstream_null_message_returns_502(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]

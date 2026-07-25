@@ -14,50 +14,53 @@ Your harness only ever sends and receives **OpenAI chat messages**, never tokens
 Your rollout loop must keep two invariants, or TITO is rejected at runtime:
 
 - **Append-only messages.** Each turn = previous messages + new ones on the tail; past turns are never edited. The only exception is retrying the latest turn — a single-step rollback to the last assistant checkpoint. Diverging earlier, or rolling back more than one turn, is rejected.
-- **Declared roles match the flag.** `--tito-allowed-append-roles` must list exactly the roles your harness appends after the first assistant turn (`tool` is always implied) — Miles resolves a prefix-stable template for that exact set, and appending any role outside it is rejected at runtime.
+- **Appended roles fit the fixed template.** `--tito-model` selects a family whose `FixedTemplate.allowed_append_roles` declares which of `tool`, `user`, `system`, and `assistant` may be appended. The default capability is all four roles; a family narrows it only when its fixed renderer cannot preserve a role append-only. Appending an unsupported role is rejected at runtime.
 
 ## Pick your `--tito-model`
 
-No auto-detection — pick the family matching your model. Miles then auto-resolves the fixed template from `(--tito-model, --tito-allowed-append-roles)`; pass `--chat-template-path` only to override. The table below lists common models; the full set and verified role surfaces live in [issue #712](https://github.com/radixark/miles/issues/712).
+No auto-detection — pick the family matching your model. For every family, Miles resolves one `FIXED_TEMPLATE` registration from `--tito-model` alone. The registration owns the bundled Jinja template (or HuggingFace-native template), fixed kwargs, and append-role capability. A non-default family rejects `--chat-template-path` overrides and conflicting fixed kwargs; use `--tito-model default` for a custom renderer.
 
-| Your model | `--tito-model` | Max `--tito-allowed-append-roles` |
-|---|---|---|
-| Qwen3 | `qwen3` | `tool user` |
-| Qwen3.5 | `qwen35` | `tool user` |
-| GLM-4.7 / GLM-5 | `glm47` | `tool user system` |
-| NVIDIA Nemotron 3 Super / Ultra | `nemotron3` | `tool user system` |
-| Kimi K2.5 / K2.6 | `kimi25` / `kimi26` | `tool user` |
-| DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` | `tool` |
-| anything else | `default` | `tool` |
+| Your model | `--tito-model` | `tool` | `user` | `system` | `assistant` |
+|---|---|---|---|---|---|
+| Qwen3 | `qwen3` | ✅ | ✅ | ✅ | ✅ |
+| Qwen3.5 | `qwen35` | ✅ | ✅ | ❌ | ✅ |
+| Qwen3-Next | `qwennext` | ✅ | ✅ | ✅ | ✅ |
+| GLM-4.7 / GLM-5 | `glm47` | ✅ | ✅ | ✅ | ✅ |
+| NVIDIA Nemotron 3 Super / Ultra | `nemotron3` | ✅ | ✅ | ✅ | ✅ |
+| Kimi K2.5 / K2.6 | `kimi25` / `kimi26` | ✅ | ✅ | ✅ | ✅ |
+| MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` | ✅ | ✅ | ❌ | ✅ |
+| DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` | ✅ | ✅ | ✅ | ✅ |
+| anything else | `default` | ✅ | ✅ | ✅ | ✅ |
 
-More models: [issue #712](https://github.com/radixark/miles/issues/712).
+`allowed_append_roles` defaults to the maximal four-role surface. That default is a capability claim, not proof that an arbitrary native template is prefix-stable: verify the selected model, and explicitly narrow the family registration when a role is known not to work. More models and verification history live in [issue #712](https://github.com/radixark/miles/issues/712).
 
 ## Turn it on
 
 ```bash
 ROLLOUT_ARGS+=(
-   --use-session-server          # entry point; required for the two flags below
+   --use-session-server          # entry point for TITO session tracking
    --hf-checkpoint Qwen/Qwen3-4B
    --tito-model qwen3
-   --tito-allowed-append-roles tool user
 )
 ```
 
 ## Example
 
-A full multi-turn agentic setup on the session-server TITO path lives in [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2): its launchers wire `--use-session-server` + `--tito-model glm47` + `--tito-allowed-append-roles user tool` against a real SWE agent.
+A full multi-turn agentic setup on the session-server TITO path lives in [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
 
 ## Add a new model
 
-Models in the table are verified by Miles maintainers — just pick the family. To support a new model (or a new append-role surface), register a `TITOTokenizer` subclass plus its fixed Jinja template (or HF-native + kwargs) and `SUPPORTED_TEMPLATES` rows in [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py), then verify with both scripts — either failing blocks it. Each prints `Verdict: PASS/FAIL`.
+Models in the table are verified by Miles maintainers — just pick the family. To support a new model, register a `TITOTokenizer` subclass plus one `FIXED_TEMPLATE` containing its fixed Jinja path or HuggingFace-native kwargs in [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py). Its append capability starts with all four roles; narrow `allowed_append_roles` on that same registration only when verification proves a restriction.
+
+The CPU CLI derives its trajectory surface from the family registration and covers non-assistant `tool`, `user`, and `system` appends. Dedicated family CPU tests cover injected assistant input, and the GPU session verifier derives the same capability for real inference. Run both scripts below — either failing blocks the model. Each prints `Verdict: PASS/FAIL`.
 
 ```bash
 # CPU / fast — rendered token sequence is append-only
 python scripts/tools/verify_chat_template.py \
-    --model <hf-id> --tito-model <family> --tito-allowed-append-roles tool user
+    --model <hf-id> --tito-model <family>
 
 # GPU / e2e — still holds under real model inference
 python scripts/tools/verify_session_tito_tokenizer.py \
-    --hf-checkpoint <hf-id> --tito-model <family> --tito-allowed-append-roles tool user \
+    --hf-checkpoint <hf-id> --tito-model <family> \
     --sglang-reasoning-parser <rp> --sglang-tool-call-parser <tcp> --rollout-num-gpus-per-engine 1
 ```

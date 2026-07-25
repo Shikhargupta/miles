@@ -175,14 +175,26 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
-            # Chat template kwargs should also be forwarded to sglang to make sure
-            # parsers work correctly.
+            # Local TITO rendering and SGLang must use the same kwargs or their
+            # token streams can diverge.  Per-request overrides are therefore
+            # limited to repeating the already-fixed server values.
             server_ctk = self.registry.tito_tokenizer.chat_template_kwargs
+            request_ctk = request_body.get("chat_template_kwargs") or {}
+            if not isinstance(request_ctk, dict):
+                raise MessageValidationError("chat_template_kwargs must be an object")
+            unknown_keys = set(request_ctk) - set(server_ctk)
+            conflicting_keys = {
+                key for key in request_ctk.keys() & server_ctk.keys() if request_ctk[key] != server_ctk[key]
+            }
+            if unknown_keys or conflicting_keys:
+                raise MessageValidationError(
+                    "chat_template_kwargs must match the TITO FixedTemplate contract; "
+                    f"unknown keys={sorted(unknown_keys)}, conflicting keys={sorted(conflicting_keys)}"
+                )
             if server_ctk:
-                request_body["chat_template_kwargs"] = {
-                    **server_ctk,
-                    **(request_body.get("chat_template_kwargs") or {}),
-                }
+                request_body["chat_template_kwargs"] = dict(server_ctk)
+            else:
+                request_body.pop("chat_template_kwargs", None)
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(

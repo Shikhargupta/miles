@@ -98,7 +98,7 @@ def optimizer_args() -> str:
 
 
 def agent_args(tito_model: str) -> str:
-    """Agentic-rollout wiring. Only the TITO surface differs across models."""
+    """Agentic-rollout wiring. Only the selected TITO family differs across models."""
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path openenv_agent_function.run "
@@ -107,7 +107,6 @@ def agent_args(tito_model: str) -> str:
         f"--tito-model {tito_model} "
         "--use-session-server "
         "--session-server-port 30000 "
-        "--tito-allowed-append-roles user tool "
     )
 
 
