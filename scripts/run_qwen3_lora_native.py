@@ -13,6 +13,12 @@ is the interesting configuration: it exercises both the column-parallel (A
 replicated, B row-sharded) and row-parallel (A col-sharded, B replicated)
 grad-summation paths. Qwen3-0.6B on 2 GPUs is the cheapest end-to-end check.
 
+Qwen3-30B-A3B is included as a MoE case, but note the coverage: every one of its 48
+layers is a pure routed-MoE block (no dense MLP, no shared expert), so only attention
+(q/k/v/o) gets adapters there. Routed-expert adapters are out of scope for the generic
+provider -- pass ``--target-modules "q_proj,k_proj,v_proj,o_proj"`` so the trainer and
+the engine agree on exactly which modules carry an adapter.
+
 Note on Qwen3.5: those checkpoints set ``attention_output_gate`` (linear_qkv emits a
 4th gate slice) and the 35B-A3B is a GDN hybrid, so neither fits the generic fused-qkv
 layout — native LoRA rejects them with a pointer to ``--lora-provider-path``. Use
@@ -37,13 +43,18 @@ _MEGATRON_MODEL_TYPE = {
     "Qwen3-8B": "qwen3-8B",
     "Qwen3-4B": "qwen3-4B",
     "Qwen3-0.6B": "qwen3-0.6B",  # cheapest config that still exercises the whole loop
+    "Qwen3-30B-A3B": "qwen3-30B-A3B",  # MoE: attention-only coverage, see the note below
 }
+
+# TP must stay <= num_query_groups: below that mcore splits a query group across ranks
+# and the local qkv rows stop being a per-group slice, which native LoRA rejects.
+_NUM_QUERY_GROUPS = {"Qwen3-8B": 8, "Qwen3-4B": 8, "Qwen3-0.6B": 8, "Qwen3-30B-A3B": 4}
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
-    model_name: Literal["Qwen3-8B", "Qwen3-4B", "Qwen3-0.6B"] = "Qwen3-8B"
+    model_name: Literal["Qwen3-8B", "Qwen3-4B", "Qwen3-0.6B", "Qwen3-30B-A3B"] = "Qwen3-8B"
     task: Literal["gsm8k", "dapo-math"] = "gsm8k"
 
     hf_checkpoint: str | None = None
@@ -59,6 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # LoRA. target modules are HF leaf names; the native path maps them onto the
     # fused megatron modules (q/k/v -> linear_qkv, gate/up -> linear_fc1, ...).
+    lr: float = 1e-5
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
@@ -90,7 +102,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.torch_dist is None:
             self.torch_dist = f"{self.model_dir}/{self.model_name}_torch_dist"
         if self.rollout_max_response_len == 0:
-            self.rollout_max_response_len = 4096 if self.task == "dapo-math" else 512
+            # Qwen3 checkpoints think before answering; a response truncated inside
+            # <think> never reaches \boxed{} and scores 0, so leave room to finish.
+            self.rollout_max_response_len = 4096 if self.task == "dapo-math" else 2048
 
     @property
     def megatron_model_type(self) -> str:
@@ -100,11 +114,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def _get_parallel_config(args: ScriptArgs) -> str:
     """TP with sequence parallelism, DP over the remaining GPUs.
 
-    TP must stay <= num_query_groups (8 for these checkpoints): below that mcore
-    splits a query group across ranks and the local qkv rows stop being a clean
-    per-group slice, which native LoRA rejects.
+    TP must stay <= num_query_groups (see _NUM_QUERY_GROUPS).
     """
-    assert args.tensor_model_parallel_size <= 8, "Qwen3 dense has num_query_groups=8; native LoRA needs TP <= 8"
+    groups = _NUM_QUERY_GROUPS[args.model_name]
+    assert args.tensor_model_parallel_size <= groups, (
+        f"{args.model_name} has num_query_groups={groups}; native LoRA needs TP <= {groups}"
+    )
     perf = (
         f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
         "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
@@ -183,7 +198,8 @@ def _train(args: ScriptArgs):
     grpo_args = "--advantage-estimator grpo --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
     optimizer_args = (
-        "--optimizer adam --lr 1e-5 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
+        f"--optimizer adam --lr {args.lr} --lr-decay-style constant "
+        "--weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
     )
 
     perf_args = _get_parallel_config(args)
