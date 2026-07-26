@@ -8,7 +8,6 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
-from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -191,12 +190,3 @@ class RolloutExecutor:
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
-
-    # -------------------------- utils -----------------------------
-
-    @property
-    def _server(self) -> RolloutServer | None:
-        """Default server (first model).  For backward compatibility."""
-        if not self.servers:
-            return None
-        return next(iter(self.servers.values()))

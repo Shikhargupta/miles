@@ -155,6 +155,13 @@ class InferenceController:
         for monitor in self._health_monitors:
             monitor.resume()
 
+    @property
+    def _server(self) -> RolloutServer | None:
+        """Default server (first model).  For backward compatibility."""
+        if not self.servers:
+            return None
+        return next(iter(self.servers.values()))
+
     # TODO will be replaced by full ft, thus temporarily leave it without modifications
     async def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
