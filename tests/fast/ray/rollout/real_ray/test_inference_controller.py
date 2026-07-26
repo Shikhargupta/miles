@@ -1,15 +1,3 @@
-"""``InferenceController`` cell dispatch + ``EnginesAndLock`` flow driven through
-the production ``InferenceController`` class.
-
-We instantiate ``InferenceController.__ray_actor_class__`` directly (the raw
-Python class behind ``@ray.remote``) — that keeps the controller in the test
-process so ``monkeypatch`` reaches its dependencies, while the engines it spawns
-are still real Ray actors (mocks). Methods are ``async`` and called with
-``await``.
-
-The rollout-data side lives in
-``tests/fast/ray/rollout/real_ray/test_rollout_executor.py``."""
-
 from __future__ import annotations
 
 import asyncio
@@ -25,11 +13,6 @@ from miles.ray.rollout.inference_controller import InferenceController
 
 @pytest.fixture
 def patch_low_level(monkeypatch):
-    """Replace, in the test process:
-    - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks.
-    - addr allocator → deterministic stub.
-    - ``configure_logger`` / ``init_http_client`` / ``start_session_server`` →
-      no-ops (the production defaults touch logging files / network)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_group as sg
@@ -37,8 +20,6 @@ def patch_low_level(monkeypatch):
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     monkeypatch.setattr(sg, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
-    # multi-model tests would otherwise spawn a real router subprocess for
-    # ``model_idx > 0`` (force_new=True bypasses the args.sglang_router_ip cache).
     monkeypatch.setattr(
         rsrv,
         "start_router",
@@ -72,9 +53,6 @@ def _make_controller(args, pg):
 
 
 def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
-    """Write a multi-model sglang yaml — each entry ``(name, update_weights)``.
-    Each model gets one regular group with 2 engines × 1 GPU = 2 GPUs. With N
-    models, total GPUs = 2N; ``args.rollout_num_gpus`` must match."""
     lines = ["sglang:"]
     for name, update_weights in models:
         lines.extend(
@@ -93,18 +71,13 @@ def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
 
 
 def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
-    """Build args that drive ``InferenceController.__init__`` →
-    ``start_rollout_servers`` → N model servers each with 1 group of 2 mock
-    engines."""
     cfg = _write_sglang_config(tmp_path, models=models)
     rollout_num_gpus = 2 * len(models)
     return make_args(
         sglang_config=cfg,
         rollout_num_gpus=rollout_num_gpus,
-        # short-circuit start_router (returns early when ip+port already set)
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
-        # disable everything else that would spawn subprocesses or hit network
         use_session_server=False,
         use_fault_tolerance=False,
         use_wandb=False,
@@ -138,9 +111,7 @@ class TestInferenceControllerInit:
         tmp_path,
         patch_low_level,
     ):
-        """End-to-end smoke: production ``__init__`` + ``start_rollout_servers``
-        runs against MockSGLangEngine; resulting engines are reachable as Ray
-        actor handles via the public ``get_updatable_engines_and_lock``."""
+        """Production __init__ brings up mock engines reachable as Ray actor handles."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -161,8 +132,7 @@ class TestGetRouterInfo:
         tmp_path,
         patch_low_level,
     ):
-        """``get_router_info`` is how the driver learns the router the controller
-        ended up with, so it can pass it to the executor actor."""
+        """get_router_info reports the router address and the per-model routers."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
@@ -180,8 +150,7 @@ class TestGetRouterInfo:
         tmp_path,
         patch_low_level,
     ):
-        """With ``debug_train_only`` no servers exist, so there is nothing to
-        route to — the driver must still receive a usable RouterInfo."""
+        """debug_train_only has no servers, so there are no per-model routers to report."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         args.debug_train_only = True
         pg = placement_group_factory(2)
@@ -221,8 +190,7 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """stop_cell(0) → start_cell(0) drives a real ``recover()`` that spawns
-        a fresh mock actor in place of the killed one."""
+        """start_cell after stop_cell recovers the slot with a fresh actor."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -246,8 +214,7 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """``stop_cell(1)`` (not 0) must kill engine 1, leaving engine 0 alive —
-        guards against off-by-one in ``get_cell_indexer_of_id_map``."""
+        """stop_cell(1) kills engine 1 only, guarding against an off-by-one in the cell indexer."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -267,8 +234,7 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """Calling ``stop_cell(0)`` twice does not raise — production code logs
-        and proceeds when the engine is already de-allocated."""
+        """Stopping an already stopped cell does not raise."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -288,9 +254,7 @@ class TestCellDispatchAcrossModels:
         tmp_path,
         patch_low_level,
     ):
-        """Cells are flattened in sorted-srv-key order: with models ("actor",
-        "ref") the cells map (0,1)→actor, (2,3)→ref. Stopping cell 2 must hit
-        ref's first engine and leave actor's engines untouched."""
+        """Cell ids are flattened in sorted-srv-key order, so cell 2 belongs to the second model."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
@@ -300,10 +264,8 @@ class TestCellDispatchAcrossModels:
 
         await controller.stop_cell(2)
 
-        # actor untouched
         for h in actor_handles:
             assert ray.get(h.health_generate.remote(timeout=1.0)) is True
-        # ref engine 0 dead, ref engine 1 alive
         await _assert_engine_dies(ref_handles[0])
         assert ray.get(ref_handles[1].health_generate.remote(timeout=1.0)) is True
 
@@ -317,8 +279,7 @@ class TestGetUpdatableEnginesAndLock:
         tmp_path,
         patch_low_level,
     ):
-        """With actor (update_weights=True) + ref (update_weights=False), the
-        returned EnginesAndLock contains the actor's engines only."""
+        """Only the updatable model's engines are returned."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
@@ -336,9 +297,7 @@ class TestGetUpdatableEnginesAndLock:
         tmp_path,
         patch_low_level,
     ):
-        """If every model has ``update_weights=False`` (e.g. inference-only
-        deployment), the returned EnginesAndLock has empty engines list and
-        the lock handle is still present (callers always need a lock)."""
+        """With no updatable model the engine list is empty but the lock is still returned."""
         args = _make_test_args(tmp_path, models=[("ref", False)])
         pg = placement_group_factory(2)
 
@@ -356,9 +315,7 @@ class TestGetUpdatableEnginesAndLock:
         tmp_path,
         patch_low_level,
     ):
-        """Lifecycle the trainer relies on: ``has_new_engines`` is True after
-        init, False after ``clear_updatable_has_new_engines``, True again
-        after ``start_cell`` spawns a fresh engine."""
+        """has_new_engines is set at init, cleared on demand, and set again by a recovered engine."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -382,13 +339,11 @@ class TestGetUpdatableEnginesAndLock:
         tmp_path,
         patch_low_level,
     ):
-        """``clear_updatable_has_new_engines`` must touch only the updatable
-        server's flag; non-updatable (ref) servers keep their flag intact."""
+        """Clearing the flag leaves non-updatable servers untouched."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
         controller = _make_controller(args, pg)
-        # Force ref's flag True so we can detect any erroneous clear.
         controller.servers["ref"].server_groups[0].has_new_engines = True
 
         controller.clear_updatable_has_new_engines()
@@ -403,8 +358,7 @@ class TestGetUpdatableEnginesAndLock:
         tmp_path,
         patch_low_level,
     ):
-        """Production guards against misconfiguration where two models both set
-        ``update_weights=True``; that's ambiguous for the trainer."""
+        """Two updatable models is ambiguous for the trainer and must raise."""
         args = _make_test_args(tmp_path, models=[("actor1", True), ("actor2", True)])
         pg = placement_group_factory(4)
 
@@ -422,9 +376,7 @@ class TestCheckWeights:
         tmp_path,
         patch_low_level,
     ):
-        """``check_weights`` targets only the updatable model. The snapshot/reset/
-        compare round-trip is meaningless for a frozen model (restored from disk,
-        never re-synced via update_weights), so it must be skipped there."""
+        """check_weights targets the updatable model only; a frozen model would always mismatch."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
@@ -433,14 +385,12 @@ class TestCheckWeights:
 
         results = await controller.check_weights(action="pre_update")
 
-        # Updatable server only: nested gather is [group][engine]; 1 group × 2 engines.
         assert len(results) == 1
         for per_group in results:
             assert len(per_group) == 2
             for engine_result in per_group:
                 assert engine_result == {"_mock": True}
 
-        # Frozen (non-updatable) servers must not have been touched.
         for srv in controller.servers.values():
             if srv.update_weights:
                 continue
@@ -461,9 +411,7 @@ class TestRecoverUpdatableEngines:
         tmp_path,
         patch_low_level,
     ):
-        """``recover_updatable_engines`` is a no-op until the first
-        ``prepare_rollout`` — the trainer hasn't issued a rollout yet, so even if
-        a slot looks dead the controller must not pre-emptively recover."""
+        """Recovery is skipped until the first prepare_rollout."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -471,14 +419,11 @@ class TestRecoverUpdatableEngines:
         eal_before = await controller.get_updatable_engines_and_lock()
         actor0_before = eal_before.rollout_engines[0]
 
-        # Kill engine 0 directly + mark stopped (simulates a fault before any
-        # rollout). recover_updatable_engines must not bring it back yet.
         ray.kill(actor0_before)
         controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
 
         await controller.recover_updatable_engines()
 
-        # Slot 0 is still de-allocated; recovery skipped because no rollout ran.
         assert not controller.servers["actor"].server_groups[0].all_engines[0].is_allocated
 
     async def test_recovers_dead_engine_after_rollout_started(
@@ -488,8 +433,7 @@ class TestRecoverUpdatableEngines:
         tmp_path,
         patch_low_level,
     ):
-        """Once ``prepare_rollout`` has run (mid-training), a dead slot on the
-        updatable server is brought back by ``recover_updatable_engines``."""
+        """After prepare_rollout a dead slot on the updatable server is recovered."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 

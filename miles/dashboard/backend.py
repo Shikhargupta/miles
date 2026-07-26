@@ -77,10 +77,10 @@ def init_dashboard(args, *, primary: bool = True, router_addr: str | None = None
     if resolve_collector() is None:
         return
     if router_addr is not None:
-        # the kwarg marks the rollout-executor process, whose Timer produces the
-        # rollout phase lane. Scraping is registered separately by
-        # hooks.register_router from the inference controller, which is the
-        # process that owns the router.
+        # the kwarg marks the rollout-manager process. It cannot be used for
+        # scraping: init_tracking runs before start_rollout_servers, so the
+        # address is still "http://None:None" here — the real registration
+        # happens via hooks.register_router once the router is up.
         hooks.attach_phase_sink(_handle, Role.ROLLOUT_MANAGER)
         hooks.attach_trajectory_sink(_handle)
 

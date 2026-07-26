@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 
 @ray.remote
 class InferenceController:
-    """The class to own inference servers and expose their control APIs."""
-
     def __init__(self, args, pg):
         event_logger_checkpoint.restore(args)
         configure_logger(args, source=InferenceControllerProcessIdentity())
@@ -59,8 +57,6 @@ class InferenceController:
     def dispose(self):
         for monitor in self._health_monitors:
             monitor.stop()
-
-    # -------------------------- rollout lifecycle hooks -----------------------------
 
     def prepare_rollout(self, rollout_id: int) -> None:
         self._latest_rollout_id = rollout_id

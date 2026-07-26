@@ -1,14 +1,3 @@
-"""``RolloutExecutor`` generate/eval flow driven through the production class.
-
-We instantiate ``RolloutExecutor.__ray_actor_class__`` directly (the raw Python
-class behind ``@ray.remote``) so ``monkeypatch`` reaches its dependencies, while
-``ray.put`` in the DP-split path still runs against a real Ray runtime.
-
-The executor owns no engines: everything inference-side is reached through the
-``InferenceController`` handle it is constructed with, which these tests replace
-with a recording stub. Engine-side behaviour is covered by
-``test_inference_controller.py``."""
-
 from __future__ import annotations
 
 import asyncio
@@ -23,8 +12,6 @@ from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, Ro
 
 
 class _RecordingRemoteCall:
-    """Stands in for ``actor.some_method`` on a Ray actor handle."""
-
     def __init__(self, name: str, log: list[tuple[str, tuple[Any, ...]]]) -> None:
         self._name = name
         self._log = log
@@ -37,11 +24,6 @@ class _RecordingRemoteCall:
 
 
 class _StubInferenceController:
-    """Records the lifecycle hooks the executor is expected to fire.
-
-    ``calls`` is shared with the rollout function stubs in the ordering tests:
-    hook-vs-generation ordering is only observable if both land in one list."""
-
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.prepare_rollout = _RecordingRemoteCall("prepare_rollout", self.calls)
@@ -50,8 +32,6 @@ class _StubInferenceController:
 
 @pytest.fixture
 def process_setup_calls(monkeypatch) -> list[str]:
-    """Records the per-process setup the executor performs, so tests can assert
-    it happens *here* rather than in the controller process."""
     import miles.ray.rollout.rollout_executor as rexec
 
     recorded: list[str] = []
@@ -62,8 +42,6 @@ def process_setup_calls(monkeypatch) -> list[str]:
 
 @pytest.fixture
 def patch_low_level(monkeypatch, process_setup_calls):
-    """No-op the executor dependencies that touch wandb / tensorboard / disk /
-    not-importable default function paths."""
     import miles.ray.rollout.rollout_executor as rexec
 
     monkeypatch.setattr(rexec, "configure_logger", lambda *a, **kw: None)
@@ -93,18 +71,13 @@ def _make_test_args(**overrides):
 
 @pytest.mark.asyncio
 class TestProcessSetup:
-    """The rollout functions run inside this actor, so the HTTP client and the
-    session servers they use must be set up in *this* process. Both are
-    process-local (a module global client, and locally spawned subprocesses), so
-    initializing them in the controller instead leaves the executor with no
-    client at all."""
-
     async def test_initializes_http_client_and_session_servers(
         self,
         ray_local_mode,
         patch_low_level,
         process_setup_calls,
     ):
+        """The rollout functions run in this process, so their HTTP client and session servers start here."""
         args = _make_test_args()
 
         _make_executor(args, _StubInferenceController())
@@ -128,19 +101,13 @@ class TestProcessSetup:
 
 @pytest.mark.asyncio
 class TestGenerate:
-    """``generate(rollout_id)`` is the trainer's per-iteration rollout entry
-    point. It must (1) tell the inference controller a rollout is starting,
-    (2) call the rollout function with ``RolloutFnTrainInput(rollout_id=N)``,
-    (3) postprocess + convert + DP-split the returned samples."""
-
     async def test_invokes_rollout_fn_with_correct_input_and_returns_dp_split(
         self,
         ray_local_mode,
         patch_low_level,
     ):
+        """generate passes a train input and returns the samples split per dp rank."""
         args = _make_test_args()
-        # global_batch_size = number of samples we'll produce (postprocess
-        # trims to a multiple, so equality avoids losing samples).
         args.global_batch_size = 8
 
         controller = _StubInferenceController()
@@ -163,8 +130,6 @@ class TestGenerate:
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnTrainInput)
         assert captured[0].rollout_id == 42
-        # generate returns {"sample_indices": ..., "data_ref": ...};
-        # split_train_data_by_dp returns Box(ObjectRef) per dp rank
         assert set(result) == {"sample_indices", "data_ref"}
         data_refs = result["data_ref"]
         assert len(data_refs) == 2
@@ -173,7 +138,6 @@ class TestGenerate:
             assert "tokens" in partition
             assert "rewards" in partition
             assert "loss_masks" in partition
-            # 8 samples / 2 dp = 4 per rank
             assert len(partition["tokens"]) == 4
 
     async def test_notifies_inference_controller_before_generating(
@@ -181,10 +145,7 @@ class TestGenerate:
         ray_local_mode,
         patch_low_level,
     ):
-        """The executor no longer owns health monitors or engines, so it must
-        hand the rollout id to the controller — that call is what resumes health
-        monitoring, runs CI fault injection and refreshes the dashboard
-        topology, and it must happen before any generation work."""
+        """prepare_rollout must reach the controller before any generation work starts."""
         args = _make_test_args()
         args.global_batch_size = 4
 
@@ -210,6 +171,7 @@ class TestEval:
         ray_local_mode,
         patch_low_level,
     ):
+        """eval passes an eval input and resumes health monitoring before issuing requests."""
         args = _make_test_args()
 
         controller = _StubInferenceController()
@@ -232,7 +194,6 @@ class TestEval:
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnEvalInput)
         assert captured[0].rollout_id == 10
-        # health monitoring must resume before eval issues any request
         assert controller.calls == [("prepare_eval", ()), ("eval_fn", ())]
 
     async def test_skipped_in_debug_train_only_mode(
@@ -240,9 +201,7 @@ class TestEval:
         ray_local_mode,
         patch_low_level,
     ):
-        """``debug_train_only=True`` must short-circuit ``eval`` before the
-        rollout function is invoked — used by trainer-only debug runs that
-        have no rollout cluster. The controller must not be poked either."""
+        """debug_train_only short-circuits eval without touching the rollout fn or the controller."""
         args = _make_test_args()
         args.debug_train_only = True
 

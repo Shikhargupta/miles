@@ -48,8 +48,6 @@ class RolloutExecutor:
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
 
-        # The rollout functions run here, so this is the process that talks HTTP
-        # to the engines and owns the session servers they call back into.
         if not self.args.debug_train_only:
             init_http_client(args)
             start_session_server(args)

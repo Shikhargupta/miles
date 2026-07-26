@@ -329,11 +329,7 @@ class TestRefreshCellsHealing:
             assert dst_ranks == [1, 2]
 
     async def test_healed_cell_receives_set_rollout_components(self):
-        """Healed cell receives both rollout handles, in order, after init.
-
-        Plain strings (not MagicMocks) stand in for the handles: they survive
-        the round-trip through the Ray actor intact, so the assertion catches a
-        swapped pair rather than only a missing call."""
+        """A healed cell receives both rollout handles, in order, after init."""
         group = await _make_alive_group(
             num_cells=2, inference_controller="controller-handle", rollout_executor="executor-handle"
         )

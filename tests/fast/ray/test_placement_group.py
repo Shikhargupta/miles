@@ -1,11 +1,3 @@
-"""Wiring tests for ``create_rollout_components``.
-
-The rollout side is two independent Ray actors now, so the driver is what holds
-them together: it must publish the controller's router address into ``args``
-*before* building the executor (the executor's tracking init reads it), hand the
-controller handle to the executor, and route each startup step to the actor that
-owns it."""
-
 from __future__ import annotations
 
 from argparse import Namespace
@@ -35,14 +27,6 @@ def _make_args(**overrides) -> Namespace:
 
 
 class _FakeActorClass:
-    """Mimics ``SomeRayActor.options(...).remote(...)``, recording ctor args.
-
-    Ray pickles the arguments at ``.remote()`` time, so mutating ``args``
-    afterwards would not reach the actor. The recorded args are therefore
-    snapshotted the same way, otherwise a test holding the live ``args`` object
-    cannot tell "filled in before the actor was created" from "filled in
-    after"."""
-
     def __init__(self, handle: MagicMock) -> None:
         self._handle = handle
         self.remote_calls: list[tuple] = []
@@ -71,7 +55,7 @@ def fake_actors():
     def fake_ray_get(ref):
         if ref == "router-info-ref":
             return router_info
-        return 5  # num_rollout_per_epoch
+        return 5
 
     with patch("miles.ray.placement_group.InferenceController", controller_cls), patch(
         "miles.ray.placement_group.RolloutExecutor", executor_cls
@@ -87,11 +71,7 @@ def fake_actors():
 
 class TestCreateRolloutComponents:
     def test_publishes_router_info_into_args_before_creating_executor(self, fake_actors):
-        """The executor's ``init_tracking``, HTTP client and session servers all
-        read ``args.sglang_router_*``, and Ray pickles args at construction time.
-        The router address must therefore already be in args at the moment the
-        executor actor is created — filling it in afterwards would reach the
-        driver's copy only."""
+        """The router address must already be in args when the executor actor is constructed."""
         args = _make_args(num_rollout=1)
 
         create_rollout_components(args, pg=MagicMock())
@@ -102,8 +82,7 @@ class TestCreateRolloutComponents:
         assert executor_args_at_construction.sglang_model_routers == {"actor": ("10.0.0.1", 4321)}
 
     def test_controller_is_created_before_the_router_address_is_known(self, fake_actors):
-        """The controller is what starts the router, so it cannot be handed the
-        address — it must be constructed with args that still lack it."""
+        """The controller starts the router itself, so it cannot be handed the address."""
         args = _make_args(num_rollout=1)
 
         create_rollout_components(args, pg=MagicMock())
@@ -112,8 +91,7 @@ class TestCreateRolloutComponents:
         assert controller_args_at_construction.sglang_router_ip is None
 
     def test_passes_controller_handle_to_executor(self, fake_actors):
-        """The executor calls back into the controller for per-rollout hooks, so
-        it must be constructed with the controller handle."""
+        """The executor calls back into the controller, so it is built with that handle."""
         args = _make_args(num_rollout=1)
 
         components = create_rollout_components(args, pg=MagicMock())
@@ -124,8 +102,7 @@ class TestCreateRolloutComponents:
         assert components.rollout_executor is fake_actors.executor_handle
 
     def test_result_unpacks_in_controller_executor_epoch_order(self, fake_actors):
-        """Callers unpack the result positionally, so the field order is part of
-        the API and swapping the two handles would go unnoticed otherwise."""
+        """Callers unpack positionally, so a swapped handle pair must be caught here."""
         args = _make_args(num_rollout=None, num_epoch=1)
 
         inference_controller, rollout_executor, num_rollout_per_epoch = create_rollout_components(args, pg=MagicMock())
@@ -135,7 +112,7 @@ class TestCreateRolloutComponents:
         assert num_rollout_per_epoch == 5
 
     def test_num_rollout_derived_from_executor_epoch_length(self, fake_actors):
-        """``num_rollout`` comes from the dataset, which the executor owns."""
+        """num_rollout comes from the dataset, which the executor owns."""
         args = _make_args(num_rollout=None, num_epoch=2)
 
         components = create_rollout_components(args, pg=MagicMock())
@@ -145,6 +122,7 @@ class TestCreateRolloutComponents:
         assert args.num_rollout == 10
 
     def test_num_rollout_left_alone_when_explicitly_set(self, fake_actors):
+        """An explicit --num-rollout skips asking the executor for the epoch length."""
         args = _make_args(num_rollout=3)
 
         components = create_rollout_components(args, pg=MagicMock())
@@ -154,8 +132,7 @@ class TestCreateRolloutComponents:
         assert args.num_rollout == 3
 
     def test_weight_check_and_offload_go_to_the_controller(self, fake_actors):
-        """Engine-side startup steps belong to the controller; the executor must
-        not be asked to do them."""
+        """Engine-side startup steps go to the controller, never to the executor."""
         args = _make_args(num_rollout=1, check_weight_update_equal=True, offload_rollout=True)
 
         create_rollout_components(args, pg=MagicMock())
