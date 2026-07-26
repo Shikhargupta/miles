@@ -124,6 +124,7 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             tokens=[],
             loss_mask=[],
             rollout_log_probs=[],
+            weight_versions=[],
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
         # Session server populates diagnostic metadata (token IDs,

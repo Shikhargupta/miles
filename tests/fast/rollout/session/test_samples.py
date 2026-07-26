@@ -12,7 +12,7 @@ import pytest
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records
 from miles.rollout.session.types import SessionRecord
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -49,6 +49,8 @@ def _make_record(
     finish_reason: str = "stop",
     cached_tokens: int | None = None,
     prompt_tokens: int | None = None,
+    weight_version: str | None = None,
+    weight_versions: list[tuple[str, int, int]] | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -70,6 +72,10 @@ def _make_record(
         meta_info["cached_tokens"] = cached_tokens
     if prompt_tokens is not None:
         meta_info["prompt_tokens"] = prompt_tokens
+    if weight_version is not None:
+        meta_info["weight_version"] = weight_version
+    if weight_versions is not None:
+        meta_info["weight_versions"] = weight_versions
     return SessionRecord(
         timestamp=0.0,
         method="POST",
@@ -111,6 +117,30 @@ class TestComputeSamplesFromRecords:
         assert s.response_length == 2
         assert s.loss_mask == [1, 1]
         assert s.status == Sample.Status.COMPLETED
+
+    def test_single_record_scalar_weight_version_becomes_span(self):
+        """A scalar weight_version in the record's meta_info synthesizes one span over the output tokens."""
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11], weight_version="v3")
+
+        samples = compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)
+
+        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 5)])]
+
+    def test_single_record_per_token_weight_versions_become_spans(self):
+        """Per-token weight_versions in meta_info are shifted by the prompt length."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11, 12],
+            weight_versions=[("v1", 0, 2), ("v2", 2, 3)],
+        )
+
+        samples = compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)
+
+        assert samples[0].weight_versions == [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 3, 5), WeightVersionSpan("v2", 5, 6)])
+        ]
 
     def test_multiple_records_produce_multiple_samples(self):
         tok = _mock_tokenizer()
