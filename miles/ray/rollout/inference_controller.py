@@ -33,8 +33,6 @@ class InferenceController:
         else:
             self.servers = start_rollout_servers(args, pg)
             dashboard_hooks.register_router(args)
-            init_http_client(args)
-            start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
 
         # TODO will be replaced by full ft, thus temporarily leave it without modifications
