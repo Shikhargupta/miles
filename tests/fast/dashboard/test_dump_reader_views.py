@@ -1,4 +1,5 @@
 import os
+import shutil
 import statistics
 import time
 
@@ -287,3 +288,32 @@ class TestLegacyWeightVersionSummary:
     def test_reports_nothing_when_the_sample_was_never_stamped(self):
         """A sample with no versions at all yields no series rather than a zero."""
         assert _weight_version_summary(Sample()) == ([], None)
+
+    def test_repeated_legacy_versions_are_two_turns_but_not_mixed(self):
+        """Two calls that happened to see the same weights are still two turns."""
+        sample = Sample.from_dict({"status": "completed", "weight_versions": ["3", "3"], "tokens": [1, 2]})
+
+        assert _weight_version_summary(sample) == (["3", "3"], 2)
+
+
+def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
+    """A real dump downgraded to the pre-span format still rebuilds its parquet and summarises."""
+    import polars as pl
+    import torch
+
+    dump_dummy_run(tmp_path, steps=1, dp_size=2, tp_dup=2, with_eval=False)
+    shutil.rmtree(tmp_path / "dashboard_columns")
+    for path in (tmp_path / "rollout_data").glob("*.pt"):
+        pack = torch.load(path, weights_only=False)
+        for data in pack["samples"]:
+            data["weight_versions"] = [span["version"] for call in data["weight_versions"] for span in call]
+        torch.save(pack, path)
+
+    reader = DumpReader(tmp_path)
+    df = reader.summary(0)
+
+    assert df.height > 0
+    agentic = df.filter(pl.col("sample_index") % 3 == 0)
+    assert agentic["turns"].min() == 2
+    assert agentic["mixed_version"].all()
+    assert reader.tokens(0, int(agentic["sample_index"][0]))
