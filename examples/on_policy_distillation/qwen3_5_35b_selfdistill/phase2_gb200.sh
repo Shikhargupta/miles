@@ -39,7 +39,7 @@ DATA_DIR=${DATA_DIR:-/node_public/maocheng-qwen35/data}
 OUTPUT_DIR=${OUTPUT_DIR:-/node_public/maocheng-qwen35/ckpt-opd-${MODE}}
 TEACHER_LOAD=${TEACHER_LOAD:-/node_public/maocheng-qwen35/ckpt-teacher}   # parent dir!
 EXAMPLE_DIR=${EXAMPLE_DIR:-$(cd "$(dirname "$0")" && pwd)}
-MILES_DIR=${MILES_DIR:-/workspace/miles}
+MILES_DIR=${MILES_DIR:-"$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"}
 RAY_ADDRESS=${RAY_ADDRESS:-http://127.0.0.1:8265}
 OPD_KL_COEF=${OPD_KL_COEF:-0.2}
 mkdir -p "${OUTPUT_DIR}"
