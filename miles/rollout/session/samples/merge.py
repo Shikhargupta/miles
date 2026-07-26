@@ -24,7 +24,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
-from miles.utils.types import Sample, compute_weight_versions_per_call_from_meta_info
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 
 def compute_samples_from_openai_records(
@@ -122,7 +122,7 @@ def _compute_sample_from_openai_record(
     sample.rollout_routed_experts = get_routed_experts_from_response(args, choice, sample)
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
     sample.weight_versions = [
-        compute_weight_versions_per_call_from_meta_info(
+        WeightVersionsPerCall.from_meta_info(
             choice["meta_info"], num_output_tokens=len(output_token_ids), output_start=len(prompt_token_ids)
         )
     ]

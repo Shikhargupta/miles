@@ -40,7 +40,7 @@ from random_async_sglang_metrics import SGLangMetricsReporter, record_agent_requ
 from miles.rollout.data_source import DataSource
 from miles.utils.async_utils import run
 from miles.utils.http_utils import post as http_post
-from miles.utils.types import Sample, compute_weight_versions_per_call_from_meta_info
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
         sample.prefix_cache_info.add(meta)
 
         sample.weight_versions.append(
-            compute_weight_versions_per_call_from_meta_info(
+            WeightVersionsPerCall.from_meta_info(
                 meta, num_output_tokens=len(segment), output_start=len(current_ids) - len(segment)
             )
         )

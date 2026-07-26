@@ -23,20 +23,18 @@ class WeightVersionsPerCall:
     def from_dicts(data: list[dict]) -> "WeightVersionsPerCall":
         return WeightVersionsPerCall(spans=[WeightVersionSpan(**span) for span in data])
 
+    @staticmethod
+    def from_meta_info(meta_info: dict, num_output_tokens: int, output_start: int) -> "WeightVersionsPerCall":
+        if (raw_spans := meta_info.get("weight_versions")) is not None:
+            spans = [WeightVersionSpan(**span) for span in raw_spans]
+        elif meta_info.get("weight_version") is not None and num_output_tokens > 0:
+            spans = [WeightVersionSpan(version=meta_info["weight_version"], start=0, end=num_output_tokens)]
+        else:
+            spans = []
 
-def compute_weight_versions_per_call_from_meta_info(
-    meta_info: dict, num_output_tokens: int, output_start: int
-) -> WeightVersionsPerCall:
-    if (raw_spans := meta_info.get("weight_versions")) is not None:
-        spans = [WeightVersionSpan(**span) for span in raw_spans]
-    elif meta_info.get("weight_version") is not None and num_output_tokens > 0:
-        spans = [WeightVersionSpan(version=meta_info["weight_version"], start=0, end=num_output_tokens)]
-    else:
-        spans = []
-
-    return WeightVersionsPerCall(
-        spans=[span._replace(start=output_start + span.start, end=output_start + span.end) for span in spans]
-    )
+        return WeightVersionsPerCall(
+            spans=[span._replace(start=output_start + span.start, end=output_start + span.end) for span in spans]
+        )
 
 
 @dataclass(frozen=True)
@@ -329,7 +327,7 @@ class Sample:
 
         num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
         self.weight_versions.append(
-            compute_weight_versions_per_call_from_meta_info(
+            WeightVersionsPerCall.from_meta_info(
                 meta_info,
                 num_output_tokens=num_output_tokens,
                 output_start=len(self.tokens) - num_output_tokens,
