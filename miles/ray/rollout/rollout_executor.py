@@ -66,8 +66,6 @@ class RolloutExecutor:
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        self.rollout_id = -1
-
         self._metric_checker = MetricChecker.maybe_create(args)
 
     # -------------------------- lifecycle -----------------------------
@@ -82,18 +80,6 @@ class RolloutExecutor:
         event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
-
-    # -------------------------- rollout lifecycle hooks -----------------------------
-
-    async def prepare_rollout(self, rollout_id):
-        self.rollout_id = rollout_id
-        self._health_monitoring_resume()
-        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
-            await self._try_ci_fault_injection()
-        dashboard_hooks.register_engines(self.servers)
-
-    def prepare_eval(self):
-        self._health_monitoring_resume()
 
     # -------------------------- data generation -----------------------------
 

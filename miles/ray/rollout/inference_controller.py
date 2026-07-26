@@ -31,6 +31,7 @@ class InferenceController:
             init_http_client(args)
             start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
+        self.rollout_id = -1
 
         # TODO will be replaced by full ft, thus temporarily leave it without modifications
         self._health_monitors = []
@@ -41,6 +42,18 @@ class InferenceController:
                     monitor.start()
                     self._health_monitors.append(monitor)
             self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
+
+    # -------------------------- rollout lifecycle hooks -----------------------------
+
+    async def prepare_rollout(self, rollout_id):
+        self.rollout_id = rollout_id
+        self._health_monitoring_resume()
+        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
+            await self._try_ci_fault_injection()
+        dashboard_hooks.register_engines(self.servers)
+
+    def prepare_eval(self):
+        self._health_monitoring_resume()
 
     def dispose(self):
         for monitor in self._health_monitors:
