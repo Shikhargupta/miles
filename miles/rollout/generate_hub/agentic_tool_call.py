@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    assert not input.args.partial_rollout, (
+        "Partial rollout is not supported: a recycled sample already carries weight versions, and the session "
+        "merge path assigns rather than appends them"
+    )
     assert getattr(input.args, "session_server_ip", None) and getattr(input.args, "session_server_ports", None), (
         "agentic_tool_call.generate requires session_server_ip/session_server_ports. "
         "Pass --use-session-server to start the session server."

@@ -150,7 +150,7 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 2  # v2: staleness/turns/tool columns
+    SUMMARY_VERSION: ClassVar[int] = 3  # v3: turns counts unstamped calls, mixed_version spans flattened
 
     def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
