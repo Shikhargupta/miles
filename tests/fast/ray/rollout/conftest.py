@@ -156,7 +156,9 @@ def make_sample(
     )
     if weight_version is not None:
         s.weight_versions = [
-            WeightVersionsPerCall(spans=[WeightVersionSpan(version=weight_version, abs_start=0, abs_end=response_length)])
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan(version=weight_version, abs_start=0, abs_end=response_length)]
+            )
         ]
     for k, v in overrides.items():
         setattr(s, k, v)

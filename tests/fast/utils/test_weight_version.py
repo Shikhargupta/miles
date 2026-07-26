@@ -155,7 +155,13 @@ class TestAssertSamplesWeightVersionSane:
             assert_samples_weight_version_sane(_make_args(), [sample], rollout_id=5)
 
     @pytest.mark.parametrize(
-        "field,value", [("debug_rollout_only", True), ("debug_skip_weight_update", True), ("lora_rank", 32), ("lora_adapter_path", "/adapter")]
+        "field,value",
+        [
+            ("debug_rollout_only", True),
+            ("debug_skip_weight_update", True),
+            ("lora_rank", 32),
+            ("lora_adapter_path", "/adapter"),
+        ],
     )
     def test_modes_without_a_trustworthy_version_are_exempt(self, field, value):
         """Rollout-only, skipped updates and either way of enabling LoRA leave the version meaningless."""
