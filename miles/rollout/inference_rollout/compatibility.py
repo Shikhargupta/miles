@@ -35,13 +35,12 @@ def load_rollout_function(input: RolloutFnConstructorInput, path: str) -> BaseRo
     fn = load_function(path)
 
     if inspect.isclass(fn):
-        instance = fn(input)
-        if not isinstance(instance, BaseRolloutFn):
+        if not issubclass(fn, BaseRolloutFn):
             raise TypeError(
                 f"Class-based rollout function {path} must subclass "
-                f"miles.rollout.base_types.BaseRolloutFn, got {type(instance).__name__}."
+                f"miles.rollout.base_types.BaseRolloutFn, got {fn.__name__}."
             )
-        return instance
+        return fn(input)
     else:
         return LegacyRolloutFnAdapter(input, fn)
 

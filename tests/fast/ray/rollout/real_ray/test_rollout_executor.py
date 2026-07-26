@@ -171,6 +171,30 @@ class TestCheckpointing:
             ("eval", "load", 7),
         ]
 
+    async def test_save_forwards_to_the_data_source_for_a_global_dataset(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """With a global dataset both the data source and the rollout functions are checkpointed."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
+        args = _make_test_args(rollout_global_dataset=True)
+
+        executor = _make_executor(args, _StubInferenceController())
+        executor.use_experimental_refactor = True
+        calls: list[tuple[str, str, object]] = []
+        executor.generate_rollout = _RecordingRolloutFn("train", calls)
+        executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
+        executor.data_source = MagicMock()
+
+        executor.save(rollout_id=5)
+
+        executor.data_source.save.assert_called_once_with(5)
+        assert ("train", "save", 5) in calls
+
     async def test_save_forwards_to_the_data_source_only_for_a_global_dataset(
         self,
         ray_local_mode,

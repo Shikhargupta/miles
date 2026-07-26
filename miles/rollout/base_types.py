@@ -62,6 +62,9 @@ RolloutFnOutput = RolloutFnTrainOutput | RolloutFnEvalOutput
 
 
 class BaseRolloutFn:
+    def __init__(self, input: RolloutFnConstructorInput) -> None:
+        self.constructor_input = input
+
     @abc.abstractmethod
     def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         raise NotImplementedError

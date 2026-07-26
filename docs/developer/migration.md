@@ -106,11 +106,12 @@ the rollout already produced, it does not itself generate.
 
 ## Class-based rollout functions must subclass `BaseRolloutFn`
 
-Rollout functions gained `save` / `load` alongside `__call__`, so a class passed to
-`--rollout-function-path` or `--eval-function-path` now has to subclass
-`miles.rollout.base_types.BaseRolloutFn`; anything else is rejected at load time. The
-base supplies no-op `save` / `load`, so a stateless implementation only adds the base
-class. Plain function rollout functions are unaffected.
+Under `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`, rollout functions gained `save` / `load`
+alongside `__call__`, and a class passed to `--rollout-function-path` or
+`--eval-function-path` now has to subclass `miles.rollout.base_types.BaseRolloutFn`;
+anything else is rejected at load time. The base supplies the constructor and no-op
+`save` / `load`, so a stateless implementation only adds the base class. Plain function
+rollout functions, and the default non-experimental path, are unaffected.
 
 ## Other recent breakages
 
