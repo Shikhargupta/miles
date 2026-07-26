@@ -183,7 +183,7 @@ class TestCheckpointing:
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
         args = _make_test_args(rollout_global_dataset=True)
 
-        executor = _make_executor(args, _StubInferenceController())
+        executor = _make_executor(args)
         executor.use_experimental_refactor = True
         calls: list[tuple[str, str, object]] = []
         executor.generate_rollout = _RecordingRolloutFn("train", calls)
