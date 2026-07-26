@@ -17,7 +17,7 @@ import time
 
 import pytest
 import ray
-from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped, make_test_weight_version
 
 from miles.ray.rollout.rollout_manager import RolloutManager
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainInput, RolloutFnTrainOutput
@@ -504,7 +504,7 @@ class TestGenerate:
         def fake_rollout_fn(input):
             captured.append(input)
             return RolloutFnTrainOutput(
-                samples=[make_samples_grouped(n_groups=2, group_size=4)],
+                samples=[make_samples_grouped(n_groups=2, group_size=4, weight_version=make_test_weight_version(42))],
                 metrics={"my_metric": 1.23},
             )
 

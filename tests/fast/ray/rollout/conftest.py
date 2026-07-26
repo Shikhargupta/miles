@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 import ray
 
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 from miles.utils.weight_version import WeightVersion
 
 TEST_WEIGHT_VERSION_RUN_UUID = "ab12cd34ef5678ab"
@@ -114,6 +114,10 @@ def make_args(**overrides: Any) -> Namespace:
         save_debug_event_data=None,
         load=None,
         save=None,
+        # weight version checks
+        weight_version_run_uuid=TEST_WEIGHT_VERSION_RUN_UUID,
+        max_weight_staleness=None,
+        update_weights_interval=1,
         # CI
         ci_test=False,
         # dumper (sglang debug dumper integration)
@@ -131,6 +135,7 @@ def make_sample(
     response_length: int = 4,
     reward: float | dict | None = 1.0,
     status: Sample.Status = Sample.Status.COMPLETED,
+    weight_version: str | None = None,
     **overrides: Any,
 ) -> Sample:
     """Build a Sample with sensible defaults. Token list defaults to a length
@@ -146,6 +151,10 @@ def make_sample(
         reward=reward,
         status=status,
     )
+    if weight_version is not None:
+        s.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version=weight_version, start=0, end=response_length)])
+        ]
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -157,6 +166,7 @@ def make_samples_grouped(
     *,
     rewards: list[float] | None = None,
     response_length: int = 4,
+    weight_version: str | None = None,
 ) -> list[Sample]:
     """Construct ``n_groups * group_size`` samples laid out group-by-group.
 
@@ -175,6 +185,7 @@ def make_samples_grouped(
                     index=i,
                     reward=r,
                     response_length=response_length,
+                    weight_version=weight_version,
                 )
             )
     return samples

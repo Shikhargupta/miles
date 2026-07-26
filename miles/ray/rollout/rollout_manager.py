@@ -35,6 +35,7 @@ from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.weight_version import assert_samples_weight_version_sane
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -163,6 +164,11 @@ class RolloutManager:
                     evaluation=True,
                 )
         data = result.data
+        for dataset_data in data.values():
+            if (eval_samples := dataset_data.get("samples")) is not None:
+                assert_samples_weight_version_sane(
+                    self.args, samples=eval_samples, rollout_id=rollout_id, is_eval=True
+                )
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
@@ -186,6 +192,7 @@ class RolloutManager:
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self.train_parallel_config
             )
+            assert_samples_weight_version_sane(self.args, samples=data, rollout_id=rollout_id)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
                 data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
