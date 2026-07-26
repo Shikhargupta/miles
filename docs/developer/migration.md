@@ -88,7 +88,7 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 + )
 
 - await rollout_manager.generate.remote(rollout_id)
-+ inference_controller.prepare_rollout(rollout_id)
++ await inference_controller.prepare_rollout(rollout_id)
 + await rollout_executor.generate.remote(rollout_id)
 
 - await rollout_manager.onload_weights.remote()

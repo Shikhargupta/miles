@@ -105,7 +105,7 @@ class TestCreateRolloutComponents:
 
         await create_rollout_components(args, pg=MagicMock())
 
-        actions = [call.kwargs["action"] for call in fake_components.controller.check_weights.call_args_list]
+        actions = [call.kwargs["action"] for call in fake_components.controller.check_weights.await_args_list]
         assert actions == ["snapshot", "reset_tensors"]
         fake_components.controller.offload.assert_awaited_once()
         fake_components.executor_handle.check_weights.remote.assert_not_called()
