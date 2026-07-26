@@ -88,7 +88,7 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
-    async def update_weights(self, rollout_id: int | None = None):
+    async def update_weights(self, *, weight_rollout_id: int):
         """Broadcast weights from rank 0 to all other ranks."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return

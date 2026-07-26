@@ -24,6 +24,6 @@ def _check_one_rollout(event: InferenceEngineWeightChecksumEvent) -> Iterable[Ch
         yield from compare_flat_dicts(
             a=baseline,
             b=engines[engine_index],
-            label_a=f"rollout_{event.rollout_id}/engine_0",
-            label_b=f"rollout_{event.rollout_id}/engine_{engine_index}",
+            label_a=f"rollout_{event.weight_rollout_id}/engine_0",
+            label_b=f"rollout_{event.weight_rollout_id}/engine_{engine_index}",
         )

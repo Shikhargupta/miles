@@ -150,12 +150,12 @@ class TestInferenceEngineWeightChecksumEvent:
         event = InferenceEngineWeightChecksumEvent(
             timestamp=_FIXED_TS,
             source=_FIXED_SOURCE,
-            rollout_id=4,
+            weight_rollout_id=4,
             engine_checksums=engine_checksums,
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
         assert isinstance(parsed, InferenceEngineWeightChecksumEvent)
-        assert parsed.rollout_id == 4
+        assert parsed.weight_rollout_id == 4
         assert parsed.engine_checksums == engine_checksums
 
 
@@ -195,7 +195,7 @@ class TestDiscriminatedUnionParsesAllEvents:
             InferenceEngineWeightChecksumEvent(
                 timestamp=_FIXED_TS,
                 source=_FIXED_SOURCE,
-                rollout_id=0,
+                weight_rollout_id=0,
                 engine_checksums=[{"rank0/w": "aaa"}],
             ),
         ]

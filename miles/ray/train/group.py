@@ -252,9 +252,9 @@ class RayTrainGroup:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, rollout_id: int | None = None):
+    async def update_weights(self, *, weight_rollout_id: int):
         """Broadcast weights to rollout engines."""
-        log_structured(logger.info, op="update_weights", phase="start", rollout=rollout_id)
+        log_structured(logger.info, op="update_weights", phase="start", rollout=weight_rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
@@ -266,9 +266,9 @@ class RayTrainGroup:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-        await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
+        await self._maybe_log_inference_engine_weight_checksums(weight_rollout_id=weight_rollout_id)
 
-    async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
+    async def _maybe_log_inference_engine_weight_checksums(self, *, weight_rollout_id: int) -> None:
         if not is_event_logger_initialized():
             return
         if self.args.debug_train_only or self.args.debug_rollout_only:
@@ -278,7 +278,7 @@ class RayTrainGroup:
         engine_checksums = flatten_inference_engine_checksums(check_weights_result)
         get_event_logger().log(
             InferenceEngineWeightChecksumEvent,
-            dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+            dict(weight_rollout_id=weight_rollout_id, engine_checksums=engine_checksums),
         )
 
     async def onload(self):
