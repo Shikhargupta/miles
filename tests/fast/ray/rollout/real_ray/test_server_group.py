@@ -61,7 +61,9 @@ class TestStartEnginesRealActors:
     real Ray actors (via ``get_calls()`` round-trip) and that ``init`` was
     invoked with the addr/port kwargs from the allocator."""
 
-    def test_creates_real_actors_and_init_runs(self, patched_sglang_engine, placement_group_factory):
+    def test_creates_real_actors_and_init_runs(
+        self, patched_sglang_engine, placement_group_factory, mock_engine_http_servers
+    ):
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
@@ -78,7 +80,8 @@ class TestStartEnginesRealActors:
             assert "init" in method_names
             init_kwargs = ray.get(e.actor_handle.get_init_kwargs.remote())
             assert init_kwargs["host"] == "127.0.0.1"
-            assert init_kwargs["port"] == 30000 + i
+            assert init_kwargs["port"] == mock_engine_http_servers.for_rank(i).port
+            assert e.server_url == mock_engine_http_servers.for_rank(i).url
 
         # Cleanup: kill the actors we created.
         for e in group.all_engines:
