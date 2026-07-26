@@ -10,12 +10,13 @@ WORKER_URL = "http://fake-host:1234"
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict | None = None):
+    def __init__(self, payload: dict | None = None, status_code: int = 200):
         self._payload = payload if payload is not None else {"ok": True}
-        self.raise_for_status_calls = 0
+        self.status_code = status_code
 
     def raise_for_status(self):
-        self.raise_for_status_calls += 1
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"status {self.status_code}")
 
     def json(self):
         return self._payload
@@ -70,6 +71,7 @@ def test_add_worker_posts_the_worker_payload_on_the_modern_api(client, recorder)
     """Modern routers take a JSON body on /workers."""
     client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=False)
 
+    assert len(recorder.calls) == 1
     verb, url, kwargs = recorder.calls[0]
     assert (verb, url) == ("post", f"{ROUTER_URL}/workers")
     assert kwargs["json"] == {"url": WORKER_URL, "worker_type": "regular"}
@@ -79,6 +81,7 @@ def test_add_worker_includes_the_bootstrap_port_for_prefill_workers(client, reco
     """PD disaggregation needs the prefill worker's bootstrap port registered with the router."""
     client.add_worker(worker_url=WORKER_URL, worker_type="prefill", use_legacy_api=False, bootstrap_port=8998)
 
+    assert len(recorder.calls) == 1
     assert recorder.calls[0][2]["json"] == {
         "url": WORKER_URL,
         "worker_type": "prefill",
@@ -130,20 +133,110 @@ def test_remove_worker_tolerates_an_unknown_worker(client, monkeypatch):
 def test_add_worker_propagates_router_errors(client, monkeypatch):
     """A router that rejects the registration must surface, not be swallowed."""
     rec = _Recorder()
-    response = _FakeResponse()
-    rec.install(monkeypatch, responses=[response])
+    rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
 
-    client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True)
-
-    assert response.raise_for_status_calls == 1
+    with pytest.raises(requests.exceptions.HTTPError):
+        client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True)
 
 
 def test_remove_worker_propagates_router_errors(client, monkeypatch):
     """Unregistration errors must surface on the legacy path too."""
     rec = _Recorder()
-    response = _FakeResponse()
-    rec.install(monkeypatch, responses=[response])
+    rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
 
-    client.remove_worker(worker_url=WORKER_URL, use_legacy_api=True)
+    with pytest.raises(requests.exceptions.HTTPError):
+        client.remove_worker(worker_url=WORKER_URL, use_legacy_api=True)
 
-    assert response.raise_for_status_calls == 1
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+def test_add_worker_rejects_pd_worker_types_before_any_request(client, monkeypatch, worker_type):
+    """The legacy API has no worker_type, so a pd worker must be refused without registering it."""
+    rec = _Recorder()
+    rec.install(monkeypatch)
+
+    with pytest.raises(AssertionError, match="pd disaggregation is not supported"):
+        client.add_worker(worker_url=WORKER_URL, worker_type=worker_type, use_legacy_api=True)
+
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("worker_type", ["regular", "decode"])
+def test_add_worker_omits_bootstrap_port_for_non_prefill_workers(client, recorder, worker_type):
+    """Only a prefill worker exposes a bootstrap port for the decode side to dial."""
+    client.add_worker(worker_url=WORKER_URL, worker_type=worker_type, use_legacy_api=False, bootstrap_port=8998)
+
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0][2]["json"] == {"url": WORKER_URL, "worker_type": worker_type}
+
+
+@pytest.mark.parametrize(
+    "version, expected_verb", [("0.2.2", "delete"), ("0.2.9", "delete"), ("0.3.0", "get"), ("0.3.1", "get")]
+)
+def test_remove_worker_switches_api_exactly_at_0_3_0(client, monkeypatch, version, expected_verb):
+    """0.3.0 is where workers stop being addressable by url and must be looked up by id."""
+    monkeypatch.setattr(sglang_router, "__version__", version)
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})])
+
+    client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+
+    assert rec.calls[0][0] == expected_verb
+
+
+def test_add_worker_propagates_a_failing_modern_response(client, monkeypatch):
+    """A router rejecting the registration must surface, not be swallowed."""
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=False)
+
+
+def test_remove_worker_propagates_a_failing_url_addressed_delete(client, monkeypatch):
+    """Unregistration errors surface on the url-addressed path too."""
+    monkeypatch.setattr(sglang_router, "__version__", "0.2.5")
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse(status_code=500)])
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+
+
+def test_remove_worker_propagates_a_failing_id_addressed_delete(client, monkeypatch):
+    """The id-addressed delete is outside the lookup's broad except, so its status must surface."""
+    monkeypatch.setattr(sglang_router, "__version__", "0.3.1")
+    rec = _Recorder()
+    rec.install(
+        monkeypatch,
+        responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]}), _FakeResponse(status_code=500)],
+    )
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+
+
+def test_remove_worker_warns_about_an_unknown_worker(client, monkeypatch, caplog):
+    """Shutdown tolerates a worker the router forgot, but says so."""
+    monkeypatch.setattr(sglang_router, "__version__", "0.3.1")
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse({"workers": []})])
+
+    with caplog.at_level("WARNING"):
+        client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+
+    assert "not found in router" in caplog.text
+
+
+def test_remove_worker_tolerates_a_broken_worker_lookup(client, monkeypatch, caplog):
+    """A router that cannot list its workers must not block the engine's shutdown."""
+    monkeypatch.setattr(sglang_router, "__version__", "0.3.1")
+
+    def raising_get(url, **kwargs):
+        raise requests.exceptions.ConnectionError("router down")
+
+    monkeypatch.setattr(requests, "get", raising_get)
+
+    with caplog.at_level("WARNING"):
+        client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
+
+    assert "Failed to fetch workers list" in caplog.text
