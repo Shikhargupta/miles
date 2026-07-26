@@ -504,7 +504,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Maximum allowed gap between a group's oldest weight version and the current "
                     "engine weight version. Groups exceeding this threshold are recycled back to "
                     "the data buffer instead of being sent to training (fully async mode). Also "
-                    "bounds the per-sample weight version spread asserted at train-data ingestion. "
+                    "bounds, at train-data ingestion, how far behind the freshest weights any "
+                    "sample in the batch saw a sample is allowed to be. "
                     "None (default) disables staleness filtering."
                 ),
             )

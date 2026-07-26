@@ -118,6 +118,9 @@ def make_args(**overrides: Any) -> Namespace:
         weight_version_run_uuid=TEST_WEIGHT_VERSION_RUN_UUID,
         max_weight_staleness=None,
         update_weights_interval=1,
+        debug_skip_weight_update=False,
+        lora_rank=0,
+        lora_adapter_path=None,
         # CI
         ci_test=False,
         # dumper (sglang debug dumper integration)
@@ -153,7 +156,7 @@ def make_sample(
     )
     if weight_version is not None:
         s.weight_versions = [
-            WeightVersionsPerCall(spans=[WeightVersionSpan(version=weight_version, start=0, end=response_length)])
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version=weight_version, abs_start=0, abs_end=response_length)])
         ]
     for k, v in overrides.items():
         setattr(s, k, v)

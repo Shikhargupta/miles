@@ -98,10 +98,9 @@ class TestAssertSamplesWeightVersionSane:
         """Async drivers launch the next generation before the update, so it runs on the previous weights."""
         assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 4)])], rollout_id=5)
 
-    def test_weights_stuck_far_behind_fail(self):
-        """Weights that stopped reaching the engines fall further behind than any driver explains."""
-        with pytest.raises(AssertionError, match="not reaching"):
-            assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 1)])], rollout_id=5)
+    def test_an_unbounded_backlog_is_allowed_when_no_bound_was_declared(self):
+        """Fully async runs legitimately train on a deep backlog; only an explicit bound may reject it."""
+        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 1)])], rollout_id=5)
 
     def test_eval_may_run_on_newer_weights(self):
         """The sync driver publishes the next rollout's weights before evaluating this one."""
@@ -155,21 +154,36 @@ class TestAssertSamplesWeightVersionSane:
         with pytest.raises(ValueError, match="invalid weight version"):
             assert_samples_weight_version_sane(_make_args(), [sample], rollout_id=5)
 
-    def test_modes_without_a_trustworthy_version_are_exempt(self):
-        """Rollout-only, skipped updates and LoRA all leave the engine version meaningless."""
-        for field in ("debug_rollout_only", "debug_skip_weight_update"):
-            args = _make_args()
-            setattr(args, field, True)
-            assert_samples_weight_version_sane(args, [_unstamped_sample()], rollout_id=5)
-        lora = _make_args()
-        lora.lora_rank = 32
-        assert_samples_weight_version_sane(lora, [_unstamped_sample()], rollout_id=5)
+    @pytest.mark.parametrize(
+        "field,value", [("debug_rollout_only", True), ("debug_skip_weight_update", True), ("lora_rank", 32), ("lora_adapter_path", "/adapter")]
+    )
+    def test_modes_without_a_trustworthy_version_are_exempt(self, field, value):
+        """Rollout-only, skipped updates and either way of enabling LoRA leave the version meaningless."""
+        args = _make_args(max_weight_staleness=0)
+        setattr(args, field, value)
+        samples = [_make_sample([(RUN_UUID, 9)]), _make_sample([(OTHER_RUN_UUID, 1)], index=1)]
 
-    def test_update_weights_interval_relaxes_the_freshness_bound(self):
-        """Batched weight updates leave rollouts on the previous version by design."""
-        args = _make_args()
+        assert_samples_weight_version_sane(args, samples, rollout_id=5)
+
+    def test_batched_weight_updates_do_not_count_as_staleness(self):
+        """With interval > 1 the engines lag rollout_id by design; a uniform batch has zero spread."""
+        args = _make_args(max_weight_staleness=0)
         args.update_weights_interval = 2
         assert_samples_weight_version_sane(args, [_make_sample([(RUN_UUID, 1)])], rollout_id=5)
+
+    def test_staleness_is_measured_against_the_batch_not_the_rollout_id(self):
+        """A deep but uniform backlog is not stale; what matters is how far apart the samples are."""
+        samples = [_make_sample([(RUN_UUID, 5)]), _make_sample([(RUN_UUID, 4)], index=1)]
+        assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), samples, rollout_id=9)
+
+        stale = [_make_sample([(RUN_UUID, 5)]), _make_sample([(RUN_UUID, 2)], index=1)]
+        with pytest.raises(AssertionError, match="past max_weight_staleness"):
+            assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), stale, rollout_id=9)
+
+    def test_eval_is_not_subject_to_the_staleness_bound(self):
+        """Eval runs on whatever the engines hold and is not what the bound protects."""
+        samples = [_make_sample([(RUN_UUID, 6)]), _make_sample([(RUN_UUID, 1)], index=1)]
+        assert_samples_weight_version_sane(_make_args(max_weight_staleness=0), samples, rollout_id=5, is_eval=True)
 
     def test_empty_batch_passes(self):
         """An empty sample list is trivially sane."""
