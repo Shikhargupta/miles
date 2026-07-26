@@ -3,13 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-
-from tests.fast.launch_scripts.sh_harness import (
-    REPO_ROOT,
-    format_invocations,
-    iter_launch_scripts,
-    run_launch_script,
-)
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, format_invocations, iter_launch_scripts, run_launch_script
 
 _SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 _UPDATE_ENV_VAR = "MILES_UPDATE_LAUNCH_SCRIPT_SNAPSHOTS"
@@ -44,9 +38,7 @@ _SCRIPTS_REFUSING_TO_RUN_WITHOUT_EXPLICIT_INPUTS: dict[str, LaunchScriptCase] = 
     "examples/p2p_weight_transfer/run-glm5-disagg-profile.sh": LaunchScriptCase(
         args=("GLM-5", "p2p", "0", _HEAD_NODE_IP), env={"MILES_LOG_DIR": "{workdir}"}
     ),
-    "examples/p2p_weight_transfer/run-kimi-k2-64node-profile.sh": LaunchScriptCase(
-        args=("p2p", "0", _HEAD_NODE_IP)
-    ),
+    "examples/p2p_weight_transfer/run-kimi-k2-64node-profile.sh": LaunchScriptCase(args=("p2p", "0", _HEAD_NODE_IP)),
     "examples/p2p_weight_transfer/run-qwen3-235B-A22B-16node-profile.sh": LaunchScriptCase(
         args=("p2p", "0", _HEAD_NODE_IP)
     ),
