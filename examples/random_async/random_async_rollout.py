@@ -195,9 +195,7 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
         sample.prefix_cache_info.add(meta)
 
         sample.weight_versions.append(
-            WeightVersionsPerCall.from_meta_info(
-                meta, output_end=perfect_cacheable_prefix_len, num_output_tokens=retained_generated_tokens
-            )
+            WeightVersionsPerCall.from_meta_info(meta, output_end=perfect_cacheable_prefix_len)
         )
 
         if len(current_ids) >= MAX_CONTEXT_TOKENS:
