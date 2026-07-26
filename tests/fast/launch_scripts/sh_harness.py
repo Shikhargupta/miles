@@ -31,7 +31,6 @@ _SHIMMED_COMMANDS = (
     "docker",
     "git",
     "hf",
-    "huggingface-cli",
     "ip",
     "mkdir",
     "nc",
