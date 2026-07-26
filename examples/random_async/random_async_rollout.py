@@ -196,7 +196,7 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
 
         sample.weight_versions.append(
             compute_weight_versions_per_call_from_meta_info(
-                meta, num_new_tokens=len(segment), offset=len(current_ids) - len(segment)
+                meta, num_output_tokens=len(segment), output_start=len(current_ids) - len(segment)
             )
         )
 

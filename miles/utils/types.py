@@ -27,18 +27,19 @@ class WeightVersionsPerCall:
 
 
 def compute_weight_versions_per_call_from_meta_info(
-    meta_info: dict, num_new_tokens: int, offset: int
+    meta_info: dict, num_output_tokens: int, output_start: int
 ) -> WeightVersionsPerCall:
     if (raw_spans := meta_info.get("weight_versions")) is not None:
         spans = [(span["version"], span["start"], span["end"]) for span in raw_spans]
-    elif meta_info.get("weight_version") is not None and num_new_tokens > 0:
-        spans = [(meta_info["weight_version"], 0, num_new_tokens)]
+    elif meta_info.get("weight_version") is not None and num_output_tokens > 0:
+        spans = [(meta_info["weight_version"], 0, num_output_tokens)]
     else:
         spans = []
 
     return WeightVersionsPerCall(
         spans=[
-            WeightVersionSpan(version=version, start=offset + start, end=offset + end) for version, start, end in spans
+            WeightVersionSpan(version=version, start=output_start + start, end=output_start + end)
+            for version, start, end in spans
         ]
     )
 
@@ -331,10 +332,12 @@ class Sample:
         # Collect prefix cache statistics
         self.prefix_cache_info.add(meta_info=meta_info)
 
-        num_new_tokens = len(meta_info.get("output_token_logprobs") or [])
+        num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
         self.weight_versions.append(
             compute_weight_versions_per_call_from_meta_info(
-                meta_info, num_new_tokens=num_new_tokens, offset=len(self.tokens) - num_new_tokens
+                meta_info,
+                num_output_tokens=num_output_tokens,
+                output_start=len(self.tokens) - num_output_tokens,
             )
         )
 

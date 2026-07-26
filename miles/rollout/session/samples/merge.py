@@ -123,7 +123,7 @@ def _compute_sample_from_openai_record(
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
     sample.weight_versions = [
         compute_weight_versions_per_call_from_meta_info(
-            choice["meta_info"], num_new_tokens=len(output_token_ids), offset=len(prompt_token_ids)
+            choice["meta_info"], num_output_tokens=len(output_token_ids), output_start=len(prompt_token_ids)
         )
     ]
 
