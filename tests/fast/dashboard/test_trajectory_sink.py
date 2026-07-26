@@ -12,6 +12,9 @@ def _version(rollout_id: int) -> str:
     return WeightVersion(run_uuid="ab12cd34", rollout_id=rollout_id).serialize()
 
 
+_DEFAULT_VERSIONS = (_version(3), _version(4))
+
+
 class FakeRemoteMethod:
     def __init__(self, fail=False):
         self.calls = []
@@ -35,7 +38,7 @@ def clean_sink():
     TrajectoryLifecycle().sink = None
 
 
-def _sample(index=7, group=2, versions=(_version(3), _version(4))):
+def _sample(index=7, group=2, versions=_DEFAULT_VERSIONS):
     return Sample(
         index=index,
         group_index=group,
