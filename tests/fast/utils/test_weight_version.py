@@ -1,6 +1,7 @@
 import pytest
 
-from miles.utils.weight_version import WeightVersion, generate_weight_version_run_uuid, parse_weight_version_rollout_id
+from miles.utils.run_identity import generate_run_uuid
+from miles.utils.weight_version import WeightVersion, parse_weight_version_rollout_id
 
 RUN_UUID = "ab12cd34"
 
@@ -15,16 +16,12 @@ class TestWeightVersion:
         """Pinning the wire form catches a serializer and parser that drift together."""
         assert WeightVersion(run_uuid=RUN_UUID, rollout_id=7).serialize() == "ab12cd34-00000007"
 
-    def test_generated_run_uuid_is_accepted(self):
-        """The per-launch run uuid round-trips through the serialized form."""
-        run_uuid = generate_weight_version_run_uuid()
+    def test_the_launch_run_uuid_survives_a_roundtrip(self):
+        """The weight version embeds whatever the run identity produced, so the two formats must agree."""
+        run_uuid = generate_run_uuid()
         assert (
             WeightVersion.deserialize(WeightVersion(run_uuid=run_uuid, rollout_id=0).serialize()).run_uuid == run_uuid
         )
-
-    def test_generated_run_uuids_differ_between_launches(self):
-        """Two launches get different run uuids, so a foreign engine is detectable."""
-        assert generate_weight_version_run_uuid() != generate_weight_version_run_uuid()
 
     @pytest.mark.parametrize("bad", ["default", "0", "1", "", "ab12cd34-1", "ab12cd34:00000001", None])
     def test_deserialize_rejects_legacy_and_malformed_versions(self, bad):

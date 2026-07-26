@@ -157,7 +157,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                         engine.update_weights_from_disk.remote(
                             model_path=self.args.update_weight_local_checkpoint_dir,
                             weight_version=WeightVersion(
-                                run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
+                                run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id
                             ).serialize(),
                         )
                         for engine in self.rollout_engines
@@ -168,9 +168,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 # TODO: temporarily weaken checkers; should enhance and fix related logics
                 _update_weight_version_if_unset(
                     self.rollout_engines,
-                    WeightVersion(
-                        run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
-                    ).serialize(),
+                    WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
                 )
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
@@ -269,7 +267,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                     engine.update_weights_from_disk.remote(
                         model_path=self.args.update_weight_local_checkpoint_dir,
                         weight_version=WeightVersion(
-                            run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
+                            run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id
                         ).serialize(),
                     )
                     for engine in self.rollout_engines

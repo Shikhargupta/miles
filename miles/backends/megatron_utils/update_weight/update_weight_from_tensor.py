@@ -268,15 +268,13 @@ class UpdateWeightFromTensor:
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            weight_version=WeightVersion(
-                run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
-            ).serialize(),
+            weight_version=WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
-                WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id).serialize(),
+                WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
                 self.distributed_rollout_engines,
                 hf_named_tensors,
             )

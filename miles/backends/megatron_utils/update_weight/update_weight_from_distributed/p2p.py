@@ -126,7 +126,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 [
                     engine.update_weight_version.remote(
                         weight_version=WeightVersion(
-                            run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
+                            run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id
                         ).serialize()
                     )
                     for engine in self.rollout_engines

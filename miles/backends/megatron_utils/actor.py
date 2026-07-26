@@ -696,13 +696,11 @@ class MegatronTrainRayActor(TrainRayActor):
                 engine_version = ray.get(engine.get_weight_version.remote())
                 if (
                     str(engine_version)
-                    != WeightVersion(
-                        run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
-                    ).serialize()
+                    != WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
                 ):
                     raise RuntimeError(
                         f"Weight version mismatch! Engine: {engine_version}, "
-                        f"Updater: {WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id).serialize()}"
+                        f"Updater: {WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()}"
                     )
 
             if getattr(self.args, "keep_old_actor", False):

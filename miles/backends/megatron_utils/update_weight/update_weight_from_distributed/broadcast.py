@@ -116,7 +116,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         refs = update_weights_from_distributed(
             self._group_name,
             self._model_update_groups,
-            WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id).serialize(),
+            WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
             self.rollout_engines,
             converted_named_tensors,
         )

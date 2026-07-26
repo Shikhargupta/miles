@@ -88,9 +88,7 @@ class UpdateWeight(abc.ABC):
         bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
         self.update_bucket_weights(
             bucket,
-            weight_version=WeightVersion(
-                run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
-            ).serialize(),
+            weight_version=WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
         )
 
     @abc.abstractmethod

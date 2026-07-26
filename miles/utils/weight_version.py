@@ -1,8 +1,12 @@
 import re
-import uuid
 from dataclasses import dataclass
 
-_SERIALIZED_PATTERN = re.compile(r"^(?P<run_uuid>[0-9a-f]{8})-(?P<rollout_id>[0-9]{8})$")
+from miles.utils.run_identity import RUN_UUID_LENGTH
+
+_ROLLOUT_ID_DIGITS = 8
+_SERIALIZED_PATTERN = re.compile(
+    rf"^(?P<run_uuid>[0-9a-f]{{{RUN_UUID_LENGTH}}})-(?P<rollout_id>[0-9]{{{_ROLLOUT_ID_DIGITS}}})$"
+)
 
 
 @dataclass(frozen=True)
@@ -13,7 +17,7 @@ class WeightVersion:
     rollout_id: int
 
     def serialize(self) -> str:
-        result = f"{self.run_uuid}-{self.rollout_id:08d}"
+        result = f"{self.run_uuid}-{self.rollout_id:0{_ROLLOUT_ID_DIGITS}d}"
         assert _SERIALIZED_PATTERN.match(result), f"malformed weight version {result!r} from {self!r}"
         return result
 
@@ -21,12 +25,11 @@ class WeightVersion:
     def deserialize(value: str) -> "WeightVersion":
         match = _SERIALIZED_PATTERN.match(str(value))
         if match is None:
-            raise ValueError(f"invalid weight version {value!r}; expected '<8-hex-run-uuid>-<8-digit-rollout-id>'")
+            raise ValueError(
+                f"invalid weight version {value!r}; "
+                f"expected '<{RUN_UUID_LENGTH}-hex-run-uuid>-<{_ROLLOUT_ID_DIGITS}-digit-rollout-id>'"
+            )
         return WeightVersion(run_uuid=match.group("run_uuid"), rollout_id=int(match.group("rollout_id")))
-
-
-def generate_weight_version_run_uuid() -> str:
-    return uuid.uuid4().hex[:8]
 
 
 def parse_weight_version_rollout_id(value: str) -> int | None:
