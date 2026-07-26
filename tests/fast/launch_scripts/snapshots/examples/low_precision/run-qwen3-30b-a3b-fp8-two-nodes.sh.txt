@@ -6,6 +6,14 @@
 "-m"
 
 ### 1
+"ps"
+"aux"
+
+### 2
+"ps"
+"aux"
+
+### 3
 "ray"
 "job"
 "submit"

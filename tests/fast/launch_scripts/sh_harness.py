@@ -38,6 +38,7 @@ _SHIMMED_COMMANDS = (
     "pip",
     "pip3",
     "pkill",
+    "ps",
     "python",
     "python3",
     "ray",

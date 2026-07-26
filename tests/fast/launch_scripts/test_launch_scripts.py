@@ -21,13 +21,13 @@ _HEAD_NODE_IP = "10.0.0.1"
 _SCRIPTS_REFUSING_TO_RUN_WITHOUT_EXPLICIT_INPUTS: dict[str, LaunchScriptCase] = {
     "examples/lora/run-qwen2.5-3B-megatron-lora-disaggregated-multi-node.sh": LaunchScriptCase(args=("p2p", "0")),
     "examples/on_policy_distillation/qwen3_5_35b_selfdistill/phase1_rlvr_teacher.sh": LaunchScriptCase(
-        env={"OUTPUT_DIR": "{workdir}", "MILES_DIR": "{repo_root}"}
+        env={"OUTPUT_DIR": "{workdir}"}
     ),
     "examples/on_policy_distillation/qwen3_5_35b_selfdistill/phase2_gb200.sh": LaunchScriptCase(
-        env={"OUTPUT_DIR": "{workdir}", "MILES_DIR": "{repo_root}"}
+        env={"OUTPUT_DIR": "{workdir}"}
     ),
     "examples/on_policy_distillation/qwen3_5_35b_selfdistill/phase2_opd_selfdistill.sh": LaunchScriptCase(
-        env={"OUTPUT_DIR": "{workdir}", "MILES_DIR": "{repo_root}"}
+        env={"OUTPUT_DIR": "{workdir}"}
     ),
     "examples/p2p_weight_transfer/run-glm4.5-air-8node-profile.sh": LaunchScriptCase(
         args=("p2p", "0", _HEAD_NODE_IP), env={"MILES_LOG_DIR": "{workdir}"}
@@ -68,7 +68,7 @@ def recorded(request, tmp_path):
         REPO_ROOT / rel,
         sandbox=tmp_path,
         args=case.args,
-        extra_env={key: value.format(workdir=workdir, repo_root=REPO_ROOT) for key, value in case.env.items()},
+        extra_env={key: value.format(workdir=workdir) for key, value in case.env.items()},
     )
     return rel, run
 
