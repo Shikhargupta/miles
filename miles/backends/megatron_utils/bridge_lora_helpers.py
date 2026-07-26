@@ -101,9 +101,9 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
             f"--target-modules (got {sorted(served & expert_pair)}); a one-sided expert "
             f"target is dropped at rollout time."
         )
-    assert not getattr(provider, "moe_pad_expert_input_to_capacity", False), (
-        "Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity."
-    )
+    assert not getattr(
+        provider, "moe_pad_expert_input_to_capacity", False
+    ), "Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity."
     # Set before finalize(); assert so a surviving provider default fails at build time.
     assert not getattr(provider, "moe_permute_fusion", False), (
         "Multi-LoRA on MoE experts requires moe_permute_fusion=False (the fused permute's "
