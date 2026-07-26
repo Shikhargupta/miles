@@ -92,6 +92,7 @@ async def main(args):
         rollout_id += 1
 
     await rollout_executor.dispose.remote()
+    await inference_controller.dispose.remote()
     await controller.stop.remote()
 
 

@@ -329,9 +329,14 @@ class TestRefreshCellsHealing:
             assert dst_ranks == [1, 2]
 
     async def test_healed_cell_receives_set_rollout_components(self):
-        """Healed cell receives set_rollout_components after init."""
-        inference_ctl = MagicMock()
-        group = await _make_alive_group(num_cells=2, inference_controller=inference_ctl, rollout_executor=MagicMock())
+        """Healed cell receives both rollout handles, in order, after init.
+
+        Plain strings (not MagicMocks) stand in for the handles: they survive
+        the round-trip through the Ray actor intact, so the assertion catches a
+        swapped pair rather than only a missing call."""
+        group = await _make_alive_group(
+            num_cells=2, inference_controller="controller-handle", rollout_executor="executor-handle"
+        )
         group.stop_cell(1)
         group.start_cell(1)
 
@@ -340,7 +345,10 @@ class TestRefreshCellsHealing:
         assert group._cells[1].is_alive
         for handle in group._cells[1]._get_actor_handles():
             calls = ray.get(handle.get_calls.remote())
-            assert any(c[0] == "set_rollout_components" for c in calls)
+            set_calls = [c for c in calls if c[0] == "set_rollout_components"]
+            assert set_calls, "healed cell never received set_rollout_components"
+            for call in set_calls:
+                assert call[1] == ("controller-handle", "executor-handle")
 
     async def test_pending_cell_with_stopped_cell(self):
         """Pending + stopped: only alive and pending participate, stopped excluded."""

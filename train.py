@@ -136,6 +136,7 @@ async def train(args):
             break
 
     await rollout_executor.dispose.remote()
+    await inference_controller.dispose.remote()
 
 
 if __name__ == "__main__":

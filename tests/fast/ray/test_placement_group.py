@@ -9,6 +9,7 @@ owns it."""
 from __future__ import annotations
 
 from argparse import Namespace
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,17 +35,25 @@ def _make_args(**overrides) -> Namespace:
 
 
 class _FakeActorClass:
-    """Mimics ``SomeRayActor.options(...).remote(...)``, recording ctor args."""
+    """Mimics ``SomeRayActor.options(...).remote(...)``, recording ctor args.
+
+    Ray pickles the arguments at ``.remote()`` time, so mutating ``args``
+    afterwards would not reach the actor. The recorded args are therefore
+    snapshotted the same way, otherwise a test holding the live ``args`` object
+    cannot tell "filled in before the actor was created" from "filled in
+    after"."""
 
     def __init__(self, handle: MagicMock) -> None:
         self._handle = handle
         self.remote_calls: list[tuple] = []
+        self.arg_snapshots: list[Namespace] = []
 
     def options(self, **_kwargs):
         return self
 
     def remote(self, *args):
         self.remote_calls.append(args)
+        self.arg_snapshots.append(deepcopy(args[0]) if args and isinstance(args[0], Namespace) else None)
         return self._handle
 
 
@@ -78,18 +87,29 @@ def fake_actors():
 
 class TestCreateRolloutComponents:
     def test_publishes_router_info_into_args_before_creating_executor(self, fake_actors):
-        """The executor's ``init_tracking`` reads ``args.sglang_router_*``, so the
-        router address must be resolved from the controller and written into the
-        args object the executor is constructed with."""
+        """The executor's ``init_tracking``, HTTP client and session servers all
+        read ``args.sglang_router_*``, and Ray pickles args at construction time.
+        The router address must therefore already be in args at the moment the
+        executor actor is created — filling it in afterwards would reach the
+        driver's copy only."""
         args = _make_args(num_rollout=1)
 
         create_rollout_components(args, pg=MagicMock())
 
-        assert args.sglang_router_ip == "10.0.0.1"
-        assert args.sglang_router_port == 4321
-        assert args.sglang_model_routers == {"actor": ("10.0.0.1", 4321)}
-        (executor_ctor_args,) = fake_actors.executor_cls.remote_calls
-        assert executor_ctor_args[0] is args
+        (executor_args_at_construction,) = fake_actors.executor_cls.arg_snapshots
+        assert executor_args_at_construction.sglang_router_ip == "10.0.0.1"
+        assert executor_args_at_construction.sglang_router_port == 4321
+        assert executor_args_at_construction.sglang_model_routers == {"actor": ("10.0.0.1", 4321)}
+
+    def test_controller_is_created_before_the_router_address_is_known(self, fake_actors):
+        """The controller is what starts the router, so it cannot be handed the
+        address — it must be constructed with args that still lack it."""
+        args = _make_args(num_rollout=1)
+
+        create_rollout_components(args, pg=MagicMock())
+
+        (controller_args_at_construction,) = fake_actors.controller_cls.arg_snapshots
+        assert controller_args_at_construction.sglang_router_ip is None
 
     def test_passes_controller_handle_to_executor(self, fake_actors):
         """The executor calls back into the controller for per-rollout hooks, so

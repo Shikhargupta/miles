@@ -17,7 +17,7 @@ same `POST /run` endpoint; this one drives it from
 trainer-side (rcli pod, this node)             agent-server (external host)
 +--------------------+                         +-----------------------------+
 |  Megatron actor    |  weights -> sglang ---->|                             |
-|  RolloutManager    |                         |   miles_agent_server.py     |
+|  RolloutExecutor   |                         |   miles_agent_server.py     |
 |     ^              |  POST /run         ---->|     (harbor-private branch) |
 |     | GRPO updates |                         |     spawns Docker -> agent  |
 +-----+--------------+                         |     -> verifier -> reward   |

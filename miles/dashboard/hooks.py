@@ -281,7 +281,7 @@ def register_train_actor(args) -> None:
 
 
 def register_router(args) -> None:
-    """Called by the rollout manager AFTER start_rollout_servers: only then are
+    """Called by the inference controller AFTER start_rollout_servers: only then are
     ``args.sglang_router_ip/port`` filled in. init_tracking runs earlier in
     __init__, so the backend cannot register the router at init time."""
     if not args.use_miles_dashboard:

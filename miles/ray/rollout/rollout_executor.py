@@ -8,6 +8,7 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
+from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -20,6 +21,7 @@ from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import RolloutExecutorProcessIdentity
 from miles.utils.environ import enable_experimental_rollout_refactor
+from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
@@ -45,6 +47,12 @@ class RolloutExecutor:
         self._inference_controller = inference_controller
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+
+        # The rollout functions run here, so this is the process that talks HTTP
+        # to the engines and owns the session servers they call back into.
+        if not self.args.debug_train_only:
+            init_http_client(args)
+            start_session_server(args)
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)

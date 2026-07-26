@@ -113,6 +113,13 @@ Custom trainer groups must rename `set_rollout_manager` to `set_rollout_componen
 accept `inference_controller` / `rollout_executor` instead of `rollout_manager`.
 `start_control_server` takes `inference_controller=` instead of `rollout_manager=`.
 
+### Resource requirement
+
+The rollout side now needs **two** schedulable CPUs instead of one, since it is two
+actors. With `--pin-rollout-manager-to-head` both land on the head node, so the head
+needs two free CPUs — otherwise the executor stays `PENDING` and the run hangs at
+startup with no error. Ray reports this under `ray status` as an unschedulable actor.
+
 ## Other recent breakages
 
 ### v0.0.8 → v0.0.9

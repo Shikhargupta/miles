@@ -8,13 +8,11 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
-from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.utils import Lock
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import InferenceControllerProcessIdentity
 from miles.utils.health_monitor import RolloutHealthMonitor
-from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)

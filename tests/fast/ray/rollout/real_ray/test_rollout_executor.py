@@ -37,7 +37,10 @@ class _RecordingRemoteCall:
 
 
 class _StubInferenceController:
-    """Records the lifecycle hooks the executor is expected to fire."""
+    """Records the lifecycle hooks the executor is expected to fire.
+
+    ``calls`` is shared with the rollout function stubs in the ordering tests:
+    hook-vs-generation ordering is only observable if both land in one list."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
@@ -46,7 +49,19 @@ class _StubInferenceController:
 
 
 @pytest.fixture
-def patch_low_level(monkeypatch):
+def process_setup_calls(monkeypatch) -> list[str]:
+    """Records the per-process setup the executor performs, so tests can assert
+    it happens *here* rather than in the controller process."""
+    import miles.ray.rollout.rollout_executor as rexec
+
+    recorded: list[str] = []
+    monkeypatch.setattr(rexec, "init_http_client", lambda args: recorded.append("init_http_client"))
+    monkeypatch.setattr(rexec, "start_session_server", lambda args: recorded.append("start_session_server"))
+    return recorded
+
+
+@pytest.fixture
+def patch_low_level(monkeypatch, process_setup_calls):
     """No-op the executor dependencies that touch wandb / tensorboard / disk /
     not-importable default function paths."""
     import miles.ray.rollout.rollout_executor as rexec
@@ -74,6 +89,41 @@ def _make_test_args(**overrides):
         use_distributed_post=False,
         **overrides,
     )
+
+
+@pytest.mark.asyncio
+class TestProcessSetup:
+    """The rollout functions run inside this actor, so the HTTP client and the
+    session servers they use must be set up in *this* process. Both are
+    process-local (a module global client, and locally spawned subprocesses), so
+    initializing them in the controller instead leaves the executor with no
+    client at all."""
+
+    async def test_initializes_http_client_and_session_servers(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        process_setup_calls,
+    ):
+        args = _make_test_args()
+
+        _make_executor(args, _StubInferenceController())
+
+        assert process_setup_calls == ["init_http_client", "start_session_server"]
+
+    async def test_skips_process_setup_in_debug_train_only(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        process_setup_calls,
+    ):
+        """No engines exist in this mode, so there is nothing to talk to."""
+        args = _make_test_args()
+        args.debug_train_only = True
+
+        _make_executor(args, _StubInferenceController())
+
+        assert process_setup_calls == []
 
 
 @pytest.mark.asyncio
@@ -142,18 +192,15 @@ class TestGenerate:
         executor = _make_executor(args, controller)
         executor.set_train_parallel_config({"dp_size": 1})
 
-        call_order: list[str] = []
-
         def fake_rollout_fn(input):
-            call_order.append("rollout_fn")
+            controller.calls.append(("rollout_fn", (input.rollout_id,)))
             return RolloutFnTrainOutput(samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={})
 
         executor.generate_rollout = fake_rollout_fn
 
         await executor.generate(rollout_id=7)
 
-        assert controller.calls == [("prepare_rollout", (7,))]
-        assert call_order == ["rollout_fn"]
+        assert controller.calls == [("prepare_rollout", (7,)), ("rollout_fn", (7,))]
 
 
 @pytest.mark.asyncio
@@ -172,6 +219,7 @@ class TestEval:
 
         def fake_eval_fn(input):
             captured.append(input)
+            controller.calls.append(("eval_fn", ()))
             return RolloutFnEvalOutput(
                 data={"my_dataset": {"rewards": [0.5, 1.0]}},
                 metrics={},
@@ -184,7 +232,8 @@ class TestEval:
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnEvalInput)
         assert captured[0].rollout_id == 10
-        assert controller.calls == [("prepare_eval", ())]
+        # health monitoring must resume before eval issues any request
+        assert controller.calls == [("prepare_eval", ()), ("eval_fn", ())]
 
     async def test_skipped_in_debug_train_only_mode(
         self,
