@@ -76,25 +76,12 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 ## `RolloutManager` split into `InferenceController` + `RolloutExecutor`
 
-### What changed
+The one `RolloutManager` actor is now two independent Ray actors:
 
-The single `RolloutManager` Ray actor is gone. Two independent Ray actors take its place:
-
-* `InferenceController` (`miles/ray/rollout/inference_controller.py`) owns the sglang
-  servers, the router, the engine lock and the health monitors. It exposes the
-  control-plane API: `offload`, `onload`, `onload_weights`, `onload_kv`,
-  `get_updatable_engines_and_lock`, `clear_updatable_has_new_engines`,
-  `recover_updatable_engines`, `start_cell`, `stop_cell`, `check_weights`,
-  `health_monitoring_pause`.
-* `RolloutExecutor` (`miles/ray/rollout/rollout_executor.py`) owns the data source, the
-  rollout functions and the data conversion. It exposes `generate`, `eval`, `save`,
-  `load`, `get_num_rollout_per_epoch`, `set_train_parallel_config`, `dispose`.
-
-`create_rollout_manager` is replaced by `create_rollout_components`, which returns a
-`RolloutComponents` named tuple of `(inference_controller, rollout_executor,
-num_rollout_per_epoch)`. `create_training_models` takes the two handles directly.
-
-### How to migrate
+| Actor | Owns | API |
+|---|---|---|
+| `InferenceController` | sglang servers, router, engine lock, health monitors | `offload`, `onload`, `onload_weights`, `onload_kv`, `get_updatable_engines_and_lock`, `clear_updatable_has_new_engines`, `recover_updatable_engines`, `start_cell`, `stop_cell`, `check_weights`, `health_monitoring_pause` |
+| `RolloutExecutor` | data source, rollout functions, data conversion | `generate`, `eval`, `save`, `load`, `get_num_rollout_per_epoch`, `set_train_parallel_config`, `dispose` |
 
 ```diff
 - rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
@@ -109,16 +96,13 @@ num_rollout_per_epoch)`. `create_training_models` takes the two handles directly
 + await inference_controller.onload_weights.remote()
 ```
 
-Custom trainer groups must rename `set_rollout_manager` to `set_rollout_components` and
-accept `inference_controller` / `rollout_executor` instead of `rollout_manager`.
-`start_control_server` takes `inference_controller=` instead of `rollout_manager=`.
+Also rename: `create_training_models` takes both handles, `set_rollout_manager` →
+`set_rollout_components`, `start_control_server(rollout_manager=)` →
+`start_control_server(inference_controller=)`.
 
-### Resource requirement
-
-The rollout side now needs **two** schedulable CPUs instead of one, since it is two
-actors. With `--pin-rollout-manager-to-head` both land on the head node, so the head
-needs two free CPUs — otherwise the executor stays `PENDING` and the run hangs at
-startup with no error. Ray reports this under `ray status` as an unschedulable actor.
+**Two actors need two CPUs.** With `--pin-rollout-manager-to-head` the head must have
+two free, or the executor sits `PENDING` and startup hangs silently — check
+`ray status`.
 
 ## Other recent breakages
 
