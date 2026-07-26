@@ -61,7 +61,7 @@ _SYNTHETIC_SCRIPT = """#!/bin/bash
 set -ex
 EXPECTED_GPUS=32
 while true; do
-    AVAILABLE_GPUS=$(python3 -c "print(0)" 2>/dev/null || echo 0)
+    AVAILABLE_GPUS=$(python3 -c "import ray; print(int(ray.cluster_resources().get('GPU', 0)))" 2>/dev/null || echo 0)
     if [ "$AVAILABLE_GPUS" -ge "$EXPECTED_GPUS" ]; then
         break
     fi
