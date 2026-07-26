@@ -131,7 +131,7 @@ RUNTIME_ENV_JSON="{\"env_vars\": {\"PYTHONPATH\": \"${MILES_DIR}:/root/Megatron-
 cd "${MILES_DIR}"
 ray job submit --address="${RAY_ADDRESS}" --submission-id qwen3.5-opd-${MODE} --no-wait \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 ${MILES_DIR}/train.py \
+   -- python3 "${MILES_DIR}/train.py" \
    --actor-num-nodes ${ACTOR_NUM_NODES} --actor-num-gpus-per-node ${GPUS_PER_NODE} --num-gpus-per-node ${GPUS_PER_NODE} --colocate \
    ${MODEL_ARGS[@]} ${CKPT_ARGS[@]} ${OPD_ARGS[@]} ${ROLLOUT_ARGS[@]} ${OPTIMIZER_ARGS[@]} ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} ${PERF_ARGS[@]} ${EVAL_ARGS[@]} ${SGLANG_ARGS[@]} ${MISC_ARGS[@]} ${RM_ARGS[@]}
