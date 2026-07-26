@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped, make_test_weight_version
 
@@ -7,7 +9,10 @@ from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
     _compute_zero_std_metrics,
+    log_eval_rollout_data,
+    log_rollout_data,
 )
+from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -58,7 +63,7 @@ class TestTitoMismatchMetrics:
     def test_no_tito_metadata_emits_no_tito_keys(self):
         args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
         samples = make_samples_grouped(1, 4)
-        out = _compute_metrics_from_samples(args, samples)
+        out = _compute_metrics_from_samples(args, samples, rollout_id=0)
         assert "tito_session_mismatch_rate" not in out
 
     def test_clean_tito_metadata_yields_zero_rates_per_mismatch_type(self):
@@ -66,7 +71,7 @@ class TestTitoMismatchMetrics:
         samples = make_samples_grouped(1, 4)
         for s in samples:
             s.metadata = {"tito_session_mismatch": []}
-        out = _compute_metrics_from_samples(args, samples)
+        out = _compute_metrics_from_samples(args, samples, rollout_id=0)
         assert out["tito_session_mismatch_rate"] == 0.0
         for mtype in ("special_token_count", "special_token_type", "non_assistant_text", "assistant_text"):
             assert out[f"tito_session_mismatch_rate/{mtype}"] == 0.0
@@ -81,7 +86,7 @@ class TestTitoMismatchMetrics:
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
         with pytest.raises(AssertionError, match="special_token_count"):
-            _compute_metrics_from_samples(args, samples)
+            _compute_metrics_from_samples(args, samples, rollout_id=0)
 
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the
@@ -91,7 +96,7 @@ class TestTitoMismatchMetrics:
         samples[0].metadata = {"tito_session_mismatch": [{"type": "assistant_text"}]}
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
-        out = _compute_metrics_from_samples(args, samples)
+        out = _compute_metrics_from_samples(args, samples, rollout_id=0)
         assert out["tito_session_mismatch_rate/assistant_text"] > 0
 
 
@@ -146,7 +151,7 @@ class TestWeightVersionMetrics:
             _make_versioned_sample([5, 6], index=1),
         ]
 
-        out = _compute_metrics_from_samples(make_args(), samples)
+        out = _compute_metrics_from_samples(make_args(), samples, rollout_id=9)
 
         assert out["weight_version/min"] == 4
         assert out["weight_version/max"] == 5
@@ -156,13 +161,13 @@ class TestWeightVersionMetrics:
         """Two calls that both saw the same version must not count as mixed."""
         samples = [_make_versioned_sample([7, 7], index=0)]
 
-        out = _compute_metrics_from_samples(make_args(), samples)
+        out = _compute_metrics_from_samples(make_args(), samples, rollout_id=9)
 
         assert out["weight_version/mixed_version_ratio"] == 0.0
 
     def test_no_version_metrics_when_nothing_was_stamped(self):
         """SFT-style batches carry no versions and must not synthesise the series."""
-        out = _compute_metrics_from_samples(make_args(), [make_sample(index=0, group_index=0)])
+        out = _compute_metrics_from_samples(make_args(), [make_sample(index=0, group_index=0)], rollout_id=9)
 
         assert not any(key.startswith("weight_version/") for key in out)
 
@@ -173,4 +178,85 @@ def _make_versioned_sample(rollout_ids: list[int], *, index: int) -> Sample:
         WeightVersionsPerCall(spans=[WeightVersionSpan(make_test_weight_version(rollout_id), i, i + 1)])
         for i, rollout_id in enumerate(rollout_ids)
     ]
+    return sample
+
+
+class TestWeightStalenessMetrics:
+    def test_staleness_is_measured_from_each_sample_oldest_weights(self):
+        """Staleness spreads over the batch from the oldest weights each sample was generated with."""
+        samples = [
+            _make_staleness_sample([5], index=0),
+            _make_staleness_sample([3, 5], index=1),
+            _make_staleness_sample([4], index=2),
+        ]
+
+        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=5)
+
+        assert log_dict["weight_staleness/max"] == 2
+        assert log_dict["weight_staleness/min"] == 0
+        assert log_dict["weight_staleness/mean"] == 1.0
+
+    def test_fully_on_policy_batch_reports_zero_staleness(self):
+        """Every sample generated with this rollout's own weights is not stale at all."""
+        samples = [_make_staleness_sample([7], index=0), _make_staleness_sample([7], index=1)]
+
+        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=7)
+
+        assert log_dict["weight_staleness/max"] == 0
+        assert log_dict["weight_staleness/mean"] == 0.0
+
+    def test_staleness_uses_the_oldest_weights_whatever_order_they_appear_in(self):
+        """Taking the first span instead of the oldest would pass on ascending data alone."""
+        ascending = _compute_metrics_from_samples(make_args(), [_make_staleness_sample([3, 5], index=0)], rollout_id=5)
+        descending = _compute_metrics_from_samples(
+            make_args(), [_make_staleness_sample([5, 3], index=0)], rollout_id=5
+        )
+
+        assert ascending["weight_staleness/max"] == 2
+        assert descending["weight_staleness/max"] == 2
+
+    def test_train_entry_passes_the_rollout_being_generated(self):
+        """The staleness series is meaningless if the entry point hands over the wrong rollout."""
+        samples = [_make_staleness_sample([4], index=0)]
+        logged = {}
+
+        with (
+            patch.object(tracking, "log", lambda args, log_dict, step_key: logged.update(log_dict)),
+            patch("miles.ray.rollout.metrics._compute_perf_metrics_from_samples", return_value={}),
+        ):
+            log_rollout_data(6, make_args(), samples, None, 1.0)
+
+        assert logged["rollout/weight_staleness/max"] == 2
+
+    def test_eval_entry_passes_the_rollout_being_evaluated(self):
+        """Eval reports the same series under its own prefix, from the same rollout id."""
+        samples = [_make_staleness_sample([4], index=0)]
+        logged = {}
+
+        with patch.object(tracking, "log", lambda args, log_dict, step_key: logged.update(log_dict)):
+            log_eval_rollout_data(6, make_args(), {"ds": {"rewards": [1.0], "samples": samples}})
+
+        assert logged["eval/ds/weight_staleness/max"] == 2
+
+    def test_no_staleness_metrics_under_lora(self):
+        """A LoRA engine's version describes the frozen base, so the distance from it means nothing."""
+        args = make_args(lora_rank=32)
+        log_dict = _compute_metrics_from_samples(args, [_make_staleness_sample([5], index=0)], rollout_id=7)
+
+        assert not any(key.startswith("weight_staleness/") for key in log_dict)
+
+    def test_no_staleness_metrics_without_weight_versions(self):
+        """Samples the engine never stamped contribute no staleness series."""
+        log_dict = _compute_metrics_from_samples(make_args(), [_make_staleness_sample([], index=0)], rollout_id=5)
+
+        assert not any(key.startswith("weight_staleness/") for key in log_dict)
+
+
+def _make_staleness_sample(version_rollout_ids: list[int], *, index: int) -> Sample:
+    calls = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan(make_test_weight_version(rollout_id), i, i + 1)])
+        for i, rollout_id in enumerate(version_rollout_ids)
+    ]
+    sample = make_sample(index=index, group_index=0)
+    sample.weight_versions = calls
     return sample

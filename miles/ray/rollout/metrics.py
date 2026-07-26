@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 
 from miles.utils.iter_utils import group_by
+from miles.utils.lora import is_lora_enabled
 from miles.utils.metric_utils import (
     compute_pass_rate,
     compute_rollout_step,
@@ -37,7 +38,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
             rewards = [0.0 if r is None else r for r in rewards]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
-            log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
+            log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples, rollout_id), f"eval/{key}/")
         if "truncated" in data[key]:
             truncated = data[key]["truncated"]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
@@ -69,7 +70,7 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
         return
 
     log_dict = {**(rollout_extra_metrics or {})}
-    log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
+    log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples, rollout_id), "rollout/")
     log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
     if args.log_passrate:
         log_dict |= dict_add_prefix(
@@ -82,7 +83,7 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     tracking.log(args, log_dict, step_key="rollout/step")
 
 
-def _compute_metrics_from_samples(args, samples):
+def _compute_metrics_from_samples(args, samples, rollout_id):
     response_lengths = [sample.effective_response_length for sample in samples]
 
     log_dict = {}
@@ -99,6 +100,10 @@ def _compute_metrics_from_samples(args, samples):
         log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
         mixed = sum(1 for s in samples if len({span.version for span in s.all_weight_version_spans}) > 1)
         log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
+        if not is_lora_enabled(args):
+            log_dict |= dict_add_prefix(
+                compute_statistics([rollout_id - version for version in oldest_versions]), "weight_staleness/"
+            )
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]

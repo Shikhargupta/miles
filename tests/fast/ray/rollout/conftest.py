@@ -119,6 +119,7 @@ def make_args(**overrides: Any) -> Namespace:
         max_weight_staleness=None,
         update_weights_interval=1,
         debug_skip_weight_update=False,
+        # LoRA
         lora_rank=0,
         lora_adapter_path=None,
         # CI
