@@ -254,7 +254,7 @@ class RayTrainGroup:
 
     async def update_weights(self, *, weight_rollout_id: int):
         """Broadcast weights to rollout engines."""
-        log_structured(logger.info, op="update_weights", phase="start", rollout=weight_rollout_id)
+        log_structured(logger.info, op="update_weights", phase="start", weight_rollout_id=weight_rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
