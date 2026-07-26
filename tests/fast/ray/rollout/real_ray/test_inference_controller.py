@@ -8,6 +8,7 @@ import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
 
 
@@ -104,7 +105,7 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
     deadline = time.monotonic() + deadline_s
     while True:
         try:
-            ray.get(actor_handle.health_generate.remote(timeout=1.0), timeout=5.0)
+            ray.get(actor_handle.get_calls.remote(), timeout=5.0)
         except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
             return
         except ray.exceptions.GetTimeoutError:
@@ -124,17 +125,17 @@ class TestInferenceControllerInit:
         patch_low_level,
     ):
         """End-to-end smoke: production ``__init__`` + ``start_rollout_servers``
-        runs against MockSGLangEngine; resulting engines are reachable as Ray
-        actor handles via the public ``get_updatable_engines_and_lock``."""
+        runs against MockSGLangEngine; the resulting engines are reachable over
+        HTTP via the public ``get_updatable_engines_and_lock``."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2
-        for h in eal.rollout_engines:
-            assert isinstance(h, ray.actor.ActorHandle)
-            assert ray.get(h.health_generate.remote(timeout=1.0)) is True
+        for api_client in eal.rollout_engines:
+            assert isinstance(api_client, SGLangApiClient)
+            assert await api_client.health_generate(timeout=5.0) is True
 
 
 @pytest.mark.asyncio
@@ -157,7 +158,7 @@ class TestStartStopCell:
         await controller.stop_cell(0)
 
         await _assert_engine_dies(actor0)
-        assert ray.get(actor1.health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(actor1.get_calls.remote()), list)
 
     async def test_start_cell_recovers_after_stop_cell(
         self,
@@ -182,7 +183,7 @@ class TestStartStopCell:
         actor0_after = eal_after.rollout_engines[0]
 
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
-        assert ray.get(actor0_after.health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(actor0_after.get_calls.remote()), list)
 
     async def test_stop_cell_targets_high_id_correctly(
         self,
@@ -202,7 +203,7 @@ class TestStartStopCell:
 
         await controller.stop_cell(1)
 
-        assert ray.get(actor0.health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(actor0.get_calls.remote()), list)
         await _assert_engine_dies(actor1)
 
     async def test_stop_cell_is_idempotent_on_already_stopped(
@@ -247,10 +248,10 @@ class TestCellDispatchAcrossModels:
 
         # actor untouched
         for h in actor_handles:
-            assert ray.get(h.health_generate.remote(timeout=1.0)) is True
+            assert isinstance(ray.get(h.get_calls.remote()), list)
         # ref engine 0 dead, ref engine 1 alive
         await _assert_engine_dies(ref_handles[0])
-        assert ray.get(ref_handles[1].health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(ref_handles[1].get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
@@ -271,8 +272,8 @@ class TestGetUpdatableEnginesAndLock:
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
         assert eal.engine_gpu_counts == [1, 1]
-        assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
-        assert ray.get(eal.rollout_engines[0].health_generate.remote(timeout=1.0)) is True
+        assert all(isinstance(api_client, SGLangApiClient) for api_client in eal.rollout_engines)
+        assert await eal.rollout_engines[0].health_generate(timeout=5.0) is True
 
     async def test_returns_empty_when_no_updatable_model(
         self,
@@ -467,7 +468,7 @@ class TestRecoverUpdatableEngines:
         slot0 = controller.servers["actor"].server_groups[0].all_engines[0]
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
-        assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(slot0.actor_handle.get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
