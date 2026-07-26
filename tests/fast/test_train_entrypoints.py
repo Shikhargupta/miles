@@ -29,10 +29,7 @@ def test_each_entrypoint_serves_the_rollout_its_loop_shape_implies(entrypoint):
     assert calls, f"{entrypoint} pushes no weights; this guard would silently pass"
 
     served = {
-        ast.unparse(keyword.value)
-        for call in calls
-        for keyword in call.keywords
-        if keyword.arg == "weight_rollout_id"
+        ast.unparse(keyword.value) for call in calls for keyword in call.keywords if keyword.arg == "weight_rollout_id"
     }
 
     assert served == _EXPECTED_WEIGHT_ROLLOUT_IDS[entrypoint]
