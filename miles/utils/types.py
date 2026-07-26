@@ -16,31 +16,26 @@ class WeightVersionSpan(NamedTuple):
 class WeightVersionsPerCall:
     spans: list[WeightVersionSpan] = field(default_factory=list)
 
-    def to_list(self) -> list[list]:
-        return [list(span) for span in self.spans]
+    def to_dicts(self) -> list[dict]:
+        return [span._asdict() for span in self.spans]
 
     @staticmethod
-    def from_list(data: list[list]) -> "WeightVersionsPerCall":
-        return WeightVersionsPerCall(
-            spans=[WeightVersionSpan(version=version, start=start, end=end) for version, start, end in data]
-        )
+    def from_dicts(data: list[dict]) -> "WeightVersionsPerCall":
+        return WeightVersionsPerCall(spans=[WeightVersionSpan(**span) for span in data])
 
 
 def compute_weight_versions_per_call_from_meta_info(
     meta_info: dict, num_output_tokens: int, output_start: int
 ) -> WeightVersionsPerCall:
     if (raw_spans := meta_info.get("weight_versions")) is not None:
-        spans = [(span["version"], span["start"], span["end"]) for span in raw_spans]
+        spans = [WeightVersionSpan(**span) for span in raw_spans]
     elif meta_info.get("weight_version") is not None and num_output_tokens > 0:
-        spans = [(meta_info["weight_version"], 0, num_output_tokens)]
+        spans = [WeightVersionSpan(version=meta_info["weight_version"], start=0, end=num_output_tokens)]
     else:
         spans = []
 
     return WeightVersionsPerCall(
-        spans=[
-            WeightVersionSpan(version=version, start=output_start + start, end=output_start + end)
-            for version, start, end in spans
-        ]
+        spans=[span._replace(start=output_start + span.start, end=output_start + span.end) for span in spans]
     )
 
 
@@ -190,7 +185,7 @@ class Sample:
         value["status"] = self.status.value
         value["spec_info"] = self.spec_info.to_dict()
         value["prefix_cache_info"] = self.prefix_cache_info.to_dict()
-        value["weight_versions"] = [call.to_list() for call in self.weight_versions]
+        value["weight_versions"] = [call.to_dicts() for call in self.weight_versions]
         return value
 
     @staticmethod
@@ -199,7 +194,7 @@ class Sample:
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))
-        data["weight_versions"] = [WeightVersionsPerCall.from_list(call) for call in data.get("weight_versions", [])]
+        data["weight_versions"] = [WeightVersionsPerCall.from_dicts(call) for call in data.get("weight_versions", [])]
 
         field_names = set(Sample.__dataclass_fields__.keys())
         init_data = {k: v for k, v in data.items() if k in field_names}
