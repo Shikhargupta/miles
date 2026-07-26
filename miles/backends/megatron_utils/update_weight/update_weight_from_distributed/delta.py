@@ -54,6 +54,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self.model = model
         self.model_name = model_name
         self.quantization_config = quantization_config
+        # TODO: unify with refactored weight version after delta mode is stablized
         self._delta_version = 0
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale: bool = False
