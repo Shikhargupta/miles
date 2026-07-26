@@ -32,8 +32,8 @@ class TestWeightVersion:
         with pytest.raises(ValueError, match="invalid weight version"):
             WeightVersion.deserialize(bad)
 
-    def test_parse_rollout_id_falls_back_to_bare_integers(self):
-        """Dumps predating the run-scoped format still yield a rollout id for display."""
+    def test_parse_rollout_id_rejects_anything_but_the_run_scoped_format(self):
+        """A bare counter from an older run is not comparable to a run-scoped id, so it is not one."""
         assert parse_weight_version_rollout_id(WeightVersion(run_uuid=RUN_UUID, rollout_id=7).serialize()) == 7
-        assert parse_weight_version_rollout_id("12") == 12
+        assert parse_weight_version_rollout_id("12") is None
         assert parse_weight_version_rollout_id("default") is None

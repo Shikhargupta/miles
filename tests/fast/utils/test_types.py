@@ -7,6 +7,11 @@ import numpy
 import pytest
 
 from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.weight_version import WeightVersion
+
+
+def _weight_version(rollout_id: int) -> str:
+    return WeightVersion(run_uuid="ab12cd34", rollout_id=rollout_id).serialize()
 
 
 def _make_sample(
@@ -268,5 +273,9 @@ class TestWeightVersions:
     def test_oldest_weight_version_reads_all_spans(self):
         """oldest_weight_version takes the minimum numeric version across every span."""
         s = _make_sample([1, 2], [3, 4, 5])
-        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("7", 2, 4), WeightVersionSpan("5", 4, 5)])]
+        s.weight_versions = [
+            WeightVersionsPerCall(
+                spans=[WeightVersionSpan(_weight_version(7), 2, 4), WeightVersionSpan(_weight_version(5), 4, 5)]
+            )
+        ]
         assert s.oldest_weight_version == 5

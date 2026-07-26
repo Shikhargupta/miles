@@ -9,6 +9,13 @@ import pytest
 import ray
 
 from miles.utils.types import Sample
+from miles.utils.weight_version import WeightVersion
+
+TEST_WEIGHT_VERSION_RUN_UUID = "ab12cd34"
+
+
+def make_test_weight_version(rollout_id: int) -> str:
+    return WeightVersion(run_uuid=TEST_WEIGHT_VERSION_RUN_UUID, rollout_id=rollout_id).serialize()
 
 
 def fake_actor_handle() -> MagicMock:

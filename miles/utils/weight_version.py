@@ -33,4 +33,4 @@ def parse_weight_version_rollout_id(value: str) -> int | None:
     try:
         return WeightVersion.deserialize(value).rollout_id
     except ValueError:
-        return int(value) if str(value).isdigit() else None
+        return None

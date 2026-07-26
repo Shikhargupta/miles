@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped, make_test_weight_version
 
 from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
@@ -142,8 +142,8 @@ class TestWeightVersionMetrics:
     def test_reports_oldest_version_statistics_and_mixed_ratio(self):
         """weight_version/* summarises each sample's oldest version; mixed counts samples spanning an update."""
         samples = [
-            _make_versioned_sample(["4"], index=0),
-            _make_versioned_sample(["5", "6"], index=1),
+            _make_versioned_sample([4], index=0),
+            _make_versioned_sample([5, 6], index=1),
         ]
 
         out = _compute_metrics_from_samples(make_args(), samples)
@@ -154,7 +154,7 @@ class TestWeightVersionMetrics:
 
     def test_a_call_spanning_no_update_is_not_mixed(self):
         """Two calls that both saw the same version must not count as mixed."""
-        samples = [_make_versioned_sample(["7", "7"], index=0)]
+        samples = [_make_versioned_sample([7, 7], index=0)]
 
         out = _compute_metrics_from_samples(make_args(), samples)
 
@@ -167,9 +167,10 @@ class TestWeightVersionMetrics:
         assert not any(key.startswith("weight_version/") for key in out)
 
 
-def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
+def _make_versioned_sample(rollout_ids: list[int], *, index: int) -> Sample:
     sample = make_sample(index=index, group_index=0)
     sample.weight_versions = [
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
+        WeightVersionsPerCall(spans=[WeightVersionSpan(make_test_weight_version(rollout_id), i, i + 1)])
+        for i, rollout_id in enumerate(rollout_ids)
     ]
     return sample

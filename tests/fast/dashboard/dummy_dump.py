@@ -44,6 +44,7 @@ from miles.ray.rollout.train_data_conversion import (
 )
 from miles.utils.train_dump_utils import save_debug_train_data_for_rank
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.weight_version import WeightVersion
 
 
 @dataclass
@@ -159,6 +160,13 @@ def _make_args(dump_dir: Path, *, num_prompts: int, n_samples_per_prompt: int) -
     )
 
 
+DUMMY_RUN_UUID = "0d0dd0dd"
+
+
+def _version(rollout_id: int) -> str:
+    return WeightVersion(run_uuid=DUMMY_RUN_UUID, rollout_id=rollout_id).serialize()
+
+
 def _make_sample(
     rng: random.Random, *, index: int, group_index: int, max_response_len: int, remove_sample: bool = False
 ) -> Sample:
@@ -172,11 +180,11 @@ def _make_sample(
     if agentic:
         split = prompt_length + response_length // 2
         versions = [
-            WeightVersionsPerCall(spans=[WeightVersionSpan(str(index % 3), prompt_length, split)]),
-            WeightVersionsPerCall(spans=[WeightVersionSpan(str(index % 3 + 1), split, total_length)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan(_version(index % 3), prompt_length, split)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan(_version(index % 3 + 1), split, total_length)]),
         ]
     else:
-        versions = [WeightVersionsPerCall(spans=[WeightVersionSpan(str(index % 3), prompt_length, total_length)])]
+        versions = [WeightVersionsPerCall(spans=[WeightVersionSpan(_version(index % 3), prompt_length, total_length)])]
     prompt: str | list = "What is 1+1?"
     if agentic:
         prompt = [

@@ -8,6 +8,7 @@ from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
 from miles.dashboard.dump_reader import DumpReader, _weight_version_summary
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.weight_version import parse_weight_version_rollout_id
 
 REMOVED = (3,)  # within-step positions marked remove_sample=True by the fixture
 
@@ -228,7 +229,8 @@ def test_staleness_and_agentic_columns(reader):
     assert agentic["tool_calls"].min() == 1
     assert not plain["mixed_version"].any() and plain["turns"].max() == 1
     assert plain["tool_calls"].is_null().all()  # string prompts: nothing to count
-    assert (agentic["weight_version"].cast(pl.Int64) - agentic["weight_version_min"] == 1).all()
+    latest_ids = agentic["weight_version"].map_elements(parse_weight_version_rollout_id, return_dtype=pl.Int64)
+    assert (latest_ids - agentic["weight_version_min"] == 1).all()
 
     aggregates = reader.step_aggregates()
     assert 0 < aggregates["mixed_version_frac"][0] < 1
