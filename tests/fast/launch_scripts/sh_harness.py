@@ -48,10 +48,11 @@ _SHIMMED_COMMANDS = (
     "wget",
 )
 
+_GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS = "1000000"
+
 _SHIM_STDOUT = {
-    # large enough that "wait until this many GPUs joined the ray cluster" loops exit immediately
-    "python": "1000000",
-    "python3": "1000000",
+    "python": _GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS,
+    "python3": _GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS,
     "date": "20260101_000000",
 }
 
@@ -63,6 +64,13 @@ done
 printf '%s%s' "$record" "$MILES_SH_HARNESS_RECORD_SEP" >>"$MILES_SH_HARNESS_CAPTURE"
 {stdout_statement}exit 0
 """
+
+
+def iter_launch_scripts() -> list[Path]:
+    roots = [REPO_ROOT / "scripts", REPO_ROOT / "examples"]
+    return sorted(
+        path for root in roots for path in root.rglob("*.sh") if "ray job submit" in path.read_text(errors="replace")
+    )
 
 
 @dataclass(frozen=True)
@@ -84,6 +92,7 @@ class LaunchScriptRun:
 def run_launch_script(
     script: Path,
     sandbox: Path,
+    args: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
     timeout: float = 120.0,
 ) -> LaunchScriptRun:
@@ -104,7 +113,7 @@ def run_launch_script(
         **(extra_env or {}),
     }
     process = subprocess.run(
-        ["bash", str(script)],
+        ["bash", str(script), *args],
         cwd=workdir,
         env=env,
         capture_output=True,
