@@ -178,7 +178,7 @@ class _BuggyQwen3TITOTokenizer(Qwen3TITOTokenizer):
     """
 
     def merge_tokens(self, old_messages, new_messages, pretokenized_token_ids, tools=None):
-        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         # Intentionally omit the `+\n` insertion — that's the bug we're catching.
         return list(pretokenized_token_ids) + incremental
 
