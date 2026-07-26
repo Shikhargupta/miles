@@ -24,7 +24,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
-from miles.utils.types import Sample
+from miles.utils.types import Sample, compute_weight_versions_per_call_from_meta_info
 
 
 def compute_samples_from_openai_records(
@@ -121,6 +121,11 @@ def _compute_sample_from_openai_record(
     sample.loss_mask = [1] * len(output_token_ids)
     sample.rollout_routed_experts = get_routed_experts_from_response(args, choice, sample)
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
+    sample.weight_versions = [
+        compute_weight_versions_per_call_from_meta_info(
+            choice["meta_info"], num_new_tokens=len(output_token_ids), offset=len(prompt_token_ids)
+        )
+    ]
 
     if trim_count > 0:
         sample.strip_last_output_tokens(trim_count, tokenizer)
@@ -135,8 +140,6 @@ def _compute_sample_from_openai_record(
             sample.status = Sample.Status.ABORTED
 
     sample.prefix_cache_info.add(choice.get("meta_info", {}))
-    if "weight_version" in choice["meta_info"]:
-        sample.weight_versions.append(choice["meta_info"]["weight_version"])
 
     return sample
 
