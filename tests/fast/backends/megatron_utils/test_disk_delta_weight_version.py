@@ -25,10 +25,10 @@ class TestUpdateWeightVersionIfUnset:
         with mock.patch(_RAY_GET, _resolve):
             update_weight_version_if_unset(
                 [_Engine(unset_version, calls, name="a"), _Engine(unset_version, calls, name="b")],
-                "ab12cd34-00000007",
+                "ab12cd34ef5678ab-00000007",
             )
 
-        assert calls == [("a", "ab12cd34-00000007", False), ("b", "ab12cd34-00000007", False)]
+        assert calls == [("a", "ab12cd34ef5678ab-00000007", False), ("b", "ab12cd34ef5678ab-00000007", False)]
 
     def test_announcing_does_not_abort_running_requests(self):
         """Announcing a version changes no weights, so it must not cancel in-flight generation."""
@@ -36,7 +36,7 @@ class TestUpdateWeightVersionIfUnset:
         calls = []
 
         with mock.patch(_RAY_GET, _resolve):
-            update_weight_version_if_unset([_Engine(unset_version, calls)], "ab12cd34-00000007")
+            update_weight_version_if_unset([_Engine(unset_version, calls)], "ab12cd34ef5678ab-00000007")
 
         assert [abort for _name, _version, abort in calls] == [False]
 
@@ -46,9 +46,9 @@ class TestUpdateWeightVersionIfUnset:
         calls = []
 
         with mock.patch(_RAY_GET, _resolve):
-            update_weight_version_if_unset([_Engine(None, calls)], "ab12cd34-00000007")
+            update_weight_version_if_unset([_Engine(None, calls)], "ab12cd34ef5678ab-00000007")
 
-        assert [version for _name, version, _abort in calls] == ["ab12cd34-00000007"]
+        assert [version for _name, version, _abort in calls] == ["ab12cd34ef5678ab-00000007"]
 
     def test_leaves_an_engine_that_already_serves_a_known_version_alone(self):
         """After a trainer failover the engines still hold their weights; claiming a version would lie."""
@@ -56,7 +56,7 @@ class TestUpdateWeightVersionIfUnset:
         calls = []
 
         with mock.patch(_RAY_GET, _resolve):
-            update_weight_version_if_unset([_Engine("ab12cd34-00000004", calls)], "ab12cd34-00000007")
+            update_weight_version_if_unset([_Engine("ab12cd34ef5678ab-00000004", calls)], "ab12cd34ef5678ab-00000007")
 
         assert calls == []
 
@@ -65,13 +65,13 @@ class TestUpdateWeightVersionIfUnset:
         unset_version, update_weight_version_if_unset = _helpers()
         calls = []
         engines = [
-            _Engine("ab12cd34-00000004", calls, name="warm"),
+            _Engine("ab12cd34ef5678ab-00000004", calls, name="warm"),
             _Engine(unset_version, calls, name="cold"),
             _Engine(None, calls, name="never_told"),
         ]
 
         with mock.patch(_RAY_GET, _resolve):
-            update_weight_version_if_unset(engines, "ab12cd34-00000007")
+            update_weight_version_if_unset(engines, "ab12cd34ef5678ab-00000007")
 
         assert [name for name, _version, _abort in calls] == ["cold", "never_told"]
 
@@ -80,7 +80,7 @@ class TestUpdateWeightVersionIfUnset:
         _unset, update_weight_version_if_unset = _helpers()
 
         with mock.patch(_RAY_GET, _resolve):
-            update_weight_version_if_unset([], "ab12cd34-00000007")
+            update_weight_version_if_unset([], "ab12cd34ef5678ab-00000007")
 
 
 class _Engine:

@@ -11,7 +11,7 @@ import ray
 from miles.utils.types import Sample
 from miles.utils.weight_version import WeightVersion
 
-TEST_WEIGHT_VERSION_RUN_UUID = "ab12cd34"
+TEST_WEIGHT_VERSION_RUN_UUID = "ab12cd34ef5678ab"
 
 
 def make_test_weight_version(rollout_id: int) -> str:

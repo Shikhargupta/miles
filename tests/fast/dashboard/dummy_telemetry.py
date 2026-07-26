@@ -120,7 +120,7 @@ def _trajectory_events(store: MetricStore, truth: DummyTelemetryTruth, samples_p
 
 
 def _version(rollout_id: int) -> str:
-    return WeightVersion(run_uuid="ab12cd34", rollout_id=rollout_id).serialize()
+    return WeightVersion(run_uuid="ab12cd34ef5678ab", rollout_id=rollout_id).serialize()
 
 
 def dump_dummy_telemetry(
