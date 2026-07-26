@@ -194,11 +194,7 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
         current_ids.extend(segment)
         sample.prefix_cache_info.add(meta)
 
-        sample.weight_versions.append(
-            WeightVersionsPerCall.from_meta_info(
-                meta, num_output_tokens=len(segment), output_start=len(current_ids) - len(segment)
-            )
-        )
+        sample.weight_versions.append(WeightVersionsPerCall.from_meta_info(meta, output_end=len(current_ids)))
 
         if len(current_ids) >= MAX_CONTEXT_TOKENS:
             break

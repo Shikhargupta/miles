@@ -1,12 +1,13 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
-from typing import Any, NamedTuple
+from typing import Any
 
 import numpy
 import torch
 
 
-class WeightVersionSpan(NamedTuple):
+@dataclass(frozen=True)
+class WeightVersionSpan:
     version: str
     start: int
     end: int
@@ -17,14 +18,15 @@ class WeightVersionsPerCall:
     spans: list[WeightVersionSpan] = field(default_factory=list)
 
     def to_dicts(self) -> list[dict]:
-        return [span._asdict() for span in self.spans]
+        return [asdict(span) for span in self.spans]
 
     @staticmethod
     def from_dicts(data: list[dict]) -> "WeightVersionsPerCall":
         return WeightVersionsPerCall(spans=[WeightVersionSpan(**span) for span in data])
 
     @staticmethod
-    def from_meta_info(meta_info: dict, num_output_tokens: int, output_start: int) -> "WeightVersionsPerCall":
+    def from_meta_info(meta_info: dict, output_end: int) -> "WeightVersionsPerCall":
+        num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
         if (raw_spans := meta_info.get("weight_versions")) is not None:
             spans = [WeightVersionSpan(**span) for span in raw_spans]
         elif meta_info.get("weight_version") is not None and num_output_tokens > 0:
@@ -32,8 +34,13 @@ class WeightVersionsPerCall:
         else:
             spans = []
 
+        output_start = output_end - num_output_tokens
         return WeightVersionsPerCall(
-            spans=[span._replace(start=output_start + span.start, end=output_start + span.end) for span in spans]
+            spans=[
+                replace(span, start=output_start + span.start, end=output_start + span.end)
+                for span in spans
+                if span.start < span.end
+            ]
         )
 
 
@@ -274,7 +281,7 @@ class Sample:
             self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
         for call in self.weight_versions:
             call.spans = [
-                span if span.end <= len(self.tokens) else span._replace(end=len(self.tokens))
+                span if span.end <= len(self.tokens) else replace(span, end=len(self.tokens))
                 for span in call.spans
                 if span.start < len(self.tokens)
             ]
@@ -325,14 +332,7 @@ class Sample:
         # Collect prefix cache statistics
         self.prefix_cache_info.add(meta_info=meta_info)
 
-        num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
-        self.weight_versions.append(
-            WeightVersionsPerCall.from_meta_info(
-                meta_info,
-                num_output_tokens=num_output_tokens,
-                output_start=len(self.tokens) - num_output_tokens,
-            )
-        )
+        self.weight_versions.append(WeightVersionsPerCall.from_meta_info(meta_info, output_end=len(self.tokens)))
 
         match meta_info["finish_reason"]["type"]:
             case "length":

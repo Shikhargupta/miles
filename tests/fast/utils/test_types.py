@@ -153,6 +153,13 @@ class TestWeightVersions:
         s.update_from_meta_info(_make_args(), _make_meta_info([3, 4, 5], weight_version="v7"))
         assert s.weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v7", 2, 5)])]
 
+    def test_zero_length_spans_are_dropped(self):
+        """An aborted call with no output tokens reports a zero-length span that covers nothing."""
+        call = WeightVersionsPerCall.from_meta_info(
+            {"output_token_logprobs": [], "weight_versions": [{"version": "v1", "start": 0, "end": 0}]}, output_end=7
+        )
+        assert call.spans == []
+
     def test_update_from_meta_info_records_a_call_without_weight_version(self):
         """A call the engine did not stamp still counts as one call, with no spans."""
         s = _make_sample([1, 2], [3, 4, 5])
