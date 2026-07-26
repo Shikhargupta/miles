@@ -1,9 +1,5 @@
-"""targets_expert_leaves decides whether adapters can land inside MoE experts.
-
-It gates the MoE-specific multi-LoRA handling (turning off permute fusion, the
-expert-parallel validations), so a false negative means those are silently skipped
-and expert tokens get routed against a permutation the adapter cannot replay.
-"""
+"""targets_expert_leaves gates the MoE-specific multi-LoRA handling (permute-fusion
+off, expert validations); a false negative silently skips those."""
 
 from miles.utils.multi_lora import targets_expert_leaves
 
@@ -25,9 +21,7 @@ def test_attention_only_targets_do_not():
 
 
 def test_bulk_aliases_target_experts():
-    # "all-linear" is expanded to concrete names during argument validation, but
-    # "all" is only resolved later by the target-module conversion, so the alias
-    # itself has to count.
+    # "all" is only resolved by the later target-module conversion, so the alias itself counts.
     for alias in ("all", "all-linear", "all_linear", "ALL"):
         assert targets_expert_leaves([alias]), alias
 

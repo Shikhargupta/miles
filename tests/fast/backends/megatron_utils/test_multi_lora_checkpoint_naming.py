@@ -1,15 +1,5 @@
-"""Megatron-native adapter shards are keyed by parallel coordinates.
-
-Expert-parallel ranks that share a ``(tp, pp)`` coordinate hold *different* local
-experts, so their adapter shards are different files. Without the ep suffix they
-overwrite each other and a resume loads one EP rank's experts onto every rank.
-
-Resume must also wait for exactly the shards that exist. The realized
-``(tp, pp, ep)`` coordinates are not the cross product of the group sizes: with
-expert tensor parallelism smaller than tensor parallelism — what expert multi-LoRA
-requires — only a subset of ``(tp, ep)`` pairs is occupied, so enumerating the
-cross product would wait for shards no rank ever writes.
-"""
+"""Adapter shards are keyed by (tp, pp, ep): EP ranks hold different local experts, and
+the realized coordinates are not the tp x pp x ep cross product when ETP < TP."""
 
 from miles.backends.megatron_utils.multi_lora_utils import all_megatron_checkpoints_exist, megatron_shard_name
 
@@ -42,9 +32,8 @@ def test_completeness_check_requires_every_realized_shard(tmp_path):
 
 
 def test_completeness_ignores_unrealized_coordinates(tmp_path):
-    # TP=2, EP=2 with ETP=1: expert-parallel ranks are carved out of the
-    # tensor-parallel dimension, so (tp=0, ep=1) and (tp=1, ep=0) do not exist.
-    # A cross-product check would demand four shards and never resume.
+    # TP=2, EP=2, ETP=1: only (0,0,0) and (1,0,1) exist; a cross-product check
+    # would demand four shards and never resume.
     coords = [(0, 0, 0), (1, 0, 1)]
     for coord in coords:
         (tmp_path / megatron_shard_name(*coord, 2)).touch()

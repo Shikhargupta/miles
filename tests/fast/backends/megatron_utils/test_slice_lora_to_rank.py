@@ -48,9 +48,8 @@ def test_non_lora_names_pass_through():
     assert slice_lora_to_rank("x.some_other.weight", tensor, 16) is tensor
 
 
-# A packed grouped-expert export is [num_experts, rank, in] / [num_experts, out, rank].
-# Slicing dim 0 / dim 1 there would cut the expert or output axis instead of the
-# rank axis — dropping whole experts while reporting the requested shape.
+# Packed grouped-expert exports ([E, rank, in] / [E, out, rank]) must be sliced on the
+# rank axis — dim 0/1 slicing would drop experts while reporting the requested shape.
 
 
 def test_packed_expert_lora_a_is_sliced_on_the_rank_dim():
@@ -77,8 +76,7 @@ def test_packed_expert_nonzero_padding_is_rejected():
 
 
 def test_packed_expert_fewer_experts_than_rank_is_not_confused():
-    # 2 experts with max rank 32 sliced to rank 4: slicing dim 0 would return
-    # only 2 experts' worth of rows and silently pass the shape check.
+    # 2 experts, max rank 32, sliced to 4: dim-0 slicing would silently pass the shape check.
     tensor = torch.zeros(2, 32, 8)
     tensor[:, :4] = 1.0
     out = slice_lora_to_rank("x.experts.gate_proj.lora_A.weight", tensor, 4)

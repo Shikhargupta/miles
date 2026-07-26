@@ -32,9 +32,8 @@ def create_multi_lora_instance(args: Namespace):
 
         lora_cls = LoRA
 
-    # exclude_modules is deliberately not forwarded: ModuleMatcher.match asserts it
-    # is empty whenever target_modules is set, and --exclude-modules has already
-    # been subtracted from args.target_modules during argument validation.
+    # exclude_modules was already subtracted from target_modules during arg validation
+    # (ModuleMatcher asserts it is empty when target_modules is set).
     return MultiLoRA(
         target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls),
         n_adapters=args.multi_lora_n_adapters,
@@ -47,13 +46,8 @@ def create_multi_lora_instance(args: Namespace):
 
 
 def megatron_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, ep_size: int) -> str:
-    """Name of the Megatron-native adapter shard for one set of parallel coordinates.
-
-    Expert-parallel ranks sharing a ``(tp, pp)`` coordinate hold *different* local
-    experts, so their adapter shards are distinct files. The suffix is omitted
-    when ``ep_size == 1`` so checkpoints written before expert adapters existed
-    stay loadable.
-    """
+    """Adapter shard name for one (tp, pp, ep) coordinate; EP ranks hold different local
+    experts. The ep suffix is omitted at ep_size == 1 so legacy checkpoints stay loadable."""
     name = f"adapter_megatron_tp{tp_rank}_pp{pp_rank}"
     if ep_size > 1:
         name += f"_ep{ep_rank}"
@@ -64,29 +58,8 @@ _shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
 def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
-    """Elect one writer per adapter shard and enumerate the shards that exist.
-
-    Returns ``(this_rank_writes_its_shard, all_realized_(tp, pp, ep)_coordinates)``.
-
-    Adapter params are replicated across the data-parallel and CP dimensions but
-    not across TP, PP, or EP, so exactly one rank per ``(tp, pp, ep)`` coordinate
-    must write, and resume must wait for exactly those coordinates. Neither can be
-    derived locally:
-
-    * No single group rank elects one writer per coordinate.
-      ``intra_dp_cp.rank == 0`` is one rank for the whole DP group, so it covers
-      only one EP rank; expert-DP rank 0 covers only one TP rank, because ranks
-      sharing a coordinate differ in both CP and expert-DP index.
-    * The realized coordinates are not the ``tp x pp x ep`` cross product. When
-      expert tensor parallelism is smaller than tensor parallelism — which expert
-      multi-LoRA requires, since it needs ETP=1 — expert-parallel ranks are carved
-      out of the tensor-parallel dimension, so only a subset of ``(tp, ep)`` pairs
-      is occupied. Enumerating the cross product would wait forever for shards no
-      rank ever writes.
-
-    One gloo all-gather, cached: the topology is fixed for the run. Every caller
-    must therefore be on a rank-uniform path.
-    """
+    """Return ``(this_rank_writes_its_shard, realized (tp, pp, ep) coords)`` from one cached
+    gloo all-gather — with ETP < TP the realized set is not the tp x pp x ep cross product."""
     global _shard_topology
     if _shard_topology is not None:
         return _shard_topology
@@ -122,9 +95,7 @@ def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
 
     expected = {megatron_shard_name(*coord, ep_size) for coord in coords}
     my_shard = megatron_shard_name(*my_coords, ep_size)
-    # Checkpoints written before expert adapters existed have no ep suffix, and all
-    # EP ranks may read the same file: without expert adapters every param in the
-    # shard is replicated across EP.
+    # Legacy pre-expert-adapter layout: no ep suffix; safe for all EP ranks to read (EP-replicated).
     legacy = {megatron_shard_name(tp, pp, 0, 1) for tp, pp, _ in coords}
     my_legacy = megatron_shard_name(my_coords[0], my_coords[1], 0, 1)
 
@@ -188,13 +159,8 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
 
 
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:
-    """Trim a max-rank-padded LoRA tensor down to ``adapter_rank``.
-
-    The rank axis is the second-to-last dim of ``lora_A`` and the last dim of
-    ``lora_B``, addressed from the end so a packed grouped-expert export
-    (``[num_experts, rank, in]`` / ``[num_experts, out, rank]``) is sliced on its
-    rank axis rather than on the expert or output axis.
-    """
+    """Trim a max-rank-padded LoRA tensor to ``adapter_rank`` on the rank axis, addressed
+    from the end so packed grouped-expert exports are not sliced on the expert axis."""
     if "lora_A" in hf_name:
         rank_dim = tensor.ndim - 2
         if adapter_rank < tensor.shape[rank_dim]:
