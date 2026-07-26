@@ -91,6 +91,7 @@ async def main(args):
 
         # Per-adapter save cadence decided inside save_model.
         await actor_model.save_model(rollout_id)
+        # TODO: support rollout_executor.save
 
         rollout_id += 1
 
