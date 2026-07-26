@@ -185,6 +185,28 @@ class TestRolloutFnCheckpointing:
 
             assert fn.calls == [("save", 4), ("load", 4)]
 
+    def test_same_path_loaded_twice_yields_independent_instances(self, constructor_input):
+        """--eval-function-path defaults to --rollout-function-path, and each load builds its own object."""
+
+        class StatefulRolloutFn(BaseRolloutFn):
+            def __init__(self, input: RolloutFnConstructorInput):
+                self.calls = []
+
+            def __call__(self, input):
+                return RolloutFnTrainOutput(samples=[])
+
+            def save(self, rollout_id):
+                self.calls.append(rollout_id)
+
+        with function_registry.temporary("test:same_path", StatefulRolloutFn):
+            train_fn = load_rollout_function(constructor_input, "test:same_path")
+            eval_fn = load_rollout_function(constructor_input, "test:same_path")
+
+            train_fn.save(2)
+
+            assert train_fn is not eval_fn
+            assert eval_fn.calls == []
+
     def test_class_not_subclassing_base_is_rejected(self, constructor_input):
         """Rejected at load time, not at the first checkpoint hours into a run."""
 

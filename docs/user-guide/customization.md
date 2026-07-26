@@ -63,6 +63,12 @@ class MyRolloutFn(BaseRolloutFn):
 in-flight rollout state survives a checkpoint restore. A class that does not subclass
 `BaseRolloutFn` is rejected when it is loaded.
 
+The train and eval rollout functions are separate instances and are checkpointed
+separately — including when `--eval-function-path` defaults to `--rollout-function-path`,
+which instantiates the same class twice. A stateful implementation must therefore derive
+its checkpoint path from something more than `rollout_id`, or the two instances overwrite
+each other.
+
 **Default:** `miles.rollout.sglang_rollout.generate_rollout`, or
 `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when
 `enable_experimental_rollout_refactor()` is on.
