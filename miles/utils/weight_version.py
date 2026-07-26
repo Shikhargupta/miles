@@ -45,7 +45,9 @@ def try_parse_num_trained_rollouts(value: str) -> int | None:
         return None
 
 
-def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"], rollout_id: int) -> None:
+def assert_samples_weight_version_sane(
+    args: Namespace, samples: list["Sample"], rollout_id: int, *, is_eval: bool = False
+) -> None:
     if args.debug_rollout_only or args.debug_skip_weight_update or is_lora_enabled(args):
         return
 
@@ -53,6 +55,7 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"],
         return
 
     current_run_uuid: str = args.run_uuid
+    distinct_versions: set[str] = set()
     newest_trained_rollouts: int | None = None
     oldest_per_sample: list[tuple[int | None, int]] = []
 
@@ -63,12 +66,13 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"],
             f"while other samples in this batch carry one"
         )
 
+        distinct_versions.update(versions)
         parsed = [WeightVersion.deserialize(version) for version in versions]
         seen_current_run = False
         for item in parsed:
             if item.run_uuid == current_run_uuid:
                 seen_current_run = True
-                assert item.num_trained_rollouts <= rollout_id, (
+                assert is_eval or item.num_trained_rollouts <= rollout_id, (
                     f"sample index={sample.index} carries weights that had trained {item.num_trained_rollouts} "
                     f"rollouts, more than the {rollout_id} finished before the rollout being generated"
                 )
@@ -91,6 +95,13 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"],
 
         if own_run := [item.num_trained_rollouts for item in parsed if item.run_uuid == current_run_uuid]:
             oldest_per_sample.append((sample.index, min(own_run)))
+
+    if is_eval:
+        assert len(distinct_versions) <= 1, (
+            f"eval batch spans {len(distinct_versions)} weight versions {sorted(distinct_versions)}; "
+            f"an eval score describes one set of weights, so every sample in it must have seen the same ones"
+        )
+        return
 
     if (max_staleness := args.max_weight_staleness) is not None:
         for index, oldest in oldest_per_sample:

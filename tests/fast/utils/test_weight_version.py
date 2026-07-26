@@ -195,3 +195,54 @@ class TestAssertSamplesWeightVersionSane:
     def test_empty_batch_passes(self):
         """An empty sample list is trivially sane."""
         assert_samples_weight_version_sane(_make_args(), [], rollout_id=5)
+
+
+class TestEvalRunsOnExactlyOneWeightVersion:
+    def test_two_samples_on_different_versions_fail(self):
+        """Scores from different weights are not comparable, so they cannot be averaged into one number."""
+        samples = [_make_sample([(RUN_UUID, 6)]), _make_sample([(RUN_UUID, 5)], index=1)]
+
+        with pytest.raises(AssertionError, match="eval batch spans 2 weight versions"):
+            assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=True)
+
+    def test_one_sample_straddling_a_weight_swap_fails(self):
+        """A multi-turn eval sample that crossed an update measured neither checkpoint."""
+        samples = [_make_sample([(RUN_UUID, 5), (RUN_UUID, 6)])]
+
+        with pytest.raises(AssertionError, match="eval batch spans 2 weight versions"):
+            assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=True)
+
+    def test_the_same_version_repeated_across_turns_and_samples_passes(self):
+        """Multi-turn eval is fine as long as every turn saw the same weights."""
+        samples = [_make_sample([(RUN_UUID, 6), (RUN_UUID, 6)]), _make_sample([(RUN_UUID, 6)], index=1)]
+
+        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=True)
+
+    def test_eval_may_run_on_weights_newer_than_the_rollout_being_evaluated(self):
+        """Both drivers publish the next rollout's weights before evaluating this one."""
+        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 6)])], rollout_id=5, is_eval=True)
+
+    def test_a_single_version_eval_batch_passes_whether_ahead_or_behind(self):
+        """The rule is one version, not a particular one; the driver decides which weights eval sees."""
+        for version_rollout_id in (4, 5, 6):
+            assert_samples_weight_version_sane(
+                _make_args(), [_make_sample([(RUN_UUID, version_rollout_id)])], rollout_id=5, is_eval=True
+            )
+
+    def test_eval_on_one_version_is_not_subject_to_the_staleness_bound(self):
+        """A single-version eval batch has no spread to bound, whatever the engines are serving."""
+        samples = [_make_sample([(RUN_UUID, 6)]), _make_sample([(RUN_UUID, 6)], index=1)]
+
+        assert_samples_weight_version_sane(_make_args(max_weight_staleness=0), samples, rollout_id=5, is_eval=True)
+
+    def test_unstamped_eval_samples_are_still_left_alone(self):
+        """An eval rollout function that never queries an engine reports no versions to disagree about."""
+        assert_samples_weight_version_sane(
+            _make_args(), [_unstamped_sample(), _unstamped_sample(1)], rollout_id=5, is_eval=True
+        )
+
+    def test_training_batches_may_still_span_versions(self):
+        """The one-version rule is an eval rule; training on a mixed batch is normal."""
+        samples = [_make_sample([(RUN_UUID, 4)]), _make_sample([(RUN_UUID, 5)], index=1)]
+
+        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5)

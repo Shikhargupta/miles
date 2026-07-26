@@ -164,6 +164,11 @@ class RolloutManager:
                     evaluation=True,
                 )
         data = result.data
+        for dataset_data in data.values():
+            if (eval_samples := dataset_data.get("samples")) is not None:
+                assert_samples_weight_version_sane(
+                    self.args, samples=eval_samples, rollout_id=rollout_id, is_eval=True
+                )
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
