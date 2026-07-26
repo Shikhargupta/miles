@@ -50,7 +50,7 @@ def _make_record(
     cached_tokens: int | None = None,
     prompt_tokens: int | None = None,
     weight_version: str | None = None,
-    weight_versions: list[tuple[str, int, int]] | None = None,
+    weight_versions: list[dict[str, str | int]] | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -133,7 +133,7 @@ class TestComputeSamplesFromRecords:
         record = _make_record(
             prompt_token_ids=[1, 2, 3],
             output_token_ids=[10, 11, 12],
-            weight_versions=[("v1", 0, 2), ("v2", 2, 3)],
+            weight_versions=[{"version": "v1", "start": 0, "end": 2}, {"version": "v2", "start": 2, "end": 3}],
         )
 
         samples = compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)

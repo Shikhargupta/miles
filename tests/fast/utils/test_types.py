@@ -136,7 +136,13 @@ class TestWeightVersions:
     def test_update_from_meta_info_parses_per_token_weight_versions(self):
         """Per-token weight_versions from meta_info are shifted to absolute token indices."""
         s = _make_sample([1, 2], [3, 4, 5])
-        s.update_from_meta_info(_make_args(), _make_meta_info([3, 4, 5], weight_versions=[("v1", 0, 2), ("v2", 2, 3)]))
+        s.update_from_meta_info(
+            _make_args(),
+            _make_meta_info(
+                [3, 4, 5],
+                weight_versions=[{"version": "v1", "start": 0, "end": 2}, {"version": "v2", "start": 2, "end": 3}],
+            ),
+        )
         assert s.weight_versions == [
             WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4), WeightVersionSpan("v2", 4, 5)])
         ]

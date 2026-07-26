@@ -29,17 +29,16 @@ class WeightVersionsPerCall:
 def compute_weight_versions_per_call_from_meta_info(
     meta_info: dict, num_new_tokens: int, offset: int
 ) -> WeightVersionsPerCall:
-    if meta_info.get("weight_versions") is not None:
-        raw_spans = meta_info["weight_versions"]
+    if (raw_spans := meta_info.get("weight_versions")) is not None:
+        spans = [(span["version"], span["start"], span["end"]) for span in raw_spans]
     elif meta_info.get("weight_version") is not None and num_new_tokens > 0:
-        raw_spans = [(meta_info["weight_version"], 0, num_new_tokens)]
+        spans = [(meta_info["weight_version"], 0, num_new_tokens)]
     else:
-        raw_spans = []
+        spans = []
 
     return WeightVersionsPerCall(
         spans=[
-            WeightVersionSpan(version=version, start=offset + start, end=offset + end)
-            for version, start, end in raw_spans
+            WeightVersionSpan(version=version, start=offset + start, end=offset + end) for version, start, end in spans
         ]
     )
 
