@@ -54,10 +54,15 @@ async def train(args):
         )
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
+        await rollout_manager.prepare_eval.remote()
         await rollout_manager.eval.remote(0)
 
+    async def prepare_and_generate(rollout_id):
+        await rollout_manager.prepare_rollout.remote(rollout_id)
+        return await rollout_manager.generate.remote(rollout_id)
+
     # async train loop.
-    rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
+    rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -65,7 +70,7 @@ async def train(args):
 
         # Start the next rollout early.
         if rollout_id + 1 < args.num_rollout:
-            rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+            rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if args.use_critic:
             critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
@@ -94,6 +99,7 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
+            await rollout_manager.prepare_eval.remote()
             await rollout_manager.eval.remote(rollout_id)
 
         if (
