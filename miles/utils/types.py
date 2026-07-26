@@ -9,8 +9,8 @@ import torch
 @dataclass(frozen=True)
 class WeightVersionSpan:
     version: str
-    start: int
-    end: int
+    abs_start: int
+    abs_end: int
 
 
 @dataclass
@@ -28,18 +28,18 @@ class WeightVersionsPerCall:
     def from_meta_info(meta_info: dict, output_end: int) -> "WeightVersionsPerCall":
         num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
         if (raw_spans := meta_info.get("weight_versions")) is not None:
-            spans = [WeightVersionSpan(**span) for span in raw_spans]
+            output_relative = [(span["version"], span["start"], span["end"]) for span in raw_spans]
         elif meta_info.get("weight_version") is not None and num_output_tokens > 0:
-            spans = [WeightVersionSpan(version=meta_info["weight_version"], start=0, end=num_output_tokens)]
+            output_relative = [(meta_info["weight_version"], 0, num_output_tokens)]
         else:
-            spans = []
+            output_relative = []
 
         output_start = output_end - num_output_tokens
         return WeightVersionsPerCall(
             spans=[
-                replace(span, start=output_start + span.start, end=output_start + span.end)
-                for span in spans
-                if span.start < span.end
+                WeightVersionSpan(version=version, abs_start=output_start + start, abs_end=output_start + end)
+                for version, start, end in output_relative
+                if start < end
             ]
         )
 
@@ -251,9 +251,9 @@ class Sample:
         for span in self.all_weight_version_spans:
             assert span.version, f"weight version span has empty version: {self.weight_versions}"
             assert (
-                previous_end <= span.start < span.end <= len(self.tokens)
+                previous_end <= span.abs_start < span.abs_end <= len(self.tokens)
             ), f"invalid weight version span {span} (previous_end={previous_end}, len(tokens)={len(self.tokens)})"
-            previous_end = span.end
+            previous_end = span.abs_end
 
     def strip_last_output_tokens(self, n: int, tokenizer) -> None:
         """Remove the last *n* output tokens and all associated per-token info."""
@@ -281,9 +281,9 @@ class Sample:
             self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
         for call in self.weight_versions:
             call.spans = [
-                span if span.end <= len(self.tokens) else replace(span, end=len(self.tokens))
+                span if span.abs_end <= len(self.tokens) else replace(span, abs_end=len(self.tokens))
                 for span in call.spans
-                if span.start < len(self.tokens)
+                if span.abs_start < len(self.tokens)
             ]
 
     def reset_for_retry(self) -> None:

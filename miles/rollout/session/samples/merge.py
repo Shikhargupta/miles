@@ -113,6 +113,11 @@ def _compute_sample_from_openai_record(
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
+    assert not input_sample.weight_versions, (
+        f"session input sample index={input_sample.index} already carries weight versions; this path assigns "
+        f"rather than appends, which matches the previous behaviour only while it never resumes generation"
+    )
+
     sample = deepcopy(input_sample)
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
