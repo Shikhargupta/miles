@@ -51,9 +51,9 @@ _SHIMMED_COMMANDS = (
 
 _SHIM_STDOUT = {
     # large enough that "wait until this many GPUs joined the ray cluster" loops exit immediately
-    "python": "1000000\n",
-    "python3": "1000000\n",
-    "date": "20260101_000000\n",
+    "python": "1000000",
+    "python3": "1000000",
+    "date": "20260101_000000",
 }
 
 _SHIM_TEMPLATE = """#!/bin/bash
@@ -70,6 +70,7 @@ printf '%s%s' "$record" "$MILES_SH_HARNESS_RECORD_SEP" >>"$MILES_SH_HARNESS_CAPT
 class LaunchScriptRun:
     invocations: list[list[str]]
     stdout: str
+    stderr: str
     returncode: int
 
     def invocations_of(self, command: str) -> list[list[str]]:
@@ -117,6 +118,7 @@ def run_launch_script(
     return LaunchScriptRun(
         invocations=invocations,
         stdout=_sanitize(process.stdout, sandbox=sandbox),
+        stderr=_sanitize(process.stderr, sandbox=sandbox),
         returncode=process.returncode,
     )
 
@@ -134,7 +136,7 @@ def _write_shims(fake_bin: Path) -> None:
     fake_bin.mkdir(exist_ok=True)
     for name in _SHIMMED_COMMANDS:
         stdout = _SHIM_STDOUT.get(name)
-        stdout_statement = "" if stdout is None else f"printf '%s' {stdout!a}\n"
+        stdout_statement = "" if stdout is None else f"printf '%s\\n' {stdout!a}\n"
         shim = fake_bin / name
         shim.write_text(_SHIM_TEMPLATE.format(name=name, stdout_statement=stdout_statement))
         shim.chmod(0o755)
