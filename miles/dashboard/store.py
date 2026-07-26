@@ -43,7 +43,7 @@ except ImportError:
 import numpy as np
 import polars as pl
 
-from miles.utils.weight_version import try_parse_weight_version_rollout_id
+from miles.utils.weight_version import try_parse_num_trained_rollouts
 
 
 class Stream(StrEnum):
@@ -658,7 +658,7 @@ class MetricStore:
             attempt_t0: float | None = None
             status = ""
             versions = sorted(
-                {step for e in events if (step := try_parse_weight_version_rollout_id(e.weight_version)) is not None}
+                {step for e in events if (step := try_parse_num_trained_rollouts(e.weight_version)) is not None}
             )
             for event in events:
                 if event.kind == TrajectoryEventKind.ATTEMPT_START:

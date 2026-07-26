@@ -106,19 +106,19 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     @torch.no_grad()
-    def update_weights(self, *, weight_rollout_id: int) -> None:
+    def update_weights(self, *, num_trained_rollouts: int) -> None:
         # The first call only captures the baseline snapshot the next sync diffs against.
         if not self._baseline_captured:
-            self._capture_baseline(weight_rollout_id)
+            self._capture_baseline(num_trained_rollouts)
             self._baseline_captured = True
             return
 
         self._delta_version += 1
         self._publish()
-        self._reload_engines(weight_rollout_id)
+        self._reload_engines(num_trained_rollouts)
         self._record_metrics()
 
-    def _capture_baseline(self, weight_rollout_id: int) -> None:
+    def _capture_baseline(self, num_trained_rollouts: int) -> None:
         """Capture the baseline snapshot the first delta diffs against (no publish), and clear any
         stale stream from a prior run. Seeds from hf_checkpoint — what each host materializes its
         base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
@@ -148,7 +148,9 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self._for_each_hf_bucket(seed_bucket)
         if dist.get_rank() == 0:
             _check_weight_sync_results(ray.get(pulls), is_lora=False)
-            weight_version = WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
+            weight_version = WeightVersion(
+                run_uuid=self.args.run_uuid, num_trained_rollouts=num_trained_rollouts
+            ).serialize()
 
             if self.args.check_weight_update_equal:
                 # The weights checker resets engine tensors at startup and compares after the
@@ -246,7 +248,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             _atomic_write(os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode())
         dist.barrier(group=group)
 
-    def _reload_engines(self, weight_rollout_id: int) -> None:
+    def _reload_engines(self, num_trained_rollouts: int) -> None:
         """Commit the published files, have each engine pull the delta onto every host it spans
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
@@ -265,7 +267,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                     engine.update_weights_from_disk.remote(
                         model_path=self.args.update_weight_local_checkpoint_dir,
                         weight_version=WeightVersion(
-                            run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id
+                            run_uuid=self.args.run_uuid, num_trained_rollouts=num_trained_rollouts
                         ).serialize(),
                     )
                     for engine in self.rollout_engines

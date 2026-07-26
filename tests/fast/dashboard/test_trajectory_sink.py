@@ -9,7 +9,7 @@ from miles.utils.weight_version import WeightVersion
 
 
 def _version(rollout_id: int) -> str:
-    return WeightVersion(run_uuid="ab12cd34ef5678ab", rollout_id=rollout_id).serialize()
+    return WeightVersion(run_uuid="ab12cd34ef5678ab", num_trained_rollouts=rollout_id).serialize()
 
 
 _DEFAULT_VERSIONS = (_version(3), _version(4))

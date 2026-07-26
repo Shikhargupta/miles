@@ -576,7 +576,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: "EnginesAndLock", *, weight_rollout_id: int) -> None:  # type: ignore[override]
+    def update_weights(self, info: "EnginesAndLock", *, num_trained_rollouts: int) -> None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines.
 
         Handles both colocated and distributed update modes. In offload mode,
@@ -603,12 +603,14 @@ class FSDPTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
-        self.weight_updater.update_weights(weight_rollout_id=weight_rollout_id)
+        self.weight_updater.update_weights(num_trained_rollouts=num_trained_rollouts)
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)
             engine_version = ray.get(engine.get_weight_version.remote())
-            updater_version = WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
+            updater_version = WeightVersion(
+                run_uuid=self.args.run_uuid, num_trained_rollouts=num_trained_rollouts
+            ).serialize()
             if str(engine_version) != updater_version:
                 raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {updater_version}")
 

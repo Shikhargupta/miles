@@ -190,7 +190,7 @@ class UpdateWeightFromTensor:
         return out
 
     @torch.no_grad()
-    def update_weights(self, *, weight_rollout_id: int) -> None:
+    def update_weights(self, *, num_trained_rollouts: int) -> None:
         """
         version++, flush caches, process buckets. Progress on rank 0.
         """
@@ -223,7 +223,7 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
-                refs, long_lived_tensors = self._send_base_params(hf_named_tensors, weight_rollout_id)
+                refs, long_lived_tensors = self._send_base_params(hf_named_tensors, num_trained_rollouts)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
@@ -262,8 +262,10 @@ class UpdateWeightFromTensor:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    def _send_base_params(self, hf_named_tensors, weight_rollout_id: int) -> tuple[list[ObjectRef], Any]:
-        weight_version = WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
+    def _send_base_params(self, hf_named_tensors, num_trained_rollouts: int) -> tuple[list[ObjectRef], Any]:
+        weight_version = WeightVersion(
+            run_uuid=self.args.run_uuid, num_trained_rollouts=num_trained_rollouts
+        ).serialize()
 
         refs, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=hf_named_tensors,

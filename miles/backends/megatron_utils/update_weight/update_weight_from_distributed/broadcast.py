@@ -107,7 +107,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         converted_named_tensors: list[tuple[str, torch.Tensor]],
         pbar: tqdm | None = None,
         *,
-        weight_rollout_id: int,
+        num_trained_rollouts: int,
     ) -> None:
         """Lock → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
         # lock the rollout engines to prevent dead lock on broadcast.
@@ -116,7 +116,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         refs = update_weights_from_distributed(
             self._group_name,
             self._model_update_groups,
-            WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
+            WeightVersion(run_uuid=self.args.run_uuid, num_trained_rollouts=num_trained_rollouts).serialize(),
             self.rollout_engines,
             converted_named_tensors,
         )

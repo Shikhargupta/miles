@@ -639,7 +639,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: "EnginesAndLock", *, weight_rollout_id: int) -> None:
+    def update_weights(self, info: "EnginesAndLock", *, num_trained_rollouts: int) -> None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
@@ -682,7 +682,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights(weight_rollout_id=weight_rollout_id)
+            self.weight_updater.update_weights(num_trained_rollouts=num_trained_rollouts)
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):
@@ -694,7 +694,9 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
                 engine_version = ray.get(engine.get_weight_version.remote())
-                updater_version = WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
+                updater_version = WeightVersion(
+                    run_uuid=self.args.run_uuid, num_trained_rollouts=num_trained_rollouts
+                ).serialize()
                 if str(engine_version) != updater_version:
                     raise RuntimeError(
                         f"Weight version mismatch! Engine: {engine_version}, Updater: {updater_version}"

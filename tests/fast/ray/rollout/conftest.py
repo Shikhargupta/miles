@@ -15,7 +15,7 @@ TEST_WEIGHT_VERSION_RUN_UUID = "ab12cd34ef5678ab"
 
 
 def make_test_weight_version(rollout_id: int) -> str:
-    return WeightVersion(run_uuid=TEST_WEIGHT_VERSION_RUN_UUID, rollout_id=rollout_id).serialize()
+    return WeightVersion(run_uuid=TEST_WEIGHT_VERSION_RUN_UUID, num_trained_rollouts=rollout_id).serialize()
 
 
 def fake_actor_handle() -> MagicMock:

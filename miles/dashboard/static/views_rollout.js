@@ -121,8 +121,8 @@ export async function renderRollout(view, meta, route) {
     statBox("truncated frac", mean(rows.map((r) => (r.truncated ? 1 : 0)))),
     statBox("zero-std groups", `${zeroStdGroups}/${groups.rows.length}`),
     statBox("mixed-version frac", mean(rows.map((r) => (r.mixed_version === null ? null : +r.mixed_version)).filter((v) => v !== null))),
-    // staleness = rollout being generated − generation version; the weights
-    // serving rollout N are stamped with N, so a fresh sample scores 0
+    // staleness = rollout being generated − rollouts already trained into the
+    // generating weights; sync scores 0, async scores 1 for its pipelined step
     statBox(
       "avg staleness",
       evaluation

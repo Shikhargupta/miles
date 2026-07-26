@@ -120,26 +120,26 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
         self._model_registered = True
 
-    def _finalize_and_resume_engines(self, weight_rollout_id: int):
+    def _finalize_and_resume_engines(self, num_trained_rollouts: int):
         if dist.get_rank() == 0:
             ray.get(
                 [
                     engine.update_weight_version.remote(
                         weight_version=WeightVersion(
-                            run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id
+                            run_uuid=self.args.run_uuid, num_trained_rollouts=num_trained_rollouts
                         ).serialize()
                     )
                     for engine in self.rollout_engines
                 ]
             )
-        super()._finalize_and_resume_engines(weight_rollout_id)
+        super()._finalize_and_resume_engines(num_trained_rollouts)
 
     def _update_weight_implementation(
         self,
         converted_named_tensors: list[tuple[str, torch.Tensor]],
         pbar: tqdm | None = None,
         *,
-        weight_rollout_id: int,
+        num_trained_rollouts: int,
     ) -> None:
         """Stage incoming tensors; when all shards for a param are collected,
         load into shared buffer and P2P-write per engine rank.

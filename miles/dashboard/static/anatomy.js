@@ -19,11 +19,12 @@ const M_TOP = 18;
 // light green → cyan → …) and the ring wraps back to the start every ~13
 const versionColor = (v) => `hsl(${55 + ((105 + v * 25) % 320)}, 69%, 37%)`;
 
-// spans carry the version stamped by the sink; older dumps may lack it on a
-// per-span basis, so fall back to the lane's (usually single) version
+// spans carry the version stamped by the sink, `<run-uuid>-<trained-rollouts>`;
+// older dumps may lack it on a per-span basis, so fall back to the lane's
+// (usually single) version
 const segmentVersion = (segment, lane) => {
-  const v = Number(segment.weight_version);
-  return Number.isFinite(v) && segment.weight_version !== "" ? v : (lane.versions[0] ?? 0);
+  const m = /-(\d+)$/.exec(segment.weight_version ?? "");
+  return m ? Number(m[1]) : (lane.versions[0] ?? 0);
 };
 // two densities, same philosophy as the rank carpet (§15): full detail only
 // while every row can carry text; above that the pane compresses to a carpet

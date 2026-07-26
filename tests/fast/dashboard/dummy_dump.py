@@ -160,11 +160,11 @@ def _make_args(dump_dir: Path, *, num_prompts: int, n_samples_per_prompt: int) -
     )
 
 
-DUMMY_RUN_UUID = "0d0dd0dd"
+DUMMY_RUN_UUID = "0d0dd0dd0d0dd0dd"
 
 
 def _version(rollout_id: int) -> str:
-    return WeightVersion(run_uuid=DUMMY_RUN_UUID, rollout_id=rollout_id).serialize()
+    return WeightVersion(run_uuid=DUMMY_RUN_UUID, num_trained_rollouts=rollout_id).serialize()
 
 
 def _make_sample(

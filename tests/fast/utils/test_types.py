@@ -11,7 +11,7 @@ from miles.utils.weight_version import WeightVersion
 
 
 def _weight_version(rollout_id: int) -> str:
-    return WeightVersion(run_uuid="ab12cd34ef5678ab", rollout_id=rollout_id).serialize()
+    return WeightVersion(run_uuid="ab12cd34ef5678ab", num_trained_rollouts=rollout_id).serialize()
 
 
 def _make_sample(
