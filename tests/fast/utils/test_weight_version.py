@@ -55,7 +55,9 @@ class TestWeightVersion:
 
     def test_parse_rollout_id_rejects_anything_but_the_run_scoped_format(self):
         """A bare counter from an older run is not comparable to a run-scoped id, so it is not one."""
-        assert try_parse_num_trained_rollouts(WeightVersion(run_uuid=RUN_UUID, num_trained_rollouts=7).serialize()) == 7
+        assert (
+            try_parse_num_trained_rollouts(WeightVersion(run_uuid=RUN_UUID, num_trained_rollouts=7).serialize()) == 7
+        )
         assert try_parse_num_trained_rollouts("12") is None
         assert try_parse_num_trained_rollouts("default") is None
 
@@ -172,6 +174,14 @@ class TestAssertSamplesWeightVersionSane:
         args = _make_args(max_weight_staleness=0)
         args.update_weights_interval = 2
         assert_samples_weight_version_sane(args, [_make_sample([(RUN_UUID, 1)])], rollout_id=5)
+
+    def test_samples_without_an_index_are_each_still_checked(self):
+        """Hand-built rollout functions leave every index None; they must not collapse onto one entry."""
+        fresh, stale = _make_sample([(RUN_UUID, 5)]), _make_sample([(RUN_UUID, 2)])
+        fresh.index = stale.index = None
+
+        with pytest.raises(AssertionError, match="past max_weight_staleness"):
+            assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), [stale, fresh], rollout_id=9)
 
     def test_staleness_is_measured_against_the_batch_not_the_rollout_id(self):
         """A deep but uniform backlog is not stale; what matters is how far apart the samples are."""
