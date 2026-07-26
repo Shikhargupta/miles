@@ -12,8 +12,12 @@ import torch.distributed as dist
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.utils.adapter_config import AdapterRun
+from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
+
+# Cached by adapter_shard_topology(); the topology is fixed for the run.
+_shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
 def create_multi_lora_instance(args: Namespace):
@@ -32,8 +36,7 @@ def create_multi_lora_instance(args: Namespace):
 
         lora_cls = LoRA
 
-    # exclude_modules was already subtracted from target_modules during arg validation
-    # (ModuleMatcher asserts it is empty when target_modules is set).
+    # exclude_modules was already folded into target_modules during arg validation.
     return MultiLoRA(
         target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls),
         n_adapters=args.multi_lora_n_adapters,
@@ -54,9 +57,6 @@ def megatron_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, ep_size: int) 
     return name + ".pt"
 
 
-_shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
-
-
 def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
     """Return ``(this_rank_writes_its_shard, realized (tp, pp, ep) coords)`` from one cached
     gloo all-gather — with ETP < TP the realized set is not the tp x pp x ep cross product."""
@@ -69,13 +69,11 @@ def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
         _shard_topology = (True, (coords,))
         return _shard_topology
 
-    from miles.utils.distributed_utils import get_gloo_group
-
-    my_rank = dist.get_rank()
+    current_rank = dist.get_rank()
     group = get_gloo_group()
     gathered: list[object] = [None] * dist.get_world_size(group=group)
-    dist.all_gather_object(gathered, (coords, my_rank), group=group)
-    is_writer = my_rank == min(rank for entry_coords, rank in gathered if entry_coords == coords)
+    dist.all_gather_object(gathered, (coords, current_rank), group=group)
+    is_writer = current_rank == min(rank for entry_coords, rank in gathered if entry_coords == coords)
     _shard_topology = (is_writer, tuple(sorted({entry_coords for entry_coords, _ in gathered})))
     return _shard_topology
 

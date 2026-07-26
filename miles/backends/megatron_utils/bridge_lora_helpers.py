@@ -104,10 +104,9 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     assert not getattr(
         provider, "moe_pad_expert_input_to_capacity", False
     ), "Multi-LoRA on MoE experts does not support --moe-pad-expert-input-to-capacity."
-    # Set before finalize(); assert so a surviving provider default fails at build time.
     assert not getattr(provider, "moe_permute_fusion", False), (
-        "Multi-LoRA on MoE experts requires moe_permute_fusion=False (the fused permute's "
-        "row_id_map is not a token gather index)."
+        "Multi-LoRA on MoE experts requires moe_permute_fusion=False (set off before "
+        "finalize(); the fused permute's row_id_map is not a token gather index)."
     )
 
 

@@ -46,20 +46,21 @@ def define_new_adapter_metrics(snapshot: dict) -> None:
         define_step_key_metric_group(prefix=f"{name}/perf", step_key="rollout/step")
 
 
-# MLP leaf names match the dense MLP and the MoE experts alike; the bulk aliases expand
-# to them ("all" is only resolved by the later target-module conversion, so match it here).
-_EXPERT_LEAF_NAMES = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
-_ALL_MODULE_ALIASES = ("all", "all-linear", "all_linear")
+# Leaf module names that can live inside MoE experts (they also name the dense MLP
+# projections); the bulk aliases expand to them during target-module resolution.
+_EXPERT_LEAF_NAMES = frozenset({"linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj"})
+_ALL_MODULE_ALIASES = frozenset({"all", "all-linear", "all_linear"})
 
 
 def targets_expert_leaves(target_modules: Any) -> bool:
     """Whether ``target_modules`` can put adapters on MoE expert linears."""
     if isinstance(target_modules, str):
         target_modules = [target_modules]
-    entries = [str(tm) for tm in (target_modules or [])]
-    if any(entry.strip().lower() in _ALL_MODULE_ALIASES for entry in entries):
+    entries = [str(tm).strip().lower() for tm in (target_modules or [])]
+    if any(entry in _ALL_MODULE_ALIASES for entry in entries):
         return True
-    return any(leaf in entry for entry in entries for leaf in _EXPERT_LEAF_NAMES)
+    # Map each entry (possibly a dotted or wildcard path) to its leaf module name.
+    return any(entry.split(".")[-1] in _EXPERT_LEAF_NAMES for entry in entries)
 
 
 def validate_multi_lora_args(args: Any) -> None:
@@ -84,8 +85,7 @@ def validate_multi_lora_args(args: Any) -> None:
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
-    # Per-forward adapter routing is only recompute-safe without pipelining, so enforce
-    # at launch rather than when the weight-sync mixin is built.
+    # Adapter routing is only recompute-safe without pipelining; enforce at launch.
     assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
         "Multi-LoRA requires --pipeline-model-parallel-size 1: no single rank holds a "
         "complete adapter to push to the rollout engines, and a pipelined schedule would "
