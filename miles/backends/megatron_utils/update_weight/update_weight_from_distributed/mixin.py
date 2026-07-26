@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from functools import partial
 
 import ray
 import torch
@@ -44,7 +45,6 @@ class DistBucketedWeightUpdateMixin:
         self.quantization_config: dict | None.
         self._is_source: bool (whether it's the rank broadcasting weights after `all_gather`).
         self._is_lora_source: bool (the single rank holding the full adapter; for LoRA sync).
-        self.weight_version: int.
         self.rollout_engines: Sequence[ActorHandle]. engines of rollout side.
         self._group_name: str. Identifier shown in the tqdm progress bar.
         self._update_weight_implementation(converted_named_tensors, pbar) -> None
@@ -314,7 +314,7 @@ class DistBucketedWeightUpdateMixin:
 
             begin_weight_update(self.rollout_engines)
 
-    def _finalize_and_resume_engines(self) -> None:
+    def _finalize_and_resume_engines(self, serving_rollout_id: int) -> None:
         """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
             end_weight_update(self.rollout_engines)
@@ -327,7 +327,7 @@ class DistBucketedWeightUpdateMixin:
         return out
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, *, serving_rollout_id: int) -> None:
         """Orchestrate the full weight-update lifecycle.
 
         Pause → flush → non-expert (TP) → expert (EP) → continue.
@@ -345,7 +345,6 @@ class DistBucketedWeightUpdateMixin:
         never pushed; the remote rollout engines already load it from
         ``hf_checkpoint`` at init.
         """
-        self.weight_version += 1
 
         self._pause_and_prepare_engines()
         dist.barrier(group=get_gloo_group())
@@ -361,9 +360,10 @@ class DistBucketedWeightUpdateMixin:
             if not is_lora:
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-                self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+                update_impl = partial(self._update_weight_implementation, serving_rollout_id=serving_rollout_id)
+                self._gather_and_update_non_expert_weights(update_impl, pbar)
                 dist.barrier(group=get_gloo_group())
-                self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+                self._gather_and_update_expert_weights(update_impl, pbar)
                 dist.barrier(group=get_gloo_group())
 
             # Adapter weights: every iteration.
@@ -375,5 +375,5 @@ class DistBucketedWeightUpdateMixin:
                 dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
-            self._finalize_and_resume_engines()
+            self._finalize_and_resume_engines(serving_rollout_id)
             dist.barrier(group=get_gloo_group())

@@ -14,6 +14,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
 
 from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.weight_version import WeightVersion
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 
@@ -41,7 +42,6 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.model = model
         self.model_name = model_name
         self.quantization_config = quantization_config
-        self.weight_version = 0
         self._model_update_groups = None
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale: bool = False
@@ -103,7 +103,11 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         return ps.pp.rank == 0 and ps.tp.rank == 0 and ps.intra_dp_cp.rank == 0
 
     def _update_weight_implementation(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
+        self,
+        converted_named_tensors: list[tuple[str, torch.Tensor]],
+        pbar: tqdm | None = None,
+        *,
+        serving_rollout_id: int,
     ) -> None:
         """Lock → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
         # lock the rollout engines to prevent dead lock on broadcast.
@@ -112,7 +116,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         refs = update_weights_from_distributed(
             self._group_name,
             self._model_update_groups,
-            self.weight_version,
+            WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id).serialize(),
             self.rollout_engines,
             converted_named_tensors,
         )

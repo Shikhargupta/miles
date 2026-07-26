@@ -20,6 +20,7 @@ from sglang.srt.server_args import ServerArgs
 from tqdm import tqdm
 
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.weight_version import WeightVersion
 
 from .mixin import DistBucketedWeightUpdateMixin
 from .p2p_transfer_utils import (
@@ -59,7 +60,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.model = model
         self.model_name = model_name
         self.quantization_config = quantization_config
-        self.weight_version = 0
         self._model_update_groups = None
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale: bool = False
@@ -120,18 +120,26 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
         self._model_registered = True
 
-    def _finalize_and_resume_engines(self):
+    def _finalize_and_resume_engines(self, serving_rollout_id: int):
         if dist.get_rank() == 0:
             ray.get(
                 [
-                    engine.update_weight_version.remote(weight_version=str(self.weight_version))
+                    engine.update_weight_version.remote(
+                        weight_version=WeightVersion(
+                            run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+                        ).serialize()
+                    )
                     for engine in self.rollout_engines
                 ]
             )
-        super()._finalize_and_resume_engines()
+        super()._finalize_and_resume_engines(serving_rollout_id)
 
     def _update_weight_implementation(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
+        self,
+        converted_named_tensors: list[tuple[str, torch.Tensor]],
+        pbar: tqdm | None = None,
+        *,
+        serving_rollout_id: int,
     ) -> None:
         """Stage incoming tensors; when all shards for a param are collected,
         load into shared buffer and P2P-write per engine rank.

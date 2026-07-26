@@ -5,6 +5,8 @@ from typing import Any
 import numpy
 import torch
 
+from miles.utils.weight_version import parse_weight_version_rollout_id
+
 
 LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
 
@@ -326,7 +328,11 @@ class Sample:
     @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
-        numeric = [int(span.version) for span in self.all_weight_version_spans if str(span.version).isdigit()]
+        numeric = [
+            rollout_id
+            for span in self.all_weight_version_spans
+            if (rollout_id := parse_weight_version_rollout_id(span.version)) is not None
+        ]
         return min(numeric) if numeric else None
 
     def update_from_meta_info(self, args, meta_info: dict):

@@ -18,6 +18,7 @@ from miles.backends.megatron_utils.lora_utils import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.weight_version import WeightVersion
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
@@ -57,7 +58,6 @@ class UpdateWeightFromTensor:
         self.weights_getter = weights_getter
         self.model_name = model_name
         self.quantization_config = quantization_config
-        self.weight_version = 0
         self.is_lora = is_lora
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args,
@@ -190,11 +190,10 @@ class UpdateWeightFromTensor:
         return out
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, *, serving_rollout_id: int) -> None:
         """
         version++, flush caches, process buckets. Progress on rank 0.
         """
-        self.weight_version += 1
 
         rank = dist.get_rank()
 
@@ -224,7 +223,7 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
-                refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
+                refs, long_lived_tensors = self._send_base_params(hf_named_tensors, serving_rollout_id)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
@@ -263,19 +262,21 @@ class UpdateWeightFromTensor:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def _send_base_params(self, hf_named_tensors, serving_rollout_id: int) -> tuple[list[ObjectRef], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=hf_named_tensors,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            weight_version=self.weight_version,
+            weight_version=WeightVersion(
+                run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+            ).serialize(),
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
-                self.weight_version,
+                WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id).serialize(),
                 self.distributed_rollout_engines,
                 hf_named_tensors,
             )

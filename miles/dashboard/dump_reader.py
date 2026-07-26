@@ -27,6 +27,7 @@ import polars as pl
 import torch
 
 from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionsPerCall
+from miles.utils.weight_version import parse_weight_version_rollout_id
 
 
 class DumpStillWriting(Exception):
@@ -55,7 +56,7 @@ def _weight_version_summary(sample: Sample) -> tuple[list[str], int | None]:
 
 
 def _min_numeric_version(versions: list[str] | None) -> int | None:
-    numeric = [int(v) for v in versions or [] if str(v).isdigit()]
+    numeric = [step for v in versions or [] if (step := parse_weight_version_rollout_id(v)) is not None]
     return min(numeric) if numeric else None
 
 

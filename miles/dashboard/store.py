@@ -43,6 +43,8 @@ except ImportError:
 import numpy as np
 import polars as pl
 
+from miles.utils.weight_version import parse_weight_version_rollout_id
+
 
 class Stream(StrEnum):
     METRICS = "metrics"
@@ -655,7 +657,9 @@ class MetricStore:
             attempts: list[dict] = []
             attempt_t0: float | None = None
             status = ""
-            versions = sorted({int(e.weight_version) for e in events if e.weight_version.isdigit()})
+            versions = sorted(
+                {step for e in events if (step := parse_weight_version_rollout_id(e.weight_version)) is not None}
+            )
             for event in events:
                 if event.kind == TrajectoryEventKind.ATTEMPT_START:
                     attempt_t0 = event.ts

@@ -32,6 +32,7 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.types import RolloutBatch
+from miles.utils.weight_version import WeightVersion
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
@@ -638,7 +639,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: "EnginesAndLock") -> None:
+    def update_weights(self, info: "EnginesAndLock", *, serving_rollout_id: int) -> None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
@@ -681,7 +682,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            self.weight_updater.update_weights(serving_rollout_id=serving_rollout_id)
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):
@@ -693,9 +694,15 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
                 engine_version = ray.get(engine.get_weight_version.remote())
-                if str(engine_version) != str(self.weight_updater.weight_version):
+                if (
+                    str(engine_version)
+                    != WeightVersion(
+                        run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+                    ).serialize()
+                ):
                     raise RuntimeError(
-                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
+                        f"Weight version mismatch! Engine: {engine_version}, "
+                        f"Updater: {WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id).serialize()}"
                     )
 
             if getattr(self.args, "keep_old_actor", False):

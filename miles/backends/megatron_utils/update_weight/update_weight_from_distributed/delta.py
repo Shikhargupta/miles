@@ -22,6 +22,7 @@ from tqdm import tqdm
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.weight_version import WeightVersion
 
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
@@ -53,7 +54,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self.model = model
         self.model_name = model_name
         self.quantization_config = quantization_config
-        self.weight_version = 0
+        self._delta_version = 0
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale: bool = False
         self.delta_dir = args.update_weight_disk_dir
@@ -104,19 +105,19 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, *, serving_rollout_id: int) -> None:
         # The first call only captures the baseline snapshot the next sync diffs against.
         if not self._baseline_captured:
-            self._capture_baseline()
+            self._capture_baseline(serving_rollout_id)
             self._baseline_captured = True
             return
 
-        self.weight_version += 1
+        self._delta_version += 1
         self._publish()
-        self._reload_engines()
+        self._reload_engines(serving_rollout_id)
         self._record_metrics()
 
-    def _capture_baseline(self) -> None:
+    def _capture_baseline(self, serving_rollout_id: int) -> None:
         """Capture the baseline snapshot the first delta diffs against (no publish), and clear any
         stale stream from a prior run. Seeds from hf_checkpoint — what each host materializes its
         base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
@@ -155,7 +156,9 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                     [
                         engine.update_weights_from_disk.remote(
                             model_path=self.args.update_weight_local_checkpoint_dir,
-                            weight_version=str(self.weight_version),
+                            weight_version=WeightVersion(
+                                run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+                            ).serialize(),
                         )
                         for engine in self.rollout_engines
                     ]
@@ -163,7 +166,12 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 _check_weight_sync_results(results, is_lora=False)
             else:
                 # TODO: temporarily weaken checkers; should enhance and fix related logics
-                _update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
+                _update_weight_version_if_unset(
+                    self.rollout_engines,
+                    WeightVersion(
+                        run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+                    ).serialize(),
+                )
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
@@ -231,8 +239,8 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         if rank == 0:
             index = {
                 "metadata": {
-                    "version": f"{self.weight_version:06d}",
-                    "base_version": f"{self.weight_version - 1:06d}",
+                    "version": f"{self._delta_version:06d}",
+                    "base_version": f"{self._delta_version - 1:06d}",
                     "delta_encoding": self.delta_encoding,
                     "compression_format": "zstd",
                     "checksum_format": self.checksum_algorithm,
@@ -242,7 +250,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             _atomic_write(os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode())
         dist.barrier(group=group)
 
-    def _reload_engines(self) -> None:
+    def _reload_engines(self, serving_rollout_id: int) -> None:
         """Commit the published files, have each engine pull the delta onto every host it spans
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
@@ -250,7 +258,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
-            pulls = ray.get([engine.pull_weights.remote(self.weight_version) for engine in self.rollout_engines])
+            pulls = ray.get([engine.pull_weights.remote(self._delta_version) for engine in self.rollout_engines])
             _check_weight_sync_results(pulls, is_lora=False)
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
@@ -260,7 +268,9 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 [
                     engine.update_weights_from_disk.remote(
                         model_path=self.args.update_weight_local_checkpoint_dir,
-                        weight_version=str(self.weight_version),
+                        weight_version=WeightVersion(
+                            run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+                        ).serialize(),
                     )
                     for engine in self.rollout_engines
                 ]
@@ -274,7 +284,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         in self._delta with their checksums. The GPU->CPU gather is pipelined into a compute pool:
         each bucket callback copies one tensor at a time to a pinned buffer and submits it; pool
         workers diff and compress in parallel (each is a few big GIL-releasing numpy/zstd calls)."""
-        self._version_dir = os.path.join(self.delta_dir, f"weight_v{self.weight_version:06d}")
+        self._version_dir = os.path.join(self.delta_dir, f"weight_v{self._delta_version:06d}")
         if self._is_source:
             os.makedirs(self._version_dir, exist_ok=True)
         snapshot = self._snapshot
@@ -366,7 +376,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         if dist.get_rank() == 0:
             logger.info(
                 "[disk delta v=%s] density=%.2f%% wire=%.2f GB",
-                self.weight_version,
+                self._delta_version,
                 100.0 * changed / max(total, 1),
                 wire / 1e9,
             )

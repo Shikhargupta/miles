@@ -18,6 +18,7 @@ except ImportError:
 from sglang.srt.utils import MultiprocessingSerializer
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
+from miles.utils.weight_version import WeightVersion
 
 
 try:
@@ -33,7 +34,6 @@ class UpdateWeight(abc.ABC):
     def __init__(self, args: Namespace, model: torch.nn.Module) -> None:
         self.args = args
         self.model = model
-        self.weight_version = 0
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -45,8 +45,7 @@ class UpdateWeight(abc.ABC):
     ) -> None:
         pass
 
-    def update_weights(self) -> None:
-        self.weight_version += 1
+    def update_weights(self, *, serving_rollout_id: int) -> None:
 
         if dist.get_rank() == 0:
             futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
@@ -59,7 +58,7 @@ class UpdateWeight(abc.ABC):
         for name, param in self.model.state_dict().items():
             param_size = param.numel() * param.element_size()
             if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket)
+                self.wait_and_update_bucket_weights(bucket, serving_rollout_id)
                 del bucket
                 bucket = []
                 bucket_size = 0
@@ -75,7 +74,7 @@ class UpdateWeight(abc.ABC):
             bucket_size += param_size
 
         if bucket:
-            self.wait_and_update_bucket_weights(bucket)
+            self.wait_and_update_bucket_weights(bucket, serving_rollout_id)
             del bucket
             bucket = []
             bucket_size = 0
@@ -85,9 +84,14 @@ class UpdateWeight(abc.ABC):
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    def wait_and_update_bucket_weights(self, bucket):
+    def wait_and_update_bucket_weights(self, bucket, serving_rollout_id: int):
         bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
-        self.update_bucket_weights(bucket, weight_version=self.weight_version)
+        self.update_bucket_weights(
+            bucket,
+            weight_version=WeightVersion(
+                run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+            ).serialize(),
+        )
 
     @abc.abstractmethod
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:

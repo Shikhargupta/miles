@@ -20,6 +20,7 @@ from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.weight_version import WeightVersion
 
 from ....utils.profile_utils import TrainProfiler
 from ...training_utils.ci_utils import check_grad_norm
@@ -575,7 +576,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: "EnginesAndLock") -> None:  # type: ignore[override]
+    def update_weights(self, info: "EnginesAndLock", *, serving_rollout_id: int) -> None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines.
 
         Handles both colocated and distributed update modes. In offload mode,
@@ -602,14 +603,18 @@ class FSDPTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
-        self.weight_updater.update_weights()
+        self.weight_updater.update_weights(serving_rollout_id=serving_rollout_id)
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)
             engine_version = ray.get(engine.get_weight_version.remote())
-            if str(engine_version) != str(self.weight_updater.weight_version):
+            if (
+                str(engine_version)
+                != WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id).serialize()
+            ):
                 raise RuntimeError(
-                    f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
+                    f"Weight version mismatch! Engine: {engine_version}, "
+                    f"Updater: {WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id).serialize()}"
                 )
 
         clear_memory()

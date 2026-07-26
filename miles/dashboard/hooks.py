@@ -27,6 +27,7 @@ from miles.dashboard.store import (
 )
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.timer import Timer
+from miles.utils.weight_version import parse_weight_version_rollout_id
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,11 @@ class TrajectorySink:
 
     def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
         try:
-            versions = [span.version for span in getattr(sample, "all_weight_version_spans", None) or []]
+            versions = [
+                step
+                for span in getattr(sample, "all_weight_version_spans", None) or []
+                if (step := parse_weight_version_rollout_id(span.version)) is not None
+            ]
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
                 kind=kind,
