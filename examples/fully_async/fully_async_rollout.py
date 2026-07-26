@@ -11,7 +11,7 @@ from miles.rollout.data_source import DataSource
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group
 from miles.utils.async_utils import run
 from miles.utils.types import Sample
-from miles.utils.weight_version import parse_weight_version_rollout_id
+from miles.utils.weight_version import try_parse_weight_version_rollout_id
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class _CachedWeightVersion:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        self._value = parse_weight_version_rollout_id(data["weight_version"])
+                        self._value = try_parse_weight_version_rollout_id(data["weight_version"])
                         self._last_query = now
         except Exception as e:
             logger.debug(f"Failed to query engine weight version: {e}")

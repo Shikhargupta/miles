@@ -1,7 +1,7 @@
 import pytest
 
 from miles.utils.run_identity import generate_run_uuid
-from miles.utils.weight_version import WeightVersion, parse_weight_version_rollout_id
+from miles.utils.weight_version import WeightVersion, try_parse_weight_version_rollout_id
 
 RUN_UUID = "ab12cd34"
 
@@ -31,6 +31,6 @@ class TestWeightVersion:
 
     def test_parse_rollout_id_rejects_anything_but_the_run_scoped_format(self):
         """A bare counter from an older run is not comparable to a run-scoped id, so it is not one."""
-        assert parse_weight_version_rollout_id(WeightVersion(run_uuid=RUN_UUID, rollout_id=7).serialize()) == 7
-        assert parse_weight_version_rollout_id("12") is None
-        assert parse_weight_version_rollout_id("default") is None
+        assert try_parse_weight_version_rollout_id(WeightVersion(run_uuid=RUN_UUID, rollout_id=7).serialize()) == 7
+        assert try_parse_weight_version_rollout_id("12") is None
+        assert try_parse_weight_version_rollout_id("default") is None

@@ -32,7 +32,7 @@ class WeightVersion:
         return WeightVersion(run_uuid=match.group("run_uuid"), rollout_id=int(match.group("rollout_id")))
 
 
-def parse_weight_version_rollout_id(value: str) -> int | None:
+def try_parse_weight_version_rollout_id(value: str) -> int | None:
     try:
         return WeightVersion.deserialize(value).rollout_id
     except ValueError:
