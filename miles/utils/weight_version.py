@@ -90,11 +90,6 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"],
         if own_run := [item.rollout_id for item in parsed if item.run_uuid == current_run_uuid]:
             oldest_per_sample[sample.index] = min(own_run)
 
-    # The bound is on how far behind the serving weights a sample is, and the
-    # freshest version anyone in the batch saw is the best available stand-in
-    # for what the engines were serving. rollout_id is not: under
-    # update_weights_interval > 1 or a fully async backlog it legitimately runs
-    # ahead of the engines, and measuring against it would reject valid runs.
     if (max_staleness := args.max_weight_staleness) is not None:
         for index, oldest in oldest_per_sample.items():
             assert newest_rollout_id - oldest <= max_staleness, (
