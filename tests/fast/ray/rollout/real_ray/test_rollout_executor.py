@@ -142,32 +142,13 @@ class _RecordingRolloutFn(BaseRolloutFn):
 
 @pytest.mark.asyncio
 class TestCheckpointing:
-    async def test_the_two_rollout_functions_are_built_with_distinct_roles(
+    async def test_save_and_load_reach_only_the_train_rollout_function(
         self,
         ray_local_mode,
         patch_low_level,
         monkeypatch,
     ):
-        """Both instances are checkpointed under one rollout id, so each must know which it is."""
-        import miles.ray.rollout.rollout_executor as rexec
-
-        inputs = []
-        monkeypatch.setattr(rexec, "enable_experimental_rollout_refactor", lambda: True)
-        monkeypatch.setattr(
-            rexec, "load_rollout_function", lambda input, path: inputs.append(input) or (lambda *a, **kw: None)
-        )
-
-        _make_executor(_make_test_args())
-
-        assert [i.evaluation for i in inputs] == [False, True]
-
-    async def test_save_and_load_reach_both_rollout_functions(
-        self,
-        ray_local_mode,
-        patch_low_level,
-        monkeypatch,
-    ):
-        """save/load fan out to the train and eval rollout functions with the same rollout id."""
+        """The eval instance is skipped: it shares the train instance's path and rollout id by default."""
         import miles.ray.rollout.rollout_executor as rexec
 
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
@@ -185,9 +166,7 @@ class TestCheckpointing:
 
         assert calls == [
             ("train", "save", 7),
-            ("eval", "save", 7),
             ("train", "load", 7),
-            ("eval", "load", 7),
         ]
 
     async def test_save_forwards_to_the_data_source_for_a_global_dataset(

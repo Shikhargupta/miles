@@ -17,7 +17,6 @@ class RolloutFnConstructorInput:
     args: Namespace
     # TODO may refactor DataSource API
     data_source: DataSource
-    evaluation: bool
 
 
 @dataclass(frozen=True)

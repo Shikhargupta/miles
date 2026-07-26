@@ -55,14 +55,9 @@ class RolloutExecutor:
 
         self.use_experimental_refactor = enable_experimental_rollout_refactor()
         if self.use_experimental_refactor:
-            self.generate_rollout = load_rollout_function(
-                RolloutFnConstructorInput(args=args, data_source=self.data_source, evaluation=False),
-                self.args.rollout_function_path,
-            )
-            self.eval_generate_rollout = load_rollout_function(
-                RolloutFnConstructorInput(args=args, data_source=self.data_source, evaluation=True),
-                self.args.eval_function_path,
-            )
+            input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
+            self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+            self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
@@ -171,14 +166,12 @@ class RolloutExecutor:
             self.data_source.save(rollout_id)
         if self.use_experimental_refactor:
             self.generate_rollout.save(rollout_id)
-            self.eval_generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
         if self.use_experimental_refactor:
             self.generate_rollout.load(rollout_id)
-            self.eval_generate_rollout.load(rollout_id)
 
     # -------------------------- misc APIs -----------------------------
 

@@ -57,8 +57,7 @@ def test_train(rollout_env):
 def test_eval(rollout_env):
     env = rollout_env
     fn = load_rollout_function(
-        RolloutFnConstructorInput(args=env.args, data_source=env.data_source, evaluation=True),
-        env.args.eval_function_path,
+        RolloutFnConstructorInput(args=env.args, data_source=env.data_source), env.args.eval_function_path
     )
     out = call_rollout_function(fn, RolloutFnEvalInput(rollout_id=0))
 
