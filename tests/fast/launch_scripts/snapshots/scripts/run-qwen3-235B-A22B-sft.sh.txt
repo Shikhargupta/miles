@@ -56,6 +56,11 @@
 "--dashboard-port=8265"
 
 ### 10
+"awk"
+"{print $1}"
+"/root/mpi_rack_hostfile"
+
+### 11
 "ray"
 "job"
 "submit"

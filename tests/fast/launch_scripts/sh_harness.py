@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,7 @@ _FROZEN_ENV = {
 _SHIMMED_COMMANDS = (
     "apt",
     "apt-get",
+    "awk",
     "curl",
     "date",
     "docker",
@@ -44,17 +46,38 @@ _SHIMMED_COMMANDS = (
     "ray",
     "rm",
     "rsync",
+    "scp",
     "sleep",
+    "ssh",
     "torchrun",
     "wget",
 )
 
 _GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS = "1000000"
 
+_FROZEN_RAY_DASHBOARD_PROCESS = "root 1 0.0 0.0 ray dashboard --node-ip-address=10.0.0.1 --dashboard-port=8265"
+
 _SHIM_STDOUT = {
-    "python": _GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS,
-    "python3": _GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS,
     "date": "20260101_000000",
+    "ps": _FROZEN_RAY_DASHBOARD_PROCESS,
+}
+
+_PYTHON_SHIM_BODY = """case "${1:-}" in
+-c)
+    case "$2" in
+    *cluster_resources*) printf '%s\\n' 'REPLACE_GPU_COUNT' ;;
+    *import*) ;;
+    *) "$MILES_SH_HARNESS_REAL_PYTHON" "$@" ;;
+    esac
+    ;;
+esac
+""".replace(
+    "REPLACE_GPU_COUNT", _GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS
+)
+
+_SHIM_BODY = {
+    "python": _PYTHON_SHIM_BODY,
+    "python3": _PYTHON_SHIM_BODY,
 }
 
 _SHIM_TEMPLATE = """#!/bin/bash
@@ -111,6 +134,7 @@ def run_launch_script(
         "MILES_SH_HARNESS_CAPTURE": str(capture),
         "MILES_SH_HARNESS_ARG_SEP": _ARG_SEPARATOR,
         "MILES_SH_HARNESS_RECORD_SEP": _RECORD_SEPARATOR,
+        "MILES_SH_HARNESS_REAL_PYTHON": sys.executable,
         **(extra_env or {}),
     }
     process = subprocess.run(
@@ -147,7 +171,7 @@ def _write_shims(fake_bin: Path) -> None:
         stdout = _SHIM_STDOUT.get(name)
         stdout_statement = "" if stdout is None else f"printf '%s\\n' {stdout!a}\n"
         shim = fake_bin / name
-        shim.write_text(_SHIM_TEMPLATE.format(name=name, stdout_statement=stdout_statement))
+        shim.write_text(_SHIM_TEMPLATE.format(name=name, stdout_statement=stdout_statement + _SHIM_BODY.get(name, "")))
         shim.chmod(0o755)
 
 

@@ -96,6 +96,10 @@ def test_launch_script_submits_exactly_one_ray_job(recorded):
     assert len(run.ray_job_submit_argv()) > 10
 
 
-def test_all_launch_scripts_are_discovered():
-    """Guards against the discovery glob silently going empty."""
-    assert len(_SCRIPTS) > 60
+def test_every_discovered_script_has_a_snapshot_and_vice_versa():
+    """A script that stops matching the discovery filter would otherwise vanish silently."""
+    discovered = {f"{rel}.txt" for rel in _SCRIPTS}
+    recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
+
+    assert discovered == recorded
+    assert len(discovered) > 60

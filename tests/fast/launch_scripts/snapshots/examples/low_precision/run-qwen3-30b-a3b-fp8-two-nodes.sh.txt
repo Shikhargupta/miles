@@ -17,7 +17,7 @@
 "ray"
 "job"
 "submit"
-"--address=http://:"
+"--address=http://10.0.0.1:8265"
 "--runtime-env-json={\n  \"env_vars\": {\n    \"PYTHONPATH\": \"/root/Megatron-LM/\",\n    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\n    \"NCCL_NVLS_ENABLE\": \"0\",\n    \"NVTE_FP8_BLOCK_SCALING_FP32_SCALES\": \"1\",\n    \"NCCL_TIMEOUT_MS\":\"36000000\"\n  }\n}"
 "--"
 "python3"

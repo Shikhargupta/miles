@@ -245,7 +245,7 @@
 "--actor-num-gpus-per-node"
 "8"
 "--update-weight-buffer-size"
-"1000000"
+"1073741824"
 "--check-weight-update-equal"
 "--update-weight-transfer-mode"
 "p2p"
