@@ -48,34 +48,6 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
     ...
 ```
 
-With `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` a rollout function may instead be a class.
-It must subclass `BaseRolloutFn`, which supplies the constructor and no-op `save` /
-`load`, so a stateless implementation writes only `__call__`:
-
-```python
-class MyRolloutFn(BaseRolloutFn):
-    async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput: ...
-    def save(self, rollout_id: int) -> None: ...          # optional
-    def load(self, rollout_id: int | None) -> None: ...   # optional
-```
-
-Without that env var the default path is the legacy one above: the class is called as
-`fn(args, rollout_id, data_source, evaluation=...)` and the class form does not apply.
-
-`save` / `load` run inside `RolloutExecutor.save` / `.load`, next to the data source, so
-in-flight rollout state survives a checkpoint restore. A class that does not subclass
-`BaseRolloutFn` is rejected when it is loaded.
-
-Two limitations to know before writing a stateful one:
-
-* The train and eval rollout functions are separate instances, and `--eval-function-path`
-  defaults to `--rollout-function-path`, so the same class is usually instantiated twice
-  and both are checkpointed under the same `rollout_id`. Nothing in the API distinguishes
-  the two yet, so keep the eval function stateless.
-* `train_async.py` may start rollout `N+1` before checkpointing rollout `N`, and nothing
-  serializes `__call__` against `save`. A stateful implementation has to tolerate being
-  saved while it is running.
-
 **Default:** `miles.rollout.sglang_rollout.generate_rollout`, or
 `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when
 `enable_experimental_rollout_refactor()` is on.
