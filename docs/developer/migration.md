@@ -104,6 +104,14 @@ weight update instead of rank 0 doing it. `start_control_server` takes
 `RolloutExecutor.generate` is now `RolloutExecutor.get`: the executor hands over data
 the rollout already produced, it does not itself generate.
 
+## Class-based rollout functions must subclass `BaseRolloutFn`
+
+Rollout functions gained `save` / `load` alongside `__call__`, so a class passed to
+`--rollout-function-path` or `--eval-function-path` now has to subclass
+`miles.rollout.base_types.BaseRolloutFn`; anything else is rejected at load time. The
+base supplies no-op `save` / `load`, so a stateless implementation only adds the base
+class. Plain function rollout functions are unaffected.
+
 ## Other recent breakages
 
 ### v0.0.8 → v0.0.9

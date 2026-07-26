@@ -48,6 +48,21 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
     ...
 ```
 
+A rollout function may also be a class. It must subclass `BaseRolloutFn`, which supplies
+no-op `save` / `load` so only stateful implementations write anything:
+
+```python
+class MyRolloutFn(BaseRolloutFn):
+    def __init__(self, input: RolloutFnConstructorInput): ...
+    async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput: ...
+    def save(self, rollout_id: int) -> None: ...          # optional
+    def load(self, rollout_id: int | None) -> None: ...   # optional
+```
+
+`save` / `load` run inside `RolloutExecutor.save` / `.load`, next to the data source, so
+in-flight rollout state survives a checkpoint restore. A class that does not subclass
+`BaseRolloutFn` is rejected when it is loaded.
+
 **Default:** `miles.rollout.sglang_rollout.generate_rollout`, or
 `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when
 `enable_experimental_rollout_refactor()` is on.

@@ -164,10 +164,16 @@ class RolloutExecutor:
     def save(self, rollout_id):
         if self.args.rollout_global_dataset:
             self.data_source.save(rollout_id)
+        if self.use_experimental_refactor:
+            self.generate_rollout.save(rollout_id)
+            self.eval_generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
+        if self.use_experimental_refactor:
+            self.generate_rollout.load(rollout_id)
+            self.eval_generate_rollout.load(rollout_id)
 
     # -------------------------- misc APIs -----------------------------
 

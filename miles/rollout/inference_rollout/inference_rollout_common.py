@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any
 
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     GenerateFnInput,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -176,7 +177,7 @@ def compute_sampling_params(
     )
 
 
-class InferenceRolloutFn:
+class InferenceRolloutFn(BaseRolloutFn):
     def __init__(self, input: RolloutFnConstructorInput):
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
