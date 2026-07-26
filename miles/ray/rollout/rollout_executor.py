@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 @ray.remote
-class RolloutManager:
+class RolloutExecutor:
     """The class to run rollout and convert rollout data to training data."""
 
     def __init__(self, args):
