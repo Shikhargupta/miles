@@ -153,6 +153,21 @@ class TestWeightVersions:
         s.update_from_meta_info(_make_args(), _make_meta_info([3, 4, 5], weight_version="v7"))
         assert s.weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v7", 2, 5)])]
 
+    def test_caller_can_state_how_many_of_its_tokens_the_engine_produced(self):
+        """A caller that stores extra tokens of its own must not have the span slide onto them."""
+        meta = {"output_token_logprobs": [(-0.1, i) for i in range(4)], "weight_version": "v1"}
+        call = WeightVersionsPerCall.from_meta_info(meta, output_end=14, num_output_tokens=4)
+        assert call.spans == [WeightVersionSpan("v1", 10, 14)]
+
+    def test_spans_are_clipped_to_the_tokens_the_caller_kept(self):
+        """Truncating the output must not leave spans reaching past what was stored."""
+        meta = {
+            "output_token_logprobs": [(-0.1, i) for i in range(4)],
+            "weight_versions": [{"version": "a", "start": 0, "end": 1}, {"version": "b", "start": 1, "end": 4}],
+        }
+        call = WeightVersionsPerCall.from_meta_info(meta, output_end=12, num_output_tokens=2)
+        assert call.spans == [WeightVersionSpan("a", 10, 11), WeightVersionSpan("b", 11, 12)]
+
     def test_zero_length_spans_are_dropped(self):
         """An aborted call with no output tokens reports a zero-length span that covers nothing."""
         call = WeightVersionsPerCall.from_meta_info(
