@@ -162,6 +162,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 )
                 _check_weight_sync_results(results, is_lora=False)
             else:
+                # TODO: enhance logics to set initial weight version
                 _update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
