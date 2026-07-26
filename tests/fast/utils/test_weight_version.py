@@ -94,20 +94,22 @@ def _make_sample(versions: list[tuple[str, int]], response_length: int = 4, inde
 class TestAssertSamplesWeightVersionSane:
     def test_weights_served_for_this_rollout_pass(self):
         """A sample generated under the weights published for this rollout is sane."""
-        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 5)])], rollout_id=5)
+        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 5)])], rollout_id=5, is_eval=False)
 
     def test_one_rollout_of_lag_is_allowed(self):
         """Async drivers launch the next generation before the update, so it runs on the previous weights."""
-        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 4)])], rollout_id=5)
+        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 4)])], rollout_id=5, is_eval=False)
 
     def test_an_unbounded_backlog_is_allowed_when_no_bound_was_declared(self):
         """Fully async runs legitimately train on a deep backlog; only an explicit bound may reject it."""
-        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 1)])], rollout_id=5)
+        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 1)])], rollout_id=5, is_eval=False)
 
     def test_training_batch_from_a_future_rollout_fails(self):
         """Outside eval, weights published for a later rollout cannot have produced this batch."""
         with pytest.raises(AssertionError, match="newer than the rollout"):
-            assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 6)])], rollout_id=5)
+            assert_samples_weight_version_sane(
+                _make_args(), [_make_sample([(RUN_UUID, 6)])], rollout_id=5, is_eval=False
+            )
 
     def test_rollout_functions_that_never_query_an_engine_are_left_alone(self):
         """SFT and hand-assembled rollouts carry no versions at all and must not be rejected."""
@@ -130,10 +132,16 @@ class TestAssertSamplesWeightVersionSane:
         """Two versions three rollouts apart are staler than two adjacent ones."""
         with pytest.raises(AssertionError, match="past"):
             assert_samples_weight_version_sane(
-                _make_args(max_weight_staleness=1), [_make_sample([(RUN_UUID, 3), (RUN_UUID, 5)])], rollout_id=5
+                _make_args(max_weight_staleness=1),
+                [_make_sample([(RUN_UUID, 3), (RUN_UUID, 5)])],
+                rollout_id=5,
+                is_eval=False,
             )
         assert_samples_weight_version_sane(
-            _make_args(max_weight_staleness=2), [_make_sample([(RUN_UUID, 3), (RUN_UUID, 5)])], rollout_id=5
+            _make_args(max_weight_staleness=2),
+            [_make_sample([(RUN_UUID, 3), (RUN_UUID, 5)])],
+            rollout_id=5,
+            is_eval=False,
         )
 
     def test_foreign_run_sample_fails_even_beside_a_current_run_sample(self):
@@ -175,7 +183,7 @@ class TestAssertSamplesWeightVersionSane:
         """With interval > 1 the engines lag rollout_id by design; a uniform batch has zero spread."""
         args = _make_args(max_weight_staleness=0)
         args.update_weights_interval = 2
-        assert_samples_weight_version_sane(args, [_make_sample([(RUN_UUID, 1)])], rollout_id=5)
+        assert_samples_weight_version_sane(args, [_make_sample([(RUN_UUID, 1)])], rollout_id=5, is_eval=False)
 
     def test_samples_without_an_index_are_each_still_checked(self):
         """Hand-built rollout functions leave every index None; they must not collapse onto one entry."""
