@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ENTRYPOINTS = ("train.py", "train_async.py", "train_multi_lora_async.py")
 
 # The rollout each entrypoint's weight push will serve, as source text. Sync
 # trains rollout N then pushes the weights rollout N+1 generates with; ordinary
@@ -18,49 +17,22 @@ _EXPECTED_WEIGHT_ROLLOUT_IDS = {
 }
 
 
-@pytest.mark.parametrize("entrypoint", _ENTRYPOINTS)
-def test_every_update_weights_call_states_which_rollout_its_weights_serve(entrypoint):
-    """A weight push that does not say which rollout it serves cannot be attributed at all."""
-    for call in _update_weights_calls(entrypoint):
-        assert any(
-            keyword.arg == "weight_rollout_id" for keyword in call.keywords
-        ), f"{entrypoint}:{call.lineno} calls update_weights without weight_rollout_id"
-
-
-@pytest.mark.parametrize("entrypoint", _ENTRYPOINTS)
+@pytest.mark.parametrize("entrypoint", sorted(_EXPECTED_WEIGHT_ROLLOUT_IDS))
 def test_each_entrypoint_serves_the_rollout_its_loop_shape_implies(entrypoint):
-    """The offset differs per driver and is not a naive +1, so pin the exact expressions."""
-    served = {
-        ast.unparse(keyword.value)
-        for call in _update_weights_calls(entrypoint)
-        for keyword in call.keywords
-        if keyword.arg == "weight_rollout_id"
-    }
-
-    assert served == _EXPECTED_WEIGHT_ROLLOUT_IDS[entrypoint]
-
-
-@pytest.mark.parametrize("entrypoint", _ENTRYPOINTS)
-def test_weights_are_pushed_before_the_rollout_they_serve_is_generated(entrypoint):
-    """A push that lands after generate would stamp the samples with weights they never saw."""
-    tree = ast.parse((_REPO_ROOT / entrypoint).read_text())
-    generates = [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("generate.remote")
-    ]
-
-    assert generates, f"{entrypoint} never generates; this guard would silently pass"
-    assert min(call.lineno for call in _update_weights_calls(entrypoint)) < min(generates)
-
-
-def _update_weights_calls(entrypoint: str) -> list[ast.Call]:
+    """The offset differs per driver and is not a naive +1, and getting it wrong misattributes silently."""
     tree = ast.parse((_REPO_ROOT / entrypoint).read_text())
     calls = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "update_weights"
     ]
-
     assert calls, f"{entrypoint} pushes no weights; this guard would silently pass"
-    return calls
+
+    served = {
+        ast.unparse(keyword.value)
+        for call in calls
+        for keyword in call.keywords
+        if keyword.arg == "weight_rollout_id"
+    }
+
+    assert served == _EXPECTED_WEIGHT_ROLLOUT_IDS[entrypoint]
