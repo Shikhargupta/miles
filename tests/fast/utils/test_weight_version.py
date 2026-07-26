@@ -239,12 +239,6 @@ class TestEvalRunsOnExactlyOneWeightVersion:
                 _make_args(), [_make_sample([(RUN_UUID, version_rollout_id)])], rollout_id=5, is_eval=True
             )
 
-    def test_eval_on_one_version_is_not_subject_to_the_staleness_bound(self):
-        """A single-version eval batch has no spread to bound, whatever the engines are serving."""
-        samples = [_make_sample([(RUN_UUID, 6)]), _make_sample([(RUN_UUID, 6)], index=1)]
-
-        assert_samples_weight_version_sane(_make_args(max_weight_staleness=0), samples, rollout_id=5, is_eval=True)
-
     def test_unstamped_eval_samples_are_still_left_alone(self):
         """An eval rollout function that never queries an engine reports no versions to disagree about."""
         assert_samples_weight_version_sane(

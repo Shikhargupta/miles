@@ -21,6 +21,7 @@ from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped, mak
 
 from miles.ray.rollout.rollout_manager import RolloutManager
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.utils.types import WeightVersionSpan, WeightVersionsPerCall
 
 
 @pytest.fixture
@@ -560,6 +561,30 @@ class TestEval:
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnEvalInput)
         assert captured[0].rollout_id == 10
+
+    async def test_eval_samples_spanning_two_weight_versions_are_rejected(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """An eval score covers one checkpoint, so the manager must refuse a batch that saw two."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        manager = _make_manager(args, placement_group_factory(2))
+
+        samples = make_samples_grouped(1, 2)
+        for sample, version in zip(samples, [10, 9], strict=True):
+            sample.weight_versions = [
+                WeightVersionsPerCall(spans=[WeightVersionSpan(make_test_weight_version(version), 0, 1)])
+            ]
+
+        manager.eval_generate_rollout = lambda input: RolloutFnEvalOutput(
+            data={"my_dataset": {"rewards": [0.5, 1.0], "samples": samples}}, metrics={}
+        )
+
+        with pytest.raises(AssertionError, match="eval batch spans 2 weight versions"):
+            await manager.eval(rollout_id=10)
 
     async def test_skipped_in_debug_train_only_mode(
         self,
