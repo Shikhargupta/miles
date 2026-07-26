@@ -13,6 +13,7 @@ from miles.utils.arguments import (
     miles_validate_args,
 )
 from miles.utils.misc import function_registry
+from miles.utils.run_identity import validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
@@ -288,3 +289,39 @@ class TestResolveFtComponents:
 
         assert result == ["train", "rollout"]
         assert result is not components
+
+
+class TestRunUuidResolution:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    def test_unset_run_uuid_is_generated(self):
+        """Every launch gets an identifier, so nothing has to cope with it being absent."""
+        args = self._parse([])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
+    def test_two_launches_do_not_share_a_run_uuid(self):
+        """A colliding identifier would attribute one run's artifacts to another."""
+        first, second = self._parse([]), self._parse([])
+        miles_validate_args(first)
+        miles_validate_args(second)
+
+        assert first.run_uuid != second.run_uuid
+
+    def test_an_explicit_run_uuid_is_kept(self):
+        """Reproducing a run means being able to pin its identifier."""
+        args = self._parse(["--run-uuid", "ab12cd34"])
+        miles_validate_args(args)
+
+        assert args.run_uuid == "ab12cd34"
+
+    def test_a_malformed_explicit_run_uuid_fails_at_launch(self):
+        """Rejecting it here beats corrupting every string that embeds it hours into a run."""
+        args = self._parse(["--run-uuid", "my-experiment"])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)
