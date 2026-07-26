@@ -291,3 +291,14 @@ class TestNodeZeroDetectionPrecondition:
             worker_type="placeholder",
             rank_offset=1,
         )
+
+
+class TestRejectedConfigurations:
+    @pytest.mark.parametrize("overrides", [{"port": 40000}, {"host": "10.9.9.9"}, {"host": "10.9.9.9", "port": 40000}])
+    def test_host_or_port_override_is_rejected(self, patched_sglang_engine, placement_group_factory, overrides):
+        """An override of host or port would make the rollout process address the wrong endpoint."""
+        group = _build_group(pg_tuple=placement_group_factory(1), num_engines=1)
+        group.sglang_overrides = overrides
+
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            group.start_engines(PortCursors.empty())
