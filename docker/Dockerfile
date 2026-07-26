@@ -120,6 +120,9 @@ RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/ver
     fi && \
     pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
     pip install --force-reinstall --no-deps "$@" && \
+    # --no-deps skips TE 2.17's runtime deps; onnxscript is imported at
+    # transformer_engine.pytorch import time, so install it explicitly.
+    pip install onnxscript==0.7.1 && \
     python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes

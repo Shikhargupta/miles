@@ -24,6 +24,9 @@ def verify(core_dist: str) -> None:
     assert actual == expected, f"unexpected TransformerEngine versions: {actual}"
     assert f"{core}=={VERSION}" in requires, f"unexpected TransformerEngine torch requirements: {requires}"
     assert importlib.util.find_spec("transformer_engine") is not None, "transformer_engine package not found"
+    # The TE wheels are installed with --no-deps; onnxscript is imported at
+    # transformer_engine.pytorch import time and must be present in the image.
+    assert importlib.util.find_spec("onnxscript") is not None, "onnxscript missing (TE imports it at runtime)"
 
 
 if __name__ == "__main__":
