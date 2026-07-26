@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from miles.utils.misc import exec_command_cpu, exec_command_gpu, exec_command_multi_node
+from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command_cpu, exec_command_gpu, exec_command_multi_node, dataclass_cli
