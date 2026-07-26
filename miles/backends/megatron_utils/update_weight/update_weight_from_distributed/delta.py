@@ -19,7 +19,6 @@ import zstandard
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
-from miles.backends.sglang_utils.sglang_engine import update_weight_version_if_unset
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
@@ -163,7 +162,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 )
                 _check_weight_sync_results(results, is_lora=False)
             else:
-                update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
+                _update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
@@ -379,3 +378,25 @@ def _atomic_write(path: str, data: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+_UNSET_WEIGHT_VERSION = "default"
+
+
+def _update_weight_version_if_unset(rollout_engines: Sequence[ActorHandle], weight_version: str) -> None:
+    reported = ray.get([engine.get_weight_version.remote() for engine in rollout_engines])
+    unset = [
+        engine
+        for engine, version in zip(rollout_engines, reported, strict=True)
+        if version in (None, _UNSET_WEIGHT_VERSION)
+    ]
+    _update_weight_version(unset, weight_version)
+
+
+def _update_weight_version(rollout_engines: Sequence[ActorHandle], weight_version: str) -> None:
+    ray.get(
+        [
+            engine.update_weight_version.remote(weight_version=weight_version, abort_all_requests=False)
+            for engine in rollout_engines
+        ]
+    )

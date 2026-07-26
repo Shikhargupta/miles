@@ -4,14 +4,11 @@ import logging
 import multiprocessing
 import os
 import time
-from collections.abc import Sequence
 from urllib.parse import quote
 
-import ray
 import requests
 import sglang_router
 from packaging.version import parse
-from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
@@ -803,25 +800,3 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "enable_metrics",
     "mem_fraction_static",
 ]
-
-
-UNSET_WEIGHT_VERSION = "default"
-
-
-def update_weight_version_if_unset(rollout_engines: Sequence[ActorHandle], weight_version: str) -> None:
-    reported = ray.get([engine.get_weight_version.remote() for engine in rollout_engines])
-    unset = [
-        engine
-        for engine, version in zip(rollout_engines, reported, strict=True)
-        if version in (None, UNSET_WEIGHT_VERSION)
-    ]
-    update_weight_version(unset, weight_version)
-
-
-def update_weight_version(rollout_engines: Sequence[ActorHandle], weight_version: str) -> None:
-    ray.get(
-        [
-            engine.update_weight_version.remote(weight_version=weight_version, abort_all_requests=False)
-            for engine in rollout_engines
-        ]
-    )
