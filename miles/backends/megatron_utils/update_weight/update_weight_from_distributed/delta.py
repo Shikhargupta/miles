@@ -390,13 +390,9 @@ def _update_weight_version_if_unset(rollout_engines: Sequence[ActorHandle], weig
         for engine, version in zip(rollout_engines, reported, strict=True)
         if version in (None, _UNSET_WEIGHT_VERSION)
     ]
-    _update_weight_version(unset, weight_version)
-
-
-def _update_weight_version(rollout_engines: Sequence[ActorHandle], weight_version: str) -> None:
     ray.get(
         [
             engine.update_weight_version.remote(weight_version=weight_version, abort_all_requests=False)
-            for engine in rollout_engines
+            for engine in unset
         ]
     )
