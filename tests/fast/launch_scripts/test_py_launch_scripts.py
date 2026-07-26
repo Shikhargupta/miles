@@ -20,6 +20,7 @@ _UPDATE_ENV_VAR = "MILES_UPDATE_LAUNCH_SCRIPT_SNAPSHOTS"
 
 _SCRIPTS_NEEDING_THE_NPU_DOCKER_PATCH = {"scripts/run_qwen3_4b_npu.py"}
 
+
 def _glm_checkpoint(sandbox: Path, model_name: str, num_layers: int) -> dict[str, object]:
     model_dir = sandbox / "models"
     (model_dir / model_name).mkdir(parents=True)
