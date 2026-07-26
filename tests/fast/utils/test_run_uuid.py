@@ -39,6 +39,7 @@ class TestValidateRunUuid:
             WELL_FORMED[:-1] + "g",
             " " + WELL_FORMED,
             WELL_FORMED + " ",
+            WELL_FORMED + "\n",
             "my-experiment",
         ],
     )

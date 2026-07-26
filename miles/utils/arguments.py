@@ -2414,7 +2414,6 @@ def miles_validate_args(args):
 
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
-    args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
     if args.mini_ft_controller_enable and args.control_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
@@ -2883,6 +2882,8 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

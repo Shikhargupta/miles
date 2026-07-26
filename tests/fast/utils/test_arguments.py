@@ -320,6 +320,24 @@ class TestRunUuidResolution:
 
         assert args.run_uuid == pinned
 
+    def test_a_run_uuid_from_the_custom_config_file_is_validated_too(self, tmp_path):
+        """The config file overwrites args after the flags are parsed, so it must not skip the check."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: my-experiment\n")
+        args = self._parse(["--custom-config-path", str(config)])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)
+
+    def test_a_run_uuid_blanked_by_the_custom_config_file_is_regenerated(self, tmp_path):
+        """A null in the config file must not leave the identifier unset for the whole run."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: null\n")
+        args = self._parse(["--custom-config-path", str(config)])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
     def test_a_malformed_explicit_run_uuid_fails_at_launch(self):
         """Rejecting it here beats corrupting every string that embeds it hours into a run."""
         args = self._parse(["--run-uuid", "my-experiment"])
