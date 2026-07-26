@@ -3,11 +3,11 @@ import logging
 import socket
 from argparse import Namespace
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import ray
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 from torch.distributed.tensor import DTensor, Replicate
 
 try:
@@ -17,7 +17,12 @@ except ImportError:
 
 from sglang.srt.utils import MultiprocessingSerializer
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
+
+if TYPE_CHECKING:
+    from ray.actor import ActorHandle
 
 
 try:
@@ -38,8 +43,8 @@ class UpdateWeight(abc.ABC):
     @abc.abstractmethod
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle | None,
+        rollout_engines: Sequence[SGLangApiClient],
+        rollout_engine_lock: "ActorHandle | None",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -49,9 +54,10 @@ class UpdateWeight(abc.ABC):
         self.weight_version += 1
 
         if dist.get_rank() == 0:
-            futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
-            futures.extend([engine.flush_cache.remote() for engine in self.rollout_engines])
-            ray.get(futures)
+            async_utils.wait_futures(
+                [async_utils.submit(client.pause_generation()) for client in self.rollout_engines]
+            )
+            async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
         bucket = []
@@ -82,7 +88,9 @@ class UpdateWeight(abc.ABC):
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            async_utils.wait_futures(
+                [async_utils.submit(client.continue_generation()) for client in self.rollout_engines]
+            )
         dist.barrier(group=get_gloo_group())
 
     def wait_and_update_bucket_weights(self, bucket):
@@ -104,8 +112,8 @@ class UpdateWeightFromTensor(UpdateWeight):
 
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle | None,
+        rollout_engines: Sequence[SGLangApiClient],
+        rollout_engine_lock: "ActorHandle | None",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -182,8 +190,7 @@ class UpdateWeightFromTensor(UpdateWeight):
                     "flush_cache": False,
                     "weight_version": str(weight_version),
                 }
-                ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
-                result = ray.get(ref)
+                result = async_utils.run(self._ipc_engine.update_weights_from_tensor(**kwargs))
                 if isinstance(result, dict):
                     success = result.get("success", True)
                     error_msg = result.get("error_message") or result.get("message", "unknown error")
@@ -196,8 +203,7 @@ class UpdateWeightFromTensor(UpdateWeight):
                     )
 
         if dist.get_rank() == self._ipc_gather_src:
-            ref = self._ipc_engine.flush_cache.remote()
-            ray.get(ref)
+            async_utils.run(self._ipc_engine.flush_cache())
 
 
 class UpdateWeightFromDistributed(UpdateWeight):
@@ -205,8 +211,8 @@ class UpdateWeightFromDistributed(UpdateWeight):
 
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle | None,
+        rollout_engines: Sequence[SGLangApiClient],
+        rollout_engine_lock: "ActorHandle | None",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -227,16 +233,18 @@ class UpdateWeightFromDistributed(UpdateWeight):
             ## TODO: why +1?
             world_size = self.args.rollout_num_gpus + 1
 
-            refs = [
-                engine.init_weights_update_group.remote(
-                    master_address,
-                    master_port,
-                    i * self.args.rollout_num_gpus_per_engine + 1,
-                    world_size,
-                    self._group_name,
-                    backend="nccl",
+            futures = [
+                async_utils.submit(
+                    api_client.init_weights_update_group(
+                        master_address,
+                        master_port,
+                        i * self.args.rollout_num_gpus_per_engine + 1,
+                        world_size,
+                        self._group_name,
+                        backend="nccl",
+                    )
                 )
-                for i, engine in enumerate(self.rollout_engines)
+                for i, api_client in enumerate(self.rollout_engines)
             ]
             self._model_update_groups = init_process_group(
                 backend="nccl",
@@ -245,7 +253,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
                 rank=0,
                 group_name=self._group_name,
             )
-            ray.get(refs)
+            async_utils.wait_futures(futures)
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
         """Send names/dtypes/shapes metadata to engines, then broadcast tensors.
@@ -256,15 +264,17 @@ class UpdateWeightFromDistributed(UpdateWeight):
         if not self._is_src_rank or not named_tensors:
             return
 
-        refs = [
-            engine.update_weights_from_distributed.remote(
-                names=[name for name, _ in named_tensors],
-                dtypes=[param.dtype for _, param in named_tensors],
-                shapes=[param.shape for _, param in named_tensors],
-                group_name=self._group_name,
-                weight_version=str(weight_version),
+        futures = [
+            async_utils.submit(
+                client.update_weights_from_distributed(
+                    names=[name for name, _ in named_tensors],
+                    dtypes=[param.dtype for _, param in named_tensors],
+                    shapes=[param.shape for _, param in named_tensors],
+                    group_name=self._group_name,
+                    weight_version=str(weight_version),
+                )
             )
-            for engine in self.rollout_engines
+            for client in self.rollout_engines
         ]
 
         handles = []
@@ -283,4 +293,4 @@ class UpdateWeightFromDistributed(UpdateWeight):
 
         for handle in handles:
             handle.wait()
-        ray.get(refs)
+        async_utils.wait_futures(futures)
