@@ -27,13 +27,10 @@ async def train(args):
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    rollout_components = create_rollout_components(args, pgs["rollout"])
-    num_rollout_per_epoch = rollout_components.num_rollout_per_epoch
-    inference_controller = rollout_components.inference_controller
-    rollout_executor = rollout_components.rollout_executor
+    inference_controller, rollout_executor, num_rollout_per_epoch = create_rollout_components(args, pgs["rollout"])
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, rollout_components)
+    actor_model, critic_model = await create_training_models(args, pgs, inference_controller, rollout_executor)
 
     if args.control_server_port:
         start_control_server(

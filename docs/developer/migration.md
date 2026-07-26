@@ -71,7 +71,7 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 ```diff
 - actor, critic = create_training_models(args, pgs, rollout_manager)
-+ actor, critic = await create_training_models(args, pgs, rollout_components)
++ actor, critic = await create_training_models(args, pgs, inference_controller, rollout_executor)
 ```
 
 ## `RolloutManager` split into `InferenceController` + `RolloutExecutor`
@@ -91,16 +91,16 @@ The single `RolloutManager` Ray actor is gone. Two independent Ray actors take i
   `load`, `get_num_rollout_per_epoch`, `set_train_parallel_config`, `dispose`.
 
 `create_rollout_manager` is replaced by `create_rollout_components`, which returns a
-`RolloutComponents` holding both handles plus `num_rollout_per_epoch`.
+`RolloutComponents` named tuple of `(inference_controller, rollout_executor,
+num_rollout_per_epoch)`. `create_training_models` takes the two handles directly.
 
 ### How to migrate
 
 ```diff
 - rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
-+ components = create_rollout_components(args, pgs["rollout"])
-+ inference_controller = components.inference_controller
-+ rollout_executor = components.rollout_executor
-+ num_rollout_per_epoch = components.num_rollout_per_epoch
++ inference_controller, rollout_executor, num_rollout_per_epoch = create_rollout_components(
++     args, pgs["rollout"]
++ )
 
 - await rollout_manager.generate.remote(rollout_id)
 + await rollout_executor.generate.remote(rollout_id)

@@ -1,6 +1,6 @@
 import logging
 import socket
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import ray
 from ray.util.placement_group import placement_group
@@ -158,7 +158,7 @@ def allocate_train_group(
     )
 
 
-async def create_training_models(args, pgs, rollout_components: "RolloutComponents"):
+async def create_training_models(args, pgs, inference_controller, rollout_executor):
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
@@ -166,8 +166,8 @@ async def create_training_models(args, pgs, rollout_components: "RolloutComponen
         pg=pgs["actor"],
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
-        inference_controller=rollout_components.inference_controller,
-        rollout_executor=rollout_components.rollout_executor,
+        inference_controller=inference_controller,
+        rollout_executor=rollout_executor,
         with_opd_teacher=args.use_opd and args.opd_type == "megatron",
     )
     if args.use_critic:
@@ -197,13 +197,12 @@ async def create_training_models(args, pgs, rollout_components: "RolloutComponen
 
     await actor_model.set_rollout_components()
     if args.rollout_global_dataset:
-        await rollout_components.rollout_executor.load.remote(args.start_rollout_id - 1)
+        await rollout_executor.load.remote(args.start_rollout_id - 1)
 
     return actor_model, critic_model
 
 
-@dataclass(frozen=True)
-class RolloutComponents:
+class RolloutComponents(NamedTuple):
     inference_controller: ray.actor.ActorHandle
     rollout_executor: ray.actor.ActorHandle
     num_rollout_per_epoch: int | None

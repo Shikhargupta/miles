@@ -103,6 +103,17 @@ class TestCreateRolloutComponents:
         assert components.inference_controller is fake_actors.controller_handle
         assert components.rollout_executor is fake_actors.executor_handle
 
+    def test_result_unpacks_in_controller_executor_epoch_order(self, fake_actors):
+        """Callers unpack the result positionally, so the field order is part of
+        the API and swapping the two handles would go unnoticed otherwise."""
+        args = _make_args(num_rollout=None, num_epoch=1)
+
+        inference_controller, rollout_executor, num_rollout_per_epoch = create_rollout_components(args, pg=MagicMock())
+
+        assert inference_controller is fake_actors.controller_handle
+        assert rollout_executor is fake_actors.executor_handle
+        assert num_rollout_per_epoch == 5
+
     def test_num_rollout_derived_from_executor_epoch_length(self, fake_actors):
         """``num_rollout`` comes from the dataset, which the executor owns."""
         args = _make_args(num_rollout=None, num_epoch=2)
