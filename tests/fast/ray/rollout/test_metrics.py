@@ -63,7 +63,7 @@ class TestTitoMismatchMetrics:
     def test_no_tito_metadata_emits_no_tito_keys(self):
         args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
         samples = make_samples_grouped(1, 4)
-        out = _compute_metrics_from_samples(args, samples, rollout_id=0)
+        out = _compute_metrics_from_samples(args, samples, rollout_id=0, is_eval=False)
         assert "tito_session_mismatch_rate" not in out
 
     def test_clean_tito_metadata_yields_zero_rates_per_mismatch_type(self):
@@ -71,7 +71,7 @@ class TestTitoMismatchMetrics:
         samples = make_samples_grouped(1, 4)
         for s in samples:
             s.metadata = {"tito_session_mismatch": []}
-        out = _compute_metrics_from_samples(args, samples, rollout_id=0)
+        out = _compute_metrics_from_samples(args, samples, rollout_id=0, is_eval=False)
         assert out["tito_session_mismatch_rate"] == 0.0
         for mtype in ("special_token_count", "special_token_type", "non_assistant_text", "assistant_text"):
             assert out[f"tito_session_mismatch_rate/{mtype}"] == 0.0
@@ -86,7 +86,7 @@ class TestTitoMismatchMetrics:
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
         with pytest.raises(AssertionError, match="special_token_count"):
-            _compute_metrics_from_samples(args, samples, rollout_id=0)
+            _compute_metrics_from_samples(args, samples, rollout_id=0, is_eval=False)
 
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the
@@ -96,7 +96,7 @@ class TestTitoMismatchMetrics:
         samples[0].metadata = {"tito_session_mismatch": [{"type": "assistant_text"}]}
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
-        out = _compute_metrics_from_samples(args, samples, rollout_id=0)
+        out = _compute_metrics_from_samples(args, samples, rollout_id=0, is_eval=False)
         assert out["tito_session_mismatch_rate/assistant_text"] > 0
 
 
@@ -151,7 +151,7 @@ class TestWeightVersionMetrics:
             _make_versioned_sample([5, 6], index=1),
         ]
 
-        out = _compute_metrics_from_samples(make_args(), samples, rollout_id=9)
+        out = _compute_metrics_from_samples(make_args(), samples, rollout_id=9, is_eval=False)
 
         assert out["weight_version/min"] == 4
         assert out["weight_version/max"] == 5
@@ -161,13 +161,15 @@ class TestWeightVersionMetrics:
         """Two calls that both saw the same version must not count as mixed."""
         samples = [_make_versioned_sample([7, 7], index=0)]
 
-        out = _compute_metrics_from_samples(make_args(), samples, rollout_id=9)
+        out = _compute_metrics_from_samples(make_args(), samples, rollout_id=9, is_eval=False)
 
         assert out["weight_version/mixed_version_ratio"] == 0.0
 
     def test_no_version_metrics_when_nothing_was_stamped(self):
         """SFT-style batches carry no versions and must not synthesise the series."""
-        out = _compute_metrics_from_samples(make_args(), [make_sample(index=0, group_index=0)], rollout_id=9)
+        out = _compute_metrics_from_samples(
+            make_args(), [make_sample(index=0, group_index=0)], rollout_id=9, is_eval=False
+        )
 
         assert not any(key.startswith("weight_version/") for key in out)
 
@@ -190,7 +192,7 @@ class TestWeightStalenessMetrics:
             _make_staleness_sample([4], index=2),
         ]
 
-        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=5)
+        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=5, is_eval=False)
 
         assert log_dict["weight_staleness/max"] == 2
         assert log_dict["weight_staleness/min"] == 0
@@ -200,16 +202,18 @@ class TestWeightStalenessMetrics:
         """Every sample generated with this rollout's own weights is not stale at all."""
         samples = [_make_staleness_sample([7], index=0), _make_staleness_sample([7], index=1)]
 
-        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=7)
+        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=7, is_eval=False)
 
         assert log_dict["weight_staleness/max"] == 0
         assert log_dict["weight_staleness/mean"] == 0.0
 
     def test_staleness_uses_the_oldest_weights_whatever_order_they_appear_in(self):
         """Taking the first span instead of the oldest would pass on ascending data alone."""
-        ascending = _compute_metrics_from_samples(make_args(), [_make_staleness_sample([3, 5], index=0)], rollout_id=5)
+        ascending = _compute_metrics_from_samples(
+            make_args(), [_make_staleness_sample([3, 5], index=0)], rollout_id=5, is_eval=False
+        )
         descending = _compute_metrics_from_samples(
-            make_args(), [_make_staleness_sample([5, 3], index=0)], rollout_id=5
+            make_args(), [_make_staleness_sample([5, 3], index=0)], rollout_id=5, is_eval=False
         )
 
         assert ascending["weight_staleness/max"] == 2
@@ -251,14 +255,18 @@ class TestWeightStalenessMetrics:
     def test_no_staleness_metrics_under_lora(self, field, value):
         """A LoRA engine's version describes the frozen base, so the distance from it means nothing."""
         args = make_args(**{field: value})
-        log_dict = _compute_metrics_from_samples(args, [_make_staleness_sample([5], index=0)], rollout_id=7)
+        log_dict = _compute_metrics_from_samples(
+            args, [_make_staleness_sample([5], index=0)], rollout_id=7, is_eval=False
+        )
 
         assert not any(key.startswith("weight_staleness/") for key in log_dict)
         assert log_dict["weight_version/min"] == 5
 
     def test_no_staleness_metrics_without_weight_versions(self):
         """Samples the engine never stamped contribute no staleness series."""
-        log_dict = _compute_metrics_from_samples(make_args(), [_make_staleness_sample([], index=0)], rollout_id=5)
+        log_dict = _compute_metrics_from_samples(
+            make_args(), [_make_staleness_sample([], index=0)], rollout_id=5, is_eval=False
+        )
 
         assert not any(key.startswith("weight_staleness/") for key in log_dict)
 
@@ -267,7 +275,7 @@ class TestWeightStalenessMetrics:
         sample = make_sample(index=0, group_index=0)
         sample.weight_versions = [WeightVersionsPerCall(spans=[])]
 
-        log_dict = _compute_metrics_from_samples(make_args(), [sample], rollout_id=5)
+        log_dict = _compute_metrics_from_samples(make_args(), [sample], rollout_id=5, is_eval=False)
 
         assert not any(key.startswith("weight_staleness/") for key in log_dict)
         assert not any(key.startswith("weight_version/") for key in log_dict)
