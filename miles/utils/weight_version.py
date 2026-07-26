@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 
-from miles.utils.run_identity import RUN_UUID_LENGTH
+from miles.utils.run_uuid import RUN_UUID_LENGTH
 
 _ROLLOUT_ID_DIGITS = 8
 _SERIALIZED_PATTERN = re.compile(

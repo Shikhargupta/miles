@@ -1,6 +1,6 @@
 import pytest
 
-from miles.utils.run_identity import generate_run_uuid
+from miles.utils.run_uuid import generate_run_uuid
 from miles.utils.weight_version import WeightVersion, try_parse_weight_version_rollout_id
 
 RUN_UUID = "ab12cd34ef5678ab"
