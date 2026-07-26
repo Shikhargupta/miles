@@ -140,63 +140,29 @@ class _RecordingRolloutFn(BaseRolloutFn):
         self._log.append((self._name, "load", rollout_id))
 
 
-def _record_checkpoint_calls(executor) -> list[tuple[str, str, object]]:
-    executor.use_experimental_refactor = True
-    calls: list[tuple[str, str, object]] = []
-    executor.generate_rollout = _RecordingRolloutFn("train", calls)
-    executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
-    executor.data_source = MagicMock()
-
-    executor.save(rollout_id=7)
-    executor.load(rollout_id=7)
-
-    return calls
-
-
 @pytest.mark.asyncio
 class TestCheckpointing:
-    async def test_save_and_load_reach_both_rollout_functions_for_distinct_paths(
+    async def test_save_and_load_reach_only_the_train_rollout_function(
         self,
         ray_local_mode,
         patch_low_level,
         monkeypatch,
     ):
-        """A separately configured eval function is its own object, so it gets its own checkpoint."""
+        """One checkpoint is enough: the train and eval instances are becoming a single object."""
         import miles.ray.rollout.rollout_executor as rexec
 
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
-        args = _make_test_args(
-            rollout_global_dataset=False,
-            rollout_function_path="pkg.train_fn",
-            eval_function_path="pkg.eval_fn",
-        )
+        args = _make_test_args(rollout_global_dataset=False)
 
-        calls = _record_checkpoint_calls(_make_executor(args))
+        executor = _make_executor(args)
+        executor.use_experimental_refactor = True
+        calls: list[tuple[str, str, object]] = []
+        executor.generate_rollout = _RecordingRolloutFn("train", calls)
+        executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
+        executor.data_source = MagicMock()
 
-        assert calls == [
-            ("train", "save", 7),
-            ("eval", "save", 7),
-            ("train", "load", 7),
-            ("eval", "load", 7),
-        ]
-
-    async def test_save_and_load_skip_the_eval_function_sharing_the_train_path(
-        self,
-        ray_local_mode,
-        patch_low_level,
-        monkeypatch,
-    ):
-        """--eval-function-path defaults to the train path, so checkpointing both would overwrite one."""
-        import miles.ray.rollout.rollout_executor as rexec
-
-        monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
-        args = _make_test_args(
-            rollout_global_dataset=False,
-            rollout_function_path="pkg.same_fn",
-            eval_function_path="pkg.same_fn",
-        )
-
-        calls = _record_checkpoint_calls(_make_executor(args))
+        executor.save(rollout_id=7)
+        executor.load(rollout_id=7)
 
         assert calls == [
             ("train", "save", 7),
