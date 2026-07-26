@@ -101,6 +101,10 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
     )
 
 
+def _engine_slots(controller, model: str = "actor"):
+    return controller.servers[model].server_groups[0].engines
+
+
 async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_interval_s: float = 0.2) -> None:
     deadline = time.monotonic() + deadline_s
     while True:
@@ -125,8 +129,9 @@ class TestInferenceControllerInit:
         patch_low_level,
     ):
         """End-to-end smoke: production ``__init__`` + ``start_rollout_servers``
-        runs against MockSGLangEngine; the resulting engines are reachable over
-        HTTP via the public ``get_updatable_engines_and_lock``."""
+        runs against MockSGLangEngine; the resulting engines are addressable over
+        http via the public ``get_updatable_engines_and_lock``, and their launcher
+        actors are reachable through the engine slots."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -136,6 +141,8 @@ class TestInferenceControllerInit:
         for api_client in eal.rollout_engines:
             assert isinstance(api_client, SGLangApiClient)
             assert await api_client.health_generate(timeout=5.0) is True
+        for engine in _engine_slots(controller):
+            assert isinstance(ray.get(engine.actor_handle.get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
@@ -152,8 +159,8 @@ class TestStartStopCell:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal = await controller.get_updatable_engines_and_lock()
-        actor0, actor1 = eal.rollout_engines
+        await controller.get_updatable_engines_and_lock()
+        actor0, actor1 = [engine.actor_handle for engine in _engine_slots(controller)]
 
         await controller.stop_cell(0)
 
@@ -174,15 +181,18 @@ class TestStartStopCell:
 
         controller = _make_controller(args, pg)
         eal_before = await controller.get_updatable_engines_and_lock()
-        actor0_before = eal_before.rollout_engines[0]
+        actor0_before = _engine_slots(controller)[0].actor_handle
+        url_before = eal_before.rollout_engines[0].server_url
 
         await controller.stop_cell(0)
         await controller.start_cell(0)
 
         eal_after = await controller.get_updatable_engines_and_lock()
-        actor0_after = eal_after.rollout_engines[0]
+        actor0_after = _engine_slots(controller)[0].actor_handle
 
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
+        assert eal_after.rollout_engines[0].server_url != url_before, "the recovered engine serves on a new port"
+        assert await eal_after.rollout_engines[0].health_generate(timeout=5.0) is True
         assert isinstance(ray.get(actor0_after.get_calls.remote()), list)
 
     async def test_stop_cell_targets_high_id_correctly(
@@ -198,8 +208,8 @@ class TestStartStopCell:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal = await controller.get_updatable_engines_and_lock()
-        actor0, actor1 = eal.rollout_engines
+        await controller.get_updatable_engines_and_lock()
+        actor0, actor1 = [engine.actor_handle for engine in _engine_slots(controller)]
 
         await controller.stop_cell(1)
 
@@ -430,8 +440,8 @@ class TestRecoverUpdatableEngines:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal_before = await controller.get_updatable_engines_and_lock()
-        actor0_before = eal_before.rollout_engines[0]
+        await controller.get_updatable_engines_and_lock()
+        actor0_before = _engine_slots(controller)[0].actor_handle
 
         # Kill engine 0 directly + mark stopped (simulates a fault before any
         # rollout). recover_updatable_engines must not bring it back yet.
@@ -456,8 +466,8 @@ class TestRecoverUpdatableEngines:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal_before = await controller.get_updatable_engines_and_lock()
-        actor0_before = eal_before.rollout_engines[0]
+        await controller.get_updatable_engines_and_lock()
+        actor0_before = _engine_slots(controller)[0].actor_handle
 
         ray.kill(actor0_before)
         controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
