@@ -50,10 +50,10 @@ class InferenceController:
             await self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
 
-    def prepare_eval(self):
+    async def prepare_eval(self):
         self._health_monitoring_resume()
 
-    def dispose(self):
+    async def dispose(self):
         for monitor in self._health_monitors:
             monitor.stop()
 
@@ -61,7 +61,7 @@ class InferenceController:
 
     # TODO may parallelly execute offload/onload across services
     async def offload(self, tags: list[str] | None = None):
-        self.health_monitoring_pause()
+        await self.health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -98,7 +98,7 @@ class InferenceController:
             engine_gpu_offsets=srv.engine_gpu_offsets,
         )
 
-    def clear_updatable_has_new_engines(self):
+    async def clear_updatable_has_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear has_new_engines after update_weights
         srv = self._get_updatable_server()
         if srv:
@@ -110,7 +110,7 @@ class InferenceController:
         Recovers the updatable model (the one that receives weight
         updates from training).
         """
-        self.health_monitoring_pause()
+        await self.health_monitoring_pause()
         srv = self._get_updatable_server()
         if self.rollout_id == -1 or srv is None:
             return
@@ -158,7 +158,7 @@ class InferenceController:
 
     # -------------------------- utils -----------------------------
 
-    def health_monitoring_pause(self) -> None:
+    async def health_monitoring_pause(self) -> None:
         for monitor in self._health_monitors:
             monitor.pause()
 

@@ -56,7 +56,7 @@ async def train(args):
         )
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
-        inference_controller.prepare_eval()
+        await inference_controller.prepare_eval()
         await rollout_executor.eval.remote(0)
 
     async def prepare_and_generate(rollout_id):
@@ -101,7 +101,7 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
-            inference_controller.prepare_eval()
+            await inference_controller.prepare_eval()
             await rollout_executor.eval.remote(rollout_id)
 
         if (
@@ -116,7 +116,7 @@ async def train(args):
             break
 
     await rollout_executor.dispose.remote()
-    inference_controller.dispose()
+    await inference_controller.dispose()
 
 
 if __name__ == "__main__":

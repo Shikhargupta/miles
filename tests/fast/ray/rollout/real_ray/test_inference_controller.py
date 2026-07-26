@@ -307,7 +307,7 @@ class TestGetUpdatableEnginesAndLock:
         eal_init = await controller.get_updatable_engines_and_lock()
         assert eal_init.has_new_engines is True
 
-        controller.clear_updatable_has_new_engines()
+        await controller.clear_updatable_has_new_engines()
         eal_cleared = await controller.get_updatable_engines_and_lock()
         assert eal_cleared.has_new_engines is False
 
@@ -332,7 +332,7 @@ class TestGetUpdatableEnginesAndLock:
         # Force ref's flag True so we can detect any erroneous clear.
         controller.servers["ref"].server_groups[0].has_new_engines = True
 
-        controller.clear_updatable_has_new_engines()
+        await controller.clear_updatable_has_new_engines()
 
         assert controller.servers["ref"].server_groups[0].has_new_engines is True
         assert controller.servers["actor"].server_groups[0].has_new_engines is False

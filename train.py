@@ -63,7 +63,7 @@ async def train(args):
 
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
-        inference_controller.prepare_eval()
+        await inference_controller.prepare_eval()
         await rollout_executor.eval.remote(rollout_id=0)
 
     async def offload_train():
@@ -89,7 +89,7 @@ async def train(args):
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
-            inference_controller.prepare_eval()
+            await inference_controller.prepare_eval()
             await rollout_executor.eval.remote(rollout_id)
 
         await inference_controller.prepare_rollout(rollout_id)
@@ -127,7 +127,7 @@ async def train(args):
             await inference_controller.onload_kv()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
-            inference_controller.prepare_eval()
+            await inference_controller.prepare_eval()
             await rollout_executor.eval.remote(rollout_id)
 
         if (
@@ -142,7 +142,7 @@ async def train(args):
             break
 
     await rollout_executor.dispose.remote()
-    inference_controller.dispose()
+    await inference_controller.dispose()
 
 
 if __name__ == "__main__":

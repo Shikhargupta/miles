@@ -99,10 +99,10 @@ class RayTrainGroup:
             await self._inference_controller.recover_updatable_engines()
 
         info = await self._inference_controller.get_updatable_engines_and_lock()
-        self._inference_controller.health_monitoring_pause()
+        await self._inference_controller.health_monitoring_pause()
 
         await self._broadcast("update_weights", info=info)
-        self._inference_controller.clear_updatable_has_new_engines()
+        await self._inference_controller.clear_updatable_has_new_engines()
 
     async def reconcile_adapters(self) -> None:
         """Multi-LoRA: reconcile loaded adapters with the controller's active set
