@@ -147,7 +147,6 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self._for_each_hf_bucket(seed_bucket)
         if dist.get_rank() == 0:
             _check_weight_sync_results(ray.get(pulls), is_lora=False)
-            update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
             if self.args.check_weight_update_equal:
                 # The weights checker resets engine tensors at startup and compares after the
                 # first sync, expecting it to rewrite every tensor. The baseline publishes
@@ -163,6 +162,8 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                     ]
                 )
                 _check_weight_sync_results(results, is_lora=False)
+            else:
+                update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),

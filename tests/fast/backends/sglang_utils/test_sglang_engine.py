@@ -48,7 +48,7 @@ class TestUpdateWeightVersion:
         with mock.patch("miles.backends.sglang_utils.sglang_engine.ray.get", lambda refs: list(refs)):
             update_weight_version([FakeEngine("a"), FakeEngine("b")], "ab12cd34-00000007")
 
-        assert calls == [("a", "ab12cd34-00000007"), ("b", "ab12cd34-00000007")]
+        assert calls == [("a", "ab12cd34-00000007", False), ("b", "ab12cd34-00000007", False)]
 
     def test_announcing_does_not_abort_running_requests(self):
         """Announcing a version changes no weights, so it must not cancel in-flight generation."""
@@ -103,6 +103,27 @@ class TestUpdateWeightVersion:
 
         assert announced == []
 
+    def test_announces_only_to_the_engines_that_are_still_cold(self):
+        """Partial recovery leaves survivors holding real weights; only the replacements need telling."""
+        pytest.importorskip("sglang")
+        from miles.backends.sglang_utils.sglang_engine import UNSET_WEIGHT_VERSION, update_weight_version_if_unset
+
+        announced = []
+
+        class Engine:
+            def __init__(self, reported):
+                self.get_weight_version = _Returning(reported)
+                self.update_weight_version = _Recording(announced)
+
+        warm = Engine("ab12cd34-00000004")
+        cold = Engine(UNSET_WEIGHT_VERSION)
+        never_told = Engine(None)
+
+        with mock.patch("miles.backends.sglang_utils.sglang_engine.ray.get", _resolve):
+            update_weight_version_if_unset([warm, cold, never_told], "ab12cd34-00000007")
+
+        assert announced == ["ab12cd34-00000007", "ab12cd34-00000007"]
+
     def test_no_engines_is_a_noop(self):
         """An updater with no engines attached publishes nothing rather than failing."""
         pytest.importorskip("sglang")
@@ -117,8 +138,8 @@ class _RecordingMethod:
         self._calls = calls
         self._name = name
 
-    def remote(self, weight_version):
-        self._calls.append((self._name, weight_version))
+    def remote(self, weight_version, abort_all_requests=True):
+        self._calls.append((self._name, weight_version, abort_all_requests))
         return object()
 
 
