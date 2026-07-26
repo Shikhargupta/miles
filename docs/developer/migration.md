@@ -46,7 +46,7 @@ while still letting `critic_model.train` proceed. That's hard to write with sync
 + await group.save_model(...)
 
 - group.update_weights()
-+ await group.update_weights()
++ await group.update_weights(num_trained_rollouts=...)
 
 - ray.get(rollout_manager.generate.remote(rollout_id))
 + await rollout_manager.generate.remote(rollout_id)

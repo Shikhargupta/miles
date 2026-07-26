@@ -43,7 +43,7 @@ async def train(args):
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.
-    await actor_model.update_weights(weight_rollout_id=args.start_rollout_id)
+    await actor_model.update_weights(num_trained_rollouts=args.start_rollout_id)
 
     if args.check_weight_update_equal:
         await rollout_manager.check_weights.remote(
@@ -91,7 +91,7 @@ async def train(args):
             # sync generate before update weights to prevent update weight in the middle of generation
             rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
             rollout_data_next_future = None
-            await actor_model.update_weights(weight_rollout_id=rollout_id + 2)
+            await actor_model.update_weights(num_trained_rollouts=rollout_id + 1)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await rollout_manager.eval.remote(rollout_id)

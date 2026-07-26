@@ -59,12 +59,12 @@ class TestRunAnalysis:
 def _log_inference_engine_checksum_event(
     event_logger: EventLogger,
     *,
-    weight_rollout_id: int,
+    num_trained_rollouts: int,
     engine_checksums: list[dict[str, str]],
 ) -> None:
     event_logger.log(
         InferenceEngineWeightChecksumEvent,
-        dict(weight_rollout_id=weight_rollout_id, engine_checksums=engine_checksums),
+        dict(num_trained_rollouts=num_trained_rollouts, engine_checksums=engine_checksums),
     )
 
 
@@ -73,7 +73,7 @@ class TestInferenceEngineChecksumRuleWiredIn:
         """run_analysis surfaces engine-to-engine checksum mismatches via the registered rule."""
         event_logger = EventLogger(log_dir=tmp_path, file_name="e.jsonl", source=MainProcessIdentity())
         _log_inference_engine_checksum_event(
-            event_logger, weight_rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "zzz"}]
+            event_logger, num_trained_rollouts=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "zzz"}]
         )
         event_logger.close()
 
@@ -84,7 +84,7 @@ class TestInferenceEngineChecksumRuleWiredIn:
         """Identical engine checksums produce no issue."""
         event_logger = EventLogger(log_dir=tmp_path, file_name="e.jsonl", source=MainProcessIdentity())
         _log_inference_engine_checksum_event(
-            event_logger, weight_rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]
+            event_logger, num_trained_rollouts=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]
         )
         event_logger.close()
 

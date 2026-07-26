@@ -19,10 +19,10 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
     ), "Baseline engines disagree with each other"
     assert not inference_engine_weight_checksum_consistency.check(target), "Target engines disagree with each other"
 
-    baseline_by_rollout = _checksums_by_weight_rollout_id(baseline)
-    target_by_rollout = _checksums_by_weight_rollout_id(target)
+    baseline_by_rollout = _checksums_by_num_trained_rollouts(baseline)
+    target_by_rollout = _checksums_by_num_trained_rollouts(target)
     assert baseline_by_rollout.keys() == target_by_rollout.keys(), (
-        f"Engine checksum weight_rollout_id sets differ: "
+        f"Engine checksum num_trained_rollouts sets differ: "
         f"baseline={sorted(baseline_by_rollout)} "
         f"vs target={sorted(target_by_rollout)}"
     )
@@ -43,16 +43,16 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
     print(f"Engine weight checksum comparison passed: {len(baseline_by_rollout)} rollout(s) compared")
 
 
-def _checksums_by_weight_rollout_id(
+def _checksums_by_num_trained_rollouts(
     events: list[InferenceEngineWeightChecksumEvent],
 ) -> dict[int, dict[str, str]]:
     by_rollout: dict[int, dict[str, str]] = {}
     for event in events:
         assert (
-            event.weight_rollout_id not in by_rollout
-        ), f"Duplicate InferenceEngineWeightChecksumEvent for weight rollout {event.weight_rollout_id}"
-        assert event.engine_checksums, f"No engine checksums for weight rollout {event.weight_rollout_id}"
-        by_rollout[event.weight_rollout_id] = event.engine_checksums[0]
+            event.num_trained_rollouts not in by_rollout
+        ), f"Duplicate InferenceEngineWeightChecksumEvent for weight rollout {event.num_trained_rollouts}"
+        assert event.engine_checksums, f"No engine checksums for weight rollout {event.num_trained_rollouts}"
+        by_rollout[event.num_trained_rollouts] = event.engine_checksums[0]
     return by_rollout
 
 

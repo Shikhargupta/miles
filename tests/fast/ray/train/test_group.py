@@ -1004,7 +1004,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         group = _make_group(num_cells=1, rollout_manager=rollout_mgr)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=False):
-            await group._maybe_log_inference_engine_weight_checksums(weight_rollout_id=0)
+            await group._maybe_log_inference_engine_weight_checksums(num_trained_rollouts=0)
 
         rollout_mgr.check_weights.assert_not_called()
 
@@ -1020,11 +1020,11 @@ class TestMaybeLogInferenceEngineWeightChecksums:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            await group._maybe_log_inference_engine_weight_checksums(weight_rollout_id=0)
+            await group._maybe_log_inference_engine_weight_checksums(num_trained_rollouts=0)
 
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
-        assert logged == dict(weight_rollout_id=0, engine_checksums=[{"rank0/w": "e0"}])
+        assert logged == dict(num_trained_rollouts=0, engine_checksums=[{"rank0/w": "e0"}])
 
     async def test_debug_train_only_skips_collection(self):
         """Without real rollout engines (debug_train_only), no check_weights request is issued."""
@@ -1034,7 +1034,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         group.args.debug_train_only = True
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
-            await group._maybe_log_inference_engine_weight_checksums(weight_rollout_id=0)
+            await group._maybe_log_inference_engine_weight_checksums(num_trained_rollouts=0)
 
         rollout_mgr.check_weights.assert_not_called()
 
@@ -1046,7 +1046,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         group.args.debug_rollout_only = True
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
-            await group._maybe_log_inference_engine_weight_checksums(weight_rollout_id=0)
+            await group._maybe_log_inference_engine_weight_checksums(num_trained_rollouts=0)
 
         rollout_mgr.check_weights.assert_not_called()
 
@@ -1062,9 +1062,9 @@ class TestMaybeLogInferenceEngineWeightChecksums:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
 
-            await group._maybe_log_inference_engine_weight_checksums(weight_rollout_id=3)
+            await group._maybe_log_inference_engine_weight_checksums(num_trained_rollouts=3)
 
         rollout_mgr.check_weights.remote.assert_awaited_once_with("checksum")
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
-        assert logged == dict(weight_rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])
+        assert logged == dict(num_trained_rollouts=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])

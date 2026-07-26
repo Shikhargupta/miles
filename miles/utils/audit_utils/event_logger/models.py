@@ -72,8 +72,8 @@ class CellReconfigureEvent(EventBase):
 
 class InferenceEngineWeightChecksumEvent(EventBase):
     type: Literal["inference_engine_weight_checksum"] = "inference_engine_weight_checksum"
-    # The rollout these weights serve, which is what the engines are stamped with.
-    weight_rollout_id: int
+    # How many rollouts had finished training when these weights were published.
+    num_trained_rollouts: int
     # One {tensor -> hash} dict per rollout engine; a TP>1 engine's ranks merge with a rank{r}/ prefix.
     engine_checksums: list[dict[str, str]]
 
