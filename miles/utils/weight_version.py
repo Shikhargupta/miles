@@ -18,7 +18,7 @@ class WeightVersion:
 
     def serialize(self) -> str:
         result = f"{self.run_uuid}-{self.rollout_id:0{_ROLLOUT_ID_DIGITS}d}"
-        assert _SERIALIZED_PATTERN.match(result), f"malformed weight version {result!r} from {self!r}"
+        assert WeightVersion.deserialize(result) == self
         return result
 
     @staticmethod

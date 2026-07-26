@@ -23,6 +23,21 @@ class TestWeightVersion:
             WeightVersion.deserialize(WeightVersion(run_uuid=run_uuid, rollout_id=0).serialize()).run_uuid == run_uuid
         )
 
+    @pytest.mark.parametrize(
+        "run_uuid, rollout_id",
+        [
+            ("AB12CD34EF5678AB", 7),
+            ("ab12cd34", 7),
+            ("ab12cd34ef5678abcd", 7),
+            ("ab12cd34ef5678ab", 10**8),
+            ("ab12cd34ef5678ab", -1),
+        ],
+    )
+    def test_serializing_an_unrepresentable_version_fails_loudly(self, run_uuid, rollout_id):
+        """A version that cannot be read back would silently stamp samples with an unattributable string."""
+        with pytest.raises((AssertionError, ValueError)):
+            WeightVersion(run_uuid=run_uuid, rollout_id=rollout_id).serialize()
+
     @pytest.mark.parametrize("bad", ["default", "0", "1", "", "ab12cd34ef5678ab-1", "ab12cd34ef5678ab:00000001", None])
     def test_deserialize_rejects_legacy_and_malformed_versions(self, bad):
         """Bare counters, sglang defaults, and malformed strings are not valid weight versions."""
