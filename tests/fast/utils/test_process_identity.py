@@ -4,8 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from miles.utils.audit_utils.process_identity import (
+    InferenceControllerProcessIdentity,
     MainProcessIdentity,
-    RolloutManagerProcessIdentity,
+    RolloutExecutorProcessIdentity,
     TrainProcessIdentity,
 )
 
@@ -14,8 +15,11 @@ class TestProcessIdentityToName:
     def test_main(self) -> None:
         assert MainProcessIdentity().to_name() == "main"
 
-    def test_rollout_manager(self) -> None:
-        assert RolloutManagerProcessIdentity().to_name() == "rollout_manager"
+    def test_inference_controller(self) -> None:
+        assert InferenceControllerProcessIdentity().to_name() == "inference_controller"
+
+    def test_rollout_executor(self) -> None:
+        assert RolloutExecutorProcessIdentity().to_name() == "rollout_executor"
 
     def test_actor(self) -> None:
         source = TrainProcessIdentity(component="actor", cell_index=1, rank_within_cell=3)

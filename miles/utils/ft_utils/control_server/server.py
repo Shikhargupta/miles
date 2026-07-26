@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def start_control_server(
     *,
     actor_model: RayTrainGroup,
-    rollout_manager: object,
+    inference_controller: object,
     port: int,
     ft_components: list[str],
 ) -> None:
@@ -42,11 +42,11 @@ def start_control_server(
 
     if "rollout" in ft_components:
         # TODO the code will NOT work before implementing rollout ft
-        num_rollout_cells = ray.get(rollout_manager.get_cell_count.remote())
+        num_rollout_cells = ray.get(inference_controller.get_cell_count.remote())
         for i in range(num_rollout_cells):
             registry.register(
                 _RolloutCellHandle(
-                    rollout_manager=rollout_manager,
+                    inference_controller=inference_controller,
                     cell_index=i,
                 )
             )

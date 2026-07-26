@@ -8,7 +8,6 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
-from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -19,7 +18,7 @@ from miles.rollout.base_types import (
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
-from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
+from miles.utils.audit_utils.process_identity import RolloutExecutorProcessIdentity
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
@@ -39,11 +38,11 @@ logger = logging.getLogger(__name__)
 class RolloutExecutor:
     """The class to run rollout and convert rollout data to training data."""
 
-    def __init__(self, args):
-        event_logger_checkpoint.restore(args)
-        configure_logger(args, source=RolloutManagerProcessIdentity())
+    def __init__(self, args, inference_controller):
+        configure_logger(args, source=RolloutExecutorProcessIdentity())
 
         self.args = args
+        self._inference_controller = inference_controller
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
 
@@ -67,15 +66,10 @@ class RolloutExecutor:
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        self.rollout_id = -1
-
         self._metric_checker = MetricChecker.maybe_create(args)
 
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
-
-    def get_router_address(self) -> tuple[str, int]:
-        return self.args.sglang_router_ip, self.args.sglang_router_port
 
     def dispose(self):
         if (close := getattr(self.data_source, "close", None)) is not None:
@@ -88,11 +82,7 @@ class RolloutExecutor:
 
     async def generate(self, rollout_id):
         start_time = time.time()
-        self.rollout_id = rollout_id
-        self._health_monitoring_resume()
-        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
-            self._try_ci_fault_injection()
-        dashboard_hooks.register_engines(self.servers)
+        await self._inference_controller.prepare_rollout.remote(rollout_id)
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
@@ -117,7 +107,7 @@ class RolloutExecutor:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
-        self._health_monitoring_resume()
+        await self._inference_controller.prepare_eval.remote()
 
         with timer("eval_rollout"):
             if self.use_experimental_refactor:
@@ -185,12 +175,3 @@ class RolloutExecutor:
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
-
-    # -------------------------- utils -----------------------------
-
-    @property
-    def _server(self) -> RolloutServer | None:
-        """Default server (first model).  For backward compatibility."""
-        if not self.servers:
-            return None
-        return next(iter(self.servers.values()))

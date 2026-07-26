@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -27,15 +27,18 @@ async def train(args):
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    rollout_components = create_rollout_components(args, pgs["rollout"])
+    num_rollout_per_epoch = rollout_components.num_rollout_per_epoch
+    inference_controller = rollout_components.inference_controller
+    rollout_executor = rollout_components.rollout_executor
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
+    actor_model, critic_model = await create_training_models(args, pgs, rollout_components)
 
     if args.control_server_port:
         start_control_server(
             actor_model=actor_model,
-            rollout_manager=rollout_manager,
+            inference_controller=inference_controller,
             port=args.control_server_port,
             ft_components=args.ft_components,
         )
@@ -46,7 +49,7 @@ async def train(args):
     await actor_model.update_weights()
 
     if args.check_weight_update_equal:
-        await rollout_manager.check_weights.remote(
+        await inference_controller.check_weights.remote(
             action="compare",
             allow_quant_error=args.check_weight_update_allow_quant_error,
             selector=args.check_weight_update_selector,
@@ -54,10 +57,10 @@ async def train(args):
         )
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
-        await rollout_manager.eval.remote(0)
+        await rollout_executor.eval.remote(0)
 
     # async train loop.
-    rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
+    rollout_data_next_future = rollout_executor.generate.remote(args.start_rollout_id)
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -65,7 +68,7 @@ async def train(args):
 
         # Start the next rollout early.
         if rollout_id + 1 < args.num_rollout:
-            rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+            rollout_data_next_future = rollout_executor.generate.remote(rollout_id + 1)
 
         if args.use_critic:
             critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
@@ -83,7 +86,7 @@ async def train(args):
             await actor_model.save_model(rollout_id, force_sync=force_sync)
             if args.use_critic:
                 await critic_model.save_model(rollout_id, force_sync=force_sync)
-            await rollout_manager.save.remote(rollout_id)
+            await rollout_executor.save.remote(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -94,7 +97,7 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
-            await rollout_manager.eval.remote(rollout_id)
+            await rollout_executor.eval.remote(rollout_id)
 
         if (
             args.debug_exit_after_rollout is not None
@@ -107,7 +110,7 @@ async def train(args):
             )
             break
 
-    await rollout_manager.dispose.remote()
+    await rollout_executor.dispose.remote()
 
 
 if __name__ == "__main__":

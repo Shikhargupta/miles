@@ -1,5 +1,6 @@
 import logging
 import socket
+from dataclasses import dataclass
 
 import ray
 from ray.util.placement_group import placement_group
@@ -9,7 +10,8 @@ from miles.utils.async_utils import eager_create_task
 from miles.utils.environ import enable_experimental_ft_trainer
 
 from ..utils.ray_utils import compute_ray_pin_head_options
-from .rollout.rollout_manager import RolloutManager
+from .rollout.inference_controller import InferenceController
+from .rollout.rollout_executor import RolloutExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +133,15 @@ def create_placement_groups(args):
 
 
 def allocate_train_group(
-    args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool, rollout_manager, with_opd_teacher: bool = False
+    args,
+    num_nodes,
+    num_gpus_per_node,
+    pg,
+    role: str,
+    with_ref: bool,
+    inference_controller,
+    rollout_executor,
+    with_opd_teacher: bool = False,
 ):
     train_group_cls = _select_train_group_class()
     return train_group_cls(
@@ -142,12 +152,13 @@ def allocate_train_group(
         num_gpus_per_actor=0.4,
         role=role,
         with_ref=with_ref,
-        rollout_manager=rollout_manager,
+        inference_controller=inference_controller,
+        rollout_executor=rollout_executor,
         with_opd_teacher=with_opd_teacher,
     )
 
 
-async def create_training_models(args, pgs, rollout_manager):
+async def create_training_models(args, pgs, rollout_components: "RolloutComponents"):
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
@@ -155,7 +166,8 @@ async def create_training_models(args, pgs, rollout_manager):
         pg=pgs["actor"],
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
-        rollout_manager=rollout_manager,
+        inference_controller=rollout_components.inference_controller,
+        rollout_executor=rollout_components.rollout_executor,
         with_opd_teacher=args.use_opd and args.opd_type == "megatron",
     )
     if args.use_critic:
@@ -166,7 +178,8 @@ async def create_training_models(args, pgs, rollout_manager):
             pg=pgs["critic"],
             role="critic",
             with_ref=False,
-            rollout_manager=None,
+            inference_controller=None,
+            rollout_executor=None,
         )
         critic_init_task = await eager_create_task(critic_model.init())
     else:
@@ -182,32 +195,53 @@ async def create_training_models(args, pgs, rollout_manager):
         await critic_init_task
         await actor_model.connect(critic_model)
 
-    await actor_model.set_rollout_manager()
+    await actor_model.set_rollout_components()
     if args.rollout_global_dataset:
-        await rollout_manager.load.remote(args.start_rollout_id - 1)
+        await rollout_components.rollout_executor.load.remote(args.start_rollout_id - 1)
 
     return actor_model, critic_model
 
 
-def create_rollout_manager(args, pg):
-    rollout_manager = RolloutManager.options(
+@dataclass(frozen=True)
+class RolloutComponents:
+    inference_controller: ray.actor.ActorHandle
+    rollout_executor: ray.actor.ActorHandle
+    num_rollout_per_epoch: int | None
+
+
+def create_rollout_components(args, pg) -> RolloutComponents:
+    actor_options = dict(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
-    ).remote(args, pg)
+    )
+
+    inference_controller = InferenceController.options(**actor_options).remote(args, pg)
+    router_info = ray.get(inference_controller.get_router_info.remote())
+    args.sglang_router_ip = router_info.router_ip
+    args.sglang_router_port = router_info.router_port
+    args.sglang_model_routers = router_info.model_routers
+
+    rollout_executor = RolloutExecutor.options(**actor_options).remote(args, inference_controller)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
     if args.num_rollout is None:
-        num_rollout_per_epoch = ray.get(rollout_manager.get_num_rollout_per_epoch.remote())
+        num_rollout_per_epoch = ray.get(rollout_executor.get_num_rollout_per_epoch.remote())
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
 
     if args.check_weight_update_equal:
-        ray.get(rollout_manager.check_weights.remote(action="snapshot"))
+        ray.get(inference_controller.check_weights.remote(action="snapshot"))
         ray.get(
-            rollout_manager.check_weights.remote(action="reset_tensors", skip_list=args.check_weight_update_skip_list)
+            inference_controller.check_weights.remote(
+                action="reset_tensors", skip_list=args.check_weight_update_skip_list
+            )
         )
 
     if args.offload_rollout:
-        ray.get(rollout_manager.offload.remote())
+        ray.get(inference_controller.offload.remote())
 
-    return rollout_manager, num_rollout_per_epoch
+    return RolloutComponents(
+        inference_controller=inference_controller,
+        rollout_executor=rollout_executor,
+        num_rollout_per_epoch=num_rollout_per_epoch,
+    )

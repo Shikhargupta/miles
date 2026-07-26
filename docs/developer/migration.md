@@ -48,12 +48,12 @@ while still letting `critic_model.train` proceed. That's hard to write with sync
 - group.update_weights()
 + await group.update_weights()
 
-- ray.get(rollout_manager.generate.remote(rollout_id))
-+ await rollout_manager.generate.remote(rollout_id)
+- ray.get(rollout_executor.generate.remote(rollout_id))
++ await rollout_executor.generate.remote(rollout_id)
 ```
 
 Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
-`set_rollout_manager`.
+`set_rollout_components`.
 
 #### 3. Dispatch handles → eager tasks
 
@@ -71,8 +71,47 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 ```diff
 - actor, critic = create_training_models(args, pgs, rollout_manager)
-+ actor, critic = await create_training_models(args, pgs, rollout_manager)
++ actor, critic = await create_training_models(args, pgs, rollout_components)
 ```
+
+## `RolloutManager` split into `InferenceController` + `RolloutExecutor`
+
+### What changed
+
+The single `RolloutManager` Ray actor is gone. Two independent Ray actors take its place:
+
+* `InferenceController` (`miles/ray/rollout/inference_controller.py`) owns the sglang
+  servers, the router, the engine lock and the health monitors. It exposes the
+  control-plane API: `offload`, `onload`, `onload_weights`, `onload_kv`,
+  `get_updatable_engines_and_lock`, `clear_updatable_has_new_engines`,
+  `recover_updatable_engines`, `start_cell`, `stop_cell`, `check_weights`,
+  `health_monitoring_pause`.
+* `RolloutExecutor` (`miles/ray/rollout/rollout_executor.py`) owns the data source, the
+  rollout functions and the data conversion. It exposes `generate`, `eval`, `save`,
+  `load`, `get_num_rollout_per_epoch`, `set_train_parallel_config`, `dispose`.
+
+`create_rollout_manager` is replaced by `create_rollout_components`, which returns a
+`RolloutComponents` holding both handles plus `num_rollout_per_epoch`.
+
+### How to migrate
+
+```diff
+- rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
++ components = create_rollout_components(args, pgs["rollout"])
++ inference_controller = components.inference_controller
++ rollout_executor = components.rollout_executor
++ num_rollout_per_epoch = components.num_rollout_per_epoch
+
+- await rollout_manager.generate.remote(rollout_id)
++ await rollout_executor.generate.remote(rollout_id)
+
+- await rollout_manager.onload_weights.remote()
++ await inference_controller.onload_weights.remote()
+```
+
+Custom trainer groups must rename `set_rollout_manager` to `set_rollout_components` and
+accept `inference_controller` / `rollout_executor` instead of `rollout_manager`.
+`start_control_server` takes `inference_controller=` instead of `rollout_manager=`.
 
 ## Other recent breakages
 

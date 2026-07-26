@@ -11,17 +11,26 @@ from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_server
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.utils import Lock
+from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
+from miles.utils.audit_utils.process_identity import InferenceControllerProcessIdentity
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import init_http_client
-
+from miles.utils.logging_utils import configure_logger
 
 logger = logging.getLogger(__name__)
 
 
+@ray.remote
 class InferenceController:
+    """The class to own inference servers and expose their control APIs."""
+
     def __init__(self, args, pg):
+        event_logger_checkpoint.restore(args)
+        configure_logger(args, source=InferenceControllerProcessIdentity())
+
         self.pg = pg
         self.args = args
+        self._latest_rollout_id = -1
 
         if self.args.debug_train_only:
             self.servers: dict[str, RolloutServer] = {}
@@ -42,9 +51,28 @@ class InferenceController:
                     self._health_monitors.append(monitor)
             self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
 
+    def get_router_info(self) -> "RouterInfo":
+        return RouterInfo(
+            router_ip=self.args.sglang_router_ip,
+            router_port=self.args.sglang_router_port,
+            model_routers={} if self.args.debug_train_only else self.args.sglang_model_routers,
+        )
+
     def dispose(self):
         for monitor in self._health_monitors:
             monitor.stop()
+
+    # -------------------------- rollout lifecycle hooks -----------------------------
+
+    def prepare_rollout(self, rollout_id: int) -> None:
+        self._latest_rollout_id = rollout_id
+        self._health_monitoring_resume()
+        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
+            self._try_ci_fault_injection()
+        dashboard_hooks.register_engines(self.servers)
+
+    def prepare_eval(self) -> None:
+        self._health_monitoring_resume()
 
     # -------------------------- offload/onload -----------------------------
 
@@ -101,7 +129,7 @@ class InferenceController:
         """
         self.health_monitoring_pause()
         srv = self._get_updatable_server()
-        if self.rollout_id == -1 or srv is None:
+        if self._latest_rollout_id == -1 or srv is None:
             return
 
         await srv.recover()
@@ -155,6 +183,13 @@ class InferenceController:
         for monitor in self._health_monitors:
             monitor.resume()
 
+    @property
+    def _server(self) -> RolloutServer | None:
+        """Default server (first model).  For backward compatibility."""
+        if not self.servers:
+            return None
+        return next(iter(self.servers.values()))
+
     # TODO will be replaced by full ft, thus temporarily leave it without modifications
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -180,6 +215,13 @@ class InferenceController:
                 time.sleep(wait_time)
             except Exception as e:
                 logger.warning(f"CI Fault Injection failed: {e}")
+
+
+@dataclass(frozen=True)
+class RouterInfo:
+    router_ip: str | None
+    router_port: int | None
+    model_routers: dict[str, tuple[str, int]]
 
 
 @dataclass(frozen=True)

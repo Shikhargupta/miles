@@ -91,7 +91,7 @@ class MockRemoteCall:
         return future
 
 
-class MockRolloutManager:
+class MockInferenceController:
     def __init__(
         self,
         phase: str = "Running",
