@@ -608,14 +608,9 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)
             engine_version = ray.get(engine.get_weight_version.remote())
-            if (
-                str(engine_version)
-                != WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
-            ):
-                raise RuntimeError(
-                    f"Weight version mismatch! Engine: {engine_version}, "
-                    f"Updater: {WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()}"
-                )
+            updater_version = WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
+            if str(engine_version) != updater_version:
+                raise RuntimeError(f"Weight version mismatch! Engine: {engine_version}, Updater: {updater_version}")
 
         clear_memory()
 

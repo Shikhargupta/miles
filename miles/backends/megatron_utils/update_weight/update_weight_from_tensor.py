@@ -263,18 +263,20 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
     def _send_base_params(self, hf_named_tensors, weight_rollout_id: int) -> tuple[list[ObjectRef], Any]:
+        weight_version = WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize()
+
         refs, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=hf_named_tensors,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            weight_version=WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
+            weight_version=weight_version,
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
-                WeightVersion(run_uuid=self.args.run_uuid, rollout_id=weight_rollout_id).serialize(),
+                weight_version,
                 self.distributed_rollout_engines,
                 hf_named_tensors,
             )
