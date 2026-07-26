@@ -142,6 +142,36 @@ class TestComputeSamplesFromRecords:
             WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 3, 5), WeightVersionSpan("v2", 5, 6)])
         ]
 
+    def test_trimmed_trailing_tokens_clip_the_weight_version_span(self):
+        """Spans are built over the untrimmed output, so trimming must clip the last span's end."""
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, STOP], weight_version="v3"),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 4], output_token_ids=[20], weight_version="v4"),
+        ]
+
+        samples = compute_samples_from_openai_records(
+            _ARGS,
+            _make_input_sample(),
+            records,
+            tok,
+            accumulated_token_ids=[1, 2, 3, 10, 4, 20],
+            max_trim_tokens=1,
+        )
+
+        assert samples[0].tokens == [1, 2, 3, 10]
+        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 4)])]
+        assert samples[1].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v4", 5, 6)])]
+
+    def test_record_without_any_weight_version_still_contributes_a_call(self):
+        """turns is len(weight_versions), so an unstamped call must appear as an empty call."""
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2], output_token_ids=[10, 11])
+
+        samples = compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)
+
+        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[])]
+
     def test_multiple_records_produce_multiple_samples(self):
         tok = _mock_tokenizer()
         records = [
