@@ -1,7 +1,7 @@
 import re
 import uuid
 
-RUN_UUID_LENGTH = 8
+RUN_UUID_LENGTH = 16
 
 _RUN_UUID_PATTERN = re.compile(rf"^[0-9a-f]{{{RUN_UUID_LENGTH}}}$")
 

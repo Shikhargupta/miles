@@ -13,7 +13,7 @@ from miles.utils.arguments import (
     miles_validate_args,
 )
 from miles.utils.misc import function_registry
-from miles.utils.run_identity import validate_run_uuid
+from miles.utils.run_identity import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
@@ -314,10 +314,11 @@ class TestRunUuidResolution:
 
     def test_an_explicit_run_uuid_is_kept(self):
         """Reproducing a run means being able to pin its identifier."""
-        args = self._parse(["--run-uuid", "ab12cd34"])
+        pinned = ("ab12cd34ef5678ab" * 4)[:RUN_UUID_LENGTH]
+        args = self._parse(["--run-uuid", pinned])
         miles_validate_args(args)
 
-        assert args.run_uuid == "ab12cd34"
+        assert args.run_uuid == pinned
 
     def test_a_malformed_explicit_run_uuid_fails_at_launch(self):
         """Rejecting it here beats corrupting every string that embeds it hours into a run."""
