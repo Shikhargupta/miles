@@ -142,6 +142,25 @@ class _RecordingRolloutFn(BaseRolloutFn):
 
 @pytest.mark.asyncio
 class TestCheckpointing:
+    async def test_the_two_rollout_functions_are_built_with_distinct_roles(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """Both instances are checkpointed under one rollout id, so each must know which it is."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        inputs = []
+        monkeypatch.setattr(rexec, "enable_experimental_rollout_refactor", lambda: True)
+        monkeypatch.setattr(
+            rexec, "load_rollout_function", lambda input, path: inputs.append(input) or (lambda *a, **kw: None)
+        )
+
+        _make_executor(_make_test_args())
+
+        assert [i.evaluation for i in inputs] == [False, True]
+
     async def test_save_and_load_reach_both_rollout_functions(
         self,
         ray_local_mode,

@@ -55,9 +55,14 @@ class RolloutExecutor:
 
         self.use_experimental_refactor = enable_experimental_rollout_refactor()
         if self.use_experimental_refactor:
-            input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
-            self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
-            self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+            self.generate_rollout = load_rollout_function(
+                RolloutFnConstructorInput(args=args, data_source=self.data_source, evaluation=False),
+                self.args.rollout_function_path,
+            )
+            self.eval_generate_rollout = load_rollout_function(
+                RolloutFnConstructorInput(args=args, data_source=self.data_source, evaluation=True),
+                self.args.eval_function_path,
+            )
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)

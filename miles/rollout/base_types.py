@@ -17,6 +17,7 @@ class RolloutFnConstructorInput:
     args: Namespace
     # TODO may refactor DataSource API
     data_source: DataSource
+    evaluation: bool
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ RolloutFnInput = RolloutFnTrainInput | RolloutFnEvalInput
 RolloutFnOutput = RolloutFnTrainOutput | RolloutFnEvalOutput
 
 
-class BaseRolloutFn:
+class BaseRolloutFn(abc.ABC):
     def __init__(self, input: RolloutFnConstructorInput) -> None:
         self.constructor_input = input
 

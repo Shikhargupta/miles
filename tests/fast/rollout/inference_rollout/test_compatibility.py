@@ -26,7 +26,7 @@ from miles.utils.misc import function_registry
 
 @pytest.fixture
 def constructor_input():
-    return RolloutFnConstructorInput(args="dummy_args", data_source="dummy_data_source")
+    return RolloutFnConstructorInput(args="dummy_args", data_source="dummy_data_source", evaluation=False)
 
 
 @pytest.fixture
@@ -206,6 +206,34 @@ class TestRolloutFnCheckpointing:
 
             assert train_fn is not eval_fn
             assert eval_fn.calls == []
+
+    def test_the_constructor_input_says_which_of_the_two_instances_it_builds(self):
+        """The train and eval instances are told apart, so a stateful one can namespace its state."""
+
+        class StatefulRolloutFn(BaseRolloutFn):
+            def __call__(self, input):
+                return RolloutFnTrainOutput(samples=[])
+
+        with function_registry.temporary("test:role_aware", StatefulRolloutFn):
+            train_fn = load_rollout_function(
+                RolloutFnConstructorInput(args="a", data_source="d", evaluation=False), "test:role_aware"
+            )
+            eval_fn = load_rollout_function(
+                RolloutFnConstructorInput(args="a", data_source="d", evaluation=True), "test:role_aware"
+            )
+
+            assert train_fn.constructor_input.evaluation is False
+            assert eval_fn.constructor_input.evaluation is True
+
+    def test_subclass_without_call_cannot_be_instantiated(self, constructor_input):
+        """__call__ is abstract, so a missing implementation fails at load, not mid-run."""
+
+        class MissingCall(BaseRolloutFn):
+            pass
+
+        with function_registry.temporary("test:missing_call", MissingCall):
+            with pytest.raises(TypeError, match="abstract"):
+                load_rollout_function(constructor_input, "test:missing_call")
 
     def test_class_not_subclassing_base_is_rejected(self, constructor_input):
         """Rejected at load time, not at the first checkpoint hours into a run."""
