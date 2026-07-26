@@ -102,10 +102,6 @@ class TestAssertSamplesWeightVersionSane:
         """Fully async runs legitimately train on a deep backlog; only an explicit bound may reject it."""
         assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 1)])], rollout_id=5)
 
-    def test_eval_may_run_on_newer_weights(self):
-        """The sync driver publishes the next rollout's weights before evaluating this one."""
-        assert_samples_weight_version_sane(_make_args(), [_make_sample([(RUN_UUID, 6)])], rollout_id=5, is_eval=True)
-
     def test_training_batch_from_a_future_rollout_fails(self):
         """Outside eval, weights published for a later rollout cannot have produced this batch."""
         with pytest.raises(AssertionError, match="newer than the rollout"):
@@ -185,11 +181,6 @@ class TestAssertSamplesWeightVersionSane:
         stale = [_make_sample([(RUN_UUID, 5)]), _make_sample([(RUN_UUID, 2)], index=1)]
         with pytest.raises(AssertionError, match="past max_weight_staleness"):
             assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), stale, rollout_id=9)
-
-    def test_eval_is_not_subject_to_the_staleness_bound(self):
-        """Eval runs on whatever the engines hold and is not what the bound protects."""
-        samples = [_make_sample([(RUN_UUID, 6)]), _make_sample([(RUN_UUID, 1)], index=1)]
-        assert_samples_weight_version_sane(_make_args(max_weight_staleness=0), samples, rollout_id=5, is_eval=True)
 
     def test_empty_batch_passes(self):
         """An empty sample list is trivially sane."""

@@ -45,9 +45,7 @@ def try_parse_num_trained_rollouts(value: str) -> int | None:
         return None
 
 
-def assert_samples_weight_version_sane(
-    args: Namespace, samples: list["Sample"], rollout_id: int, *, is_eval: bool = False
-) -> None:
+def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"], rollout_id: int) -> None:
     if args.debug_rollout_only or args.debug_skip_weight_update or is_lora_enabled(args):
         return
 
@@ -70,7 +68,7 @@ def assert_samples_weight_version_sane(
         for item in parsed:
             if item.run_uuid == current_run_uuid:
                 seen_current_run = True
-                assert is_eval or item.rollout_id <= rollout_id, (
+                assert item.rollout_id <= rollout_id, (
                     f"sample index={sample.index} carries weight version from rollout {item.rollout_id}, "
                     f"which is newer than the rollout {rollout_id} being generated"
                 )
@@ -97,7 +95,7 @@ def assert_samples_weight_version_sane(
     # for what the engines were serving. rollout_id is not: under
     # update_weights_interval > 1 or a fully async backlog it legitimately runs
     # ahead of the engines, and measuring against it would reject valid runs.
-    if (max_staleness := args.max_weight_staleness) is not None and not is_eval:
+    if (max_staleness := args.max_weight_staleness) is not None:
         for index, oldest in oldest_per_sample.items():
             assert newest_rollout_id - oldest <= max_staleness, (
                 f"sample index={index} was generated with weights from rollout {oldest}, "
