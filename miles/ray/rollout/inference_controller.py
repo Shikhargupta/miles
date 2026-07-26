@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -8,33 +7,12 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.addr_allocator import PortCursors
-from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
-from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
-from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
-from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp
 from miles.ray.utils import Lock
-from miles.rollout.base_types import (
-    RolloutFnConstructorInput,
-    RolloutFnEvalInput,
-    RolloutFnTrainInput,
-    call_rollout_fn,
-)
-from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
-from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
-from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
-from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
-from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import init_http_client
-from miles.utils.logging_utils import configure_logger
-from miles.utils.metric_checker import MetricChecker
-from miles.utils.misc import load_function
-from miles.utils.ray_utils import Box
-from miles.utils.timer import timer
-from miles.utils.tracking_utils.tracking import init_tracking
 
 
 logger = logging.getLogger(__name__)
@@ -157,7 +135,7 @@ class InferenceController:
     # -------------------------- misc APIs -----------------------------
 
     async def check_weights(
-            self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
         # Only the updatable model is re-synced; a frozen model would always mismatch.
         srv = self._get_updatable_server()
@@ -187,9 +165,9 @@ class InferenceController:
         self._ci_fault_injection_pending = False
 
         if (
-                self._server
-                and self._server.server_groups[0].all_engines
-                and self._server.server_groups[0].all_engines[0].is_allocated
+            self._server
+            and self._server.server_groups[0].all_engines
+            and self._server.server_groups[0].all_engines[0].is_allocated
         ):
             logger.info("CI Fault Injection: Simulating crash on engine 0 during generate")
             try:
