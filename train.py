@@ -61,6 +61,7 @@ async def train(args):
 
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
+        await rollout_manager.prepare_eval.remote()
         await rollout_manager.eval.remote(rollout_id=0)
 
     async def offload_train():
@@ -86,8 +87,10 @@ async def train(args):
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
+            await rollout_manager.prepare_eval.remote()
             await rollout_manager.eval.remote(rollout_id)
 
+        await rollout_manager.prepare_rollout.remote(rollout_id)
         rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
 
         if args.offload_rollout:
@@ -122,6 +125,7 @@ async def train(args):
             await rollout_manager.onload_kv.remote()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
+            await rollout_manager.prepare_eval.remote()
             await rollout_manager.eval.remote(rollout_id)
 
         if (
