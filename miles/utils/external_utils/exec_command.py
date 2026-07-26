@@ -2,6 +2,7 @@ import re
 import subprocess
 
 import ray
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from miles.utils.misc import get_current_node_ip
 
