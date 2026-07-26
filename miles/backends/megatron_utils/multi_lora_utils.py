@@ -58,8 +58,7 @@ def megatron_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, ep_size: int) 
 
 
 def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
-    """Return ``(this_rank_writes_its_shard, realized (tp, pp, ep) coords)`` from one cached
-    gloo all-gather — with ETP < TP the realized set is not the tp x pp x ep cross product."""
+    """Return ``(this_rank_writes_its_shard, realized (tp, pp, ep) coords)`` via one cached gloo all-gather."""
     global _shard_topology
     if _shard_topology is not None:
         return _shard_topology
