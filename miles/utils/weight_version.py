@@ -46,7 +46,7 @@ def try_parse_num_trained_rollouts(value: str) -> int | None:
 
 
 def assert_samples_weight_version_sane(
-    args: Namespace, samples: list["Sample"], rollout_id: int, *, is_eval: bool = False
+    args: Namespace, samples: list["Sample"], rollout_id: int, *, is_eval: bool
 ) -> None:
     if args.debug_rollout_only or args.debug_skip_weight_update or is_lora_enabled(args):
         return

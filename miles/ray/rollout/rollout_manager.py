@@ -192,7 +192,7 @@ class RolloutManager:
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self.train_parallel_config
             )
-            assert_samples_weight_version_sane(self.args, samples=data, rollout_id=rollout_id)
+            assert_samples_weight_version_sane(self.args, samples=data, rollout_id=rollout_id, is_eval=False)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
                 data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)

@@ -111,18 +111,20 @@ class TestAssertSamplesWeightVersionSane:
 
     def test_rollout_functions_that_never_query_an_engine_are_left_alone(self):
         """SFT and hand-assembled rollouts carry no versions at all and must not be rejected."""
-        assert_samples_weight_version_sane(_make_args(), [_unstamped_sample(), _unstamped_sample(1)], rollout_id=5)
+        assert_samples_weight_version_sane(
+            _make_args(), [_unstamped_sample(), _unstamped_sample(1)], rollout_id=5, is_eval=False
+        )
 
     def test_losing_the_version_on_only_some_samples_fails(self):
         """A batch where attribution went missing part-way is the case worth catching."""
         samples = [_make_sample([(RUN_UUID, 5)]), _unstamped_sample(1)]
         with pytest.raises(AssertionError, match="while other samples"):
-            assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5)
+            assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=False)
 
     def test_empty_response_sample_needs_no_version(self):
         """A sample that generated nothing has nothing to attribute."""
         samples = [_make_sample([(RUN_UUID, 5)]), _unstamped_sample(1, response_length=0)]
-        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5)
+        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=False)
 
     def test_staleness_is_measured_as_a_distance_not_a_version_count(self):
         """Two versions three rollouts apart are staler than two adjacent ones."""
@@ -138,19 +140,19 @@ class TestAssertSamplesWeightVersionSane:
         """A sample served entirely by another run's engine is rejected per sample."""
         samples = [_make_sample([(RUN_UUID, 5)]), _make_sample([(OTHER_RUN_UUID, 5)], index=1)]
         with pytest.raises(AssertionError, match="another run"):
-            assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5)
+            assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=False)
 
     def test_foreign_run_versions_may_precede_current_run_versions(self):
         """A trajectory carried across a restart starts on the previous run's weights."""
         samples = [_make_sample([(OTHER_RUN_UUID, 2), (RUN_UUID, 5)])]
-        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5)
+        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=False)
 
     def test_unparseable_version_fails(self):
         """Default-like engine versions such as 'default' are rejected."""
         sample = _make_sample([(RUN_UUID, 5)])
         sample.weight_versions[0].spans[0] = WeightVersionSpan("default", 0, 4)
         with pytest.raises(ValueError, match="invalid weight version"):
-            assert_samples_weight_version_sane(_make_args(), [sample], rollout_id=5)
+            assert_samples_weight_version_sane(_make_args(), [sample], rollout_id=5, is_eval=False)
 
     @pytest.mark.parametrize(
         "field,value",
@@ -167,7 +169,7 @@ class TestAssertSamplesWeightVersionSane:
         setattr(args, field, value)
         samples = [_make_sample([(RUN_UUID, 9)]), _make_sample([(OTHER_RUN_UUID, 1)], index=1)]
 
-        assert_samples_weight_version_sane(args, samples, rollout_id=5)
+        assert_samples_weight_version_sane(args, samples, rollout_id=5, is_eval=False)
 
     def test_batched_weight_updates_do_not_count_as_staleness(self):
         """With interval > 1 the engines lag rollout_id by design; a uniform batch has zero spread."""
@@ -186,15 +188,15 @@ class TestAssertSamplesWeightVersionSane:
     def test_staleness_is_measured_against_the_batch_not_the_rollout_id(self):
         """A deep but uniform backlog is not stale; what matters is how far apart the samples are."""
         samples = [_make_sample([(RUN_UUID, 5)]), _make_sample([(RUN_UUID, 4)], index=1)]
-        assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), samples, rollout_id=9)
+        assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), samples, rollout_id=9, is_eval=False)
 
         stale = [_make_sample([(RUN_UUID, 5)]), _make_sample([(RUN_UUID, 2)], index=1)]
         with pytest.raises(AssertionError, match="past max_weight_staleness"):
-            assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), stale, rollout_id=9)
+            assert_samples_weight_version_sane(_make_args(max_weight_staleness=1), stale, rollout_id=9, is_eval=False)
 
     def test_empty_batch_passes(self):
         """An empty sample list is trivially sane."""
-        assert_samples_weight_version_sane(_make_args(), [], rollout_id=5)
+        assert_samples_weight_version_sane(_make_args(), [], rollout_id=5, is_eval=False)
 
 
 class TestEvalRunsOnExactlyOneWeightVersion:
@@ -245,4 +247,4 @@ class TestEvalRunsOnExactlyOneWeightVersion:
         """The one-version rule is an eval rule; training on a mixed batch is normal."""
         samples = [_make_sample([(RUN_UUID, 4)]), _make_sample([(RUN_UUID, 5)], index=1)]
 
-        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5)
+        assert_samples_weight_version_sane(_make_args(), samples, rollout_id=5, is_eval=False)
