@@ -1,6 +1,6 @@
 import pytest
 
-from miles.utils.run_identity import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
+from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 
 WELL_FORMED = ("ab12cd34ef5678ab" * 4)[:RUN_UUID_LENGTH]
 

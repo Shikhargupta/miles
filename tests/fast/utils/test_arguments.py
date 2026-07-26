@@ -13,7 +13,7 @@ from miles.utils.arguments import (
     miles_validate_args,
 )
 from miles.utils.misc import function_registry
-from miles.utils.run_identity import RUN_UUID_LENGTH, validate_run_uuid
+from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
