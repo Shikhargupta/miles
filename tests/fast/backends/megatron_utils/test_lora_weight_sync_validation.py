@@ -495,6 +495,9 @@ class TestBroadcastLoraImplementation:
         assert kwargs["names"] == [n for n, _ in SAMPLE_LORA_WEIGHTS]
         assert kwargs["dtypes"] == [t.dtype for _, t in SAMPLE_LORA_WEIGHTS]
         assert kwargs["shapes"] == [list(t.shape) for _, t in SAMPLE_LORA_WEIGHTS]
+        assert kwargs.get("pinned", False) is False
+        assert kwargs.get("added_tokens_config") is None
+        assert kwargs.get("upsert", False) is False
         # One NCCL broadcast (src=0, shared base group) per tensor.
         assert dist_mock.broadcast.call_count == len(SAMPLE_LORA_WEIGHTS)
         for call in dist_mock.broadcast.call_args_list:
@@ -557,3 +560,24 @@ class TestBroadcastLoraImplementation:
         fake_self = self._make_self(engines=engines)
         with pytest.raises(RuntimeError, match="LoRA weight sync failed"):
             self._run(fake_self, SAMPLE_LORA_WEIGHTS)
+
+    def test_multi_lora_upserts_the_named_slot(self):
+        """The multi-LoRA variant addresses its own slot and overwrites it in place."""
+        engines = [_FakeEngine()]
+        fake_self = self._make_self(engines=engines)
+        lora_config = {"peft_type": "LORA", "r": 8, "lora_alpha": 8}
+
+        with patch(f"{_BROADCAST_MODULE}.dist"):
+            UpdateWeightFromDistributed._update_multi_lora_weight_implementation(
+                fake_self,
+                SAMPLE_LORA_WEIGHTS,
+                lora_name="adapter-b",
+                lora_config=lora_config,
+            )
+
+        kwargs = engines[0].load_lora_adapter_from_distributed.calls[0]
+        assert kwargs["lora_name"] == "adapter-b"
+        assert kwargs["config_dict"] == lora_config
+        assert kwargs.get("pinned", False) is False
+        assert kwargs.get("added_tokens_config") is None
+        assert kwargs["upsert"] is True

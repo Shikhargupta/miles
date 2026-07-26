@@ -34,8 +34,7 @@ def _make_updater(calls: list[tuple[str, dict]]) -> UpdateWeightFromDiskDelta:
 
 
 def test_reload_engines_pulls_with_both_checkpoint_dirs_then_reloads():
-    """The client takes no args, so the updater must pass both dirs itself; missing either one
-    used to be injected by the engine wrapper and would now be a TypeError at runtime."""
+    """The reload pull carries both checkpoint dirs the deleted engine wrapper used to inject."""
     calls: list[tuple[str, dict]] = []
     updater = _make_updater(calls)
 
@@ -56,11 +55,11 @@ def test_reload_engines_pulls_with_both_checkpoint_dirs_then_reloads():
         "local_checkpoint_dir": "/local/ckpt",
         "source_dir": "/shared/delta",
     }
-    assert calls[3][1] == {"model_path": "/local/ckpt", "load_format": None, "weight_version": "7"}
+    assert calls[3][1] == {"model_path": "/local/ckpt", "weight_version": "7"}
 
 
 def test_in_place_pause_mode_skips_the_flush():
-    """in_place pause keeps the running batches, so draining the queue would be wrong."""
+    """in_place pause mode does not flush."""
     calls: list[tuple[str, dict]] = []
     updater = _make_updater(calls)
     updater.args.pause_generation_mode = "in_place"
@@ -81,3 +80,50 @@ def test_non_source_rank_issues_no_requests():
         updater._reload_engines()
 
     assert calls == []
+
+
+def test_baseline_capture_pulls_with_both_checkpoint_dirs(tmp_path):
+    """The baseline pull carries both checkpoint dirs too."""
+    calls: list[tuple[str, dict]] = []
+    updater = _make_updater(calls)
+    updater.delta_dir = str(tmp_path / "delta")
+    updater.args.hf_checkpoint = "/fake/hf"
+    updater._snapshot = {}
+    updater._for_each_hf_bucket = lambda bucket_func: None
+
+    with (
+        patch(f"{_MODULE}.dist") as dist_mock,
+        patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()),
+        patch(f"{_MODULE}.make_tensor_reader", return_value=lambda name: None),
+    ):
+        dist_mock.get_rank.return_value = 0
+        updater._capture_baseline()
+
+    assert [name for name, _kwargs in calls] == ["pull_weights"]
+    assert calls[0][1] == {
+        "target_version": 0,
+        "local_checkpoint_dir": "/local/ckpt",
+        "source_dir": "/shared/delta",
+    }
+
+
+def test_baseline_capture_reloads_the_pulled_checkpoint_when_equality_is_checked(tmp_path):
+    """check_weight_update_equal makes the baseline reload the base checkpoint it just pulled."""
+    calls: list[tuple[str, dict]] = []
+    updater = _make_updater(calls)
+    updater.delta_dir = str(tmp_path / "delta")
+    updater.args.hf_checkpoint = "/fake/hf"
+    updater.args.check_weight_update_equal = True
+    updater._snapshot = {}
+    updater._for_each_hf_bucket = lambda bucket_func: None
+
+    with (
+        patch(f"{_MODULE}.dist") as dist_mock,
+        patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()),
+        patch(f"{_MODULE}.make_tensor_reader", return_value=lambda name: None),
+    ):
+        dist_mock.get_rank.return_value = 0
+        updater._capture_baseline()
+
+    assert [name for name, _kwargs in calls] == ["pull_weights", "update_weights_from_disk"]
+    assert calls[1][1] == {"model_path": "/local/ckpt", "weight_version": "7"}
