@@ -2,33 +2,39 @@ from unittest import mock
 
 import pytest
 
+_DELTA = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta"
+_RAY_GET = f"{_DELTA}.ray.get"
+
+
+def _helpers():
+    pytest.importorskip("sglang")
+    from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
+        _UNSET_WEIGHT_VERSION,
+        _update_weight_version,
+        _update_weight_version_if_unset,
+    )
+
+    return _UNSET_WEIGHT_VERSION, _update_weight_version, _update_weight_version_if_unset
+
 
 class TestUpdateWeightVersion:
     def test_publishes_the_version_to_every_engine(self):
         """Paths whose transport cannot carry the version announce it to all engines itself."""
-        pytest.importorskip("sglang")
-        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
-            _update_weight_version,
-        )
-
+        _unset, update_weight_version, _if_unset = _helpers()
         calls = []
 
         class FakeEngine:
             def __init__(self, name):
                 self.update_weight_version = _RecordingMethod(calls, name)
 
-        with mock.patch("miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta.ray.get", lambda refs: list(refs)):
-            _update_weight_version([FakeEngine("a"), FakeEngine("b")], "ab12cd34-00000007")
+        with mock.patch(_RAY_GET, lambda refs: list(refs)):
+            update_weight_version([FakeEngine("a"), FakeEngine("b")], "ab12cd34-00000007")
 
         assert calls == [("a", "ab12cd34-00000007", False), ("b", "ab12cd34-00000007", False)]
 
     def test_announcing_does_not_abort_running_requests(self):
         """Announcing a version changes no weights, so it must not cancel in-flight generation."""
-        pytest.importorskip("sglang")
-        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
-            _update_weight_version,
-        )
-
+        _unset, update_weight_version, _if_unset = _helpers()
         seen = {}
 
         class FakeEngine:
@@ -38,38 +44,29 @@ class TestUpdateWeightVersion:
                     seen["abort_all_requests"] = abort_all_requests
                     return object()
 
-        with mock.patch("miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta.ray.get", lambda refs: list(refs)):
-            _update_weight_version([FakeEngine()], "ab12cd34-00000007")
+        with mock.patch(_RAY_GET, lambda refs: list(refs)):
+            update_weight_version([FakeEngine()], "ab12cd34-00000007")
 
         assert seen["abort_all_requests"] is False
 
     def test_only_announces_to_engines_that_were_never_told_a_version(self):
         """A cold engine still reports the launch default and needs the version."""
-        pytest.importorskip("sglang")
-        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
-            _UNSET_WEIGHT_VERSION,
-            _update_weight_version_if_unset,
-        )
-
+        unset_version, _update, update_weight_version_if_unset = _helpers()
         announced = []
 
         class ColdEngine:
             def __init__(self):
-                self.get_weight_version = _Returning(_UNSET_WEIGHT_VERSION)
+                self.get_weight_version = _Returning(unset_version)
                 self.update_weight_version = _Recording(announced)
 
-        with mock.patch("miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta.ray.get", _resolve):
-            _update_weight_version_if_unset([ColdEngine()], "ab12cd34-00000007")
+        with mock.patch(_RAY_GET, _resolve):
+            update_weight_version_if_unset([ColdEngine()], "ab12cd34-00000007")
 
         assert announced == ["ab12cd34-00000007"]
 
     def test_leaves_an_engine_that_already_serves_a_known_version_alone(self):
         """After a trainer failover the engines still hold their weights; claiming a version would lie."""
-        pytest.importorskip("sglang")
-        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
-            _update_weight_version,
-        )_if_unset
-
+        _unset, _update, update_weight_version_if_unset = _helpers()
         announced = []
 
         class WarmEngine:
@@ -77,19 +74,14 @@ class TestUpdateWeightVersion:
                 self.get_weight_version = _Returning("ab12cd34-00000004")
                 self.update_weight_version = _Recording(announced)
 
-        with mock.patch("miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta.ray.get", _resolve):
-            _update_weight_version_if_unset([WarmEngine()], "ab12cd34-00000007")
+        with mock.patch(_RAY_GET, _resolve):
+            update_weight_version_if_unset([WarmEngine()], "ab12cd34-00000007")
 
         assert announced == []
 
     def test_announces_only_to_the_engines_that_are_still_cold(self):
         """Partial recovery leaves survivors holding real weights; only the replacements need telling."""
-        pytest.importorskip("sglang")
-        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
-            _UNSET_WEIGHT_VERSION,
-            _update_weight_version_if_unset,
-        )
-
+        unset_version, _update, update_weight_version_if_unset = _helpers()
         announced = []
 
         class Engine:
@@ -98,23 +90,20 @@ class TestUpdateWeightVersion:
                 self.update_weight_version = _Recording(announced)
 
         warm = Engine("ab12cd34-00000004")
-        cold = Engine(_UNSET_WEIGHT_VERSION)
+        cold = Engine(unset_version)
         never_told = Engine(None)
 
-        with mock.patch("miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta.ray.get", _resolve):
-            _update_weight_version_if_unset([warm, cold, never_told], "ab12cd34-00000007")
+        with mock.patch(_RAY_GET, _resolve):
+            update_weight_version_if_unset([warm, cold, never_told], "ab12cd34-00000007")
 
         assert announced == ["ab12cd34-00000007", "ab12cd34-00000007"]
 
     def test_no_engines_is_a_noop(self):
         """An updater with no engines attached publishes nothing rather than failing."""
-        pytest.importorskip("sglang")
-        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
-            _update_weight_version,
-        )
+        _unset, update_weight_version, _if_unset = _helpers()
 
-        with mock.patch("miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta.ray.get", lambda refs: list(refs)):
-            _update_weight_version([], "ab12cd34-00000007")
+        with mock.patch(_RAY_GET, lambda refs: list(refs)):
+            update_weight_version([], "ab12cd34-00000007")
 
 
 class _RecordingMethod:
