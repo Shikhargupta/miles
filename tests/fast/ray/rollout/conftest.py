@@ -11,11 +11,11 @@ import ray
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 from miles.utils.weight_version import WeightVersion
 
-TEST_WEIGHT_VERSION_RUN_UUID = "ab12cd34ef5678ab"
+TEST_RUN_UUID = "ab12cd34ef5678ab"
 
 
 def make_test_weight_version(rollout_id: int) -> str:
-    return WeightVersion(run_uuid=TEST_WEIGHT_VERSION_RUN_UUID, num_trained_rollouts=rollout_id).serialize()
+    return WeightVersion(run_uuid=TEST_RUN_UUID, num_trained_rollouts=rollout_id).serialize()
 
 
 def fake_actor_handle() -> MagicMock:
@@ -115,7 +115,7 @@ def make_args(**overrides: Any) -> Namespace:
         load=None,
         save=None,
         # weight version checks
-        weight_version_run_uuid=TEST_WEIGHT_VERSION_RUN_UUID,
+        run_uuid=TEST_RUN_UUID,
         max_weight_staleness=None,
         update_weights_interval=1,
         debug_skip_weight_update=False,
