@@ -46,6 +46,11 @@ class ServerGroup:
     router_port: int | None = None
     update_weights: bool = True
 
+    def __post_init__(self):
+        assert (
+            not self.all_engines or self.rank_offset % self.nodes_per_engine == 0
+        ), f"{self.rank_offset=} must be a multiple of {self.nodes_per_engine=}"
+
     @property
     def nodes_per_engine(self):
         return max(1, self.num_gpus_per_engine // self.args.num_gpus_per_node)
