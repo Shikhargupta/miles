@@ -198,14 +198,23 @@ class TestWeightStalenessMetrics:
         assert log_dict["weight_staleness/min"] == 0
         assert log_dict["weight_staleness/mean"] == 1.0
 
-    def test_fully_on_policy_batch_reports_zero_staleness(self):
-        """Every sample generated with this rollout's own weights is not stale at all."""
+    def test_sync_driver_batch_reports_zero_staleness(self):
+        """Sync trains rollout N on weights that had trained N rollouts, so nothing is behind."""
         samples = [_make_staleness_sample([7], index=0), _make_staleness_sample([7], index=1)]
 
         log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=7, is_eval=False)
 
         assert log_dict["weight_staleness/max"] == 0
         assert log_dict["weight_staleness/mean"] == 0.0
+
+    def test_async_driver_batch_reports_its_one_pipelined_step(self):
+        """Async issues the next generate before training, so its batch is one trained rollout behind."""
+        samples = [_make_staleness_sample([6], index=0), _make_staleness_sample([6], index=1)]
+
+        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=7, is_eval=False)
+
+        assert log_dict["weight_staleness/max"] == 1
+        assert log_dict["weight_staleness/mean"] == 1.0
 
     def test_staleness_uses_the_oldest_weights_whatever_order_they_appear_in(self):
         """Taking the first span instead of the oldest would pass on ascending data alone."""

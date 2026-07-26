@@ -329,9 +329,9 @@ class Sample:
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
         numeric = [
-            rollout_id
+            trained
             for span in self.all_weight_version_spans
-            if (rollout_id := try_parse_num_trained_rollouts(span.version)) is not None
+            if (trained := try_parse_num_trained_rollouts(span.version)) is not None
         ]
         return min(numeric) if numeric else None
 
