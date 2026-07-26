@@ -12,7 +12,5 @@ def generate_run_uuid() -> str:
 
 def validate_run_uuid(value: str) -> str:
     if _RUN_UUID_PATTERN.match(value) is None:
-        raise ValueError(
-            f"invalid run uuid {value!r}; expected exactly {RUN_UUID_LENGTH} lowercase hex characters"
-        )
+        raise ValueError(f"invalid run uuid {value!r}; expected exactly {RUN_UUID_LENGTH} lowercase hex characters")
     return value
