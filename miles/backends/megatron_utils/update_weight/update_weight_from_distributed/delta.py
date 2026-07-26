@@ -19,6 +19,7 @@ import zstandard
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.sglang_engine import update_weight_version_if_unset
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
@@ -146,6 +147,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self._for_each_hf_bucket(seed_bucket)
         if dist.get_rank() == 0:
             _check_weight_sync_results(ray.get(pulls), is_lora=False)
+            update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
             if self.args.check_weight_update_equal:
                 # The weights checker resets engine tensors at startup and compares after the
                 # first sync, expecting it to rewrite every tensor. The baseline publishes

@@ -4,11 +4,14 @@ import logging
 import multiprocessing
 import os
 import time
+from collections.abc import Sequence
 from urllib.parse import quote
 
+import ray
 import requests
 import sglang_router
 from packaging.version import parse
+from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
@@ -621,10 +624,10 @@ class SGLangEngine(RayActor):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
         return self._make_request("end_weight_update", {})
 
-    def update_weight_version(self, weight_version: str):
+    def update_weight_version(self, weight_version: str, abort_all_requests: bool = True):
         return self._make_request(
             "update_weight_version",
-            {"new_version": weight_version},
+            {"new_version": weight_version, "abort_all_requests": abort_all_requests},
         )
 
     def start_profile(
@@ -800,3 +803,22 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "enable_metrics",
     "mem_fraction_static",
 ]
+
+
+UNSET_WEIGHT_VERSION = "default"
+
+
+def update_weight_version_if_unset(rollout_engines: Sequence[ActorHandle], weight_version: str) -> None:
+    reported = ray.get([engine.get_weight_version.remote() for engine in rollout_engines])
+    if any(version not in (None, UNSET_WEIGHT_VERSION) for version in reported):
+        return
+    update_weight_version(rollout_engines, weight_version)
+
+
+def update_weight_version(rollout_engines: Sequence[ActorHandle], weight_version: str) -> None:
+    ray.get(
+        [
+            engine.update_weight_version.remote(weight_version=weight_version, abort_all_requests=False)
+            for engine in rollout_engines
+        ]
+    )
