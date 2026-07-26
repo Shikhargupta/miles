@@ -5,7 +5,8 @@ import time
 import pytest
 from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
-from miles.dashboard.dump_reader import DumpReader
+from miles.dashboard.dump_reader import DumpReader, _weight_version_summary
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 REMOVED = (3,)  # within-step positions marked remove_sample=True by the fixture
 
@@ -197,7 +198,6 @@ def test_summary_and_tokens_survive_dump_without_log_probs(tmp_path):
     derived from them degrades to None instead of KeyError -> HTTP 404
     (disagg report 2026-07-14)."""
     import torch
-
     from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
     from miles.dashboard.dump_reader import DumpReader
@@ -258,3 +258,32 @@ def test_turns_counts_a_call_that_carried_no_version():
     ]
 
     assert _weight_version_summary(sample) == (["4"], 2)
+
+
+class TestLegacyWeightVersionSummary:
+    def test_reads_versions_from_a_pre_span_dump(self):
+        """A dump that predates spans still reports its versions and turn count."""
+        sample = Sample.from_dict({"status": "completed", "weight_versions": ["3", "4"], "tokens": [1, 2]})
+
+        versions, turns = _weight_version_summary(sample)
+
+        assert versions == ["3", "4"]
+        assert turns == 2
+
+    def test_prefers_spans_when_the_dump_has_them(self):
+        """A current dump is read from its spans, in generation order."""
+        sample = Sample(
+            weight_versions=[
+                WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 1)]),
+                WeightVersionsPerCall(spans=[WeightVersionSpan("4", 1, 2), WeightVersionSpan("5", 2, 3)]),
+            ]
+        )
+
+        versions, turns = _weight_version_summary(sample)
+
+        assert versions == ["3", "4", "5"]
+        assert turns == 2
+
+    def test_reports_nothing_when_the_sample_was_never_stamped(self):
+        """A sample with no versions at all yields no series rather than a zero."""
+        assert _weight_version_summary(Sample()) == ([], None)
