@@ -91,7 +91,6 @@ async def main(args):
 
         # Per-adapter save cadence decided inside save_model.
         await actor_model.save_model(rollout_id)
-        await rollout_executor.save.remote(rollout_id)
 
         rollout_id += 1
 

@@ -165,13 +165,20 @@ class RolloutExecutor:
         if self.args.rollout_global_dataset:
             self.data_source.save(rollout_id)
         if self.use_experimental_refactor:
-            self.generate_rollout.save(rollout_id)
+            for rollout_function in self._checkpointed_rollout_functions():
+                rollout_function.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
         if self.use_experimental_refactor:
-            self.generate_rollout.load(rollout_id)
+            for rollout_function in self._checkpointed_rollout_functions():
+                rollout_function.load(rollout_id)
+
+    def _checkpointed_rollout_functions(self) -> list:
+        if self.args.eval_function_path == self.args.rollout_function_path:
+            return [self.generate_rollout]
+        return [self.generate_rollout, self.eval_generate_rollout]
 
     # -------------------------- misc APIs -----------------------------
 
