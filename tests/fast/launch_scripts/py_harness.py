@@ -11,6 +11,7 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
+import miles.utils.external_utils.command_utils.common as command_utils_common
 
 FROZEN_RUN_ID = "260101-000000-000"
 
@@ -66,8 +67,9 @@ def install_command_recorder(monkeypatch) -> list[str]:
         pseudo_files.append(text)
         return f"/frozen/pseudo_file_{len(pseudo_files)}.{ext}"
 
-    monkeypatch.setattr(command_utils, "create_run_id", lambda: FROZEN_RUN_ID)
-    monkeypatch.setattr(command_utils, "save_to_temp_file", fake_save_to_temp_file)
+    for module in (command_utils, command_utils_common):
+        monkeypatch.setattr(module, "create_run_id", lambda: FROZEN_RUN_ID)
+        monkeypatch.setattr(module, "save_to_temp_file", fake_save_to_temp_file)
 
     return commands
 

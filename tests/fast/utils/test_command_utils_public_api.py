@@ -5,12 +5,13 @@ import pytest
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
+import miles.utils.external_utils.command_utils.common as common
 
 
 @pytest.fixture
 def commands(monkeypatch):
     recorded = record_commands(monkeypatch)
-    monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
+    monkeypatch.setattr(common, "check_has_nvlink", lambda: False)
     for name in ("MILES_SCRIPT_EXTERNAL_RAY", "RAY_ADDRESS", "NCCL_NVLS_ENABLE", "WANDB_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
@@ -188,7 +189,7 @@ class TestExecuteTrain:
 
     def test_derives_nvls_from_nvlink_detection(self, commands, monkeypatch):
         """NCCL_NVLS_ENABLE follows the detected topology when it is not preset."""
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: True)
+        monkeypatch.setattr(common, "check_has_nvlink", lambda: True)
 
         command_utils.execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
@@ -196,7 +197,7 @@ class TestExecuteTrain:
 
     def test_lets_the_environment_override_nvls(self, commands, monkeypatch):
         """An explicit NCCL_NVLS_ENABLE wins over topology detection."""
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: True)
+        monkeypatch.setattr(common, "check_has_nvlink", lambda: True)
         monkeypatch.setenv("NCCL_NVLS_ENABLE", "0")
 
         command_utils.execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
@@ -292,7 +293,7 @@ class TestParseExtraEnvVars:
     )
     def test_accepts_json_and_shell_style(self, text, expected):
         """Operators pass either a JSON object or plain KEY=VALUE pairs."""
-        assert command_utils._parse_extra_env_vars(text) == expected
+        assert command_utils.parse_extra_env_vars(text) == expected
 
 
 class TestCheckHasNvlink:
