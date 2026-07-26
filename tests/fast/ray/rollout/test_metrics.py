@@ -228,28 +228,49 @@ class TestWeightStalenessMetrics:
 
         assert logged["rollout/weight_staleness/max"] == 2
 
-    def test_eval_entry_passes_the_rollout_being_evaluated(self):
-        """Eval reports the same series under its own prefix, from the same rollout id."""
-        samples = [_make_staleness_sample([4], index=0)]
+    def test_eval_reports_versions_but_no_staleness(self):
+        """Eval runs on weights published for the next rollout, so the distance would go negative."""
+        samples = [_make_staleness_sample([7], index=0)]
         logged = {}
 
         with patch.object(tracking, "log", lambda args, log_dict, step_key: logged.update(log_dict)):
             log_eval_rollout_data(6, make_args(), {"ds": {"rewards": [1.0], "samples": samples}})
 
-        assert logged["eval/ds/weight_staleness/max"] == 2
+        assert logged["eval/ds/weight_version/max"] == 7
+        assert not any("weight_staleness/" in key for key in logged)
 
-    def test_no_staleness_metrics_under_lora(self):
+    def test_eval_on_newer_weights_never_reports_a_negative_distance(self):
+        """The sync driver publishes rollout N+1's weights before evaluating rollout N."""
+        samples = [_make_staleness_sample([7], index=0)]
+
+        log_dict = _compute_metrics_from_samples(make_args(), samples, rollout_id=6, is_eval=True)
+
+        assert not any(key.startswith("weight_staleness/") for key in log_dict)
+
+    @pytest.mark.parametrize("field,value", [("lora_rank", 32), ("lora_adapter_path", "/adapter")])
+    def test_no_staleness_metrics_under_lora(self, field, value):
         """A LoRA engine's version describes the frozen base, so the distance from it means nothing."""
-        args = make_args(lora_rank=32)
+        args = make_args(**{field: value})
         log_dict = _compute_metrics_from_samples(args, [_make_staleness_sample([5], index=0)], rollout_id=7)
 
         assert not any(key.startswith("weight_staleness/") for key in log_dict)
+        assert log_dict["weight_version/min"] == 5
 
     def test_no_staleness_metrics_without_weight_versions(self):
         """Samples the engine never stamped contribute no staleness series."""
         log_dict = _compute_metrics_from_samples(make_args(), [_make_staleness_sample([], index=0)], rollout_id=5)
 
         assert not any(key.startswith("weight_staleness/") for key in log_dict)
+
+    def test_a_call_that_produced_no_spans_is_not_a_version(self):
+        """Real generation leaves an empty call behind rather than an empty version list."""
+        sample = make_sample(index=0, group_index=0)
+        sample.weight_versions = [WeightVersionsPerCall(spans=[])]
+
+        log_dict = _compute_metrics_from_samples(make_args(), [sample], rollout_id=5)
+
+        assert not any(key.startswith("weight_staleness/") for key in log_dict)
+        assert not any(key.startswith("weight_version/") for key in log_dict)
 
 
 def _make_staleness_sample(version_rollout_ids: list[int], *, index: int) -> Sample:

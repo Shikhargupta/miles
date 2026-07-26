@@ -38,7 +38,9 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
             rewards = [0.0 if r is None else r for r in rewards]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
-            log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples, rollout_id), f"eval/{key}/")
+            log_dict |= dict_add_prefix(
+                _compute_metrics_from_samples(args, samples, rollout_id, is_eval=True), f"eval/{key}/"
+            )
         if "truncated" in data[key]:
             truncated = data[key]["truncated"]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
@@ -83,7 +85,7 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     tracking.log(args, log_dict, step_key="rollout/step")
 
 
-def _compute_metrics_from_samples(args, samples, rollout_id):
+def _compute_metrics_from_samples(args, samples, rollout_id, *, is_eval: bool = False):
     response_lengths = [sample.effective_response_length for sample in samples]
 
     log_dict = {}
@@ -100,7 +102,9 @@ def _compute_metrics_from_samples(args, samples, rollout_id):
         log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
         mixed = sum(1 for s in samples if len({span.version for span in s.all_weight_version_spans}) > 1)
         log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
-        if not is_lora_enabled(args):
+        # Eval runs after the next rollout's weights were published, so measuring
+        # its samples against rollout_id would report a negative distance.
+        if not is_lora_enabled(args) and not is_eval:
             log_dict |= dict_add_prefix(
                 compute_statistics([rollout_id - version for version in oldest_versions]), "weight_staleness/"
             )
