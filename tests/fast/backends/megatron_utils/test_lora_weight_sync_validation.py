@@ -208,7 +208,7 @@ class TestUpdateWeightsZeroChunks:
         updater.use_distribute = False
 
         with pytest.raises(RuntimeError, match="zero chunks"):
-            updater.update_weights(serving_rollout_id=0)
+            updater.update_weights(weight_rollout_id=0)
 
     @patch("miles.backends.megatron_utils.update_weight.common.ray")
     @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
@@ -239,7 +239,7 @@ class TestUpdateWeightsZeroChunks:
         updater.rollout_engines = [MagicMock()]
         updater.use_distribute = False
 
-        updater.update_weights(serving_rollout_id=0)
+        updater.update_weights(weight_rollout_id=0)
 
 
 # ---------------------------------------------------------------------------

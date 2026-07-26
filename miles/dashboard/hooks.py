@@ -200,9 +200,9 @@ class TrajectorySink:
     def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
         try:
             versions = [
-                step
+                span.version
                 for span in getattr(sample, "all_weight_version_spans", None) or []
-                if (step := parse_weight_version_rollout_id(span.version)) is not None
+                if parse_weight_version_rollout_id(span.version) is not None
             ]
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
@@ -210,7 +210,7 @@ class TrajectorySink:
                 sample_index=sample.index if sample.index is not None else -1,
                 group_index=sample.group_index if sample.group_index is not None else -1,
                 turn=turn,
-                weight_version=str(versions[-1]) if versions else "",
+                weight_version=versions[-1] if versions else "",
                 detail=detail,
             )
             with self._lock:

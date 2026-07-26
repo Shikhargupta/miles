@@ -42,6 +42,7 @@ from miles.dashboard.store import (
     TrajectoryEvent,
     TrajectoryEventKind,
 )
+from miles.utils.weight_version import WeightVersion
 
 BASE_TS = 1_000_000.0
 GPU_NODE = "10.0.0.1"
@@ -91,7 +92,7 @@ def _trajectory_events(store: MetricStore, truth: DummyTelemetryTruth, samples_p
             agentic = index % 3 == 0
             # stagger submits so every lifecycle fits inside the rollout window
             start = t0 + i * (t1 - t0 - 16.0) / samples_per_step
-            version = str(index % 3)
+            version = _version(index % 3)
 
             def emit(kind, ts, turn=-1, version=version, detail="", index=index, group=i // 2):
                 store.append(
@@ -112,10 +113,14 @@ def _trajectory_events(store: MetricStore, truth: DummyTelemetryTruth, samples_p
             if agentic:
                 emit(TrajectoryEventKind.TOOL_START, start + 6.0, turn=1, detail="1 calls")
                 emit(TrajectoryEventKind.TOOL_END, start + 9.0, turn=1, detail="1 calls")
-                bumped = str(index % 3 + 1)
+                bumped = _version(index % 3 + 1)
                 emit(TrajectoryEventKind.GEN_START, start + 9.0, turn=2, version=bumped)
                 emit(TrajectoryEventKind.GEN_END, start + 14.0, turn=2, version=bumped)
             emit(TrajectoryEventKind.ATTEMPT_END, start + (15.0 if agentic else 7.0), detail="completed")
+
+
+def _version(rollout_id: int) -> str:
+    return WeightVersion(run_uuid="ab12cd34", rollout_id=rollout_id).serialize()
 
 
 def dump_dummy_telemetry(

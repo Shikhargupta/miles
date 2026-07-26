@@ -45,7 +45,7 @@ class UpdateWeight(abc.ABC):
     ) -> None:
         pass
 
-    def update_weights(self, *, serving_rollout_id: int) -> None:
+    def update_weights(self, *, weight_rollout_id: int) -> None:
 
         if dist.get_rank() == 0:
             futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
@@ -58,7 +58,7 @@ class UpdateWeight(abc.ABC):
         for name, param in self.model.state_dict().items():
             param_size = param.numel() * param.element_size()
             if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket, serving_rollout_id)
+                self.wait_and_update_bucket_weights(bucket, weight_rollout_id)
                 del bucket
                 bucket = []
                 bucket_size = 0
@@ -74,7 +74,7 @@ class UpdateWeight(abc.ABC):
             bucket_size += param_size
 
         if bucket:
-            self.wait_and_update_bucket_weights(bucket, serving_rollout_id)
+            self.wait_and_update_bucket_weights(bucket, weight_rollout_id)
             del bucket
             bucket = []
             bucket_size = 0
@@ -84,12 +84,12 @@ class UpdateWeight(abc.ABC):
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    def wait_and_update_bucket_weights(self, bucket, serving_rollout_id: int):
+    def wait_and_update_bucket_weights(self, bucket, weight_rollout_id: int):
         bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
         self.update_bucket_weights(
             bucket,
             weight_version=WeightVersion(
-                run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+                run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
             ).serialize(),
         )
 

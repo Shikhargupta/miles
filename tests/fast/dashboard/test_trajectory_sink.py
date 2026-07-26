@@ -5,6 +5,11 @@ from miles.dashboard.hooks import BATCH_MAX_EVENTS, TrajectorySink
 from miles.dashboard.store import Stream, TrajectoryEvent, TrajectoryEventKind
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.weight_version import WeightVersion
+
+
+def _version(rollout_id: int) -> str:
+    return WeightVersion(run_uuid="ab12cd34", rollout_id=rollout_id).serialize()
 
 
 class FakeRemoteMethod:
@@ -30,7 +35,7 @@ def clean_sink():
     TrajectoryLifecycle().sink = None
 
 
-def _sample(index=7, group=2, versions=("3", "4")):
+def _sample(index=7, group=2, versions=(_version(3), _version(4))):
     return Sample(
         index=index,
         group_index=group,
@@ -64,7 +69,7 @@ def test_attempt_and_gen_events_carry_identity_and_version():
     ]
     for event in _pushed(handle):
         assert (event.sample_index, event.group_index) == (7, 2)
-        assert event.weight_version == "4"
+        assert event.weight_version == _version(4)
     assert _pushed(handle)[-1].detail == Sample.Status.PENDING.value
 
 

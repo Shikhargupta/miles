@@ -262,7 +262,7 @@ class RayTrainGroup:
         await self._rollout_manager.health_monitoring_pause.remote()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info, serving_rollout_id=weight_rollout_id),
+            lambda _: self._execute_first_alive("update_weights", info=info, weight_rollout_id=weight_rollout_id),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 

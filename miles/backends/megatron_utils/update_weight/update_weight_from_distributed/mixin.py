@@ -314,7 +314,7 @@ class DistBucketedWeightUpdateMixin:
 
             begin_weight_update(self.rollout_engines)
 
-    def _finalize_and_resume_engines(self, serving_rollout_id: int) -> None:
+    def _finalize_and_resume_engines(self, weight_rollout_id: int) -> None:
         """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
             end_weight_update(self.rollout_engines)
@@ -327,7 +327,7 @@ class DistBucketedWeightUpdateMixin:
         return out
 
     @torch.no_grad()
-    def update_weights(self, *, serving_rollout_id: int) -> None:
+    def update_weights(self, *, weight_rollout_id: int) -> None:
         """Orchestrate the full weight-update lifecycle.
 
         Pause → flush → non-expert (TP) → expert (EP) → continue.
@@ -360,7 +360,7 @@ class DistBucketedWeightUpdateMixin:
             if not is_lora:
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-                update_impl = partial(self._update_weight_implementation, serving_rollout_id=serving_rollout_id)
+                update_impl = partial(self._update_weight_implementation, weight_rollout_id=weight_rollout_id)
                 self._gather_and_update_non_expert_weights(update_impl, pbar)
                 dist.barrier(group=get_gloo_group())
                 self._gather_and_update_expert_weights(update_impl, pbar)
@@ -375,5 +375,5 @@ class DistBucketedWeightUpdateMixin:
                 dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
-            self._finalize_and_resume_engines(serving_rollout_id)
+            self._finalize_and_resume_engines(weight_rollout_id)
             dist.barrier(group=get_gloo_group())

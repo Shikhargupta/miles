@@ -7,6 +7,7 @@ from tests.fast.dashboard.dummy_telemetry import SAMPLES_PER_STEP, dump_dummy_te
 from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.server import make_app
 from miles.dashboard.store import MetricStore, TrajectoryEvent, TrajectoryEventKind
+from miles.utils.weight_version import WeightVersion
 
 
 @pytest.fixture
@@ -20,9 +21,19 @@ def combined(tmp_path):
 # ------------------------------ lane assembly --------------------------------
 
 
-def _event(ts, kind, index=1, turn=-1, version="2", detail=""):
+def _version(rollout_id: int) -> str:
+    return WeightVersion(run_uuid="ab12cd34", rollout_id=rollout_id).serialize()
+
+
+def _event(ts, kind, index=1, turn=-1, version=2, detail=""):
     return TrajectoryEvent(
-        ts=ts, kind=kind, sample_index=index, group_index=0, turn=turn, weight_version=version, detail=detail
+        ts=ts,
+        kind=kind,
+        sample_index=index,
+        group_index=0,
+        turn=turn,
+        weight_version=_version(version),
+        detail=detail,
     )
 
 
@@ -35,12 +46,12 @@ def test_trajectory_lanes_pairs_spans_and_attempts(tmp_path):
         _event(15.0, kinds.GEN_END, turn=1),
         _event(15.0, kinds.TOOL_START, turn=1),
         _event(18.0, kinds.TOOL_END, turn=1),
-        _event(18.0, kinds.GEN_START, turn=2, version="3"),
+        _event(18.0, kinds.GEN_START, turn=2, version=3),
         # turn-2 gen never ends: aborted mid-generation, then a second attempt
         _event(19.0, kinds.ATTEMPT_END, detail="aborted"),
         _event(30.0, kinds.ATTEMPT_START),
-        _event(31.0, kinds.GEN_START, turn=1, version="4"),
-        _event(35.0, kinds.GEN_END, turn=1, version="4"),
+        _event(31.0, kinds.GEN_START, turn=1, version=4),
+        _event(35.0, kinds.GEN_END, turn=1, version=4),
         _event(36.0, kinds.ATTEMPT_END, detail="completed"),
     ):
         writer.append(event)

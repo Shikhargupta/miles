@@ -190,7 +190,7 @@ class UpdateWeightFromTensor:
         return out
 
     @torch.no_grad()
-    def update_weights(self, *, serving_rollout_id: int) -> None:
+    def update_weights(self, *, weight_rollout_id: int) -> None:
         """
         version++, flush caches, process buckets. Progress on rank 0.
         """
@@ -223,7 +223,7 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
-                refs, long_lived_tensors = self._send_base_params(hf_named_tensors, serving_rollout_id)
+                refs, long_lived_tensors = self._send_base_params(hf_named_tensors, weight_rollout_id)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
@@ -262,21 +262,21 @@ class UpdateWeightFromTensor:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    def _send_base_params(self, hf_named_tensors, serving_rollout_id: int) -> tuple[list[ObjectRef], Any]:
+    def _send_base_params(self, hf_named_tensors, weight_rollout_id: int) -> tuple[list[ObjectRef], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=hf_named_tensors,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
             weight_version=WeightVersion(
-                run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id
+                run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id
             ).serialize(),
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
-                WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=serving_rollout_id).serialize(),
+                WeightVersion(run_uuid=self.args.weight_version_run_uuid, rollout_id=weight_rollout_id).serialize(),
                 self.distributed_rollout_engines,
                 hf_named_tensors,
             )
