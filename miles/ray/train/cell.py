@@ -36,7 +36,7 @@ class RayTrainCell:
         with_opd_teacher: bool = False,
         cell_index: int,
         actor_factory: ActorFactory,
-        rollout_manager: object | None,
+        rollout_executor: object | None,
         health_checker: BaseHealthChecker,
     ) -> None:
         self.args = args
@@ -44,7 +44,7 @@ class RayTrainCell:
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
-        self.rollout_manager = rollout_manager
+        self.rollout_executor = rollout_executor
         self.actor_factory = actor_factory
         self.health_checker = health_checker
 
@@ -81,9 +81,9 @@ class RayTrainCell:
             compute_kwargs=lambda _: {},
         )
 
-    async def set_rollout_manager(self):
-        if (m := self.rollout_manager) is not None:
-            return await self.execute("set_rollout_manager", m)
+    async def set_rollout_executor(self):
+        if (executor := self.rollout_executor) is not None:
+            return await self.execute("set_rollout_executor", executor)
         return []
 
     # ------------------------ API :: cooperatively prepare ------------------------
@@ -109,7 +109,7 @@ class RayTrainCell:
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
 
-        await self.set_rollout_manager()
+        await self.set_rollout_executor()
 
     # ------------------------ state transition ------------------------
 

@@ -12,7 +12,6 @@ from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.utils import Lock
 from miles.utils.health_monitor import RolloutHealthMonitor
-from miles.utils.http_utils import init_http_client
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,6 @@ class InferenceController:
         else:
             self.servers = start_rollout_servers(args, pg)
             dashboard_hooks.register_router(args)
-            init_http_client(args)
             start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1

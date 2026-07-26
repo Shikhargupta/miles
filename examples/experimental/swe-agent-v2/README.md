@@ -14,7 +14,7 @@ Docker Network (swe-net)
 │  Ray job → train.py                │       │  server.py (port 11000)            │
 │    ├─ MegatronTrainRayActor (×N)  │       │    Wraps Harbor Trial API          │
 │    ├─ SGLangEngine (×N, 1/GPU)    │       │    Task-type agnostic              │
-│    └─ RolloutManager               │       │                                    │
+│    └─ RolloutExecutor              │       │                                    │
 │                                    │       │                                    │
 │  agentic_tool_call.generate        │       │                                    │
 │  (miles/rollout/generate_hub/)     │       │                                    │
