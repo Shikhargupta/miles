@@ -54,9 +54,7 @@ class TestProcessSetup:
 
         assert http_client_calls == ["init_http_client"]
 
-    async def test_skips_the_http_client_in_debug_train_only(
-        self, ray_local_mode, patch_low_level, http_client_calls
-    ):
+    async def test_skips_the_http_client_in_debug_train_only(self, ray_local_mode, patch_low_level, http_client_calls):
         """No engines exist in this mode, so there is nothing to talk to."""
         args = _make_test_args()
         args.debug_train_only = True
@@ -68,9 +66,7 @@ class TestProcessSetup:
 
 @pytest.mark.asyncio
 class TestGenerate:
-    async def test_invokes_rollout_fn_with_correct_input_and_returns_dp_split(
-        self, ray_local_mode, patch_low_level
-    ):
+    async def test_invokes_rollout_fn_with_correct_input_and_returns_dp_split(self, ray_local_mode, patch_low_level):
         """generate passes a train input and returns the samples split per dp rank."""
         args = _make_test_args()
         args.global_batch_size = 8

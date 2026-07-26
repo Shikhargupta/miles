@@ -80,7 +80,7 @@ async def main(args):
             continue
 
         try:
-            inference_controller.prepare_rollout(rollout_id)
+            await inference_controller.prepare_rollout(rollout_id)
             rollout_data = await rollout_executor.generate.remote(rollout_id)
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):

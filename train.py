@@ -92,7 +92,7 @@ async def train(args):
             inference_controller.prepare_eval()
             await rollout_executor.eval.remote(rollout_id)
 
-        inference_controller.prepare_rollout(rollout_id)
+        await inference_controller.prepare_rollout(rollout_id)
         rollout_data_ref = await rollout_executor.generate.remote(rollout_id)
 
         if args.offload_rollout:
