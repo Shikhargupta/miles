@@ -5,7 +5,7 @@ generated: never edit a file by hand, regenerate it and review the diff.
 
 | Directory | Produced by | Contains |
 | --- | --- | --- |
-| `launch_scripts/sh/` | `tests/fast/launch_scripts/test_launch_scripts.py` | every external command each `scripts/**.sh` and `examples/**.sh` launcher issues, including the full `ray job submit` argv |
+| `launch_scripts/sh/` | `tests/fast/launch_scripts/test_sh_launch_scripts.py` | every external command each `scripts/**.sh` and `examples/**.sh` launcher issues, including the full `ray job submit` argv |
 
 Regenerate after an intentional change:
 
