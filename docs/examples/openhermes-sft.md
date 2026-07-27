@@ -15,7 +15,7 @@ Why use Miles for SFT? Two reasons:
 
 * You completed the [Qwen3-4B](/models/qwen/qwen3) recipe (we reuse the
   conversion).
-* ~50 GB free disk for OpenHermes-2.5.
+* ~5 GB free disk for OpenHermes-2.5.
 
 ## Quick start
 
@@ -105,16 +105,14 @@ Compare to [run-qwen3-4B.sh](/models/qwen/qwen3). The deltas:
 
 ## What to watch
 
+`sft_loss` reports a single metric, which shows up as `train/loss` in the per-step
+log line and in wandb (values illustrative):
+
 ```text
-sft/loss                       decreasing
-sft/per_token_loss             decreasing (mirrors loss when using per-token)
-sft/tokens_seen                steadily increasing
-sft/epoch                      0 → num_epoch
-data/prefetch_queue_depth      > 0 (else loader is the bottleneck)
+step 0: {'train/loss': 1.83, 'train/grad_norm': 2.4, ...}
 ```
 
-If `data/prefetch_queue_depth` stays at 0, your data loader is too slow — increase
-worker count or use parquet (we already do).
+Watch `train/loss` decrease steadily and `train/grad_norm` stay sane (no spikes).
 
 ## Tuning knobs
 
@@ -124,23 +122,21 @@ worker count or use parquet (we already do).
 | `--rollout-batch-size` | Bigger = better GPU utilization, more memory |
 | `--max-tokens-per-gpu` | As always — push it up until OOM |
 | `--lr` | SFT typically `1e-5` to `5e-5` (10× higher than RL) |
-| `--lr-decay-style cosine --lr-warmup-iters 100` | Standard SFT schedule |
+| `--lr-decay-style cosine --lr-warmup-fraction 0.1` | Standard SFT schedule (what the script uses) |
 
 ## Variations
 
 ### Mix datasets
 
-Pass multiple `--prompt-data` entries:
+`--prompt-data` takes a single file, so concatenate the sources into one parquet
+before training:
 
-```bash
-SFT_ARGS+=(
-   --prompt-data \
-      hermes  /root/openhermes2_5.parquet \
-      slimorca /data/slimorca.parquet
-)
+```python
+from datasets import concatenate_datasets
+
+mixed = concatenate_datasets([hermes_ds, slimorca_ds]).shuffle(seed=42)
+mixed.to_parquet("/root/sft_mix.parquet")
 ```
-
-Per-source loss is logged separately.
 
 ### Continue with RL
 
