@@ -1,5 +1,4 @@
 import json
-import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -13,12 +12,11 @@ from tests.fast.launch_scripts.py_harness import (
     install_command_recorder,
     iter_py_launch_scripts,
 )
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
 
 _SNAPSHOT_DIR = Path(__file__).parent / "py_snapshots"
-_UPDATE_ENV_VAR = "MILES_UPDATE_LAUNCH_SCRIPT_SNAPSHOTS"
 
-_SCRIPTS_NEEDING_THE_NPU_DOCKER_PATCH = {"scripts/run_qwen3_4b_npu.py"}
+_SCRIPTS_SKIPPED_PENDING_NPU_SUPPORT = {"scripts/run_qwen3_4b_npu.py"}
 
 
 def _glm_checkpoint(sandbox: Path, model_name: str, num_layers: int) -> dict[str, object]:
@@ -45,7 +43,7 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
 
 _ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {("scripts/run_deepseek_v4.py", "prepare_mxfp8")}
 
-_SCRIPTS = [script for script in iter_py_launch_scripts() if script.rel not in _SCRIPTS_NEEDING_THE_NPU_DOCKER_PATCH]
+_SCRIPTS = [script for script in iter_py_launch_scripts() if script.rel not in _SCRIPTS_SKIPPED_PENDING_NPU_SUPPORT]
 _CASES = [(script.rel, entrypoint) for script in _SCRIPTS for entrypoint in script.entrypoints]
 
 
@@ -65,13 +63,7 @@ def test_py_launch_script_commands_match_snapshot(recorded):
     snapshot = _SNAPSHOT_DIR / rel / f"{entrypoint}.txt"
     actual = format_commands(commands, sandbox=sandbox)
 
-    if os.environ.get(_UPDATE_ENV_VAR):
-        snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_text(actual)
-        return
-
-    assert snapshot.exists(), f"missing snapshot for {rel}::{entrypoint}; regenerate with {_UPDATE_ENV_VAR}=1"
-    assert actual == snapshot.read_text()
+    assert_matches_snapshot(snapshot, actual, f"{rel}::{entrypoint}")
 
 
 def test_py_launch_script_entrypoint_issues_commands(recorded):

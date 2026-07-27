@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, REPO_ROOT_PLACEHOLDER, SANDBOX_PLACEHOLDER
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 
 import miles.utils.external_utils.command_utils as command_utils
 import miles.utils.misc as misc
@@ -111,7 +111,7 @@ def format_commands(commands: list[str], sandbox: Path) -> str:
     lines = []
     for index, command in enumerate(commands):
         lines.append(f"### {index}")
-        lines.append(re.sub(r" (?=--)", "\n  ", _sanitize(command, sandbox=sandbox)))
+        lines.append(re.sub(r" (?=--)", "\n  ", sanitize(command, sandbox=sandbox)))
         lines.append("")
     return "\n".join(lines)
 
@@ -123,7 +123,3 @@ def _entrypoint_names(path: Path) -> list[str]:
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and not node.name.startswith("_") and node.name != "main"
     ]
-
-
-def _sanitize(text: str, sandbox: Path) -> str:
-    return text.replace(str(sandbox), SANDBOX_PLACEHOLDER).replace(str(REPO_ROOT), REPO_ROOT_PLACEHOLDER)

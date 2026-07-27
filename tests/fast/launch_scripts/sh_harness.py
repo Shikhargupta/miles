@@ -151,8 +151,8 @@ def run_launch_script(
 
     return LaunchScriptRun(
         invocations=invocations,
-        stdout=_sanitize(process.stdout, sandbox=sandbox),
-        stderr=_sanitize(process.stderr, sandbox=sandbox),
+        stdout=sanitize(process.stdout, sandbox=sandbox),
+        stderr=sanitize(process.stderr, sandbox=sandbox),
         returncode=process.returncode,
     )
 
@@ -191,8 +191,8 @@ def _write_shims(fake_bin: Path) -> None:
 
 def _parse_capture(raw: str, sandbox: Path) -> list[list[str]]:
     records = [record for record in raw.split(_RECORD_SEPARATOR) if record != ""]
-    return [[_sanitize(arg, sandbox=sandbox) for arg in record.split(_ARG_SEPARATOR)] for record in records]
+    return [[sanitize(arg, sandbox=sandbox) for arg in record.split(_ARG_SEPARATOR)] for record in records]
 
 
-def _sanitize(text: str, sandbox: Path) -> str:
+def sanitize(text: str, sandbox: Path) -> str:
     return text.replace(str(sandbox), SANDBOX_PLACEHOLDER).replace(str(REPO_ROOT), REPO_ROOT_PLACEHOLDER)
