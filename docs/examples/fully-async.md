@@ -201,8 +201,9 @@ In wandb, compare `perf/rollout_time` against `perf/actor_train_time` as usual.
 `run_qwen3_30b_a3b_fully_async.py` shows the same pattern on a 30B MoE:
 `--tensor-model-parallel-size 8` and `--expert-model-parallel-size 8` on the training
 side, a single 8-GPU SGLang engine (`--rollout-num-gpus-per-engine 8`), and
-`--use-tis`. It also demonstrates the two weight-sync combinations for async runs:
-`--pause-generation-mode in_place` with `broadcast`, or `retract` with `p2p`.
+`--use-tis`. It also demonstrates the weight-sync combinations for async runs —
+`--pause-generation-mode` (`in_place`/`retract`) × `--update-weight-transfer-mode`
+(`broadcast`/`p2p`) — every pairing except `in_place` + `p2p`, which the script rejects.
 
 ### Async + R3
 
@@ -217,6 +218,8 @@ it uses `generate_and_rm_group` under the hood.
 
 ### Async + partial rollout
 
-If you also use `--partial-rollout`, unfinished trajectories are recycled back to the
-in-memory data buffer and resume generating in a later batch instead of being thrown
-away — useful when weight updates abort in-flight generation.
+When weight updates abort in-flight generation, this example already recycles the
+aborted groups back to the in-memory data buffer — but it calls `reset_for_retry()`
+first, so they regenerate from the prompt. The stock `--partial-rollout` flag, which
+instead resumes from the partial response, applies to the built-in rollout function;
+to get true resumption here, recycle the aborted groups without resetting them.
