@@ -19,10 +19,10 @@ layers is a pure routed-MoE block (no dense MLP, no shared expert), so only atte
 provider -- pass ``--target-modules "q_proj,k_proj,v_proj,o_proj"`` so the trainer and
 the engine agree on exactly which modules carry an adapter.
 
-Note on Qwen3.5: those checkpoints set ``attention_output_gate`` (linear_qkv emits a
-4th gate slice) and the 35B-A3B is a GDN hybrid, so neither fits the generic fused-qkv
-layout — native LoRA rejects them with a pointer to ``--lora-provider-path``. Use
-``scripts/run_qwen3_5_35b_a3b_lora.py`` (bridge mode) for those.
+Note on Qwen3.5: the gated ``linear_qkv`` and the GDN hybrid layout are covered by
+``scripts/run_lora_native.py``, which drives the MoE registries. Bridge mode
+(``scripts/run_qwen3_5_35b_a3b_lora.py``) remains the recommended path for Qwen3.5 for
+now: raw mode's GDN layers produce an unstable backward once the base is frozen.
 
 Usage:
   python scripts/run_qwen3_lora_native.py prepare    --model-name Qwen3-8B
@@ -139,15 +139,23 @@ def _download_dataset(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
+    """Download the checkpoint + dataset and build the frozen base as a torch-dist checkpoint.
+
+    The conversion has to go through ``U.convert_checkpoint``: it sources
+    ``scripts/models/<megatron_model_type>.sh`` and passes ``MODEL_ARGS``, without which
+    ``convert_hf_to_torch_dist.py`` has no ``--num-layers`` and cannot run.
+    """
     U.exec_command(f"mkdir -p {args.data_dir} {args.model_dir}")
     U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.hf_checkpoint}")
     _download_dataset(args)
-    # Native LoRA loads a real megatron dist-checkpoint for the frozen base.
-    U.exec_command(
-        f"cd {U.repo_base_dir} && PYTHONPATH={args.megatron_path}:{U.repo_base_dir} "
-        f"torchrun --nproc-per-node 1 tools/convert_hf_to_torch_dist.py "
-        f"--hf-checkpoint {args.hf_checkpoint} --save {args.torch_dist} "
-        f"--megatron-to-hf-mode raw --bf16"
+    U.convert_checkpoint(
+        model_name=args.model_name,
+        megatron_model_type=args.megatron_model_type,
+        num_gpus_per_node=1,
+        dir_dst=args.model_dir,
+        hf_checkpoint=args.hf_checkpoint,
+        megatron_path=args.megatron_path,
+        extra_args="--bf16 ",
     )
 
 

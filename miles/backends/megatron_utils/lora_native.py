@@ -29,6 +29,12 @@ kv_a_proj_with_mqa           ``self_attention.linear_kv_down_proj``      replica
 kv_b_proj                    ``self_attention.linear_kv_up_proj``        column-parallel
 ===========================  ==========================================  ===============
 
+Adapters export under the HF names the checkpoint itself uses: the decoder-layer
+prefix and the shared-expert segment are read off its weight index (see
+``_hf_naming``), because Qwen3.5 nests the decoder under
+``model.language_model.layers.`` and DeepSeek / GLM / Kimi spell the shared expert
+``mlp.shared_experts.``.
+
 ``mlp.shared_experts`` (a plain MLP) follows the same MLP targets. Routed MoE
 experts are deliberately out of scope here: their adapters need a serving-side
 layout contract of their own, so a MoE model supplies them through its own
@@ -54,6 +60,8 @@ points this module does: ``wrap_model_provider_with_lora``,
 
 from __future__ import annotations
 
+import collections
+import json
 import logging
 import os
 import re
@@ -75,15 +83,40 @@ _QKV, _O, _FC1, _FC2 = "qkv", "o", "fc1", "fc2"
 # up-projection ("_B"), plus the un-compressed query path when q_lora_rank is unset.
 _MLA_Q_A, _MLA_Q_B, _MLA_KV_A, _MLA_KV_B, _MLA_Q = "mla_q_a", "mla_q_b", "mla_kv_a", "mla_kv_b", "mla_q"
 
-# Column-parallel kinds: A is replicated but each rank holds only its slice of B, so
-# every rank computes a partial dL/dA and the true gradient is their sum over TP.
-# Row-parallel and replicated kinds: B (resp. both) is replicated and only differs per
-# rank under sequence parallelism, where each rank owns a different sequence shard.
-_COLUMN_PARALLEL_KINDS = frozenset({_QKV, _FC1, _MLA_Q_B, _MLA_KV_B, _MLA_Q})
-
 # MLA kind -> HF leaf name, split by how the adapter is sharded.
 _MLA_REPLICATED_HF = {_MLA_Q_A: "q_a_proj", _MLA_KV_A: "kv_a_proj_with_mqa"}
 _MLA_COLUMN_HF = {_MLA_Q_B: "q_b_proj", _MLA_KV_B: "kv_b_proj", _MLA_Q: "q_proj"}
+
+
+_DEFAULT_LAYER_PREFIX = "model.layers."
+_DEFAULT_SHARED_EXPERT = "mlp.shared_expert."
+
+
+def _hf_naming(hf_checkpoint: str | None) -> tuple[str, str]:
+    """Read the decoder-layer prefix and shared-expert segment off the checkpoint itself.
+
+    Both vary by family and both have to match exactly, because the exported adapter
+    names are what SGLang looks up against its own module paths: Qwen3.5 nests the
+    decoder under ``model.language_model.layers.`` and spells the shared expert
+    ``mlp.shared_expert.``, while DeepSeek / GLM / Kimi use ``model.layers.`` and
+    ``mlp.shared_experts.``. Reading the weight index avoids a per-model table.
+    """
+    index_path = os.path.join(hf_checkpoint or "", "model.safetensors.index.json")
+    if not os.path.exists(index_path):
+        return _DEFAULT_LAYER_PREFIX, _DEFAULT_SHARED_EXPERT
+    with open(index_path) as handle:
+        names = json.load(handle).get("weight_map", {})
+
+    prefixes: collections.Counter[str] = collections.Counter()
+    for name in names:
+        if name.startswith("mtp.") or "vision" in name:
+            continue
+        match = re.match(r"^((?:[\w.]+\.)?layers\.)\d+\.", name)
+        if match:
+            prefixes[match.group(1)] += 1
+    layer_prefix = prefixes.most_common(1)[0][0] if prefixes else _DEFAULT_LAYER_PREFIX
+    shared = "mlp.shared_experts." if any(".mlp.shared_experts." in n for n in names) else _DEFAULT_SHARED_EXPERT
+    return layer_prefix, shared
 
 
 class NativeLoRAAdapter(nn.Module):
@@ -115,8 +148,12 @@ class _Spec:
     eps: float
     hidden: int
     sequence_parallel: bool
+    zero_centered_gamma: bool
     tp_size: int
     targets: frozenset[str]
+    output_gate: bool
+    layer_prefix: str
+    shared_expert: str
 
     @classmethod
     def from_args(cls, args, config) -> _Spec:
@@ -124,6 +161,7 @@ class _Spec:
 
         rank = int(args.lora_rank)
         assert rank > 0, "native LoRA requires --lora-rank > 0"
+        layer_prefix, shared_expert = _hf_naming(getattr(args, "hf_checkpoint", None))
         return cls(
             rank=rank,
             scale=float(args.lora_alpha) / rank,
@@ -132,8 +170,12 @@ class _Spec:
             eps=config.layernorm_epsilon,
             hidden=config.hidden_size,
             sequence_parallel=bool(config.sequence_parallel),
+            zero_centered_gamma=bool(getattr(config, "layernorm_zero_centered_gamma", False)),
             tp_size=ps.get_tensor_model_parallel_world_size(),
             targets=frozenset(args.target_modules or ()),
+            output_gate=bool(getattr(config, "attention_output_gate", False)),
+            layer_prefix=layer_prefix,
+            shared_expert=shared_expert,
         )
 
     def wants(self, *names: str) -> bool:
@@ -167,11 +209,17 @@ def _new_param(reference: torch.Tensor, shape, *, init: str, grad_sum_group: str
     return param
 
 
-def _rmsnorm(x: torch.Tensor, gamma: torch.Tensor, eps: float) -> torch.Tensor:
-    """Recompute the RMSNorm fused into TELayerNormColumnParallelLinear (fp32 internals)."""
+def _rmsnorm(x: torch.Tensor, gamma: torch.Tensor, eps: float, zero_centered_gamma: bool = False) -> torch.Tensor:
+    """Recompute the RMSNorm fused into TELayerNormColumnParallelLinear (fp32 internals).
+
+    Under ``--apply-layernorm-1p`` (Qwen3.5 / Qwen3-Next) the stored weight is
+    ``gamma - 1``, so the branch has to add the 1 back or it sees a differently
+    scaled input than the base GEMM does.
+    """
     xf = x.float()
     normed = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps)
-    return (normed * gamma.float()).to(x.dtype)
+    weight = gamma.float() + 1.0 if zero_centered_gamma else gamma.float()
+    return (normed * weight).to(x.dtype)
 
 
 def _branch_input(x: torch.Tensor, module: nn.Module, spec: _Spec) -> torch.Tensor:
@@ -184,7 +232,7 @@ def _branch_input(x: torch.Tensor, module: nn.Module, spec: _Spec) -> torch.Tens
     """
     gamma = getattr(module, "layer_norm_weight", None)
     if gamma is not None:
-        x = _rmsnorm(x, gamma, spec.eps)
+        x = _rmsnorm(x, gamma, spec.eps, spec.zero_centered_gamma)
     if spec.sequence_parallel:
         from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 
@@ -212,20 +260,32 @@ def _reduce_row_parallel(partial: torch.Tensor, spec: _Spec) -> torch.Tensor:
     return reduce_from_tensor_model_parallel_region(partial)
 
 
-def _build_qkv_perm(num_q_heads: int, num_groups: int, head_dim: int, device) -> torch.Tensor:
+def _build_qkv_perm(
+    num_q_heads: int, num_groups: int, head_dim: int, device, output_gate: bool = False
+) -> torch.Tensor:
     """Row permutation from plain ``[q; k; v]`` order into mcore's fused qkv layout.
 
     mcore emits qkv grouped per query group -- ``q1 q2 k1 v1 | q3 q4 k2 v2 | ...``
     (see ``SelfAttention.get_query_key_value_tensors``) -- while the adapter keeps
     one ``B`` per projection. Permuting the assembled delta is cheaper and easier
     to reason about than storing ``B`` interleaved.
+
+    With ``attention_output_gate`` (Qwen3.5 / Qwen3-Next) the query side carries a
+    second slice per head, and the two orders differ in more than the grouping: mcore
+    holds a group as ``[q heads][gate heads]`` while HF's ``q_proj`` interleaves them
+    per head as ``[q h0][gate h0][q h1][gate h1] ...``. The same permutation expresses
+    both, so the adapter still keeps one plain ``B`` per HF projection.
     """
     q_per_group = num_q_heads // num_groups
-    k_base = num_q_heads * head_dim
-    v_base = (num_q_heads + num_groups) * head_dim
+    q_slices = 2 if output_gate else 1
+    k_base = num_q_heads * q_slices * head_dim
+    v_base = k_base + num_groups * head_dim
     index: list[int] = []
     for g in range(num_groups):
-        index.extend(range(g * q_per_group * head_dim, (g + 1) * q_per_group * head_dim))
+        for slice_idx in range(q_slices):
+            for head in range(q_per_group):
+                start = ((g * q_per_group + head) * q_slices + slice_idx) * head_dim
+                index.extend(range(start, start + head_dim))
         index.extend(range(k_base + g * head_dim, k_base + (g + 1) * head_dim))
         index.extend(range(v_base + g * head_dim, v_base + (g + 1) * head_dim))
     return torch.tensor(index, dtype=torch.long, device=device)
@@ -259,14 +319,19 @@ def _attach_attention(attn: nn.Module, hf_prefix: str, spec: _Spec) -> int:
 
     if spec.wants("q_proj", "k_proj", "v_proj"):
         qkv = attn.linear_qkv
-        ad = NativeLoRAAdapter(_QKV, hf_prefix, num_q=num_q, num_kv=num_kv, head_dim=head_dim, tp_rank=tp_rank)
+        q_rows = num_q * head_dim * (2 if spec.output_gate else 1)
+        ad = NativeLoRAAdapter(
+            _QKV, hf_prefix, num_q=num_q, num_kv=num_kv, head_dim=head_dim, q_rows=q_rows, tp_rank=tp_rank
+        )
         ref = qkv.weight
-        for name, rows in (("q", num_q * head_dim), ("k", num_kv * head_dim), ("v", num_kv * head_dim)):
+        for name, rows in (("q", q_rows), ("k", num_kv * head_dim), ("v", num_kv * head_dim)):
             ad.register_parameter(
                 f"{name}_A", _new_param(ref, (spec.rank, spec.hidden), init=spec.a_init, grad_sum_group="tp")
             )
             ad.register_parameter(f"{name}_B", _new_param(ref, (rows, spec.rank), init="zero"))
-        ad.register_buffer("out_perm", _build_qkv_perm(num_q, num_kv, head_dim, ref.device), persistent=False)
+        ad.register_buffer(
+            "out_perm", _build_qkv_perm(num_q, num_kv, head_dim, ref.device, spec.output_gate), persistent=False
+        )
         attn.lora_qkv_adapter = ad
 
         def qkv_delta(x, _m=qkv, _ad=ad):
@@ -481,18 +546,15 @@ def _attach_mlp(mlp: nn.Module, hf_prefix: str, spec: _Spec) -> int:
     return n
 
 
-def _assert_supported_architecture(config, model, tp_size: int = 1) -> None:
+def _assert_supported_architecture(config, tp_size: int = 1) -> None:
     """Reject layouts this generic implementation would silently get wrong.
 
-    Each of these needs a different fused-qkv slicing, a down/up projection pair,
-    or a non-GEMM mixer, so they belong in a model-specific provider.
+    Each of these needs a different fused-qkv slicing or a down/up projection pair,
+    so they belong in a model-specific provider. Layers whose mixer is not a fused
+    qkv at all (linear-attention / GDN) are not an error: they simply carry no
+    attention adapter, which ``apply_native_lora`` reports.
     """
     unsupported = []
-    if getattr(config, "attention_output_gate", False):
-        unsupported.append(
-            "attention_output_gate=True (Qwen3.5 / Qwen3-Next): linear_qkv emits a 4th gate "
-            "slice, so the per-projection row split here does not hold"
-        )
     is_mla = bool(getattr(config, "multi_latent_attention", False))
     num_query_groups = getattr(config, "num_query_groups", None)
     # The fused-qkv regime below is a GQA concern; MLA has no fused qkv to slice.
@@ -503,20 +565,37 @@ def _assert_supported_architecture(config, model, tp_size: int = 1) -> None:
             f"num_query_groups ({num_query_groups}) < tensor parallel size ({tp_size}): mcore splits "
             "a single query group across ranks, so the local qkv rows are not a per-group slice"
         )
-    if not is_mla:
-        missing_qkv = [
-            layer.layer_number - 1
-            for layer in model.decoder.layers
-            if getattr(layer, "self_attention", None) is not None and not hasattr(layer.self_attention, "linear_qkv")
-        ]
-        if missing_qkv:
-            shown = f"{missing_qkv[:4]}{'...' if len(missing_qkv) > 4 else ''}"
-            unsupported.append(f"layers {shown} have no linear_qkv (linear-attention / GDN mixer)")
     assert not unsupported, (
         "native LoRA (--megatron-to-hf-mode raw) does not support this architecture: "
         + "; ".join(unsupported)
         + ". Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a model-specific provider."
     )
+
+
+def _require_grad_on_first_activation(model) -> nn.Module | None:
+    """Force the embedding output to require grad, so recomputation still trains.
+
+    Under activation recomputation mcore runs each transformer block's forward
+    inside ``torch.no_grad()`` and recomputes it during backward. Every adapter
+    param lives *inside* that block, so with the base frozen the checkpointed
+    region has no grad-requiring input at all: autograd never enters it, the
+    recompute never runs, and every adapter gradient comes back exactly zero
+    (``grad_norm`` 0.0, ``B`` stuck at its zero init, so the LoRA delta is a
+    permanent no-op that still passes every sync check).
+
+    Making the first activation a grad-requiring leaf reconnects the chain. This
+    is what PEFT does as ``enable_input_require_grads`` for the same reason, and
+    it is a no-op cost when recomputation is off.
+    """
+    embedding = getattr(model, "embedding", None)
+    if embedding is None:
+        return None
+
+    def hook(_module, _inputs, output):
+        return output if output.requires_grad else output.requires_grad_(True)
+
+    embedding.register_forward_hook(hook)
+    return embedding
 
 
 def apply_native_lora(model, args):
@@ -527,20 +606,24 @@ def apply_native_lora(model, args):
     """
     config = model.config
     spec = _Spec.from_args(args, config)
-    _assert_supported_architecture(config, model, tp_size=spec.tp_size)
+    _assert_supported_architecture(config, tp_size=spec.tp_size)
 
     for param in model.parameters():
         param.requires_grad = False
+    hooked_embedding = _require_grad_on_first_activation(model)
 
     wrapped = 0
+    mixer_only_layers = []
     for layer in model.decoder.layers:
-        hf_layer = f"model.layers.{layer.layer_number - 1}."
+        hf_layer = f"{spec.layer_prefix}{layer.layer_number - 1}."
         attn = getattr(layer, "self_attention", None)
         if attn is not None:
             if getattr(config, "multi_latent_attention", False):
                 wrapped += _attach_mla_attention(attn, hf_layer + "self_attn.", spec, config)
-            else:
+            elif hasattr(attn, "linear_qkv"):
                 wrapped += _attach_attention(attn, hf_layer + "self_attn.", spec)
+            else:
+                mixer_only_layers.append(layer.layer_number - 1)
 
         mlp = layer.mlp
         # A dense MLP, or the shared expert of an MoE layer: both are plain gated MLPs.
@@ -549,13 +632,13 @@ def apply_native_lora(model, args):
             wrapped += _attach_mlp(mlp, hf_layer + "mlp.", spec)
         shared = getattr(mlp, "shared_experts", None)
         if shared is not None and hasattr(shared, "linear_fc1"):
-            wrapped += _attach_mlp(shared, hf_layer + "mlp.shared_expert.", spec)
+            wrapped += _attach_mlp(shared, hf_layer + spec.shared_expert, spec)
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     logger.info(
         "[lora-native] rank=%d alpha=%s scale=%.3f dropout=%s targets=%s | %d modules wrapped, "
-        "trainable %s / %s params (%.4f%%)",
+        "trainable %s / %s params (%.4f%%), input-grad hook=%s",
         spec.rank,
         args.lora_alpha,
         spec.scale,
@@ -565,7 +648,17 @@ def apply_native_lora(model, args):
         f"{trainable:,}",
         f"{total:,}",
         100.0 * trainable / max(total, 1),
+        hooked_embedding is not None,
     )
+    if mixer_only_layers:
+        shown = f"{mixer_only_layers[:4]}{'...' if len(mixer_only_layers) > 4 else ''}"
+        logger.info(
+            "[lora-native] %d of %d layers have no linear_qkv (linear-attention / GDN mixer) and carry no "
+            "attention adapter: %s. Their mixer projections need a model-specific --lora-provider-path.",
+            len(mixer_only_layers),
+            len(model.decoder.layers),
+            shown,
+        )
     assert wrapped > 0, (
         f"native LoRA matched no modules for --target-modules {sorted(spec.targets)}; "
         "expected some of q_proj / k_proj / v_proj / o_proj / gate_proj / up_proj / down_proj"
@@ -642,6 +735,9 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     TP shards are gathered, so every rank returns the same complete set (e.g.
     ``model.layers.3.self_attn.q_proj.lora_A.weight``). PP is not gathered here;
     callers that need the whole model's adapter assemble across PP stages.
+
+    The logged ``max|lora_B|`` is 0 exactly while the adapter is still at its zero
+    init, which separates "the sync works" from "the sync carries anything".
     """
     started = time.perf_counter()
     gather = _TpGather()
@@ -688,10 +784,15 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
         for name, source in plan
     ]
     if not dist.is_initialized() or dist.get_rank() == 0:
+        peak_b = max(
+            (t.abs().max().item() for name, t in exported if name.endswith("lora_B.weight")),
+            default=0.0,
+        )
         logger.info(
-            "[lora-native] exported %d adapter tensors in %.1f ms",
+            "[lora-native] exported %d adapter tensors in %.1f ms (max|lora_B|=%.3e)",
             len(exported),
             (time.perf_counter() - started) * 1e3,
+            peak_b,
         )
     return exported
 
@@ -710,6 +811,10 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     from safetensors import safe_open
 
     path = os.path.join(adapter_path, "adapter_model.safetensors")
+    assert os.path.exists(path), (
+        f"[lora-native] no adapter_model.safetensors under {adapter_path}; "
+        "checkpoints written by save_lora_checkpoint use that name"
+    )
     loaded = 0
     with safe_open(path, framework="pt") as f:
         # PEFT checkpoints prefix names with base_model.model.; index both spellings.
@@ -732,9 +837,9 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
             prefix, meta = adapter.hf_prefix, adapter.shard_meta
             tp_rank = meta["tp_rank"]
             if adapter.kind == _QKV:
-                head_dim, num_q, num_kv = meta["head_dim"], meta["num_q"], meta["num_kv"]
+                head_dim, num_kv = meta["head_dim"], meta["num_kv"]
                 for proj, name, rows in (
-                    ("q_proj", "q", num_q * head_dim),
+                    ("q_proj", "q", meta["q_rows"]),
                     ("k_proj", "k", num_kv * head_dim),
                     ("v_proj", "v", num_kv * head_dim),
                 ):

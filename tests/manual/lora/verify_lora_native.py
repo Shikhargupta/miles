@@ -10,13 +10,21 @@ Run it directly (needs as many GPUs as --tp):
       tests/manual/lora/verify_lora_native.py --tp 1
   PYTHONPATH=/root/Megatron-LM:. torchrun --nproc-per-node 2 \
       tests/manual/lora/verify_lora_native.py --tp 2 --sp
+  PYTHONPATH=/root/Megatron-LM:. torchrun --nproc-per-node 2 \
+      tests/manual/lora/verify_lora_native.py --tp 2 --sp --gate
+
+``--mla`` builds multi-latent attention instead of GQA; ``--gate`` builds GQA with
+``attention_output_gate`` (Qwen3.5 / Qwen3-Next), where the fused qkv carries a
+second query slice per head.
 
 Exits nonzero if any check fails. Checks, per configuration:
 
   1. no-op: a fresh adapter (B is zero-init) leaves the output bit-identical
   2. delta: the adapter branch equals scale * B @ (A @ x) computed densely from the
      TP-gathered adapter, for both a column-parallel (fc1) and a row-parallel (fc2)
-     module -- the base GEMM is subtracted out, so this tests only our math
+     module -- the base GEMM is subtracted out, so this tests only our math. The
+     fused qkv is checked after mcore's own per-group split, so the row permutation
+     (and, when gated, the query/gate deinterleave) is verified where it is consumed
   3. export: TP shards gather to tensors identical on every rank
   4. round-trip: export -> load into a fresh model reproduces params and outputs
   5. grads: dL/dA == 0 while dL/dB != 0 for a fresh adapter (B zero-init), grads are
@@ -61,7 +69,7 @@ def check(name, ok, detail=""):
         print(f"[{tag}] {name} {detail}", flush=True)
 
 
-def build(tp, seq_parallel, seed=1234, mla=False):
+def build(tp, seq_parallel, seed=1234, mla=False, output_gate=False):
     torch.manual_seed(seed)
     if mla:
         return _build_mla(tp, seq_parallel)
@@ -77,6 +85,7 @@ def build(tp, seq_parallel, seed=1234, mla=False):
         sequence_parallel=seq_parallel,
         bf16=False,
         params_dtype=torch.float32,
+        attention_output_gate=output_gate,
         gated_linear_unit=True,
         add_bias_linear=False,
         normalization="RMSNorm",
@@ -163,13 +172,15 @@ def main():
     p.add_argument("--tp", type=int, default=1)
     p.add_argument("--sp", action="store_true")
     p.add_argument("--mla", action="store_true", help="build multi-latent attention instead of GQA")
+    p.add_argument("--gate", action="store_true", help="GQA with attention_output_gate (Qwen3.5 / Qwen3-Next)")
     a = p.parse_args()
+    assert not (a.mla and a.gate), "attention_output_gate is a fused-qkv concern; MLA has no fused qkv"
 
     dist.init_process_group("nccl")
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     ps.initialize_model_parallel(tensor_model_parallel_size=a.tp)
     model_parallel_cuda_manual_seed(1234)
-    label = f"TP{a.tp}{'+SP' if a.sp else ''}{'+MLA' if a.mla else ''}"
+    label = f"TP{a.tp}{'+SP' if a.sp else ''}{'+MLA' if a.mla else ''}{'+GATE' if a.gate else ''}"
     if a.mla:
         Args.target_modules = Args.mla_target_modules
     # per-layer adapter modules and exported tensors
@@ -184,7 +195,7 @@ def main():
     mask = torch.ones(b, 1, s, s, dtype=torch.bool, device="cuda").tril().logical_not()
 
     # ---- 1. fresh adapter is a no-op -------------------------------------
-    lora_model, _ = build(a.tp, a.sp, mla=a.mla)
+    lora_model, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     lora_model.eval()
     with torch.no_grad():
         out_base = fwd(lora_model, tokens, pos, mask).clone()
@@ -196,6 +207,10 @@ def main():
     torch.manual_seed(31337)
     x_fc1 = torch.randn(4, 1, fc1_mod.weight.shape[1], device="cuda")
     x_fc2 = torch.randn(4, 1, fc2_mod.weight.shape[1], device="cuda")
+    qkv_pre = {}
+    if not a.mla:
+        qkv_mod = layer0.self_attention.linear_qkv
+        qkv_pre["x"] = torch.randn(4, 1, qkv_mod.weight.shape[1], device="cuda")
     mla_pre = {}
     if a.mla:
         attn0 = layer0.self_attention
@@ -205,6 +220,8 @@ def main():
     with torch.no_grad():
         y0_fc1 = fc1_mod(x_fc1)[0].clone()
         y0_fc2 = fc2_mod(x_fc2)[0].clone()
+        if not a.mla:
+            qkv_pre["y0"] = qkv_mod(qkv_pre["x"])[0].clone()
         if a.mla:
             mla_pre["y0_kv_up"] = kv_up(mla_pre["x_kv"])[0].clone()
             mla_pre["y0_kv_down"] = kv_down(mla_pre["x_h"])[0].clone()
@@ -273,6 +290,56 @@ def main():
     r2 = e2 / max(ref2.abs().max().item(), 1e-9)
     check(f"{label} row-parallel (fc2) delta == dense reference", r2 < 1e-5, f"max|d|={e2:.3e} rel={r2:.2e}")
 
+    if not a.mla:
+        # Fused qkv: check the delta where it is consumed, i.e. after mcore's own
+        # per-group split. Each projection's adapter output must land in its own
+        # slice, which is what the row permutation exists to guarantee -- and with
+        # attention_output_gate the query side carries a second slice per head.
+        attn0 = layer0.self_attention
+        ad_qkv = attn0.lora_qkv_adapter
+        num_q = attn0.num_attention_heads_per_partition
+        num_kv = attn0.num_query_groups_per_partition
+        head_dim = attn0.hidden_size_per_attention_head
+        q_per_group = num_q // num_kv
+        q_slices = 2 if a.gate else 1
+        with torch.no_grad():
+            delta = qkv_mod(qkv_pre["x"])[0] - qkv_pre["y0"]
+            xn = _rmsnorm(qkv_pre["x"], qkv_mod.layer_norm_weight, lora_model.config.layernorm_epsilon)
+            if a.sp:
+                xn = gather_cat(xn, 0)
+            hf_delta = {
+                name: scale * F.linear(F.linear(xn, getattr(ad_qkv, f"{name}_A")), getattr(ad_qkv, f"{name}_B"))
+                for name in ("q", "k", "v")
+            }
+            # mcore consumes the fused output as [.., num_kv, per_group * head_dim],
+            # split into query / gate / key / value blocks.
+            grouped = delta.view(*delta.shape[:-1], num_kv, -1)
+            split = [q_per_group * head_dim] * q_slices + [head_dim, head_dim]
+            blocks = torch.split(grouped, split, dim=-1)
+            key_block, value_block = blocks[-2], blocks[-1]
+
+            # The HF q_proj row for (head n, slice s) is at ((n * q_slices) + s) * head_dim.
+            def hf_query_slice(slice_idx):
+                rows = [
+                    hf_delta["q"].narrow(-1, ((head * q_slices) + slice_idx) * head_dim, head_dim)
+                    for head in range(num_q)
+                ]
+                return torch.cat(rows, dim=-1).view(*delta.shape[:-1], num_kv, q_per_group * head_dim)
+
+            worst_qkv = 0.0
+            for slice_idx in range(q_slices):
+                worst_qkv = max(worst_qkv, (blocks[slice_idx] - hf_query_slice(slice_idx)).abs().max().item())
+            for block, name in ((key_block, "k"), (value_block, "v")):
+                want = hf_delta[name].view(*delta.shape[:-1], num_kv, head_dim)
+                worst_qkv = max(worst_qkv, (block - want).abs().max().item())
+        largest = max(t.abs().max().item() for t in hf_delta.values())
+        rel_qkv = worst_qkv / max(largest, 1e-9)
+        check(
+            f"{label} fused qkv delta lands in mcore's per-group slots",
+            rel_qkv < 1e-5,
+            f"max|d|={worst_qkv:.3e} rel={rel_qkv:.2e} q_slices={q_slices}",
+        )
+
     if a.mla:
         # kv_b_proj: column-parallel, and its input is the already-normed latent
         # (kv_layernorm runs before it), so the branch must NOT recompute a norm.
@@ -324,7 +391,7 @@ def main():
     tmp = obj[0]
     dist.barrier()
 
-    fresh, _ = build(a.tp, a.sp, mla=a.mla)
+    fresh, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(fresh, Args())
     # copy the base (non-adapter) weights so only the adapter differs
     base_state = {k: v for k, v in lora_model.state_dict().items() if "lora" not in k}
@@ -359,7 +426,7 @@ def main():
     # ---- 5. gradients: nonzero, TP-consistent, and honor B's zero init ----
     # Fresh-adapter invariant: with B == 0, dL/dA == 0 and dL/dB != 0. Check that
     # first on a clean model, then check the general case on the randomized one.
-    fresh2, _ = build(a.tp, a.sp, mla=a.mla)
+    fresh2, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(fresh2, Args())
     fresh2.train()
     fwd(fresh2, tokens, pos, mask).square().mean().backward()
@@ -410,6 +477,42 @@ def main():
         # The sum must actually change the grads: partials differ per rank.
         changed = any(not torch.allclose(pre[n], q.main_grad) for n, q in tagged)
         check(f"{label} TP sum actually combined distinct partial grads", changed)
+
+    # ---- 6. the same thing through the wrapper training actually uses --------
+    # Everything above runs on a bare GPTModel. Training runs it inside mcore DDP,
+    # and that is where the adapter grads have to land -- in the DDP grad buffer, as
+    # main_grad -- for the optimizer to see them at all.
+    ddp_model, ddp_cfg = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
+    apply_native_lora(ddp_model, Args())
+    from megatron.core.distributed import DistributedDataParallel as DDP
+    from megatron.core.distributed import DistributedDataParallelConfig
+
+    wrapped = DDP(
+        ddp_cfg,
+        DistributedDataParallelConfig(grad_reduce_in_fp32=True, overlap_grad_reduce=False),
+        ddp_model,
+    )
+    for prm in wrapped.parameters():
+        if prm.requires_grad:
+            with torch.no_grad():
+                prm.normal_(0, 0.02)
+    wrapped.zero_grad_buffer()
+    wrapped.train()
+    fwd(wrapped, tokens, pos, mask).float().square().mean().backward()
+
+    adapters = [(n, q) for n, q in wrapped.named_parameters() if "lora" in n and q.requires_grad]
+    with_buffer = [q for _, q in adapters if getattr(q, "main_grad", None) is not None]
+    nonzero_grads = [q for q in with_buffer if q.main_grad.abs().max().item() > 0]
+    check(
+        f"{label} DDP builds a grad buffer for every adapter param",
+        len(adapters) > 0 and len(with_buffer) == len(adapters),
+        f"{len(with_buffer)}/{len(adapters)} have main_grad",
+    )
+    check(
+        f"{label} adapter grads reach the DDP buffer",
+        len(nonzero_grads) > 0,
+        f"{len(nonzero_grads)}/{len(with_buffer)} nonzero",
+    )
 
     dist.barrier()
     if dist.get_rank() == 0:

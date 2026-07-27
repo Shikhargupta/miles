@@ -756,7 +756,13 @@ def _compute_server_args(
         kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
         if args.lora_adapter_path is not None:
-            kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+            logger.info(
+                "LoRA adapter %s is loaded trainer-side and shipped on the first weight sync, which "
+                "runs before any rollout; pre-registering it here as %s would make that sync fail with "
+                "'already loaded'",
+                args.lora_adapter_path,
+                LORA_ADAPTER_NAME,
+            )
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 

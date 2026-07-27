@@ -425,9 +425,11 @@ def save_lora_checkpoint(
     """Save LoRA adapter checkpoint to disk.
 
     Saves in two formats:
-    1. **HF PEFT format** (``adapter_model.bin`` + ``adapter_config.json``) for
-       external tool compatibility. Uses Megatron-Bridge's ``export_adapter_weights``
-       which correctly handles fused QKV / gate-up weight splitting and TP gathering.
+    1. **HF PEFT format** (``adapter_model.safetensors`` + ``adapter_config.json``) for
+       external tool compatibility, and for reloading through ``--lora-adapter-path``.
+       Bridge mode exports via Megatron-Bridge's ``export_adapter_weights``; raw mode
+       via the native provider, whose adapters the bridge exporter cannot see. Both
+       handle fused QKV / gate-up splitting and TP gathering.
     2. **Megatron-native format** (``adapter_megatron_tp{tp}_pp{pp}_ep{ep}.pt``) for
        fast checkpoint resume without name/weight conversion. Each TP/PP/EP rank saves
        its own shard with original parameter names (ranks sharing ``(tp, pp)`` hold
@@ -443,6 +445,7 @@ def save_lora_checkpoint(
     import json
 
     from megatron.bridge import AutoBridge
+    from safetensors.torch import save_file
 
     from miles.utils import megatron_bridge_utils
 
@@ -471,23 +474,29 @@ def save_lora_checkpoint(
         torch.save(adapter_state, native_path)
         logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
-    # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
-    # Bridge export is collective: all TP ranks participate in the all-gather,
-    # so every rank must call export_adapter_weights.
-    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-
+    # ---- HF PEFT format ----
     lora_state_dict: dict[str, torch.Tensor] = {}
-    with megatron_bridge_utils.patch_megatron_model(model):
-        for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
-            model,
-            cpu=True,
-            show_progress=False,
-        ):
-            lora_state_dict[hf_name] = weight
+    if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
+        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        with megatron_bridge_utils.patch_megatron_model(model):
+            for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
+                model,
+                cpu=True,
+                show_progress=False,
+            ):
+                lora_state_dict[hf_name] = weight
+    else:
+        from .lora_native import resolve_lora_provider
 
-    # Only one rank writes the HF PEFT files (bridge already gathered across TP/PP)
+        for hf_name, weight in resolve_lora_provider(args).export_lora_hf_named(model):
+            lora_state_dict[hf_name] = weight.cpu()
+
+    # Only one rank writes the HF PEFT files (the exporter already gathered across TP/PP)
     if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
-        torch.save(lora_state_dict, save_path / "adapter_model.bin")
+        save_file(
+            {name: weight.contiguous() for name, weight in lora_state_dict.items()},
+            save_path / "adapter_model.safetensors",
+        )
 
         target_modules_hf = (
             convert_target_modules_to_hf(list(args.target_modules))
@@ -539,8 +548,9 @@ def load_lora_adapter(
 
     Attempts to load from Megatron-native format first (per-rank ``.pt`` files),
     which preserves the exact TP/PP sharding and requires no name conversion.
-    Falls back to HF PEFT ``adapter_model.bin`` if native files are not found
-    (not yet implemented for HF PEFT format).
+    Falls back to the HF PEFT adapter if native files are not found (not yet
+    implemented for HF PEFT format here; ``--lora-adapter-path`` loads that format
+    through the native provider's ``load_lora_adapter_hf`` instead).
 
     When ``optimizer`` is provided, also restores training state (optimizer +
     LR scheduler) from a co-located ``training_state_rank*.pt`` file.
@@ -581,8 +591,11 @@ def load_lora_adapter(
         return True, iteration
 
     # ---- HF PEFT format (future work) ----
-    hf_path = adapter_dir / "adapter_model.bin"
-    if hf_path.exists():
+    hf_path = next(
+        (adapter_dir / n for n in ("adapter_model.safetensors", "adapter_model.bin") if (adapter_dir / n).exists()),
+        None,
+    )
+    if hf_path is not None:
         logger.warning(
             f"Found HF PEFT adapter at {hf_path} but direct HF PEFT loading into "
             f"Megatron is not yet supported. Please save using Megatron-native format "
