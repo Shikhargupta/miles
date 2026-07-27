@@ -70,7 +70,16 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             yield from _chunk_atomic_units_by_size(units, chunk_size=self.args.update_weight_buffer_size)
 
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
-        for hf_param_name, weight, megatron_param_name in named_weights:
+        """Normalise names, postprocess, and quantize one exported weight at a time.
+
+        megatron-bridge PEFT reports a LoRA-wrapped module's base weight as
+        ``<module>.to_wrap.weight``. The quantizer regexes here and the atomic-group
+        suffixes used by ``_stream_atomic_units`` are both written against unwrapped
+        names, so the segment is stripped first; leaving it in silently disables both
+        (the distributed iterator does the same in ``_get_weight_transfer_update_units``).
+        """
+        for hf_param_name, weight, wrapped_megatron_name in named_weights:
+            megatron_param_name = wrapped_megatron_name.replace(".to_wrap.", ".")
             hf_name = hf_param_name.replace(".base_layer.", ".")
             weight = postprocess_hf_param(
                 args=self.args,
