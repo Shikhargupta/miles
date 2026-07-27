@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -154,6 +155,19 @@ def run_launch_script(
         stderr=_sanitize(process.stderr, sandbox=sandbox),
         returncode=process.returncode,
     )
+
+
+SNAPSHOT_UPDATE_ENV_VAR = "MILES_UPDATE_LAUNCH_SCRIPT_SNAPSHOTS"
+
+
+def assert_matches_snapshot(snapshot: Path, actual: str, subject: str) -> None:
+    if os.environ.get(SNAPSHOT_UPDATE_ENV_VAR):
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(actual)
+        return
+
+    assert snapshot.exists(), f"missing snapshot for {subject}; regenerate with {SNAPSHOT_UPDATE_ENV_VAR}=1"
+    assert actual == snapshot.read_text()
 
 
 def format_invocations(invocations: list[list[str]]) -> str:

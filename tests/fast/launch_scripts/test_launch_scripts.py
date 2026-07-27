@@ -1,12 +1,16 @@
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, format_invocations, iter_launch_scripts, run_launch_script
+from tests.fast.launch_scripts.sh_harness import (
+    REPO_ROOT,
+    assert_matches_snapshot,
+    format_invocations,
+    iter_launch_scripts,
+    run_launch_script,
+)
 
 _SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
-_UPDATE_ENV_VAR = "MILES_UPDATE_LAUNCH_SCRIPT_SNAPSHOTS"
 
 
 @dataclass(frozen=True)
@@ -59,10 +63,11 @@ _SCRIPTS_RACING_WITH_A_BACKGROUNDED_SERVER = {"examples/on_policy_distillation/r
 _SCRIPTS = [script.relative_to(REPO_ROOT).as_posix() for script in iter_launch_scripts()]
 
 
-@pytest.fixture(params=_SCRIPTS)
-def recorded(request, tmp_path):
+@pytest.fixture(params=_SCRIPTS, scope="module")
+def recorded(request, tmp_path_factory):
     rel = request.param
     case = _SCRIPTS_REFUSING_TO_RUN_WITHOUT_EXPLICIT_INPUTS.get(rel, LaunchScriptCase())
+    tmp_path = tmp_path_factory.mktemp("launch_script")
     workdir = tmp_path / "workdir"
     run = run_launch_script(
         REPO_ROOT / rel,
@@ -80,13 +85,7 @@ def test_launch_script_invocations_match_snapshot(recorded):
     invocations = sorted(run.invocations) if rel in _SCRIPTS_RACING_WITH_A_BACKGROUNDED_SERVER else run.invocations
     actual = f"# returncode: {run.returncode}\n\n{format_invocations(invocations)}"
 
-    if os.environ.get(_UPDATE_ENV_VAR):
-        snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_text(actual)
-        return
-
-    assert snapshot.exists(), f"missing snapshot for {rel}; regenerate with {_UPDATE_ENV_VAR}=1"
-    assert actual == snapshot.read_text()
+    assert_matches_snapshot(snapshot, actual, rel)
 
 
 def test_launch_script_submits_exactly_one_ray_job(recorded):
