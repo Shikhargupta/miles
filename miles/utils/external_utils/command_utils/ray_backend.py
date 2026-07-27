@@ -8,8 +8,9 @@ from pathlib import Path
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.external_utils.command_utils.common import (
     ExecuteTrainConfig,
-    build_runtime_env_vars,
+    check_has_nvlink,
     get_bool_env_var,
+    parse_extra_env_vars,
     pythonpath_with_sources,
     repo_base_dir,
 )
@@ -67,17 +68,39 @@ class RayCommandBackend(BaseCommandBackend):
         if (f := before_ray_job_submit) is not None:
             f()
 
-        runtime_env_json = json.dumps(
-            {
-                "env_vars": build_runtime_env_vars(
-                    train_backend_fsdp=train_backend_fsdp,
-                    master_addr=master_addr,
-                    megatron_path=megatron_path,
-                    extra_env_vars=extra_env_vars,
-                    config=config,
-                )
-            }
-        )
+        runtime_env_vars = {
+            # If setting this in FSDP, the computation communication overlapping may have issues
+            **(
+                {}
+                if train_backend_fsdp
+                else {
+                    "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                }
+            ),
+            "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+            **{
+                k: os.environ[k]
+                for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
+                if k in os.environ
+            },
+            "no_proxy": f"127.0.0.1,{master_addr}",
+            # This is needed by megatron / torch distributed in multi-node setup
+            "MASTER_ADDR": master_addr,
+            **(
+                {
+                    "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
+                    "CUDA_COREDUMP_SHOW_PROGRESS": "1",
+                    "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
+                    "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
+                }
+                if config.cuda_core_dump
+                else {}
+            ),
+            **extra_env_vars,
+            **parse_extra_env_vars(config.extra_env_vars),
+        }
+        runtime_env_vars["PYTHONPATH"] = pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
+        runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
 
         if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
             cmd_megatron_model_source = (

@@ -24,48 +24,6 @@ class ExecuteTrainConfig:
     output_dir: str = "/root/shared_data"
 
 
-def build_runtime_env_vars(
-    train_backend_fsdp: bool,
-    master_addr: str,
-    megatron_path: str,
-    extra_env_vars: dict[str, str],
-    config: ExecuteTrainConfig,
-) -> dict[str, str]:
-    runtime_env_vars = {
-        # If setting this in FSDP, the computation communication overlapping may have issues
-        **(
-            {}
-            if train_backend_fsdp
-            else {
-                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            }
-        ),
-        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
-        **{
-            k: os.environ[k]
-            for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
-            if k in os.environ
-        },
-        "no_proxy": f"127.0.0.1,{master_addr}",
-        # This is needed by megatron / torch distributed in multi-node setup
-        "MASTER_ADDR": master_addr,
-        **(
-            {
-                "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
-                "CUDA_COREDUMP_SHOW_PROGRESS": "1",
-                "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
-                "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
-            }
-            if config.cuda_core_dump
-            else {}
-        ),
-        **extra_env_vars,
-        **parse_extra_env_vars(config.extra_env_vars),
-    }
-    runtime_env_vars["PYTHONPATH"] = pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
-    return runtime_env_vars
-
-
 def pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | None) -> str:
     entries = [str(repo_base_dir), megatron_path]
     for pythonpath in (*additional_pythonpaths, os.environ.get("PYTHONPATH")):
