@@ -18,12 +18,12 @@ class RecordedRequest:
 
 
 class MockSGLangHttpServer:
-    def __init__(self, response_payload: dict[str, Any] | None = None):
+    def __init__(self, response_payload: dict[str, Any] | None = None, port: int = 0):
         self._response_payload = response_payload if response_payload is not None else {"mock": True}
         self._requests: list[RecordedRequest] = []
         self._lock = threading.Lock()
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
+        self._server = ThreadingHTTPServer(("127.0.0.1", port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
@@ -89,31 +89,3 @@ class MockSGLangHttpServer:
                 self.wfile.write(body)
 
         return _Handler
-
-
-class MockSGLangHttpServerPool:
-    def __init__(self):
-        self._servers: dict[int, MockSGLangHttpServer] = {}
-        self._lock = threading.Lock()
-
-    def for_rank(self, rank: int) -> MockSGLangHttpServer:
-        with self._lock:
-            if rank not in self._servers:
-                self._servers[rank] = MockSGLangHttpServer()
-            return self._servers[rank]
-
-    def new_for_rank(self, rank: int) -> MockSGLangHttpServer:
-        with self._lock:
-            previous = self._servers.pop(rank, None)
-            server = MockSGLangHttpServer()
-            self._servers[rank] = server
-        if previous is not None:
-            previous.close()
-        return server
-
-    def close(self) -> None:
-        with self._lock:
-            servers = list(self._servers.values())
-            self._servers.clear()
-        for server in servers:
-            server.close()
