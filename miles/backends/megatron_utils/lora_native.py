@@ -84,8 +84,53 @@ _QKV, _O, _FC1, _FC2 = "qkv", "o", "fc1", "fc2"
 _MLA_Q_A, _MLA_Q_B, _MLA_KV_A, _MLA_KV_B, _MLA_Q = "mla_q_a", "mla_q_b", "mla_kv_a", "mla_kv_b", "mla_q"
 
 # MLA kind -> HF leaf name, split by how the adapter is sharded.
-_MLA_REPLICATED_HF = {_MLA_Q_A: "q_a_proj", _MLA_KV_A: "kv_a_proj_with_mqa"}
-_MLA_COLUMN_HF = {_MLA_Q_B: "q_b_proj", _MLA_KV_B: "kv_b_proj", _MLA_Q: "q_proj"}
+COLUMN, ROW, REPLICATED = "column", "row", "replicated"
+
+
+@dataclass(frozen=True)
+class _Proj:
+    """One HF projection carried by an adapter kind.
+
+    ``attr`` names the parameter pair on the adapter (``<attr>_A`` / ``<attr>_B``).
+    ``layout`` fixes both the export gather and the load slice, which is why export
+    and load can share this table instead of restating the contract separately:
+
+    ==========  ===================  ==============================
+    layout      A                    B
+    ==========  ===================  ==============================
+    column      replicated           sharded over rows (dim 0)
+    row         sharded over columns replicated
+    replicated  replicated           replicated
+    ==========  ===================  ==============================
+
+    ``width`` returns this rank's extent along the sharded axis, read off the
+    adapter's ``shard_meta``; it is unused for ``replicated``.
+    """
+
+    hf: str
+    attr: str
+    layout: str
+    width: object = None
+
+
+_ADAPTER_LAYOUT: dict[str, tuple[_Proj, ...]] = {
+    _QKV: (
+        _Proj("q_proj", "q", COLUMN, lambda m: m["q_rows"]),
+        _Proj("k_proj", "k", COLUMN, lambda m: m["num_kv"] * m["head_dim"]),
+        _Proj("v_proj", "v", COLUMN, lambda m: m["num_kv"] * m["head_dim"]),
+    ),
+    _O: (_Proj("o_proj", "o", ROW, lambda m: m["in_local"]),),
+    _FC1: (
+        _Proj("gate_proj", "gate", COLUMN, lambda m: m["inter_local"]),
+        _Proj("up_proj", "up", COLUMN, lambda m: m["inter_local"]),
+    ),
+    _FC2: (_Proj("down_proj", "down", ROW, lambda m: m["in_local"]),),
+    _MLA_Q_A: (_Proj("q_a_proj", "a", REPLICATED),),
+    _MLA_KV_A: (_Proj("kv_a_proj_with_mqa", "a", REPLICATED),),
+    _MLA_Q_B: (_Proj("q_b_proj", "b", COLUMN, lambda m: m["out_local"]),),
+    _MLA_KV_B: (_Proj("kv_b_proj", "b", COLUMN, lambda m: m["out_local"]),),
+    _MLA_Q: (_Proj("q_proj", "b", COLUMN, lambda m: m["out_local"]),),
+}
 
 
 _DEFAULT_LAYER_PREFIX = "model.layers."
@@ -307,6 +352,46 @@ def _wrap_forward(module: nn.Module, delta_fn, scale: float) -> None:
     module.forward = forward
 
 
+def _attach_row_parallel(
+    module: nn.Module,
+    owner: nn.Module,
+    kind: str,
+    hf_prefix: str,
+    spec: _Spec,
+    *,
+    in_local: int,
+    tp_rank: int,
+    attr: str,
+) -> int:
+    """Adapter on a row-parallel linear: ``A`` col-sharded, ``B`` replicated.
+
+    Shared by ``o_proj`` on both attention flavours and by the MLP's ``down_proj``:
+    the three differ only in this rank's input width and the parameter names.
+    ``B`` is replicated, so its gradient only diverges per rank -- and therefore only
+    needs TP summing -- under sequence parallelism.
+    """
+    adapter = NativeLoRAAdapter(kind, hf_prefix, in_local=in_local, tp_rank=tp_rank)
+    reference = module.weight
+    adapter.register_parameter(f"{attr}_A", _new_param(reference, (spec.rank, in_local), init=spec.a_init))
+    adapter.register_parameter(
+        f"{attr}_B",
+        _new_param(
+            reference,
+            (spec.hidden, spec.rank),
+            init="zero",
+            grad_sum_group="tp" if spec.sequence_parallel else None,
+        ),
+    )
+    setattr(owner, f"lora_{kind}_adapter", adapter)
+
+    def delta(x, _m=module, _ad=adapter):
+        partial = F.linear(_dropout(x, spec, _m.training), getattr(_ad, f"{attr}_A"))
+        return F.linear(_reduce_row_parallel(partial, spec), getattr(_ad, f"{attr}_B"))
+
+    _wrap_forward(module, delta, spec.scale)
+    return 1
+
+
 def _attach_attention(attn: nn.Module, hf_prefix: str, spec: _Spec) -> int:
     """Adapters on the fused qkv (column-parallel) and the output proj (row-parallel)."""
     from megatron.core import parallel_state as ps
@@ -352,25 +437,9 @@ def _attach_attention(attn: nn.Module, hf_prefix: str, spec: _Spec) -> int:
         n += 1
 
     if spec.wants("o_proj"):
-        proj = attn.linear_proj
-        in_local = num_q * head_dim
-        ad = NativeLoRAAdapter(_O, hf_prefix, in_local=in_local, tp_rank=tp_rank)
-        ref = proj.weight
-        ad.register_parameter("o_A", _new_param(ref, (spec.rank, in_local), init=spec.a_init))
-        ad.register_parameter(
-            "o_B",
-            _new_param(
-                ref, (spec.hidden, spec.rank), init="zero", grad_sum_group="tp" if spec.sequence_parallel else None
-            ),
+        n += _attach_row_parallel(
+            attn.linear_proj, attn, _O, hf_prefix, spec, in_local=num_q * head_dim, tp_rank=tp_rank, attr="o"
         )
-        attn.lora_o_adapter = ad
-
-        def o_delta(x, _m=proj, _ad=ad):
-            partial = F.linear(_dropout(x, spec, _m.training), _ad.o_A)
-            return F.linear(_reduce_row_parallel(partial, spec), _ad.o_B)
-
-        _wrap_forward(proj, o_delta, spec.scale)
-        n += 1
     return n
 
 
@@ -471,27 +540,9 @@ def _attach_mla_attention(attn: nn.Module, hf_prefix: str, spec: _Spec, config) 
         )
 
     if spec.wants("o_proj"):
-        proj = attn.linear_proj
-        in_local = heads_local * v_head_dim
-        ad = NativeLoRAAdapter(_O, hf_prefix, in_local=in_local, tp_rank=tp_rank)
-        ad.register_parameter("o_A", _new_param(proj.weight, (spec.rank, in_local), init=spec.a_init))
-        ad.register_parameter(
-            "o_B",
-            _new_param(
-                proj.weight,
-                (spec.hidden, spec.rank),
-                init="zero",
-                grad_sum_group="tp" if spec.sequence_parallel else None,
-            ),
+        n += _attach_row_parallel(
+            attn.linear_proj, attn, _O, hf_prefix, spec, in_local=heads_local * v_head_dim, tp_rank=tp_rank, attr="o"
         )
-        attn.lora_o_adapter = ad
-
-        def o_delta(x, _m=proj, _ad=ad):
-            partial = F.linear(_dropout(x, spec, _m.training), _ad.o_A)
-            return F.linear(_reduce_row_parallel(partial, spec), _ad.o_B)
-
-        _wrap_forward(proj, o_delta, spec.scale)
-        n += 1
     return n
 
 
@@ -525,24 +576,9 @@ def _attach_mlp(mlp: nn.Module, hf_prefix: str, spec: _Spec) -> int:
         n += 1
 
     if spec.wants("down_proj"):
-        fc2 = mlp.linear_fc2
-        ad = NativeLoRAAdapter(_FC2, hf_prefix, inter_local=inter_local, tp_rank=tp_rank)
-        ref = fc2.weight
-        ad.register_parameter("down_A", _new_param(ref, (spec.rank, inter_local), init=spec.a_init))
-        ad.register_parameter(
-            "down_B",
-            _new_param(
-                ref, (spec.hidden, spec.rank), init="zero", grad_sum_group="tp" if spec.sequence_parallel else None
-            ),
+        n += _attach_row_parallel(
+            mlp.linear_fc2, mlp, _FC2, hf_prefix, spec, in_local=inter_local, tp_rank=tp_rank, attr="down"
         )
-        mlp.lora_fc2_adapter = ad
-
-        def fc2_delta(x, _m=fc2, _ad=ad):
-            partial = F.linear(_dropout(x, spec, _m.training), _ad.down_A)
-            return F.linear(_reduce_row_parallel(partial, spec), _ad.down_B)
-
-        _wrap_forward(fc2, fc2_delta, spec.scale)
-        n += 1
     return n
 
 
@@ -554,21 +590,14 @@ def _assert_supported_architecture(config, tp_size: int = 1) -> None:
     qkv at all (linear-attention / GDN) are not an error: they simply carry no
     attention adapter, which ``apply_native_lora`` reports.
     """
-    unsupported = []
-    is_mla = bool(getattr(config, "multi_latent_attention", False))
+    if bool(getattr(config, "multi_latent_attention", False)):
+        return
     num_query_groups = getattr(config, "num_query_groups", None)
-    # The fused-qkv regime below is a GQA concern; MLA has no fused qkv to slice.
-    if not is_mla and num_query_groups is not None and num_query_groups < tp_size:
-        # mcore re-gathers the full qkv and re-slices per group in this regime, so this
-        # rank's weight rows are not a per-group slice of its own output.
-        unsupported.append(
-            f"num_query_groups ({num_query_groups}) < tensor parallel size ({tp_size}): mcore splits "
-            "a single query group across ranks, so the local qkv rows are not a per-group slice"
-        )
-    assert not unsupported, (
+    assert num_query_groups is None or num_query_groups >= tp_size, (
         "native LoRA (--megatron-to-hf-mode raw) does not support this architecture: "
-        + "; ".join(unsupported)
-        + ". Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a model-specific provider."
+        f"num_query_groups ({num_query_groups}) < tensor parallel size ({tp_size}), so mcore splits a "
+        "single query group across ranks and the local qkv rows are not a per-group slice. "
+        "Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a model-specific provider."
     )
 
 
@@ -719,6 +748,11 @@ class _TpGather:
             offset += size
 
 
+def _projections(kind: str) -> tuple[_Proj, ...]:
+    assert kind in _ADAPTER_LAYOUT, f"unknown adapter kind {kind}"
+    return _ADAPTER_LAYOUT[kind]
+
+
 def _iter_adapters(model_chunks):
     for chunk in model_chunks:
         module = chunk
@@ -745,38 +779,15 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
 
     for adapter in _iter_adapters(model_chunks):
         prefix = adapter.hf_prefix
-        if adapter.kind == _QKV:
-            # B rows stay in plain per-projection order (the interleave is applied to
-            # the delta at forward time), so this is a plain row gather.
-            for proj, a, b in (
-                ("q_proj", adapter.q_A, adapter.q_B),
-                ("k_proj", adapter.k_A, adapter.k_B),
-                ("v_proj", adapter.v_A, adapter.v_B),
-            ):
-                plan.append((f"{prefix}{proj}.lora_A.weight", a))  # replicated
-                plan.append((f"{prefix}{proj}.lora_B.weight", gather.request(b, 0)))
-        elif adapter.kind == _O:
-            plan.append((f"{prefix}o_proj.lora_A.weight", gather.request(adapter.o_A, 1)))
-            plan.append((f"{prefix}o_proj.lora_B.weight", adapter.o_B))  # replicated
-        elif adapter.kind == _FC1:
-            plan.append((f"{prefix}gate_proj.lora_A.weight", adapter.gate_A))
-            plan.append((f"{prefix}gate_proj.lora_B.weight", gather.request(adapter.gate_B, 0)))
-            plan.append((f"{prefix}up_proj.lora_A.weight", adapter.up_A))
-            plan.append((f"{prefix}up_proj.lora_B.weight", gather.request(adapter.up_B, 0)))
-        elif adapter.kind == _FC2:
-            plan.append((f"{prefix}down_proj.lora_A.weight", gather.request(adapter.down_A, 1)))
-            plan.append((f"{prefix}down_proj.lora_B.weight", adapter.down_B))  # replicated
-        elif adapter.kind in _MLA_REPLICATED_HF:
-            # Both sides replicated: nothing to gather.
-            hf = _MLA_REPLICATED_HF[adapter.kind]
-            plan.append((f"{prefix}{hf}.lora_A.weight", adapter.a_A))
-            plan.append((f"{prefix}{hf}.lora_B.weight", adapter.a_B))
-        elif adapter.kind in _MLA_COLUMN_HF:
-            hf = _MLA_COLUMN_HF[adapter.kind]
-            plan.append((f"{prefix}{hf}.lora_A.weight", adapter.b_A))  # replicated
-            plan.append((f"{prefix}{hf}.lora_B.weight", gather.request(adapter.b_B, 0)))
-        else:
-            raise ValueError(f"unknown adapter kind {adapter.kind}")
+        for proj in _projections(adapter.kind):
+            a = getattr(adapter, f"{proj.attr}_A")
+            b = getattr(adapter, f"{proj.attr}_B")
+            if proj.layout == COLUMN:
+                a, b = a, gather.request(b, 0)
+            elif proj.layout == ROW:
+                a, b = gather.request(a, 1), b
+            plan.append((f"{prefix}{proj.hf}.lora_A.weight", a))
+            plan.append((f"{prefix}{proj.hf}.lora_B.weight", b))
 
     gather.flush()
     exported = [
@@ -836,43 +847,18 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
         for adapter in _iter_adapters(model_chunks):
             prefix, meta = adapter.hf_prefix, adapter.shard_meta
             tp_rank = meta["tp_rank"]
-            if adapter.kind == _QKV:
-                head_dim, num_kv = meta["head_dim"], meta["num_kv"]
-                for proj, name, rows in (
-                    ("q_proj", "q", meta["q_rows"]),
-                    ("k_proj", "k", num_kv * head_dim),
-                    ("v_proj", "v", num_kv * head_dim),
-                ):
-                    copy_into(getattr(adapter, f"{name}_A"), take(f"{prefix}{proj}.lora_A.weight"))
-                    rows_full = take(f"{prefix}{proj}.lora_B.weight")
-                    copy_into(getattr(adapter, f"{name}_B"), rows_full[tp_rank * rows : (tp_rank + 1) * rows])
-            elif adapter.kind == _O:
-                in_local = meta["in_local"]
-                cols = take(f"{prefix}o_proj.lora_A.weight")
-                copy_into(adapter.o_A, cols[:, tp_rank * in_local : (tp_rank + 1) * in_local])
-                copy_into(adapter.o_B, take(f"{prefix}o_proj.lora_B.weight"))
-            elif adapter.kind == _FC1:
-                inter = meta["inter_local"]
-                for proj, name in (("gate_proj", "gate"), ("up_proj", "up")):
-                    copy_into(getattr(adapter, f"{name}_A"), take(f"{prefix}{proj}.lora_A.weight"))
-                    rows_full = take(f"{prefix}{proj}.lora_B.weight")
-                    copy_into(getattr(adapter, f"{name}_B"), rows_full[tp_rank * inter : (tp_rank + 1) * inter])
-            elif adapter.kind == _FC2:
-                inter = meta["inter_local"]
-                cols = take(f"{prefix}down_proj.lora_A.weight")
-                copy_into(adapter.down_A, cols[:, tp_rank * inter : (tp_rank + 1) * inter])
-                copy_into(adapter.down_B, take(f"{prefix}down_proj.lora_B.weight"))
-            elif adapter.kind in _MLA_REPLICATED_HF:
-                hf = _MLA_REPLICATED_HF[adapter.kind]
-                copy_into(adapter.a_A, take(f"{prefix}{hf}.lora_A.weight"))
-                copy_into(adapter.a_B, take(f"{prefix}{hf}.lora_B.weight"))
-            elif adapter.kind in _MLA_COLUMN_HF:
-                hf, out_local = _MLA_COLUMN_HF[adapter.kind], meta["out_local"]
-                copy_into(adapter.b_A, take(f"{prefix}{hf}.lora_A.weight"))
-                rows_full = take(f"{prefix}{hf}.lora_B.weight")
-                copy_into(adapter.b_B, rows_full[tp_rank * out_local : (tp_rank + 1) * out_local])
-            else:
-                raise ValueError(f"unknown adapter kind {adapter.kind}")
+            for proj in _projections(adapter.kind):
+                a_full = take(f"{prefix}{proj.hf}.lora_A.weight")
+                b_full = take(f"{prefix}{proj.hf}.lora_B.weight")
+                if proj.layout != REPLICATED:
+                    width = proj.width(meta)
+                    span = slice(tp_rank * width, (tp_rank + 1) * width)
+                    if proj.layout == COLUMN:
+                        b_full = b_full[span]
+                    else:
+                        a_full = a_full[:, span]
+                copy_into(getattr(adapter, f"{proj.attr}_A"), a_full)
+                copy_into(getattr(adapter, f"{proj.attr}_B"), b_full)
     logger.info("[lora-native] loaded %d adapter tensors from %s", loaded, adapter_path)
     return loaded
 
