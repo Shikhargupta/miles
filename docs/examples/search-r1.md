@@ -98,40 +98,38 @@ SEARCH_R1_CONFIGS = {
 
 ## Walkthrough — multi-turn rollout
 
-The custom rollout lives in `generate_with_search.py:generate`. The loop is
-straightforward but every step matters:
+The custom rollout lives in `generate_with_search.py:generate`. The model emits
+either `<search>query</search>` or `<answer>...</answer>`; search results come back
+wrapped in `<information>...</information>`. Condensed:
 
 ```python
 async def generate(args, sample: Sample, sampling_params) -> Sample:
-    prompt = build_prompt(sample)
-    full_response, loss_masks, tokens = "", [], []
+    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    response, response_token_ids, loss_mask = "", [], []
 
-    for turn in range(SEARCH_R1_CONFIGS["max_turns"]):
+    for _turn_idx in range(SEARCH_R1_CONFIGS["max_turns"]):
         # 1. Model generates an action
-        out = await call_sglang(prompt + full_response, sampling_params)
-        toks = tokenize(out.text)
-        full_response += out.text
-        tokens += toks
-        loss_masks += [1] * len(toks)        # model tokens count toward loss
+        output = await post(url, {"text": sample.prompt + response,
+                                  "sampling_params": sampling_params})
+        cur_response_token_ids = ...   # token ids (and log probs) from the output
+        response += output["text"]
+        response_token_ids += cur_response_token_ids
+        loss_mask += [1] * len(cur_response_token_ids)  # model tokens count toward loss
 
-        # 2. Parse action
-        action, content = parse_action(out.text)
-
-        # 3. Run the tool
-        if action == "search":
-            result = await search_backend(content, topk=SEARCH_R1_CONFIGS["topk"])
-            obs_text = render_observation(result)
-            obs_toks = tokenize(obs_text)
-            full_response += obs_text
-            tokens += obs_toks
-            loss_masks += [0] * len(obs_toks)   # observation tokens MASKED OUT
-        elif action == "answer":
+        # 2. Parse the action and run the tool; <answer> ends the loop
+        next_obs, done = await execute_predictions(output["text"])
+        if done:
             break
 
-    sample.response   = full_response
-    sample.tokens     = tokens
-    sample.loss_mask  = loss_masks
-    sample.metadata["turns_used"] = turn + 1
+        # 3. Feed the observation back, masked out of the loss
+        obs_tokens_ids = state.tokenizer(next_obs, add_special_tokens=False)["input_ids"]
+        response += next_obs
+        response_token_ids += obs_tokens_ids
+        loss_mask += [0] * len(obs_tokens_ids)          # observation tokens MASKED OUT
+
+    sample.response  = response
+    sample.tokens    = prompt_tokens_ids + response_token_ids
+    sample.loss_mask = loss_mask
     return sample
 ```
 
@@ -147,16 +145,19 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
 ## Walkthrough — reward
 
 ```python
-async def reward_func(args, sample: Sample, **kwargs) -> float:
-    answer = extract_final_answer(sample.response)
-    label  = sample.label
-    em     = exact_match(answer, label)
-    fmt    = SEARCH_R1_CONFIGS["format_score"] if has_valid_format(sample.response) else 0
-    return em + fmt
+async def reward_func(args, sample, **kwargs):
+    score = compute_score_em(
+        solution_str=sample.prompt + sample.response,
+        ground_truth=sample.label["ground_truth"],
+        format_score=SEARCH_R1_CONFIGS["format_score"],
+    )
+    return score
 ```
 
-`format_score=0.2` gives partial credit for the correct `<answer>...` shape even if the
-content is wrong — keeps gradient flowing during early exploration.
+`compute_score_em` (in `qa_em_format.py`) extracts the `<answer>...</answer>` span and
+exact-matches it against the label. `format_score=0.2` gives partial credit for the
+correct shape even if the content is wrong — keeps gradient flowing during early
+exploration.
 
 ## Enabling TIS
 
@@ -183,16 +184,14 @@ token / logp alignment.
 ## What to watch
 
 ```text
-search_r1/turns_per_sample          ~1.5 (depends on max_turns)
-search_r1/search_calls_per_sample    ~1.0
-reward/exact_match                   trending up
-reward/format                        ~0.18 (steady — most outputs are well-formed)
-loss_mask/observation_fraction       0.4 – 0.7 (lots of obs tokens, all masked)
-tis/effective_sample_size            > 0.7 × batch_size
+rollout/raw_reward                          trending up (EM + format credit)
+perf/rollout_time                           grows with max_turns (each turn adds a retrieval RTT)
+train/loss, train/pg_loss, train/grad_norm  the standard step-line metrics
+train/train_rollout_logprob_abs_diff        train-vs-rollout drift (needs return_logprob)
 ```
 
-If `tis/effective_sample_size` collapses below 0.5, your inference distribution has
-drifted too far. Lower `--lr` or shorten `max_turns`.
+If `train/train_rollout_logprob_abs_diff` keeps climbing, training and inference have
+drifted too far apart. Lower `--lr` or shorten `max_turns`.
 
 ## Tuning knobs
 
@@ -220,8 +219,9 @@ drifted too far. Lower `--lr` or shorten `max_turns`.
   exec, internal API. The pattern is identical.
 * **Group RM.** With multiple trajectories per prompt (GRPO), enable `--group-rm` so
   rewards are computed in a batch.
-* **Longer chains.** Bump `max_turns` to 8+ for deep-reasoning tasks. Watch
-  `loss_mask/observation_fraction` — if it dominates, the model is barely training.
+* **Longer chains.** Bump `max_turns` to 8+ for deep-reasoning tasks. Watch how much
+  of each trajectory is masked observation tokens — if observations dominate, the
+  model is barely training.
 
 ## Appendix — local Wikipedia retriever
 
