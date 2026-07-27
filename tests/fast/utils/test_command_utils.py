@@ -10,7 +10,7 @@ import miles.utils.external_utils.command_utils as command_utils
 def test_convert_checkpoint_preserves_source_paths(monkeypatch, tmp_path):
     commands = []
     monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
-    monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
+    monkeypatch.setattr(command_utils, "exec_command_gpu", commands.append)
 
     command_utils.convert_checkpoint(
         model_name="model",
