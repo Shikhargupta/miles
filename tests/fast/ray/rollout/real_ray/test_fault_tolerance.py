@@ -188,7 +188,9 @@ class TestKillAndRecover:
 
             # Recovery releases everything, not just the weights: an engine that kept its kv cache
             # would leave the trainer short of GPU memory when it takes the device back.
-            assert ray.get(recovered_actor.get_http_payloads_of.remote("/release_memory_occupation")) == [{"tags": None}]
+            assert ray.get(recovered_actor.get_http_payloads_of.remote("/release_memory_occupation")) == [
+                {"tags": None}
+            ]
             assert ray.get(recovered_actor.get_http_payloads_of.remote("/resume_memory_occupation")) == [
                 {"tags": [GPU_MEMORY_TYPE_WEIGHTS]}
             ]
