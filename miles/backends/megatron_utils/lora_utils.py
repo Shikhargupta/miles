@@ -429,7 +429,10 @@ def save_lora_checkpoint(
        external tool compatibility, and for reloading through ``--lora-adapter-path``.
        Bridge mode exports via Megatron-Bridge's ``export_adapter_weights``; raw mode
        via the native provider, whose adapters the bridge exporter cannot see. Both
-       handle fused QKV / gate-up splitting and TP gathering.
+       handle fused QKV / gate-up splitting and TP gathering. Tensors are cloned before
+       writing because that splitting aliases them -- a fused ``linear_fc1`` has one
+       ``lora_A`` that exports under both ``gate_proj`` and ``up_proj``, and its ``B``
+       becomes two row views -- and ``safetensors`` refuses to write shared storage.
     2. **Megatron-native format** (``adapter_megatron_tp{tp}_pp{pp}_ep{ep}.pt``) for
        fast checkpoint resume without name/weight conversion. Each TP/PP/EP rank saves
        its own shard with original parameter names (ranks sharing ``(tp, pp)`` hold
@@ -493,7 +496,7 @@ def save_lora_checkpoint(
 
     if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
         save_file(
-            {name: weight.contiguous() for name, weight in lora_state_dict.items()},
+            {name: weight.detach().contiguous().clone() for name, weight in lora_state_dict.items()},
             save_path / "adapter_model.safetensors",
         )
 
