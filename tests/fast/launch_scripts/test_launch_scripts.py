@@ -77,27 +77,28 @@ def recorded(request, tmp_path_factory):
     return rel, run
 
 
-def test_launch_script_invocations_match_snapshot(recorded):
-    """Every launch script must issue exactly the recorded sequence of external commands."""
-    rel, run = recorded
-    snapshot = _SNAPSHOT_DIR / f"{rel}.txt"
-    invocations = sorted(run.invocations) if rel in _SCRIPTS_RACING_WITH_A_BACKGROUNDED_SERVER else run.invocations
-    actual = f"# returncode: {run.returncode}\n\n{format_invocations(invocations)}"
+class TestEveryLaunchScript:
+    def test_invocations_match_snapshot(self, recorded):
+        """Every launch script must issue exactly the recorded sequence of external commands."""
+        rel, run = recorded
+        snapshot = _SNAPSHOT_DIR / f"{rel}.txt"
+        invocations = sorted(run.invocations) if rel in _SCRIPTS_RACING_WITH_A_BACKGROUNDED_SERVER else run.invocations
+        actual = f"# returncode: {run.returncode}\n\n{format_invocations(invocations)}"
 
-    assert_matches_snapshot(snapshot, actual, rel)
+        assert_matches_snapshot(snapshot, actual, rel)
+
+    def test_submits_exactly_one_ray_job(self, recorded):
+        """A launch script that no longer reaches `ray job submit` is broken, whatever else it does."""
+        _, run = recorded
+        assert run.returncode == 0
+        assert len(run.ray_job_submit_argv()) > 10
 
 
-def test_launch_script_submits_exactly_one_ray_job(recorded):
-    """A launch script that no longer reaches `ray job submit` is broken, whatever else it does."""
-    _, run = recorded
-    assert run.returncode == 0
-    assert len(run.ray_job_submit_argv()) > 10
+class TestDiscovery:
+    def test_every_discovered_script_has_a_snapshot_and_vice_versa(self):
+        """A script that stops matching the discovery filter would otherwise vanish silently."""
+        discovered = {f"{rel}.txt" for rel in _SCRIPTS}
+        recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
 
-
-def test_every_discovered_script_has_a_snapshot_and_vice_versa():
-    """A script that stops matching the discovery filter would otherwise vanish silently."""
-    discovered = {f"{rel}.txt" for rel in _SCRIPTS}
-    recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
-
-    assert discovered == recorded
-    assert len(discovered) > 60
+        assert discovered == recorded
+        assert len(discovered) > 60
