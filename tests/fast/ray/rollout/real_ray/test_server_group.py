@@ -73,7 +73,7 @@ class TestStartEnginesRealActors:
         # Wait for init.remote() to actually complete on each actor.
         ray.get(handles)
 
-        for i, e in enumerate(flatten_cells(group.cells)):
+        for e in flatten_cells(group.cells):
             assert e.is_allocated
             calls = ray.get(e.actor_handle.get_calls.remote())
             method_names = [name for name, _, _ in calls]
