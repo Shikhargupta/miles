@@ -8,9 +8,9 @@ from pathlib import Path
 from types import ModuleType
 
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
+from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
-import miles.utils.misc as misc
 
 FROZEN_RUN_ID = "260101-000000-000"
 
@@ -59,26 +59,13 @@ def freeze_environment(monkeypatch) -> None:
 
 
 def install_command_recorder(monkeypatch) -> list[str]:
-    commands: list[str] = []
+    commands = record_commands(monkeypatch)
     pseudo_files: list[str] = []
-
-    def fake_exec_command(cmd: str, capture_output: bool = False) -> str | None:
-        commands.append(cmd)
-        return "0" if capture_output else None
-
-    def fake_exec_command_all_ray_node(
-        cmd: str, capture_output: bool = False, num_nodes: int | None = None
-    ) -> list[str | None]:
-        commands.append(f"[all_ray_node num_nodes={num_nodes}] {cmd}")
-        return ["0"]
 
     def fake_save_to_temp_file(text: str, ext: str) -> str:
         pseudo_files.append(text)
         return f"/frozen/pseudo_file_{len(pseudo_files)}.{ext}"
 
-    for module in (command_utils, misc):
-        monkeypatch.setattr(module, "exec_command", fake_exec_command)
-        monkeypatch.setattr(module, "exec_command_all_ray_node", fake_exec_command_all_ray_node)
     monkeypatch.setattr(command_utils, "create_run_id", lambda: FROZEN_RUN_ID)
     monkeypatch.setattr(command_utils, "save_to_temp_file", fake_save_to_temp_file)
 

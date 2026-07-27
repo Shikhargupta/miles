@@ -57,31 +57,30 @@ def recorded(request, monkeypatch, tmp_path):
     return rel, entrypoint, commands, tmp_path
 
 
-def test_py_launch_script_commands_match_snapshot(recorded):
-    """Every launcher entrypoint must build exactly the recorded shell commands."""
-    rel, entrypoint, commands, sandbox = recorded
-    snapshot = _SNAPSHOT_DIR / rel / f"{entrypoint}.txt"
-    actual = format_commands(commands, sandbox=sandbox)
+class TestEveryLauncherEntrypoint:
+    def test_commands_match_snapshot(self, recorded):
+        """Every launcher entrypoint must build exactly the recorded shell commands."""
+        rel, entrypoint, commands, sandbox = recorded
+        snapshot = _SNAPSHOT_DIR / rel / f"{entrypoint}.txt"
 
-    assert_matches_snapshot(snapshot, actual, f"{rel}::{entrypoint}")
+        assert_matches_snapshot(snapshot, format_commands(commands, sandbox=sandbox), f"{rel}::{entrypoint}")
 
-
-def test_py_launch_script_entrypoint_issues_commands(recorded):
-    """An entrypoint that silently does nothing is a broken launcher, not a passing test."""
-    rel, entrypoint, commands, _ = recorded
-    if (rel, entrypoint) in _ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS:
-        assert not commands
-    else:
-        assert commands
-
-
-def test_execute_train_config_defaults_are_not_taken_from_a_slurm_allocation(monkeypatch):
-    """SLURM_JOB_NUM_NODES is read at import time, so a stale allocation would skew every snapshot."""
-    import miles.utils.external_utils.command_utils as command_utils
-
-    assert command_utils.ExecuteTrainConfig().num_nodes == 1
+    def test_entrypoint_issues_commands(self, recorded):
+        """An entrypoint that silently does nothing is a broken launcher, not a passing test."""
+        rel, entrypoint, commands, _ = recorded
+        if (rel, entrypoint) in _ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS:
+            assert not commands
+        else:
+            assert commands
 
 
-def test_all_py_launch_scripts_are_discovered():
-    """Guards against the discovery glob silently going empty."""
-    assert len(_SCRIPTS) > 15
+class TestDiscovery:
+    def test_all_py_launch_scripts_are_discovered(self):
+        """Guards against the discovery glob silently going empty."""
+        assert len(_SCRIPTS) > 15
+
+    def test_execute_train_config_defaults_are_not_taken_from_a_slurm_allocation(self, monkeypatch):
+        """SLURM_JOB_NUM_NODES is read at import time, so a stale allocation would skew every snapshot."""
+        import miles.utils.external_utils.command_utils as command_utils
+
+        assert command_utils.ExecuteTrainConfig().num_nodes == 1
