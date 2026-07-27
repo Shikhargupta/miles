@@ -491,7 +491,6 @@ def save_lora_checkpoint(
         for hf_name, weight in resolve_lora_provider(args).export_lora_hf_named(model):
             lora_state_dict[hf_name] = weight.cpu()
 
-    # Only one rank writes the HF PEFT files (the exporter already gathered across TP/PP)
     if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
         save_file(
             {name: weight.contiguous() for name, weight in lora_state_dict.items()},

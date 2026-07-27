@@ -291,10 +291,6 @@ def main():
     check(f"{label} row-parallel (fc2) delta == dense reference", r2 < 1e-5, f"max|d|={e2:.3e} rel={r2:.2e}")
 
     if not a.mla:
-        # Fused qkv: check the delta where it is consumed, i.e. after mcore's own
-        # per-group split. Each projection's adapter output must land in its own
-        # slice, which is what the row permutation exists to guarantee -- and with
-        # attention_output_gate the query side carries a second slice per head.
         attn0 = layer0.self_attention
         ad_qkv = attn0.lora_qkv_adapter
         num_q = attn0.num_attention_heads_per_partition
@@ -311,14 +307,11 @@ def main():
                 name: scale * F.linear(F.linear(xn, getattr(ad_qkv, f"{name}_A")), getattr(ad_qkv, f"{name}_B"))
                 for name in ("q", "k", "v")
             }
-            # mcore consumes the fused output as [.., num_kv, per_group * head_dim],
-            # split into query / gate / key / value blocks.
             grouped = delta.view(*delta.shape[:-1], num_kv, -1)
             split = [q_per_group * head_dim] * q_slices + [head_dim, head_dim]
             blocks = torch.split(grouped, split, dim=-1)
             key_block, value_block = blocks[-2], blocks[-1]
 
-            # The HF q_proj row for (head n, slice s) is at ((n * q_slices) + s) * head_dim.
             def hf_query_slice(slice_idx):
                 rows = [
                     hf_delta["q"].narrow(-1, ((head * q_slices) + slice_idx) * head_dim, head_dim)
@@ -479,9 +472,6 @@ def main():
         check(f"{label} TP sum actually combined distinct partial grads", changed)
 
     # ---- 6. the same thing through the wrapper training actually uses --------
-    # Everything above runs on a bare GPTModel. Training runs it inside mcore DDP,
-    # and that is where the adapter grads have to land -- in the DDP grad buffer, as
-    # main_grad -- for the optimizer to see them at all.
     ddp_model, ddp_cfg = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(ddp_model, Args())
     from megatron.core.distributed import DistributedDataParallel as DDP

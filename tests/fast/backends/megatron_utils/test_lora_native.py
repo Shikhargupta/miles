@@ -73,8 +73,6 @@ class TestBuildQkvPerm:
         assert out.tolist() == [[10.0, 11.0, 20.0, 30.0, 12.0, 13.0, 21.0, 31.0]]
 
     def test_output_gate_deinterleaves_the_query_slices(self):
-        # 2 query heads, 1 group, head_dim 1, gated: HF q_proj is [q0 g0 q1 g1],
-        # mcore's group is [q0 q1 g0 g1] followed by k and v.
         perm = _build_qkv_perm(num_q_heads=2, num_groups=1, head_dim=1, device="cpu", output_gate=True)
         assert perm.tolist() == [0, 2, 1, 3, 4, 5]
 
@@ -87,10 +85,8 @@ class TestBuildQkvPerm:
 
     def test_output_gate_applied_to_delta(self):
         perm = _build_qkv_perm(num_q_heads=4, num_groups=2, head_dim=1, device="cpu", output_gate=True)
-        # HF order: [q0 g0 q1 g1 | q2 g2 q3 g3 | k0 k1 | v0 v1]
         plain = torch.tensor([[10.0, 40.0, 11.0, 41.0, 12.0, 42.0, 13.0, 43.0, 20.0, 21.0, 30.0, 31.0]])
         out = plain.index_select(-1, perm)
-        # group 0 -> q0 q1 g0 g1 k0 v0, group 1 -> q2 q3 g2 g3 k1 v1
         assert out.tolist() == [[10.0, 11.0, 40.0, 41.0, 20.0, 30.0, 12.0, 13.0, 42.0, 43.0, 21.0, 31.0]]
 
 
@@ -251,7 +247,6 @@ class TestShippedRegistries:
             ("kimi-k25_2layer", dict(mla=True)),
             # glm5-744B-A40B_4layer.sh -> glm5-744B-A40B.sh: --multi-latent-attention
             ("glm5-744B-A40B_4layer", dict(mla=True)),
-            # deepseek-v4-flash-4layer.sh: --multi-latent-attention
             ("deepseek-v4-flash-4layer", dict(mla=True)),
         ],
     )
