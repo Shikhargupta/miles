@@ -299,13 +299,13 @@ class TestParseExtraEnvVars:
 class TestCheckHasNvlink:
     def test_reports_true_when_links_are_counted(self, monkeypatch):
         """A non-zero NVLink count from nvidia-smi means NVLink is present."""
-        monkeypatch.setattr(command_utils, "exec_command_gpu", lambda cmd, capture_output=False: "4\n")
+        monkeypatch.setattr(common, "exec_command_gpu", lambda cmd, capture_output=False: "4\n")
 
         assert command_utils.check_has_nvlink() is True
 
     def test_reports_false_without_links(self, monkeypatch):
         """Zero counted links means no NVLink."""
-        monkeypatch.setattr(command_utils, "exec_command_gpu", lambda cmd, capture_output=False: "0\n")
+        monkeypatch.setattr(common, "exec_command_gpu", lambda cmd, capture_output=False: "0\n")
 
         assert command_utils.check_has_nvlink() is False
 
