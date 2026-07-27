@@ -85,9 +85,9 @@ def allocate_rollout_engine_addr_and_ports_normal(
                     addr_and_ports[rank + i]["dist_init_addr"] = dist_init_addr
         else:
             for i in range(num_engines_on_this_node):
-                addr_and_ports[rank + i]["dist_init_addr"] = (
-                    f"{node_ip}:{get_port(consecutive=30 + args.sglang_dp_size)}"
-                )
+                addr_and_ports[rank + i][
+                    "dist_init_addr"
+                ] = f"{node_ip}:{get_port(consecutive=30 + args.sglang_dp_size)}"
 
     for i, _ in rollout_engines:
         for key in ["port", "nccl_port", "dist_init_addr"]:
