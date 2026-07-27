@@ -196,8 +196,7 @@ async def create_training_models(args, pgs, inference_controller, rollout_execut
         await actor_model.connect(critic_model)
 
     await actor_model.set_rollout_executor()
-    if args.rollout_global_dataset:
-        await rollout_executor.load.remote(args.start_rollout_id - 1)
+    await rollout_executor.load.remote(args.start_rollout_id - 1)
 
     return actor_model, critic_model
 
