@@ -144,7 +144,11 @@ class TestAllocateNormal:
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         engines = [(rank, fake_engine(host="10.0.0.7", port_seed=40000)) for rank in (4, 5, 6, 7)]
         addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
-            args=args, port_allocator=PortAllocator.empty(), rollout_engines=engines, num_gpus_per_engine=1, rank_offset=4
+            args=args,
+            port_allocator=PortAllocator.empty(),
+            rollout_engines=engines,
+            num_gpus_per_engine=1,
+            rank_offset=4,
         )
         # Allocator fills remaining slots on the node starting from rank 4
         # (see source comment: "we will set port for engine 3,4,5,6,7 on this

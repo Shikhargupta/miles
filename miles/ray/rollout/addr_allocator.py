@@ -1,3 +1,4 @@
+import functools
 import logging
 from dataclasses import dataclass
 
@@ -61,8 +62,7 @@ def allocate_rollout_engine_addr_and_ports_normal(
 
         node_ip, _ = ray.get(engine._get_current_node_ip_and_free_port.remote())
 
-        def get_port(consecutive=1):
-            return port_allocator.alloc(engine=engine, node_ip=node_ip, consecutive=consecutive)
+        get_port = functools.partial(port_allocator.alloc, engine=engine, node_ip=node_ip)
 
         for i in range(num_engines_on_this_node):
             current_rank = rank + i
@@ -79,13 +79,15 @@ def allocate_rollout_engine_addr_and_ports_normal(
         if _gpus_per_engine > args.num_gpus_per_node:
             num_node_per_engine = _gpus_per_engine // args.num_gpus_per_node
             if local_rank % num_node_per_engine == 0:
-                dist_init_addr = f"{node_ip}:{get_port(30 + args.sglang_dp_size)}"
+                dist_init_addr = f"{node_ip}:{get_port(consecutive=30 + args.sglang_dp_size)}"
                 for i in range(num_node_per_engine):
                     addr_and_ports.setdefault(rank + i, {})
                     addr_and_ports[rank + i]["dist_init_addr"] = dist_init_addr
         else:
             for i in range(num_engines_on_this_node):
-                addr_and_ports[rank + i]["dist_init_addr"] = f"{node_ip}:{get_port(30 + args.sglang_dp_size)}"
+                addr_and_ports[rank + i]["dist_init_addr"] = (
+                    f"{node_ip}:{get_port(consecutive=30 + args.sglang_dp_size)}"
+                )
 
     for i, _ in rollout_engines:
         for key in ["port", "nccl_port", "dist_init_addr"]:
