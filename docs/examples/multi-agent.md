@@ -3,11 +3,12 @@ title: Multi-Agent Co-Evolution
 description: Two specialized agents train together and improve each other.
 ---
 **What you'll learn:** how to wire up an asynchronous multi-agent system in Miles, where
-two (or more) specialized agents take alternating turns and the joint outcome drives a
+multiple specialized agent roles cooperate on a prompt and the joint outcome drives a
 single shared reward.
 
-This example uses a dual-agent setup that interleaves a "thinker" and a "verifier", but
-the same pattern scales to:
+This example ships a three-role pipeline — parallel *solvers*, a round of *rewriters*
+that revise the solvers' answers, and a *selector* that picks the best one — but the
+same pattern scales to:
 
 * Doctor / patient simulations.
 * Multi-step DeepResearch pipelines.
@@ -149,38 +150,36 @@ rollout integration itself is a thin wrapper.
 
 | Knob | Effect |
 |---|---|
-| `MAX_TURNS` | Conversation depth — longer = more context = slower |
+| `num_parallel` | Solver / rewriter attempts per prompt running concurrently |
 | `incorrect_reward_weight` / `correct_reward_weight` | Asymmetric shaping |
-| `num_parallel` | Rollouts per prompt running concurrently |
 | `--rollout-max-context-len` | Stops the conversation when budget is hit |
 
 ## What to watch
 
 ```text
-multi_agent/avg_turns                       2.5 – 4.0
-multi_agent/early_termination_rate          0.4 – 0.6 (reaches <final_answer>)
-multi_agent/conversation_token_count        4096 – 12288
-loss_mask/role_split                        balanced (~50/50)
-reward/avg                                  trending up
+rollout/raw_reward             trending up
+perf/rollout_time              high by design — solver, rewriter, selector run in sequence
+train/loss, train/grad_norm    the standard step-line metrics
 ```
 
-If `loss_mask/role_split` is heavily skewed, one role is dominating — typically the
-verifier becomes verbose. Tighten its system prompt or reduce its `max_tokens`.
+All three roles' samples go back to the trainer together, with rewards scaled by
+`correct_reward_weight` / `incorrect_reward_weight` depending on whether the selected
+solution scores as correct.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| OOM mid-rollout | Reduce `MAX_TURNS` or `--rollout-max-context-len` |
-| Both agents repeat each other | Verifier prompt is too permissive — make it adversarial |
-| Reward never moves | Check that `<final_answer>` extraction matches the verifier output |
-| Rollout much slower than baseline | Per-turn SGLang RTT × MAX_TURNS — consider async rollout |
+| OOM mid-rollout | Reduce `num_parallel` or `--rollout-max-context-len` |
+| Rewrites barely differ from the originals | Strengthen the rewriter template in `prompts.py` |
+| Reward never moves | The RM is `--rm-type deepscaler` — check that solutions end in an extractable boxed answer |
+| Rollout much slower than baseline | Solver → rewriter → selector are sequential SGLang round-trips — consider async rollout |
 
 ## Variations
 
 ### VLM multi-turn
 
-Replace `call_role` with a VLM-aware caller that includes images in messages. Miles
+Make the solver / rewriter workers VLM-aware by including images in their messages. Miles
 supports VLM multi-turn natively — same pattern, just `multimodal_train_inputs` in the
 sample dict (see [Customization #13](/user-guide/customization#training)).
 
