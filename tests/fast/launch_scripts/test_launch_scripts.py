@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
 from tests.fast.launch_scripts.sh_harness import (
@@ -10,7 +9,7 @@ from tests.fast.launch_scripts.sh_harness import (
     run_launch_script,
 )
 
-_SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
+_SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "sh"
 
 
 @dataclass(frozen=True)
