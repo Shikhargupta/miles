@@ -10,7 +10,7 @@ import miles.utils.external_utils.command_utils as command_utils
 def test_convert_checkpoint_preserves_source_paths(monkeypatch, tmp_path):
     commands = []
     monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
-    monkeypatch.setattr(command_utils, "exec_command", commands.append)
+    monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
 
     command_utils.convert_checkpoint(
         model_name="model",
@@ -29,7 +29,7 @@ def test_execute_train_exports_unbuffered_python_to_ray(monkeypatch):
     commands = []
     monkeypatch.delenv("MILES_SCRIPT_EXTERNAL_RAY", raising=False)
     monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-    monkeypatch.setattr(command_utils, "exec_command", commands.append)
+    monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
     monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
     command_utils.execute_train(
@@ -49,7 +49,7 @@ def test_execute_train_preserves_source_paths_in_ray_runtime(monkeypatch):
     monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
     monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
     monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-    monkeypatch.setattr(command_utils, "exec_command", commands.append)
+    monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
     monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
     command_utils.execute_train(
@@ -77,7 +77,7 @@ def test_every_supported_hardware_declares_its_gpus_per_node(hardware):
 def test_rsync_simple_limits_itself_to_the_requested_node_count(monkeypatch):
     """prepare_cp asks for the training node count; forwarding it is the whole point of the argument."""
     calls = []
-    monkeypatch.setattr(command_utils, "exec_command_all_ray_node", lambda cmd, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(command_utils, "exec_command_multi_node", lambda cmd, **kwargs: calls.append(kwargs))
 
     command_utils.rsync_simple("/src", "/dst", num_nodes=4)
 

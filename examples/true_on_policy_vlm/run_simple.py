@@ -11,11 +11,11 @@ EXTERNAL_RAY = int(os.environ.get("MILES_SCRIPT_EXTERNAL_RAY", "0"))
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     dataset_name = "chenhegu/geo3k_imgurl"
     _, partial_name = dataset_name.split("/")
-    U.exec_command(f"hf download --repo-type dataset {dataset_name} --local-dir /root/datasets/{partial_name}")
+    U.exec_command_cpu(f"hf download --repo-type dataset {dataset_name} --local-dir /root/datasets/{partial_name}")
 
 
 def execute():

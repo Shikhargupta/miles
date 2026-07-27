@@ -57,7 +57,7 @@ class TestConvertCheckpoint:
         assert len(commands) == 1
 
     def test_multinode_uses_torchrun_rendezvous_placeholders(self, commands, tmp_path):
-        """Multi-node conversion must template the placeholders exec_command_all_ray_node substitutes."""
+        """Multi-node conversion must template the placeholders exec_command_multi_node substitutes."""
         command_utils.convert_checkpoint(
             model_name="Qwen3-4B",
             megatron_model_type="qwen3-4B",
@@ -87,7 +87,7 @@ class TestRsyncSimple:
         """rsync fails on a missing destination, so the mkdir has to precede it."""
         command_utils.rsync_simple("/src", "/dst")
 
-        assert commands == ["[all_ray_node num_nodes=None] mkdir -p /dst && rsync -a --info=progress2 /src/ /dst"]
+        assert commands == ["[multi_node num_nodes=None] mkdir -p /dst && rsync -a --info=progress2 /src/ /dst"]
 
 
 class TestHfDownloadDataset:
@@ -298,13 +298,13 @@ class TestParseExtraEnvVars:
 class TestCheckHasNvlink:
     def test_reports_true_when_links_are_counted(self, monkeypatch):
         """A non-zero NVLink count from nvidia-smi means NVLink is present."""
-        monkeypatch.setattr(command_utils, "exec_command", lambda cmd, capture_output=False: "4\n")
+        monkeypatch.setattr(command_utils, "exec_command_cpu", lambda cmd, capture_output=False: "4\n")
 
         assert command_utils.check_has_nvlink() is True
 
     def test_reports_false_without_links(self, monkeypatch):
         """Zero counted links means no NVLink."""
-        monkeypatch.setattr(command_utils, "exec_command", lambda cmd, capture_output=False: "0\n")
+        monkeypatch.setattr(command_utils, "exec_command_cpu", lambda cmd, capture_output=False: "0\n")
 
         assert command_utils.check_has_nvlink() is False
 

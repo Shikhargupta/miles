@@ -95,7 +95,7 @@ def _convert_hf_to_fp8(args: ScriptArgs):
     if Path(fp8_dir).exists():
         print(f"FP8 checkpoint already exists at {fp8_dir}, skipping conversion.")
         return
-    U.exec_command(
+    U.exec_command_gpu(
         "python tools/convert_hf_to_fp8.py "
         f"--model-dir {args.hf_checkpoint} "
         f"--save-dir {fp8_dir} "

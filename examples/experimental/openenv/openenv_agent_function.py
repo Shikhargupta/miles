@@ -383,8 +383,8 @@ async def _multi_turn(
             t0 = time.monotonic()
             # A native server runs the toolkit in the task's real WORKDIR
             # already; only an older server needs the adapter-side prefix.
-            exec_command = command if native_evaluate else _apply_workdir(command)
-            step_result = await env.step(action_cls(action_type="exec", command=exec_command))
+            exec_command_cpu = command if native_evaluate else _apply_workdir(command)
+            step_result = await env.step(action_cls(action_type="exec", command=exec_command_cpu))
             tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
             # Feed the command output back as a user turn, not a tool turn. GLM
