@@ -1,14 +1,8 @@
 """TITO tokenizer — incremental tokenization for pretokenized prefix reuse.
 
-``TITOTokenizer`` computes incremental token IDs for non-assistant messages
-(tool responses, user follow-ups, system injections) that follow the
-assistant's generated token sequence, then merges them with the pretokenized
-prefix — handling model-specific boundary tokens at the junction.
+``TITOTokenizer`` computes incremental token IDs for messages appended after the assistant's generated token sequence, then merges them with the pretokenized prefix — handling model-specific boundary tokens at the junction.
 
-The default implementation renders the complete appended non-assistant suffix
-and the next generation prompt once under a synthetic
-``[dummy_system, dummy_assistant]`` prefix.  Model-specific subclasses only
-override ``merge_tokens`` for boundary quirks at the prefix junction.
+The default implementation renders the complete appended suffix and the next generation prompt once under a synthetic ``[dummy_system, dummy_assistant]`` prefix.  Model-specific subclasses only override ``merge_tokens`` for boundary quirks at the prefix junction.
 """
 
 from __future__ import annotations
@@ -72,7 +66,7 @@ def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
 
 
 class TITOTokenizer:
-    """Incremental tokenization and prefix merging for appended non-assistant turns."""
+    """Incremental tokenization and prefix merging for appended messages."""
 
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
@@ -156,19 +150,16 @@ class TITOTokenizer:
             raise ValueError(f"rendered suffix diff failed for {roles}")
         return self._encode_text(text_with[len(text_without) :])
 
-    def tokenize_additional_non_assistant(
+    def tokenize_additional_messages(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        """Compute incremental token IDs for non-assistant messages appended
-        after the pretokenized prefix.
+        """Compute incremental token IDs for messages appended after the
+        pretokenized prefix.
 
-        Handles tool responses, user, and system messages —
-        never an assistant message.  Validates that *new_messages* is an
-        append-only extension of *old_messages* via
-        ``assert_messages_append_only_with_allowed_role``.
+        Appended roles must be listed in ``self.allowed_append_roles``.  The method validates that *new_messages* is an append-only extension of *old_messages* via ``assert_messages_append_only_with_allowed_role``.
 
         Args:
             old_messages: Previously stored messages (prefix).
@@ -203,7 +194,7 @@ class TITOTokenizer:
         The default implementation is simple concatenation.  Subclasses
         override this to handle model-specific boundary token logic.
         """
-        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         return list(pretokenized_token_ids) + incremental
 
 
@@ -264,7 +255,7 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         pretokenized_token_ids: list[int],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         prefix = list(pretokenized_token_ids)
         if prefix and prefix[-1] == self._im_end_id:
             prefix.append(self._newline_id)
@@ -380,7 +371,7 @@ class GLM47TITOTokenizer(TITOTokenizer):
         pretokenized_token_ids: list[int],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         prefix = list(pretokenized_token_ids)
         if prefix and prefix[-1] in self._ambiguous_boundary_ids:
             prefix = prefix[:-1]
@@ -605,7 +596,7 @@ class MinimaxM25TITOTokenizer(TITOTokenizer):
         pretokenized_token_ids: list[int],
         tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
-        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         prefix = list(pretokenized_token_ids)
         if prefix and prefix[-1] == self._eos_id:
             prefix.append(self._newline_id)
@@ -764,7 +755,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
                 "thinking": deepseek.V4.render_thinking_enabled(self.chat_template_kwargs),
             }
 
-    def tokenize_additional_non_assistant(
+    def tokenize_additional_messages(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],

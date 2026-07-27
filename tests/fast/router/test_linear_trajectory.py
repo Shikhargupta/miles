@@ -38,7 +38,7 @@ class _MockTITOTokenizer(TITOTokenizer):
     ) -> list[int]:
         return list(_MOCK_FIRST_TURN_TOKENS)
 
-    def tokenize_additional_non_assistant(
+    def tokenize_additional_messages(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
