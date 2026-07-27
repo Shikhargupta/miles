@@ -155,23 +155,26 @@ filesystem), swap in a container-based runner — the interface is just
 
 ```python
 async def reward_func(args, sample, **kwargs):
-    parsed = parse_trace(sample.response)
-    correct = check_answer(parsed.final_answer, sample.label)
+    """Tool call reward function using math_dapo as primary reward model"""
+    solution_str = sample.response
+    ground_truth = sample.label if sample.label is not None else ""
+    num_turns = getattr(sample, "tool_call_count", 0)
 
-    # 1. Final answer (most weight)
-    r_ans = 1.0 if correct else 0.0
+    # use \boxed{...} answer
+    result = math_dapo_compute_score(solution_str, ground_truth, strict_box_verify=True)
 
-    # 2. Format bonus
-    r_fmt = 0.1 if parsed.has_valid_format else 0.0
+    # encourage model to call tools
+    if result["score"] < 0:
+        tool_call_reward = (num_turns - 2) / 2 * 0.1
+        result["score"] = min(-0.6, result["score"] + tool_call_reward)
 
-    # 3. Tool-use bonus (small, just to encourage tool calls)
-    r_use = 0.05 if parsed.num_tool_calls > 0 else 0.0
-
-    return r_ans + r_fmt + r_use
+    return result
 ```
 
-The shaping rewards are deliberately small. The dominant signal is correctness — the
-shape and tool use just keep gradient alive in the early epochs.
+The dominant signal is correctness — `math_dapo_compute_score` verifies the
+`\boxed{...}` answer against the label. The only shaping applies to *incorrect*
+samples: a small tool-call bonus softens their penalty (capped at −0.6), so tool
+calling isn't extinguished before the model learns to use the results.
 
 ## Tuning knobs
 
@@ -181,22 +184,19 @@ shape and tool use just keep gradient alive in the early epochs.
 | `TOOL_CONFIGS["python_timeout"]` | Sandbox per-call wallclock |
 | `PythonSandbox.allowed_modules` | What modules the model can import |
 | `--rollout-max-response-len` | Total response cap (incl. tool I/O) |
-| `format / tool-use bonus weights` | How aggressively to shape early |
+| Tool-call bonus in `reward_func` | How much wrong-but-tool-using samples are softened |
 
 ## What to watch
 
 ```text
-retool/tool_calls_per_sample          1.5 – 3.0
-retool/tool_success_rate              > 0.85
-retool/avg_code_length_chars          50 – 200
-reward/exact_match                    trending up
-reward/format_bonus                   ~0.10
-sandbox/timeout_rate                  < 0.02
+rollout/raw_reward             trending up — mean math_dapo score of fresh rollouts
+perf/rollout_time              generation cost; every tool call adds sandbox latency
+train/loss, train/grad_norm    sane, no spikes
 ```
 
-If `sandbox/timeout_rate` climbs, the model is generating expensive code. Either bump
-`TOOL_CONFIGS["python_timeout"]` or restrict `PythonSandbox.allowed_modules` (numpy is
-the usual suspect).
+If tool responses fill up with `Error: Code execution timed out after ...`, the model
+is generating expensive code. Either bump `TOOL_CONFIGS["python_timeout"]` or restrict
+`PythonSandbox.allowed_modules` (numpy is the usual suspect).
 
 ## Troubleshooting
 
@@ -204,7 +204,7 @@ the usual suspect).
 |---|---|
 | `ModuleNotFoundError` from sandbox | Add the module to `PythonSandbox.allowed_modules` |
 | Tool response not masked | Check `<tool_response>` boundary regex matches your output |
-| EM = 0 forever | Verify your answer extractor — check a few samples manually |
+| Reward stuck at the minimum | Check samples end with a `\boxed{...}` answer — that is what math_dapo scores |
 | Sandbox returns `MemoryError` | Bump `TOOL_CONFIGS["python_memory_limit"]`, or restrict `numpy` calls |
 
 ## Variations
