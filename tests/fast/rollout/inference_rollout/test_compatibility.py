@@ -162,6 +162,17 @@ class TestRolloutFnCheckpointing:
             assert fn.save(1) is None
             assert fn.load(None) is None
 
+    def test_legacy_adapter_exposes_the_constructor_input(self, constructor_input):
+        """The base class promises constructor_input, so the framework's own subclasses must set it too."""
+
+        def legacy_rollout_fn(args, rollout_id, data_source, evaluation=False):
+            return [[{"text": "sample"}]]
+
+        with function_registry.temporary("test:legacy_constructor_input", legacy_rollout_fn):
+            fn = load_rollout_function(constructor_input, "test:legacy_constructor_input")
+
+            assert fn.constructor_input is constructor_input
+
     def test_custom_save_and_load_are_used(self, constructor_input):
         """A stateful rollout function checkpoints through its own save/load."""
 

@@ -17,6 +17,7 @@ from miles.utils.misc import load_function
 
 class LegacyRolloutFnAdapter(BaseRolloutFn):
     def __init__(self, input: RolloutFnConstructorInput, fn: Callable):
+        super().__init__(input)
         self.args = input.args
         self.data_source = input.data_source
         self.fn = fn
