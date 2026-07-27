@@ -14,7 +14,7 @@ from tests.fast.launch_scripts.py_harness import (
 )
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
 
-_SNAPSHOT_DIR = Path(__file__).parent / "py_snapshots"
+_SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "py"
 
 _SCRIPTS_SKIPPED_PENDING_NPU_SUPPORT = {"scripts/run_qwen3_4b_npu.py"}
 
