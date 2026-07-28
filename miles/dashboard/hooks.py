@@ -343,14 +343,14 @@ def report_data_buffer(length: int | None) -> None:
 
 
 def _alive_engine_chunks(servers) -> list[list]:
-    """A multi-node engine's cell holds ``nodes_per_engine`` entries; only the
-    first (master) owns the router-visible URL. Cells with any dead member are
-    skipped until recovery completes."""
+    """A multi-node engine's cell holds ``num_nodes`` actors; only the first
+    (master) owns the router-visible URL. Cells that are not alive are skipped
+    until recovery completes."""
     chunks = []
     for server in servers.values():
         for cell in server.server_cells:
-            if all(engine.is_allocated and engine.is_alive for engine in cell.engines):
-                chunks.append(cell.engines)
+            if cell.is_alive:
+                chunks.append(cell.actor_handles)
     return chunks
 
 

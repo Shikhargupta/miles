@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells
+from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_dataclass_cells
 
+from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import (
     RolloutServer,
     _compute_megatron_num_gpus,
@@ -90,10 +91,16 @@ class TestRolloutServerPureFunctions:
 
 
 class TestRolloutServerCrossCellProperties:
-    def test_engines_collects_primary_engines_from_each_cell(self):
+    def test_api_clients_expose_one_client_per_cell(self):
+        """Each cell is addressed through its primary (node-0) endpoint."""
         cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
+        for index, cell in enumerate(cells):
+            cell._mark_allocated_uninitialized([fake_actor_handle()])
+            cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{index + 1}:30000")])
         srv = RolloutServer(server_cells=cells)
-        assert len(srv.engines) == 4
+        assert [client.server_url for client in srv.api_clients] == [
+            f"http://10.0.0.{index + 1}:30000" for index in range(4)
+        ]
 
     def test_engine_gpu_counts_parallel_to_engines(self):
         cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
