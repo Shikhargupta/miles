@@ -114,7 +114,7 @@ class ServerGroup:
         ]
 
         if not self._precheck_engine_start():
-            return
+            return []
 
         await asyncio.gather(
             *[
@@ -124,6 +124,7 @@ class ServerGroup:
         )
 
         logger.info(f"Recovered {len(filter_cell_indices)} dead rollout cells (worker_type={self.worker_type})")
+        return filter_cell_indices
 
     def mark_alive(self, cell_indices: list[int]):
         for cell_index in cell_indices:
