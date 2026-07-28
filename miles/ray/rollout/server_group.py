@@ -73,6 +73,11 @@ class ServerGroup:
             self.has_new_engines = False
             return [], []
 
+        if self.args.rollout_external:
+            raise NotImplementedError(
+                "external rollout address allocation was removed and a new implementation is coming"
+            )
+
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
         start_indices = (
@@ -111,11 +116,6 @@ class ServerGroup:
 
         if curr_num_new_engines == 0:
             return [], []
-
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
 
         addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
             args=self.args,
