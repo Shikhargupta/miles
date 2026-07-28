@@ -109,10 +109,10 @@ class ServerCell:
 
         await asyncio.gather(*init_handles)
 
-    async def recover(self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient) -> None:
+    async def start(self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient, recover: bool = False) -> None:
         await self.start_engines(port_allocator)
 
-        if self.needs_offload:
+        if recover and self.needs_offload:
             await self.primary_engine.api_client.release_memory_occupation()
             if self.update_weights or self.model_path:
                 await self.primary_engine.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])

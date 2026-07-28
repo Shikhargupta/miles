@@ -150,7 +150,7 @@ class RolloutServer:
     """
 
     server_cells: list[ServerCell]
-    args: Any = None
+    args: Any
     # NOTE: this may have risk when recovering engines parallelly; may use source of truth (cells) later
     has_new_engines: bool = False
     router_ip: str | None = None
@@ -188,12 +188,11 @@ class RolloutServer:
 
         cell_indices = [cell_index for cell_index, cell in enumerate(self.server_cells) if not cell.is_allocated]
         await asyncio.gather(
-            *[self.server_cells[cell_index].start_engines(port_allocator) for cell_index in cell_indices]
+            *[
+                self.server_cells[cell_index].start(port_allocator, self._router_api_client)
+                for cell_index in cell_indices
+            ]
         )
-        for cell_index in cell_indices:
-            self.server_cells[cell_index].mark_alive()
-        self.has_new_engines |= bool(cell_indices)
-        await self.register_workers(cell_indices)
 
     async def recover(self, cell_indices: list[int] | None = None):
         """Recover dead engines, overlapping init across cells."""
@@ -204,7 +203,7 @@ class RolloutServer:
 
         await asyncio.gather(
             *[
-                self.server_cells[cell_index].recover(port_allocator, self._router_api_client)
+                self.server_cells[cell_index].start(port_allocator, self._router_api_client, recover=True)
                 for cell_index in cell_indices
             ]
         )
