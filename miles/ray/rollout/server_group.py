@@ -79,25 +79,17 @@ class ServerGroup:
         return not (self.args.debug_train_only or self.worker_type == "placeholder")
 
     async def register_workers(self, cell_indices: list[int]) -> None:
-        router_api_client = self._router_api_client_if_enabled
-        if router_api_client is None:
-            return
-        await asyncio.gather(*[cell.register(router_api_client) for cell in self._allocated_cells_of(cell_indices)])
+        await asyncio.gather(
+            *[cell.register(self._router_api_client) for cell in self._allocated_cells_of(cell_indices)]
+        )
 
     async def unregister_workers(self, cell_indices: list[int]) -> None:
-        router_api_client = self._router_api_client_if_enabled
-        if router_api_client is None:
-            return
-        await asyncio.gather(*[cell.unregister(router_api_client) for cell in self._allocated_cells_of(cell_indices)])
+        await asyncio.gather(
+            *[cell.unregister(self._router_api_client) for cell in self._allocated_cells_of(cell_indices)]
+        )
 
     def _allocated_cells_of(self, cell_indices: list[int]) -> list[ServerCell]:
         return [self.cells[cell_index] for cell_index in cell_indices if self.cells[cell_index].is_allocated]
-
-    @property
-    def _router_api_client_if_enabled(self) -> SGLangRouterApiClient | None:
-        if self.args.rollout_external or not (self.router_ip and self.router_port):
-            return None
-        return self._router_api_client
 
     @property
     def _router_api_client(self) -> SGLangRouterApiClient:
@@ -127,9 +119,11 @@ class ServerGroup:
         if not self._precheck_engine_start():
             return
 
-        router_api_client = self._router_api_client_if_enabled
         await asyncio.gather(
-            *[self.cells[cell_index].recover(port_allocator, router_api_client) for cell_index in filter_cell_indices]
+            *[
+                self.cells[cell_index].recover(port_allocator, self._router_api_client)
+                for cell_index in filter_cell_indices
+            ]
         )
         self.has_new_engines |= bool(filter_cell_indices)
 

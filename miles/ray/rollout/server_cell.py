@@ -112,7 +112,7 @@ class ServerCell:
 
         await asyncio.gather(*init_handles)
 
-    async def recover(self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient | None) -> None:
+    async def recover(self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient) -> None:
         await self.start_engines(port_allocator)
 
         if self.needs_offload:
@@ -122,8 +122,7 @@ class ServerCell:
 
         self.mark_alive()
 
-        if router_api_client is not None:
-            await self.register(router_api_client)
+        await self.register(router_api_client)
 
     def mark_alive(self):
         for engine in self.engines:
