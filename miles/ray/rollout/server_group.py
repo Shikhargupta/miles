@@ -117,18 +117,18 @@ class ServerGroup:
             return [], []
 
         if self.args.rollout_external:
-            addr_and_ports = allocate_rollout_engine_addr_and_ports_external(
-                args=self.args, rollout_engines=new_engines
+            raise NotImplementedError(
+                "external rollout address allocation was removed and a new implementation is coming"
             )
-        else:
-            addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
-                args=self.args,
-                port_allocator=port_allocator,
-                rollout_engines=new_engines,
-                worker_type=self.worker_type,
-                num_gpus_per_engine=self.num_gpus_per_engine,
-                rank_offset=self.rank_offset,
-            )
+
+        addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
+            args=self.args,
+            port_allocator=port_allocator,
+            rollout_engines=new_engines,
+            worker_type=self.worker_type,
+            num_gpus_per_engine=self.num_gpus_per_engine,
+            rank_offset=self.rank_offset,
+        )
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
