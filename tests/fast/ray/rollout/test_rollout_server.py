@@ -97,7 +97,7 @@ class TestRolloutServerCrossCellProperties:
         for index, cell in enumerate(cells):
             cell._mark_allocated_uninitialized([fake_actor_handle()])
             cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{index + 1}:30000")])
-        srv = RolloutServer(server_cells=cells)
+        srv = RolloutServer(server_cells={f"idx-{i}": cell for i, cell in enumerate(cells)})
         assert [client.server_url for client in srv.api_clients] == [
             f"http://10.0.0.{index + 1}:30000" for index in range(4)
         ]
@@ -106,26 +106,26 @@ class TestRolloutServerCrossCellProperties:
         cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
             num_cells=2, num_gpus_per_engine=2
         )
-        srv = RolloutServer(server_cells=cells)
+        srv = RolloutServer(server_cells={f"idx-{i}": cell for i, cell in enumerate(cells)})
         assert srv.engine_gpu_counts == [1, 1, 2, 2]
 
     def test_engine_gpu_offsets_consistent_across_cells(self):
         cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1, gpu_offset=0) + make_dataclass_cells(
             num_cells=2, num_gpus_per_engine=2, gpu_offset=4
         )
-        srv = RolloutServer(server_cells=cells)
+        srv = RolloutServer(server_cells={f"idx-{i}": cell for i, cell in enumerate(cells)})
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
 
 class TestRolloutServerNodesPerEngineHeterogeneity:
     def test_homogeneous_cells_return_single_value(self):
         cells = make_dataclass_cells(num_gpus_per_engine=1) + make_dataclass_cells(num_gpus_per_engine=1)
-        srv = RolloutServer(server_cells=cells)
+        srv = RolloutServer(server_cells={f"idx-{i}": cell for i, cell in enumerate(cells)})
         assert srv.nodes_per_engine == 1
 
     def test_heterogeneous_cells_raise_value_error(self):
         # 1 gpu/engine vs 16 gpu/engine on 8-gpu nodes → 1 vs 2 nodes/engine
         cells = make_dataclass_cells(num_gpus_per_engine=1) + make_dataclass_cells(num_cells=1, num_gpus_per_engine=16)
-        srv = RolloutServer(server_cells=cells)
+        srv = RolloutServer(server_cells={f"idx-{i}": cell for i, cell in enumerate(cells)})
         with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
             _ = srv.nodes_per_engine

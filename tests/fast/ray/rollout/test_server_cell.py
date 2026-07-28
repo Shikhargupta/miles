@@ -147,7 +147,7 @@ def _build_servers(
         for cell in cells:
             cell.num_gpus_per_engine = num_gpus_per_engine
         servers[f"model_{s_idx}"] = RolloutServer(
-            server_cells=cells,
+            server_cells={f"idx-{i}": cell for i, cell in enumerate(cells)},
             args=args,
             model_name=f"model_{s_idx}",
             update_weights=True,
@@ -163,7 +163,7 @@ class TestGetCellIndexerOfIdMap:
         assert len(cells) == 3
         for i, cell in enumerate(cells):
             assert cell.srv_key == "model_0"
-            assert cell.cell_index == i
+            assert cell.cell_id == f"idx-{i}"
 
     def test_multi_server_ordered_by_key_alphabetically(self):
         """When multiple servers exist, cells are emitted in srv_key order."""
@@ -179,12 +179,12 @@ class TestGetCellIndexerOfIdMap:
         servers = _build_servers(num_servers=1, engines_per_server=2, num_gpus_per_engine=16)
         cells = get_cell_indexer_of_id_map(servers)
         assert len(cells) == 1
-        assert cells[0].cell_index == 0
+        assert cells[0].cell_id == "idx-0"
 
     def test_server_without_cells_emits_zero_cells(self):
         """A server with no cells (e.g. only placeholder groups) emits no cell ids."""
         srv = MagicMock()
-        srv.server_cells = []
+        srv.server_cells = {}
         out = get_cell_indexer_of_id_map({"only": srv})
         assert out == []
 
