@@ -196,7 +196,7 @@ class RolloutServer:
         self.has_new_engines |= bool(cell_indices)
 
     async def recover(self, cell_indices: list[int] | None = None):
-        """Recover dead engines, overlapping init across cells."""
+        """Recover dead cells, overlapping init across cells."""
         port_allocator = PortAllocator()
         if cell_indices is None:
             cell_indices = list(range(len(self.server_cells)))
