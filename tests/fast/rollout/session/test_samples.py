@@ -12,7 +12,7 @@ import pytest
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records
 from miles.rollout.session.types import SessionRecord
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -49,6 +49,8 @@ def _make_record(
     finish_reason: str = "stop",
     cached_tokens: int | None = None,
     prompt_tokens: int | None = None,
+    weight_version: str | None = None,
+    weight_versions: list[dict[str, str | int]] | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -70,6 +72,10 @@ def _make_record(
         meta_info["cached_tokens"] = cached_tokens
     if prompt_tokens is not None:
         meta_info["prompt_tokens"] = prompt_tokens
+    if weight_version is not None:
+        meta_info["weight_version"] = weight_version
+    if weight_versions is not None:
+        meta_info["weight_versions"] = weight_versions
     return SessionRecord(
         timestamp=0.0,
         method="POST",
@@ -111,6 +117,71 @@ class TestComputeSamplesFromRecords:
         assert s.response_length == 2
         assert s.loss_mask == [1, 1]
         assert s.status == Sample.Status.COMPLETED
+
+    def test_single_record_scalar_weight_version_becomes_span(self):
+        """A scalar weight_version in the record's meta_info synthesizes one span over the output tokens."""
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11], weight_version="v3")
+
+        samples = compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)
+
+        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 5)])]
+
+    def test_input_sample_already_carrying_weight_versions_is_rejected(self):
+        """The session path assigns spans rather than appending, so a pre-populated input sample must be refused."""
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11])
+        input_sample = _make_input_sample(
+            weight_versions=[WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 0, 1)])]
+        )
+
+        with pytest.raises(AssertionError, match="already carries weight versions"):
+            compute_samples_from_openai_records(_ARGS, input_sample, [record], tok)
+
+    def test_single_record_per_token_weight_versions_become_spans(self):
+        """Per-token weight_versions in meta_info are shifted by the prompt length."""
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11, 12],
+            weight_versions=[{"version": "v1", "start": 0, "end": 2}, {"version": "v2", "start": 2, "end": 3}],
+        )
+
+        samples = compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)
+
+        assert samples[0].weight_versions == [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 3, 5), WeightVersionSpan("v2", 5, 6)])
+        ]
+
+    def test_trimmed_trailing_tokens_clip_the_weight_version_span(self):
+        """Spans are built over the untrimmed output, so trimming must clip the last span's end."""
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, STOP], weight_version="v3"),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 4], output_token_ids=[20], weight_version="v4"),
+        ]
+
+        samples = compute_samples_from_openai_records(
+            _ARGS,
+            _make_input_sample(),
+            records,
+            tok,
+            accumulated_token_ids=[1, 2, 3, 10, 4, 20],
+            max_trim_tokens=1,
+        )
+
+        assert samples[0].tokens == [1, 2, 3, 10]
+        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v3", 3, 4)])]
+        assert samples[1].weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v4", 5, 6)])]
+
+    def test_record_without_any_weight_version_still_contributes_a_call(self):
+        """turns is len(weight_versions), so an unstamped call must appear as an empty call."""
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2], output_token_ids=[10, 11])
+
+        samples = compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)
+
+        assert samples[0].weight_versions == [WeightVersionsPerCall(spans=[])]
 
     def test_multiple_records_produce_multiple_samples(self):
         tok = _mock_tokenizer()

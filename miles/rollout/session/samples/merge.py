@@ -24,7 +24,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 
 def compute_samples_from_openai_records(
@@ -113,6 +113,11 @@ def _compute_sample_from_openai_record(
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
+    assert not input_sample.weight_versions, (
+        f"session input sample index={input_sample.index} already carries weight versions; this path assigns "
+        f"rather than appends, which matches the previous behaviour only while it never resumes generation"
+    )
+
     sample = deepcopy(input_sample)
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
@@ -121,6 +126,7 @@ def _compute_sample_from_openai_record(
     sample.loss_mask = [1] * len(output_token_ids)
     sample.rollout_routed_experts = get_routed_experts_from_response(args, choice, sample)
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
+    sample.weight_versions = [WeightVersionsPerCall.from_meta_info(choice["meta_info"], output_end=len(sample.tokens))]
 
     if trim_count > 0:
         sample.strip_last_output_tokens(trim_count, tokenizer)
@@ -135,8 +141,6 @@ def _compute_sample_from_openai_record(
             sample.status = Sample.Status.ABORTED
 
     sample.prefix_cache_info.add(choice.get("meta_info", {}))
-    if "weight_version" in choice["meta_info"]:
-        sample.weight_versions.append(choice["meta_info"]["weight_version"])
 
     return sample
 
