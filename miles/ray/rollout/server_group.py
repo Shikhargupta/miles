@@ -7,11 +7,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.addr_allocator import (
-    PortAllocator,
-    allocate_rollout_engine_addr_and_ports_external,
-    allocate_rollout_engine_addr_and_ports_normal,
-)
+from miles.ray.rollout.addr_allocator import PortAllocator, allocate_rollout_engine_addr_and_ports_normal
 from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells, launch_sglang_ray_actor
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.utils import async_utils
