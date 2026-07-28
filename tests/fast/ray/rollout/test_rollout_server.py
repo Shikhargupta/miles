@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group
+from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells
 
 from miles.ray.rollout.rollout_server import (
     RolloutServer,
@@ -89,37 +89,36 @@ class TestRolloutServerPureFunctions:
         assert _compute_megatron_num_gpus(args) == 0
 
 
-class TestRolloutServerCrossGroupProperties:
-    def test_engines_collects_node0_engines_from_each_group(self):
-        a = make_dataclass_group(num_engines=2, gpu_offset=0)
-        b = make_dataclass_group(num_engines=2, gpu_offset=2)
-        srv = RolloutServer(server_groups=[a, b])
+class TestRolloutServerCrossCellProperties:
+    def test_engines_collects_primary_engines_from_each_cell(self):
+        cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
+        srv = RolloutServer(server_cells=cells)
         assert len(srv.engines) == 4
 
     def test_engine_gpu_counts_parallel_to_engines(self):
-        a = make_dataclass_group(num_engines=2, num_gpus_per_engine=1)
-        b = make_dataclass_group(num_engines=2, num_gpus_per_engine=2)
-        srv = RolloutServer(server_groups=[a, b])
+        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
+            num_cells=2, num_gpus_per_engine=2
+        )
+        srv = RolloutServer(server_cells=cells)
         assert srv.engine_gpu_counts == [1, 1, 2, 2]
 
-    def test_engine_gpu_offsets_consistent_across_groups(self):
-        a = make_dataclass_group(num_engines=2, num_gpus_per_engine=1, gpu_offset=0)
-        b = make_dataclass_group(num_engines=2, num_gpus_per_engine=2, gpu_offset=4)
-        srv = RolloutServer(server_groups=[a, b])
+    def test_engine_gpu_offsets_consistent_across_cells(self):
+        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1, gpu_offset=0) + make_dataclass_cells(
+            num_cells=2, num_gpus_per_engine=2, gpu_offset=4
+        )
+        srv = RolloutServer(server_cells=cells)
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
 
 class TestRolloutServerNodesPerEngineHeterogeneity:
-    def test_homogeneous_groups_return_single_value(self):
-        a = make_dataclass_group(num_gpus_per_engine=1)
-        b = make_dataclass_group(num_gpus_per_engine=1)
-        srv = RolloutServer(server_groups=[a, b])
+    def test_homogeneous_cells_return_single_value(self):
+        cells = make_dataclass_cells(num_gpus_per_engine=1) + make_dataclass_cells(num_gpus_per_engine=1)
+        srv = RolloutServer(server_cells=cells)
         assert srv.nodes_per_engine == 1
 
-    def test_heterogeneous_groups_raise_value_error(self):
+    def test_heterogeneous_cells_raise_value_error(self):
         # 1 gpu/engine vs 16 gpu/engine on 8-gpu nodes → 1 vs 2 nodes/engine
-        a = make_dataclass_group(num_gpus_per_engine=1)
-        b = make_dataclass_group(num_gpus_per_engine=16)
-        srv = RolloutServer(server_groups=[a, b])
+        cells = make_dataclass_cells(num_gpus_per_engine=1) + make_dataclass_cells(num_cells=1, num_gpus_per_engine=16)
+        srv = RolloutServer(server_cells=cells)
         with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
             _ = srv.nodes_per_engine

@@ -4,7 +4,7 @@ import functools
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import Any, Literal
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -16,9 +16,6 @@ from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.rollout_server import RolloutServer
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +170,8 @@ class ServerCell:
         )
 
 
-def flatten_cells(cells: list[ServerCell]) -> list[ServerEngine]:
-    return [engine for cell in cells for engine in cell.engines]
+def compute_nodes_per_engine(*, num_gpus_per_engine: int, num_gpus_per_node: int) -> int:
+    return max(1, num_gpus_per_engine // num_gpus_per_node)
 
 
 def launch_sglang_ray_actor(
@@ -236,31 +233,3 @@ def launch_sglang_ray_actor(
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
     )
-
-
-class CellIndexer(NamedTuple):
-    srv_key: str
-    group_index: int
-    cell_index: int
-
-
-def get_cell_indexer_of_id_map(servers: dict[str, "RolloutServer"]) -> list[CellIndexer]:
-    """Flatten ``servers`` into a list whose position is the cell id.
-
-    ``cell_index`` is the cell's position within its group. Order is sorted by
-    ``srv_key``, so cell ids are stable across calls when the topology is
-    unchanged.
-    """
-    result: list[CellIndexer] = []
-    for srv_key in sorted(servers):
-        srv = servers[srv_key]
-        for group_index, group in enumerate(srv.server_groups):
-            for cell_index in range(len(group.cells)):
-                result.append(
-                    CellIndexer(
-                        srv_key=srv_key,
-                        group_index=group_index,
-                        cell_index=cell_index,
-                    )
-                )
-    return result

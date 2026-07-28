@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
-from miles.ray.rollout.server_cell import flatten_cells
+from miles.ray.rollout.rollout_server import RolloutServer
+from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
-from miles.ray.rollout.server_group import ServerGroup
 from miles.utils import async_utils
 
-_MODULE = "miles.ray.rollout.server_group"
+_MODULE = "miles.ray.rollout.rollout_server"
 _CELL_MODULE = "miles.ray.rollout.server_cell"
 
 
@@ -28,7 +28,7 @@ class _RecordingRouterApiClient:
             await self._remove_worker_effect()
 
 
-def _build_group(
+def _build_server(
     *,
     events: list[tuple[str, dict]],
     num_engines: int = 1,
@@ -39,7 +39,7 @@ def _build_group(
     bootstrap_port: int | None = None,
     use_miles_router: bool = False,
     remove_worker_effect=None,
-) -> ServerGroup:
+) -> RolloutServer:
     args = make_args(num_gpus_per_node=8, use_miles_router=use_miles_router)
     engines = []
     for index in range(num_engines):
@@ -51,35 +51,39 @@ def _build_group(
         engine.mark_alive()
         engines.append(engine)
 
-    group = ServerGroup(
-        args=args,
-        cells=chunk_engines_into_cells(
-            engines,
-            num_gpus_per_engine=num_gpus_per_engine,
-            num_gpus_per_node=8,
+    nodes_per_engine = max(1, num_gpus_per_engine // 8)
+    cells = [
+        ServerCell(
+            engines=engines[i : i + nodes_per_engine],
             args=args,
+            num_gpus_per_engine=num_gpus_per_engine,
             worker_type=worker_type,
-        ),
-        num_gpus_per_engine=num_gpus_per_engine,
-        worker_type=worker_type,
+            rank_offset=i,
+        )
+        for i in range(0, len(engines), nodes_per_engine)
+    ]
+
+    srv = RolloutServer(
+        server_cells=cells,
+        args=args,
         router_ip=router_ip,
         router_port=router_port,
     )
-    group._recording_router_client = _RecordingRouterApiClient(events, remove_worker_effect=remove_worker_effect)
-    return group
+    srv._recording_router_client = _RecordingRouterApiClient(events, remove_worker_effect=remove_worker_effect)
+    return srv
 
 
-def _with_recording_client(group: ServerGroup):
-    return patch.object(ServerGroup, "_router_api_client", property(lambda self: self._recording_router_client))
+def _with_recording_client(srv: RolloutServer):
+    return patch.object(RolloutServer, "_router_api_client", property(lambda self: self._recording_router_client))
 
 
 async def test_registration_publishes_the_url_the_engine_actually_serves():
     """The router must be told the url the rollout process derived from the allocator."""
     events: list[tuple[str, dict]] = []
-    group = _build_group(events=events)
+    srv = _build_server(events=events)
 
-    with _with_recording_client(group):
-        await group.register_workers([0])
+    with _with_recording_client(srv):
+        await srv.register_workers([0])
 
     assert events == [
         (
@@ -97,51 +101,51 @@ async def test_registration_publishes_the_url_the_engine_actually_serves():
 async def test_registration_passes_the_bootstrap_port_of_a_prefill_worker():
     """PD disaggregation needs the decode side to dial this port."""
     events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, worker_type="prefill", bootstrap_port=8998)
+    srv = _build_server(events=events, worker_type="prefill", bootstrap_port=8998)
 
-    with _with_recording_client(group):
-        await group.register_workers([0])
+    with _with_recording_client(srv):
+        await srv.register_workers([0])
 
     assert events[0][1]["worker_type"] == "prefill"
     assert events[0][1]["bootstrap_port"] == 8998
 
 
-async def test_registration_addresses_only_node0_of_a_multi_node_engine():
-    """Only node 0 serves the router-visible endpoint."""
-    events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, num_engines=2, num_gpus_per_engine=16)
-
-    with _with_recording_client(group):
-        await group.register_workers([0])
-
-    assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.1:30000"]
-
-
 async def test_registration_skips_a_cell_that_is_not_allocated():
     """A stopped cell has no url to publish, so it must be filtered out."""
     events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, num_engines=2)
-    for engine in group.cells[0].engines:
+    srv = _build_server(events=events, num_engines=2)
+    for engine in srv.server_cells[0].engines:
         engine.mark_stopped()
 
-    with _with_recording_client(group):
-        await group.register_workers([0, 1])
+    with _with_recording_client(srv):
+        await srv.register_workers([0, 1])
 
     assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.2:30001"]
 
 
-def test_stop_engines_unregisters_before_killing_the_actor():
+async def test_registration_addresses_only_the_primary_engine_of_a_multi_node_cell():
+    """Only the primary (node-0) engine serves the router-visible endpoint."""
+    events: list[tuple[str, dict]] = []
+    srv = _build_server(events=events, num_engines=2, num_gpus_per_engine=16)
+
+    with _with_recording_client(srv):
+        await srv.register_workers([0])
+
+    assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.1:30000"]
+
+
+def test_stop_cells_unregisters_before_killing_the_actor():
     """Killing first would leave the router routing to a dead worker."""
     events: list[tuple[str, dict]] = []
-    group = _build_group(events=events)
+    srv = _build_server(events=events)
 
     with (
-        _with_recording_client(group),
+        _with_recording_client(srv),
         patch(f"{_CELL_MODULE}.ray") as ray_mock,
     ):
         ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        group.stop_engines(cell_indices=[0])
+        srv.stop_cells([0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
     assert events[0][1] == {"worker_url": "http://10.0.0.1:30000", "use_legacy_api": False}
@@ -154,18 +158,18 @@ def test_a_router_that_rejects_the_unregister_still_kills_the_actor():
         raise RuntimeError("router rejected the removal")
 
     events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, remove_worker_effect=_reject)
+    srv = _build_server(events=events, remove_worker_effect=_reject)
 
     with (
-        _with_recording_client(group),
+        _with_recording_client(srv),
         patch(f"{_CELL_MODULE}.ray") as ray_mock,
     ):
         ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        group.stop_engines(cell_indices=[0])
+        srv.stop_cells([0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
-    assert not flatten_cells(group.cells)[0].is_allocated
+    assert not srv.server_cells[0].primary_engine.is_allocated
 
 
 def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
@@ -175,30 +179,30 @@ def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
         await asyncio.sleep(3600)
 
     events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, remove_worker_effect=_hang)
+    srv = _build_server(events=events, remove_worker_effect=_hang)
 
     with (
-        _with_recording_client(group),
+        _with_recording_client(srv),
         patch(f"{_MODULE}.SHUTDOWN_TIMEOUT", 0.1),
         patch(f"{_CELL_MODULE}.ray") as ray_mock,
     ):
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        group.stop_engines(cell_indices=[0])
+        srv.stop_cells([0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "kill"]
-    assert not flatten_cells(group.cells)[0].is_allocated
+    assert not srv.server_cells[0].primary_engine.is_allocated
 
 
 def test_use_miles_router_reaches_both_router_calls():
     """--use-miles-router pins the legacy query-string API on register and unregister alike."""
     events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, use_miles_router=True)
+    srv = _build_server(events=events, use_miles_router=True)
 
     with (
-        _with_recording_client(group),
+        _with_recording_client(srv),
         patch(f"{_CELL_MODULE}.ray"),
     ):
-        async_utils.run(group.register_workers([0]))
-        group.stop_engines(cell_indices=[0])
+        async_utils.run(srv.register_workers([0]))
+        srv.stop_cells([0])
 
     assert [kwargs["use_legacy_api"] for _name, kwargs in events] == [True, True]
