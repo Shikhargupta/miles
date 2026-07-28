@@ -416,6 +416,34 @@ class UpdateWeightFromTensor:
         return refs or [], long_lived_tensors
 
 
+def _repack_onto_fresh_storage(
+    named_tensors: list[tuple[str, torch.Tensor]],
+) -> dict[str, torch.Tensor]:
+    """Copy tensors into freshly allocated flat buffers and return views onto them.
+
+    LoRA adapter params are allocated inside torch_memory_saver's region, which is backed
+    by cuMem; those allocations cannot be exported over the legacy CUDA IPC API that
+    MultiprocessingSerializer uses, so sharing them directly fails with
+    "CUDA error: invalid argument". One flat buffer per dtype keeps the property the
+    direct-dict transport relies on -- the pickler memoizes storages, so the engine gets
+    one IPC handle per buffer rather than one per tensor.
+    """
+    by_dtype: dict[torch.dtype, list[tuple[str, torch.Tensor]]] = {}
+    for name, tensor in named_tensors:
+        by_dtype.setdefault(tensor.dtype, []).append((name, tensor))
+
+    repacked: dict[str, torch.Tensor] = {}
+    for dtype, items in by_dtype.items():
+        flat = torch.empty(sum(t.numel() for _, t in items), dtype=dtype, device=items[0][1].device)
+        offset = 0
+        for name, tensor in items:
+            view = flat[offset : offset + tensor.numel()].view(tensor.shape)
+            view.copy_(tensor)
+            repacked[name] = view
+            offset += tensor.numel()
+    return repacked
+
+
 def _send_to_colocated_engine(
     hf_named_tensors: list[tuple[str, torch.Tensor]],
     *,
@@ -438,8 +466,11 @@ def _send_to_colocated_engine(
     long_live_tensors = []
 
     if is_lora:
-        # Serialize the named dict directly (no FlattenedTensorBucket); the pickler memoizes storages so IPC shares each flat once.
-        payload = dict(hf_named_tensors)
+        # Serialize the named dict directly (no FlattenedTensorBucket) so the engine
+        # receives the whole unsharded adapter and shards it per TP rank itself. Repack
+        # onto fresh storage first so the handles are IPC-exportable even when the
+        # training actor is offload-managed.
+        payload = _repack_onto_fresh_storage(hf_named_tensors)
         long_live_tensors.append(payload)
         converted_named_tensors_by_dtypes = {}
         serialized_lora = MultiprocessingSerializer.serialize(payload, output_str=True)
