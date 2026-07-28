@@ -9,7 +9,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.addr_allocator import PortAllocator, allocate_rollout_engine_addr_and_ports_normal
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells, launch_sglang_ray_actor
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.utils import async_utils
@@ -119,25 +119,26 @@ class ServerGroup:
         if curr_num_new_engines == 0:
             return [], []
 
-        addr_and_ports: list[dict[str, Any]] = []
+        addr_and_ports: dict[int, dict[str, Any]] = {}
         for cell_index in start_cell_indices or range(len(self.cells)):
             dist_init_addr = None
             for engine_in_cell_index in range(self.nodes_per_engine):
-                engine = self.cells[cell_index].engines[engine_in_cell_index]
-                node_ip, _ = ray.get(engine._get_current_node_ip_and_free_port.remote())
-                alloc = functools.partial(port_allocator.alloc, engine=engine, node_ip=node_ip)
+                actor = self.cells[cell_index].engines[engine_in_cell_index].actor_handle
+                node_ip, _ = ray.get(actor._get_current_node_ip_and_free_port.remote())
+                alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
 
                 if engine_in_cell_index == 0:
                     dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
 
-                addr_and_ports.append(dict(
+                rank = self.rank_offset + cell_index * self.nodes_per_engine + engine_in_cell_index
+                addr_and_ports[rank] = dict(
                     host=node_ip,
                     port=alloc(),
                     nccl_port=alloc(),
                     engine_info_bootstrap_port=alloc(),
                     disaggregation_bootstrap_port=alloc(),
                     dist_init_addr=dist_init_addr,
-                ))
+                )
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
