@@ -124,7 +124,7 @@ class InferenceController:
 
     async def stop_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        self.servers[idx.srv_key].stop_cells([idx.cell_index])
+        await self.servers[idx.srv_key].stop_cells([idx.cell_index])
 
     # -------------------------- misc APIs -----------------------------
 

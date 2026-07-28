@@ -211,29 +211,10 @@ class RolloutServer:
 
         logger.info(f"Recovered {len(cell_indices)} dead rollout cells")
 
-    # Called from InferenceController.stop_cell (main thread, async): deliberately non-async here
-    # to avoid introducing two states like "stopping (but not stopped)" vs "stopped", since
-    # single-thread async code will not yield without an await point
-    # it has the drawback of freezing the whole async thread, which may be avoided later by
-    # moving `shutdown` mainly to local code
-    def stop_cells(self, cell_indices: list[int]):
+    async def stop_cells(self, cell_indices: list[int]):
         logger.info(f"Killing server {cell_indices=}...")
-        try:
-            async_utils.run(asyncio.wait_for(self.unregister_workers(cell_indices), timeout=SHUTDOWN_TIMEOUT))
-        except Exception as e:
-            logger.warning(f"Unregistering {cell_indices=} from the router failed, tearing down anyway (e: {e})")
         for cell_index in sorted(set(cell_indices)):
-            self.server_cells[cell_index].stop()
-
-    async def register_workers(self, cell_indices: list[int]) -> None:
-        await asyncio.gather(
-            *[cell.register(self._router_api_client) for cell in self._allocated_cells_of(cell_indices)]
-        )
-
-    async def unregister_workers(self, cell_indices: list[int]) -> None:
-        await asyncio.gather(
-            *[cell.unregister(self._router_api_client) for cell in self._allocated_cells_of(cell_indices)]
-        )
+            await self.server_cells[cell_index].stop(self._router_api_client)
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(

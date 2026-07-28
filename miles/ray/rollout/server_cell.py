@@ -125,7 +125,12 @@ class ServerCell:
         for engine in self.engines:
             engine.mark_alive()
 
-    def stop(self):
+    async def stop(self, router_api_client: SGLangRouterApiClient) -> None:
+        try:
+            await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"Unregistering {self=} from the router failed, tearing down anyway (e: {e})")
+
         for local_index, engine in enumerate(self.engines):
             if engine.is_allocated:
                 logger.info(f"Shutting down and killing engine at cell-local index {local_index}")
