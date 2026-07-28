@@ -1,8 +1,10 @@
 import asyncio
 import dataclasses
+import functools
 import logging
 from typing import Any
 
+import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import build_server_url
@@ -117,14 +119,25 @@ class ServerGroup:
         if curr_num_new_engines == 0:
             return [], []
 
-        addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
-            args=self.args,
-            port_allocator=port_allocator,
-            rollout_engines=new_engines,
-            worker_type=self.worker_type,
-            num_gpus_per_engine=self.num_gpus_per_engine,
-            rank_offset=self.rank_offset,
-        )
+        addr_and_ports: list[dict[str, Any]] = []
+        for cell_index in start_cell_indices or range(len(self.cells)):
+            dist_init_addr = None
+            for engine_in_cell_index in range(self.nodes_per_engine):
+                engine = self.cells[cell_index].engines[engine_in_cell_index]
+                node_ip, _ = ray.get(engine._get_current_node_ip_and_free_port.remote())
+                alloc = functools.partial(port_allocator.alloc, engine=engine, node_ip=node_ip)
+
+                if engine_in_cell_index == 0:
+                    dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
+
+                addr_and_ports.append(dict(
+                    host=node_ip,
+                    port=alloc(),
+                    nccl_port=alloc(),
+                    engine_info_bootstrap_port=alloc(),
+                    disaggregation_bootstrap_port=alloc(),
+                    dist_init_addr=dist_init_addr,
+                ))
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
