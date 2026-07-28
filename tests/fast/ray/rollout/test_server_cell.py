@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, get_cell_indexer_of_id_map
+from miles.ray.rollout.rollout_server import ParsedId, RolloutServer, list_global_cell_ids
 from miles.ray.rollout.server_cell import ServerCell
 
 
@@ -155,38 +156,45 @@ def _build_servers(
     return servers
 
 
-class TestGetCellIndexerOfIdMap:
-    def test_single_server_one_cell_per_engine(self):
-        """Happy path: one server with N engines → N cells, each cell_index=i, all under model_0."""
-        servers = _build_servers(num_servers=1, engines_per_server=3)
-        cells = get_cell_indexer_of_id_map(servers)
-        assert len(cells) == 3
-        for i, cell in enumerate(cells):
-            assert cell.srv_key == "model_0"
-            assert cell.cell_id == f"idx-{i}"
+class TestParsedId:
+    def test_round_trips_through_the_global_id(self):
+        """The global id is the only thing external callers hold onto."""
+        parsed = ParsedId(model_id="actor", cell_id="idx-3")
+        assert parsed.format() == "actor--idx-3"
+        assert ParsedId.parse("actor--idx-3") == parsed
 
-    def test_multi_server_ordered_by_key_alphabetically(self):
-        """When multiple servers exist, cells are emitted in srv_key order."""
+    def test_a_cell_id_may_contain_the_separator_characters(self):
+        """Only the first separator splits, so cell ids stay free-form."""
+        assert ParsedId.parse("actor--pod--7") == ParsedId(model_id="actor", cell_id="pod--7")
+
+    def test_an_id_without_a_separator_is_rejected(self):
+        """A bare cell id would silently address the wrong model."""
+        with pytest.raises(AssertionError, match="must be"):
+            ParsedId.parse("idx-0")
+
+
+class TestListGlobalCellIds:
+    def test_single_server_lists_every_cell(self):
+        """Happy path: one server with N cells → N global ids under model_0."""
+        servers = _build_servers(num_servers=1, engines_per_server=3)
+        assert list_global_cell_ids(servers) == ["model_0--idx-0", "model_0--idx-1", "model_0--idx-2"]
+
+    def test_multi_server_ordered_by_model_id_alphabetically(self):
+        """When multiple servers exist, ids are emitted in model id order."""
         servers = _build_servers(num_servers=2, engines_per_server=1)
-        cells = get_cell_indexer_of_id_map(servers)
-        srv_keys_in_order = [c.srv_key for c in cells]
-        assert srv_keys_in_order == sorted(srv_keys_in_order)
-        assert srv_keys_in_order == ["model_0", "model_1"]
+        assert list_global_cell_ids(servers) == ["model_0--idx-0", "model_1--idx-0"]
 
     def test_multinode_engine_slots_form_one_cell(self):
         """num_gpus_per_engine=16 and num_gpus_per_node=8 → nodes_per_engine=2;
         the 2 engine slots form one cell."""
         servers = _build_servers(num_servers=1, engines_per_server=2, num_gpus_per_engine=16)
-        cells = get_cell_indexer_of_id_map(servers)
-        assert len(cells) == 1
-        assert cells[0].cell_id == "idx-0"
+        assert list_global_cell_ids(servers) == ["model_0--idx-0"]
 
-    def test_server_without_cells_emits_zero_cells(self):
+    def test_server_without_cells_emits_zero_ids(self):
         """A server with no cells (e.g. only placeholder groups) emits no cell ids."""
         srv = MagicMock()
         srv.server_cells = {}
-        out = get_cell_indexer_of_id_map({"only": srv})
-        assert out == []
+        assert list_global_cell_ids({"only": srv}) == []
 
     def test_empty_server_dict_returns_empty_list(self):
-        assert get_cell_indexer_of_id_map({}) == []
+        assert list_global_cell_ids({}) == []

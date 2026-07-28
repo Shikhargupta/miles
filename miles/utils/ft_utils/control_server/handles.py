@@ -9,16 +9,12 @@ from miles.utils.test_utils.fault_injector import FailureMode
 
 class _CellHandle(abc.ABC):
     @property
-    def cell_id(self) -> str:
-        return f"{self.cell_type}-{self.cell_index}"
-
-    @property
     @abc.abstractmethod
     def cell_type(self) -> str: ...
 
     @property
     @abc.abstractmethod
-    def cell_index(self) -> int: ...
+    def cell_id(self) -> str: ...
 
     @abc.abstractmethod
     async def get_cell(self) -> Cell: ...
@@ -43,8 +39,8 @@ class _ActorCellHandle(_CellHandle):
         return "actor"
 
     @property
-    def cell_index(self) -> int:
-        return self._cell_index
+    def cell_id(self) -> str:
+        return f"{self.cell_type}-{self._cell_index}"
 
     async def get_cell(self) -> Cell:
         cell = self._group._cells[self._cell_index]
@@ -81,28 +77,28 @@ class _ActorCellHandle(_CellHandle):
 
 # TODO the code will NOT work before implementing rollout ft
 class _RolloutCellHandle(_CellHandle):
-    def __init__(self, *, inference_controller: object, cell_index: int) -> None:
+    def __init__(self, *, inference_controller: object, global_cell_id: str) -> None:
         self._inference_controller = inference_controller
-        self._cell_index = cell_index
+        self._global_cell_id = global_cell_id
 
     @property
     def cell_type(self) -> str:
         return "rollout"
 
     @property
-    def cell_index(self) -> int:
-        return self._cell_index
+    def cell_id(self) -> str:
+        return f"{self.cell_type}-{self._global_cell_id}"
 
     async def get_cell(self) -> Cell:
-        phase = self._inference_controller.get_cell_phase(self._cell_index)
-        conditions_raw = self._inference_controller.get_cell_conditions(self._cell_index)
-        is_suspended = self._inference_controller.get_cell_is_suspended(self._cell_index)
+        phase = self._inference_controller.get_cell_phase(self._global_cell_id)
+        conditions_raw = self._inference_controller.get_cell_conditions(self._global_cell_id)
+        is_suspended = self._inference_controller.get_cell_is_suspended(self._global_cell_id)
         return Cell(
             metadata=CellMetadata(
                 name=self.cell_id,
                 labels={
                     "miles.io/cell-type": "rollout",
-                    "miles.io/cell-index": str(self._cell_index),
+                    "miles.io/cell-index": self._global_cell_id,
                 },
             ),
             spec=CellSpec(suspend=is_suspended),
@@ -113,7 +109,7 @@ class _RolloutCellHandle(_CellHandle):
         )
 
     async def suspend(self) -> None:
-        await self._inference_controller.stop_cell(self._cell_index)
+        await self._inference_controller.stop_cell(self._global_cell_id)
 
     async def resume(self) -> None:
-        await self._inference_controller.start_cell(self._cell_index)
+        await self._inference_controller.start_cell(self._global_cell_id)

@@ -1,7 +1,7 @@
 import asyncio
 import dataclasses
 import logging
-from typing import Any, NamedTuple
+from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
@@ -255,21 +255,30 @@ class RolloutServer:
         return SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
 
 
-class CellIndexer(NamedTuple):
-    srv_key: str
+@dataclasses.dataclass(frozen=True)
+class ParsedId:
+    """A cell's address across all models: which model serves it, and which of
+    that model's cells it is."""
+
+    model_id: str
     cell_id: str
 
+    SEPARATOR = "--"
 
-def get_cell_indexer_of_id_map(servers: dict[str, RolloutServer]) -> list[CellIndexer]:
-    """Flatten ``servers`` into a list whose position is the cell id.
+    @staticmethod
+    def parse(global_id: str) -> "ParsedId":
+        model_id, separator, cell_id = global_id.partition(ParsedId.SEPARATOR)
+        assert separator, f"{global_id=} must be '<model_id>{ParsedId.SEPARATOR}<cell_id>'"
+        return ParsedId(model_id=model_id, cell_id=cell_id)
 
-    ``cell_id`` keys the cell within its server. Order is sorted by ``srv_key``,
-    so positional cell ids are stable across calls when the topology is
-    unchanged.
-    """
-    result: list[CellIndexer] = []
-    for srv_key in sorted(servers):
-        srv = servers[srv_key]
-        for cell_id in srv.server_cells:
-            result.append(CellIndexer(srv_key=srv_key, cell_id=cell_id))
-    return result
+    def format(self) -> str:
+        return f"{self.model_id}{ParsedId.SEPARATOR}{self.cell_id}"
+
+
+def list_global_cell_ids(servers: dict[str, RolloutServer]) -> list[str]:
+    """Every cell across every model, sorted by model id then by cell order."""
+    return [
+        ParsedId(model_id=model_id, cell_id=cell_id).format()
+        for model_id in sorted(servers)
+        for cell_id in servers[model_id].server_cells
+    ]
