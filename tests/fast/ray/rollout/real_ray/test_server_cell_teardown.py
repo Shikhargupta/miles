@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
@@ -46,7 +47,7 @@ class TestTeardownIsTerminal:
         actor_handle = srv.server_cells[0].primary_engine.actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))
 
-        srv.stop_cells([0])
+        await srv.stop_cells([0])
 
         assert _is_dead(actor_handle)
         assert not srv.server_cells[0].primary_engine.is_allocated
@@ -59,7 +60,12 @@ class TestTeardownIsTerminal:
         srv.server_cells[0].primary_engine.mark_allocated_uninitialized(actor_handle)
 
         finished = threading.Event()
-        thread = threading.Thread(target=lambda: (srv.stop_cells([0]), finished.set()), daemon=True)
+
+        def _teardown():
+            asyncio.run(srv.stop_cells([0]))
+            finished.set()
+
+        thread = threading.Thread(target=_teardown, daemon=True)
         thread.start()
         thread.join(timeout=30)
 

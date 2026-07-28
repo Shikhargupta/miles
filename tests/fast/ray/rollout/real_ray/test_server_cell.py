@@ -109,7 +109,7 @@ class TestStopCellsRealKill:
         srv = RolloutServer(server_cells=cells, args=cells[0].args)
 
         actors = [e.actor_handle for e in flatten_cells(cells)]
-        srv.stop_cells([0, 1])
+        await srv.stop_cells([0, 1])
 
         for e in flatten_cells(cells):
             assert not e.is_allocated, "engine should be stopped"
@@ -138,7 +138,7 @@ class TestStopCellsRealKill:
             )
         )
 
-        srv.stop_cells([0, 1])
+        await srv.stop_cells([0, 1])
         for e in flatten_cells(cells):
             assert not e.is_allocated, "all engines must be stopped despite shutdown raise"
 

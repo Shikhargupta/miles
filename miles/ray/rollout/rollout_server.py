@@ -7,7 +7,7 @@ from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupCo
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
-from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.utils import async_utils
 
@@ -193,6 +193,7 @@ class RolloutServer:
                 for cell_index in cell_indices
             ]
         )
+        self.has_new_engines |= bool(cell_indices)
 
     async def recover(self, cell_indices: list[int] | None = None):
         """Recover dead engines, overlapping init across cells."""
