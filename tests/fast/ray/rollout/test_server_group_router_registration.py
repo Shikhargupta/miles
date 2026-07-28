@@ -63,7 +63,6 @@ def _build_group(
             worker_type=worker_type,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
-        has_new_engines=False,
         worker_type=worker_type,
         router_ip=router_ip,
         router_port=router_port,
