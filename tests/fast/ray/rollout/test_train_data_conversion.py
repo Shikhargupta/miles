@@ -18,7 +18,7 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp_scheduled_raw,
 )
 from miles.utils import object_store
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -171,6 +171,24 @@ class TestConvertSamplesToTrainData:
             custom_reward_post_process_func=None,
         )
         assert out["rollout_ids"] == [0, 1, 1, 3]
+
+    def test_weight_versions_are_converted_to_serializable_dicts(self):
+        """Weight version spans cross the object-store boundary as plain msgpack values."""
+        args = make_args(rewards_normalization=False)
+        sample = make_sample()
+        sample.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version="v1", abs_start=2, abs_end=4)])
+        ]
+
+        out = convert_samples_to_train_data(
+            args,
+            [sample],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["weight_versions"] == [[[{"version": "v1", "abs_start": 2, "abs_end": 4}]]]
 
     def test_custom_convert_func_short_circuits(self):
         args = make_args()
