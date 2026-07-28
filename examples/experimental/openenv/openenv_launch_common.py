@@ -164,7 +164,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
         # platform-injected) or from a file they can read (DAYTONA_API_KEY_FILE,
         # default ~/.config/daytona/api_key — a dotfile, K8s Secret mount, or
         # shared-FS path). The launcher forwards only the file PATH, never the
-        # value: worker env rides ray's runtime_env, which exec_command echoes
+        # value: worker env rides ray's runtime_env, which exec_command_cpu echoes
         # into driver logs and ray persists in job metadata, all in plaintext.
         key_file = Path(args.daytona_api_key_file or "~/.config/daytona/api_key").expanduser()
         try:
