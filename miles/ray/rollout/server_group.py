@@ -120,7 +120,7 @@ class ServerGroup:
             return [], []
 
         addr_and_ports: dict[int, dict[str, Any]] = {}
-        for cell_index in start_cell_indices or range(len(self.cells)):
+        for cell_index in sorted({index // self.nodes_per_engine for index in new_engine_indices}):
             dist_init_addr = None
             for engine_in_cell_index in range(self.nodes_per_engine):
                 actor = self.cells[cell_index].engines[engine_in_cell_index].actor_handle
