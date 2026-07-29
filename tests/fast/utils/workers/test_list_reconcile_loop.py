@@ -1,8 +1,8 @@
 import pytest
 
 from miles.utils.test_utils.clock import FakeClock
+from miles.utils.workers.list_reconcile_loop import ListBasedReconcileLoop
 from miles.utils.workers.worker_provider.base import CellInfo
-from miles.utils.workers.worker_provider.list_reconcile_loop import ListBasedReconcileLoop
 
 _POLL_INTERVAL_SECONDS = 10.0
 
