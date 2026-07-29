@@ -6,7 +6,7 @@ def spec_rollout_executor(args) -> ServeWorkerSpec:
         name="rollout-executor",
         port_infos=[],
         env_var=lambda: {},
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
+        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0, num_cpus_per_worker=1),
         worker_class="miles.ray.rollout.rollout_executor.RolloutExecutor",
-        ctor_kwargs=lambda: dict(args=args),
+        ctor_kwargs=lambda cell_index, worker_index: dict(args=args),
     )

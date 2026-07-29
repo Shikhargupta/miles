@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from tests.fast.ray.rollout.conftest import make_sglang_config_yaml
 from tests.fast.ray.specs.conftest import make_args
 
@@ -8,6 +9,7 @@ from miles.ray.specs.inference import (
     _compute_megatron_num_gpus,
     _compute_nodes_per_engine,
     _compute_rollout_pg_offset,
+    compute_inference_deployments,
     compute_inference_specs,
 )
 
@@ -92,23 +94,69 @@ class TestComputeInferenceSpecs:
         """ctor_kwargs stays lazy and yields args-level shared engine settings."""
         args = make_args()
         (spec,) = compute_inference_specs(args)
-        kwargs = spec.ctor_kwargs()
+        kwargs = spec.ctor_kwargs(0, 0)
         assert kwargs["args"] is args
         assert kwargs["worker_type"] == "regular"
         assert kwargs["num_gpus_per_engine"] == 1
         assert kwargs["sglang_overrides"]["model_path"] == args.hf_checkpoint
 
+    def test_ctor_kwargs_computes_global_engine_ranks(self):
+        """Ranks advance per worker within a cell and keep counting across groups."""
+        args = make_args(rollout_num_gpus=32, rollout_num_gpus_per_engine=16, num_gpus_per_node=8)
+        (spec,) = compute_inference_specs(args)
+        assert spec.ctor_kwargs(0, 1)["rank"] == 1
+        assert spec.ctor_kwargs(1, 0)["rank"] == 2
+
+    def test_ctor_kwargs_ranks_continue_after_earlier_groups(self):
+        """A later group's ranks start after all engines of earlier groups."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=1, prefill_num_servers=2)
+        prefill, decode = compute_inference_specs(args)
+        assert prefill.ctor_kwargs(0, 0)["rank"] == 0
+        assert decode.ctor_kwargs(0, 0)["rank"] == 2
+
+    def test_server_port_declares_http_url_scheme(self):
+        """The engine's server port is the cell's url so providers can hand out urls."""
+        (spec,) = compute_inference_specs(make_args())
+        (server,) = [port_info for port_info in spec.port_infos if port_info.name == "server"]
+        assert server.url_scheme == "http"
+
+    def test_deployments_expose_model_metadata(self):
+        """Deployments carry the model-level fields the rollout server needs."""
+        args = make_args()
+        (deployment,) = compute_inference_deployments(args)
+        assert deployment.model_name == "default"
+        assert deployment.update_weights is True
+        assert deployment.model_path == args.hf_checkpoint
+        assert deployment.group_gpu_offset == 0
+
+    def test_host_port_overrides_are_rejected(self, tmp_path):
+        """A config that pins host/port would bypass managed ports and must fail."""
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(
+            "sglang:\n"
+            "  - name: default\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 1\n"
+            "        overrides:\n"
+            "          port: 12345\n"
+        )
+        args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=8)
+        with pytest.raises(AssertionError, match="host/port"):
+            compute_inference_specs(args)
+
     def test_colocated_offload_group_keeps_memory_saver(self):
         """A group sharing gpus with megatron keeps memory saver enabled."""
         args = make_args(colocate=True, offload_rollout=True)
         (spec,) = compute_inference_specs(args)
-        assert "enable_memory_saver" not in spec.ctor_kwargs()["sglang_overrides"]
+        assert "enable_memory_saver" not in spec.ctor_kwargs(0, 0)["sglang_overrides"]
 
     def test_disjoint_offload_group_disables_memory_saver(self):
         """A group beyond the megatron gpus gets enable_memory_saver=False."""
         args = make_args(colocate=False, offload_rollout=True, actor_num_nodes=1, actor_num_gpus_per_node=8)
         (spec,) = compute_inference_specs(args)
-        assert spec.ctor_kwargs()["sglang_overrides"]["enable_memory_saver"] is False
+        assert spec.ctor_kwargs(0, 0)["sglang_overrides"]["enable_memory_saver"] is False
 
 
 class TestComputeEngineEnvVars:

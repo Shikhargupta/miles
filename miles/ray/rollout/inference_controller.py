@@ -1,5 +1,8 @@
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -8,7 +11,10 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
+from miles.ray.specs.inference import InferenceDeployment
 from miles.ray.utils import Lock
+from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 
 
 logger = logging.getLogger(__name__)
@@ -16,20 +22,32 @@ logger = logging.getLogger(__name__)
 
 class InferenceController:
     @staticmethod
-    async def create(args, pg) -> "InferenceController":
-        controller = InferenceController(args, pg)
+    async def create(
+        args,
+        *,
+        deployments: list[InferenceDeployment],
+        providers: dict[str, BaseWorkerProvider],
+        worker_cell_control: Any,
+    ) -> "InferenceController":
+        controller = InferenceController(args)
         if not args.debug_train_only:
-            controller.servers = await start_rollout_servers(args, pg)
+            controller.servers = await start_rollout_servers(
+                args, deployments=deployments, providers=providers, worker_cell_control=worker_cell_control
+            )
             dashboard_hooks.register_router(args)
             start_session_server(args)
+            for provider in providers.values():
+                controller._watcher_disposers.append(await provider.watch_cells(controller._reconcile))
         return controller
 
-    def __init__(self, args, pg):
-        self.pg = pg
+    def __init__(self, args):
         self.args = args
         self.servers: dict[str, RolloutServer] = {}
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self._reconcile_gate = _ReconcileGate()
+        self._cell_ops_lock = asyncio.Lock()
+        self._watcher_disposers: list[StopWatchFn] = []
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
@@ -44,7 +62,9 @@ class InferenceController:
         await self.health_monitoring_resume()
 
     async def dispose(self):
-        pass
+        for disposer in self._watcher_disposers:
+            await disposer()
+        self._watcher_disposers = []
 
     # -------------------------- offload/onload -----------------------------
 
@@ -78,7 +98,6 @@ class InferenceController:
                 engine_gpu_offsets=[],
             )
 
-        await srv.wait_all_engines_alive()
         return EnginesAndLock(
             rollout_engines=srv.api_clients,
             rollout_engine_lock=self.rollout_engine_lock,
@@ -91,6 +110,7 @@ class InferenceController:
         # when fault tolerance is not enabled, we need to manually clear has_new_engines after update_weights
         srv = self._get_updatable_server()
         if srv:
+            await srv.promote_weight_synced_cells()
             srv.clear_has_new_engines()
 
     async def recover_updatable_engines(self) -> None:
@@ -122,13 +142,35 @@ class InferenceController:
     # -------------------------- external start/stop -----------------------------
 
     async def start_cell(self, cell_id: str):
-        await self._server_of(cell_id).recover(cell_ids=[cell_id])
+        async with self._reconcile_gate.operate(), self._cell_ops_lock:
+            await self._server_of(cell_id).recover(cell_ids=[cell_id])
 
     async def stop_cell(self, cell_id: str):
-        await self._server_of(cell_id).stop_cells([cell_id])
+        async with self._reconcile_gate.operate(), self._cell_ops_lock:
+            await self._server_of(cell_id).stop_cells([cell_id])
 
     def list_cell_ids(self) -> list[str]:
         return list_cell_ids(self.servers)
+
+    def compute_cell_status(self, cell_id: str) -> CellStatus:
+        cell = self._server_of(cell_id).server_cells[cell_id]
+        if not cell.is_allocated:
+            return CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
+        if not cell.is_alive:
+            return CellStatus(
+                phase="Running",
+                conditions=[
+                    CellCondition.allocated(TriState.TRUE),
+                    CellCondition.healthy(TriState.UNKNOWN, reason="WeightSyncPending"),
+                ],
+            )
+        return CellStatus(
+            phase="Running",
+            conditions=[CellCondition.allocated(TriState.TRUE), CellCondition.healthy(TriState.TRUE)],
+        )
+
+    def get_cell_is_suspended(self, cell_id: str) -> bool:
+        return not self._server_of(cell_id).server_cells[cell_id].is_allocated
 
     def _server_of(self, cell_id: str) -> RolloutServer:
         owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]
@@ -148,20 +190,57 @@ class InferenceController:
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
 
+    # -------------------------- reconcile -----------------------------
+
+    async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        async with self._reconcile_gate.operate(), self._cell_ops_lock:
+            srv = self._server_of(cell_id)
+            cell = srv.server_cells[cell_id]
+
+            if observed is None:
+                if cell.is_allocated:
+                    await self._reconcile_remove(srv=srv, cell=cell)
+                return
+
+            if len(observed.member_urls) < cell.num_nodes:
+                return
+
+            if not cell.is_allocated:
+                await self._reconcile_add(srv=srv, cell=cell)
+            elif cell.observed_members_hash is not None and observed.members_hash != cell.observed_members_hash:
+                logger.info(f"Cell {cell_id} changed members; replacing it")
+                await self._reconcile_remove(srv=srv, cell=cell)
+                await self._reconcile_add(srv=srv, cell=cell)
+            elif not srv.update_weights and not cell.is_alive:
+                await cell.promote_to_alive(srv._router_api_client)
+            cell.observed_members_hash = observed.members_hash
+
+    async def _reconcile_remove(self, *, srv: RolloutServer, cell) -> None:
+        logger.info(f"Reconcile removes cell {cell.cell_id}")
+        if cell.is_alive:
+            try:
+                await asyncio.wait_for(cell.unregister(srv._router_api_client), timeout=_UNREGISTER_TIMEOUT_SECONDS)
+            except Exception:
+                logger.warning(f"Unregistering cell {cell.cell_id} from the router failed; removing anyway")
+        cell._mark_stopped()
+        if srv.update_weights:
+            srv.has_new_engines = True
+
+    async def _reconcile_add(self, *, srv: RolloutServer, cell) -> None:
+        logger.info(f"Reconcile adds cell {cell.cell_id}")
+        await cell.attach_unsynced()
+        if srv.update_weights:
+            srv.has_new_engines = True
+        else:
+            await cell.promote_to_alive(srv._router_api_client)
+
     # -------------------------- utils -----------------------------
 
     async def health_monitoring_pause(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
+        await self._reconcile_gate.pause()
 
     async def health_monitoring_resume(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
-
-    def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
-            raise NotImplementedError(
-                "rollout fault tolerance is being rebuilt; health monitoring must pause before "
-                "get_updatable_engines_and_lock snapshots the engines"
-            )
+        await self._reconcile_gate.resume()
 
     @property
     def _server(self) -> RolloutServer | None:
@@ -171,7 +250,44 @@ class InferenceController:
         return next(iter(self.servers.values()))
 
     async def _try_ci_fault_injection(self):
-        raise NotImplementedError("rollout fault injection is being rebuilt with rollout fault tolerance")
+        raise NotImplementedError("rollout fault injection is being rebuilt on top of the worker manager")
+
+
+class _ReconcileGate:
+    """Blocks reconcile add/remove while weight updates or offload snapshots run.
+
+    ``pause`` waits for in-flight reconcile operations to drain, so the set of
+    allocated cells is stable from pause until resume."""
+
+    def __init__(self) -> None:
+        self._paused = False
+        self._num_active = 0
+        self._condition = asyncio.Condition()
+
+    async def pause(self) -> None:
+        async with self._condition:
+            self._paused = True
+            await self._condition.wait_for(lambda: self._num_active == 0)
+
+    async def resume(self) -> None:
+        async with self._condition:
+            self._paused = False
+            self._condition.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def operate(self):
+        async with self._condition:
+            await self._condition.wait_for(lambda: not self._paused)
+            self._num_active += 1
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._num_active -= 1
+                self._condition.notify_all()
+
+
+_UNREGISTER_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ def compute_session_server_specs(args) -> list[CommandWorkerSpec]:
                 num_cells=_compute_num_session_servers(args),
                 num_workers_per_cell=1,
                 num_gpus_per_worker=0,
+                num_cpus_per_worker=1,
             ),
             launch_command="python -m miles.rollout.session.server --config-json {config_json}",
         )

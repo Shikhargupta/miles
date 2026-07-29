@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -91,7 +92,9 @@ class TestRolloutCellHandle:
     @pytest.mark.asyncio
     async def test_get_cell_delegates_to_controller(self) -> None:
         controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
+        handle = _RolloutCellHandle(
+            inference_controller=controller, driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+        )
         cell = await handle.get_cell()
 
         assert cell.metadata.name == "rollout-actor-0"
@@ -100,21 +103,28 @@ class TestRolloutCellHandle:
         assert cell.spec.suspend is False
 
     @pytest.mark.asyncio
-    async def test_suspend_delegates_to_controller(self) -> None:
+    async def test_suspend_runs_the_gated_controller_stop_on_the_driver_loop(self) -> None:
         controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
+        handle = _RolloutCellHandle(
+            inference_controller=controller, driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+        )
         await handle.suspend()
         assert controller.stopped_cells == ["actor-0"]
 
     @pytest.mark.asyncio
-    async def test_resume_delegates_to_controller(self) -> None:
+    async def test_resume_runs_the_gated_controller_start_on_the_driver_loop(self) -> None:
         controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
+        handle = _RolloutCellHandle(
+            inference_controller=controller, driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+        )
         await handle.resume()
         assert controller.started_cells == ["actor-0"]
 
-    def test_cell_type_is_rollout(self) -> None:
-        handle = _RolloutCellHandle(inference_controller=object(), rollout_cell_id="actor-0")
+    @pytest.mark.asyncio
+    async def test_cell_type_is_rollout(self) -> None:
+        handle = _RolloutCellHandle(
+            inference_controller=object(), driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+        )
         assert handle.cell_type == "rollout"
         assert handle.cell_id == "rollout-actor-0"
 

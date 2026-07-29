@@ -23,7 +23,7 @@ def _make_base_kwargs(**overrides) -> dict:
         name="demo-worker",
         port_infos=[_make_port_info()],
         env_var=lambda: {"DEMO": "1"},
-        scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=4, num_gpus_per_worker=0.4),
+        scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=4, num_gpus_per_worker=0.4, num_cpus_per_worker=1),
     )
     kwargs.update(overrides)
     return kwargs
@@ -34,6 +34,11 @@ class TestPortInfo:
         """Both per_worker and master are valid modes."""
         assert _make_port_info(mode="per_worker").mode == "per_worker"
         assert _make_port_info(mode="master").mode == "master"
+
+    def test_url_scheme_defaults_to_none_and_is_settable(self):
+        """A port is not a url port unless it declares a scheme."""
+        assert _make_port_info().url_scheme is None
+        assert _make_port_info(url_scheme="http").url_scheme == "http"
 
     def test_rejects_unknown_mode(self):
         """An unknown mode literal is rejected."""
@@ -103,7 +108,7 @@ class TestServeWorkerSpec:
         spec = ServeWorkerSpec(
             **_make_base_kwargs(),
             worker_class="miles.ray.rollout.inference_controller.InferenceController",
-            ctor_kwargs=lambda: {},
+            ctor_kwargs=lambda cell_index, worker_index: {},
         )
         assert spec.worker_class == "miles.ray.rollout.inference_controller.InferenceController"
         assert isinstance(spec, BaseWorkerSpec)
@@ -112,9 +117,9 @@ class TestServeWorkerSpec:
         """The ctor_kwargs callable is stored as-is and only evaluated on demand."""
         calls = []
 
-        def ctor_kwargs() -> dict:
+        def ctor_kwargs(cell_index: int, worker_index: int) -> dict:
             calls.append(1)
-            return {"x": 1}
+            return {"x": cell_index * 10 + worker_index}
 
         spec = ServeWorkerSpec(
             **_make_base_kwargs(),
@@ -122,7 +127,7 @@ class TestServeWorkerSpec:
             ctor_kwargs=ctor_kwargs,
         )
         assert calls == []
-        assert spec.ctor_kwargs() == {"x": 1}
+        assert spec.ctor_kwargs(1, 2) == {"x": 12}
 
 
 class TestServeWorkerSpecRpcPortInjection:
@@ -130,7 +135,7 @@ class TestServeWorkerSpecRpcPortInjection:
         return ServeWorkerSpec(
             **_make_base_kwargs(**overrides),
             worker_class="miles.demo.Worker",
-            ctor_kwargs=lambda: {},
+            ctor_kwargs=lambda cell_index, worker_index: {},
         )
 
     def test_rpc_port_is_injected_by_default(self):

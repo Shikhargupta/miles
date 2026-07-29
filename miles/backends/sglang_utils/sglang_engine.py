@@ -5,6 +5,7 @@ import multiprocessing
 import os
 
 import httpx
+import ray
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 
@@ -31,6 +32,15 @@ def get_base_gpu_id(args, rank):
             num_critic_gpus = args.critic_num_gpus_per_node * args.critic_num_nodes
             start_index = (num_actor_gpus + num_critic_gpus + rank * num_gpus) % args.num_gpus_per_node
     return start_index
+
+
+def _derive_base_gpu_id_from_ray() -> int | None:
+    if not ray.is_initialized():
+        return None
+    gpu_ids = ray.get_gpu_ids()
+    if not gpu_ids:
+        return None
+    return int(gpu_ids[0])
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
@@ -113,9 +123,19 @@ class SGLangEngine(RayActor):
         self.args = args
         self.rank = rank
         self.worker_type = worker_type
+        if base_gpu_id is None and not args.rollout_external:
+            base_gpu_id = _derive_base_gpu_id_from_ray()
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
+        self._addr_ports: dict = {}
+        os.environ.setdefault("SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{worker_type}_rank_{rank}")
+
+    def configure_addrs_and_ports(self, **kwargs) -> None:
+        self._addr_ports = kwargs
+
+    def get_addr_and_ports(self) -> dict:
+        return dict(self._addr_ports)
 
     def get_topology_info(self) -> dict:
         """Placement facts for the dashboard timeline. ``base_gpu_id`` is
@@ -138,13 +158,26 @@ class SGLangEngine(RayActor):
 
     def init(
         self,
-        dist_init_addr,
-        port,
-        nccl_port,
+        dist_init_addr=None,
+        port=None,
+        nccl_port=None,
         host=None,
         disaggregation_bootstrap_port=None,
         engine_info_bootstrap_port=None,
     ):
+        stored = self._addr_ports
+        if dist_init_addr is None and "dist_init_addr" in stored:
+            dist_init_addr = f"{stored['dist_init_addr']}:{stored['dist_init_port']}"
+        host = host or stored.get("server_addr")
+        port = port if port is not None else stored.get("server_port")
+        nccl_port = nccl_port if nccl_port is not None else stored.get("nccl_port")
+        if engine_info_bootstrap_port is None:
+            engine_info_bootstrap_port = stored.get("engine_info_bootstrap_port")
+        if disaggregation_bootstrap_port is None:
+            disaggregation_bootstrap_port = stored.get("disaggregation_bootstrap_port")
+        assert dist_init_addr is not None, "init needs dist_init_addr from arguments or configure_addrs_and_ports"
+        assert port is not None and nccl_port is not None, f"init needs server/nccl ports, got {stored=}"
+
         if env_report := self.args.env_report:
             collect_and_print_node_env_report(
                 role="rollout",

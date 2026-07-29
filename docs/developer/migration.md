@@ -71,7 +71,7 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 ```diff
 - actor, critic = create_training_models(args, pgs, rollout_manager)
-+ actor, critic = await create_training_models(args, pgs, inference_controller, rollout_executor)
++ actor, critic = await create_training_models(args, infra, inference_controller, rollout_executor)
 ```
 
 ## `RolloutManager` split into `InferenceController` + `RolloutExecutor`
@@ -83,8 +83,9 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 ```diff
 - rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
++ infra = create_worker_infra(args)
 + inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
-+     args, pgs["rollout"]
++     args, infra
 + )
 
 - await rollout_manager.generate.remote(rollout_id)

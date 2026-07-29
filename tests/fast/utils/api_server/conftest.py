@@ -102,11 +102,8 @@ class MockInferenceController:
         self.stopped_cells: list[str] = []
         self.started_cells: list[str] = []
 
-    def get_cell_phase(self, cell_id: str) -> str:
-        return self._phase
-
-    def get_cell_conditions(self, cell_id: str) -> list[dict[str, str | None]]:
-        return self._conditions
+    def compute_cell_status(self, cell_id: str) -> CellStatus:
+        return CellStatus(phase=self._phase, conditions=[CellCondition(**c) for c in self._conditions])
 
     def get_cell_is_suspended(self, cell_id: str) -> bool:
         return self._is_suspended

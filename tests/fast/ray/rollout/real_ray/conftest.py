@@ -1,123 +1,124 @@
-"""Fixtures for tests that drive ``MockSGLangEngine`` as a real Ray actor."""
+"""Fixtures that drive ``MockSGLangEngine`` actors through a real ``RayWorkerManager``."""
 
 from __future__ import annotations
+
+import dataclasses
+import itertools
+import time
 
 import pytest
 import ray
 
-# Production launch_sglang_ray_actor hard-codes num_gpus=0.2, num_cpus=0.2 on
-# the actor's .options(...) call, so each PG bundle must satisfy that.
-_PER_ENGINE_NUM_CPUS = 0.2
-_PER_ENGINE_NUM_GPUS = 0.2
+from miles.ray.rollout.rollout_server import build_server_cells
+from miles.ray.specs.inference import InferenceDeployment, compute_inference_deployments
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+_MOCK_ENGINE_CLASS = "miles.utils.test_utils.mock_sglang_engine.MockSGLangEngine"
+_PROVIDER_POLL_INTERVAL_SECONDS = 0.5
+_ACTORS_GONE_TIMEOUT_SECONDS = 30.0
+
+_unique_counter = itertools.count()
+
+
+def make_mock_deployments(args) -> list[InferenceDeployment]:
+    """Inference deployments whose engines are gpu-less MockSGLangEngine actors."""
+    deployments = []
+    for deployment in compute_inference_deployments(args):
+        spec = deployment.spec.model_copy(
+            update={
+                "worker_class": _MOCK_ENGINE_CLASS,
+                "scheduling": deployment.spec.scheduling.model_copy(
+                    update={"num_gpus_per_worker": 0, "num_cpus_per_worker": 0.1}
+                ),
+            }
+        )
+        deployments.append(dataclasses.replace(deployment, spec=spec))
+    return deployments
+
+
+@dataclasses.dataclass
+class ManagerHarness:
+    manager: ray.actor.ActorHandle
+    deployments: list[InferenceDeployment]
+
+    @property
+    def providers(self) -> dict[str, RayWorkerProvider]:
+        return {
+            deployment.spec.name: RayWorkerProvider(
+                manager=self.manager,
+                spec_name=deployment.spec.name,
+                poll_interval_seconds=_PROVIDER_POLL_INTERVAL_SECONDS,
+            )
+            for deployment in self.deployments
+        }
+
+    @property
+    def worker_cell_control(self) -> RayWorkerHandle:
+        return RayWorkerHandle(self.manager)
+
+    def build_cells(self, args):
+        return build_server_cells(
+            args,
+            deployments=self.deployments,
+            providers=self.providers,
+            worker_cell_control=self.worker_cell_control,
+        )
+
+    def kill_all(self) -> None:
+        worker_names = [
+            info.name
+            for deployment in self.deployments
+            for info in ray.get(self.manager.get_worker_infos.remote(spec_name=deployment.spec.name))
+        ]
+        for name in worker_names:
+            try:
+                ray.kill(ray.get_actor(name), no_restart=True)
+            except ValueError:
+                pass
+        ray.kill(self.manager)
+        _wait_names_gone(worker_names)
 
 
 @pytest.fixture
-def placement_group_factory(ray_local_mode):
-    """Yields ``make(num_engines) -> (pg, bundle_indices, gpu_ids)`` matching
-    what ``ServerGroup.pg`` expects. PGs are torn down on teardown."""
-    created: list = []
+def manager_harness_factory(ray_local_mode):
+    """Yields ``async make(args) -> ManagerHarness``; all managers and their
+    named worker actors are torn down (and confirmed gone) after the test."""
+    harnesses: list[ManagerHarness] = []
 
-    def _make(num_engines: int) -> tuple:
-        bundles = [{"CPU": _PER_ENGINE_NUM_CPUS, "GPU": _PER_ENGINE_NUM_GPUS} for _ in range(num_engines)]
-        pg = ray.util.placement_group(bundles, strategy="PACK")
-        ray.get(pg.ready())
-        created.append(pg)
-        return (pg, list(range(num_engines)), list(range(num_engines)))
+    async def _make(args) -> ManagerHarness:
+        deployments = make_mock_deployments(args)
+        manager = (
+            ray.remote(RayWorkerManager)
+            .options(name=f"test-worker-manager-{next(_unique_counter)}", num_cpus=0.1)
+            .remote()
+        )
+        await manager.init.remote(worker_specs=[deployment.spec for deployment in deployments], placements={})
+        harness = ManagerHarness(manager=manager, deployments=deployments)
+        harnesses.append(harness)
+        return harness
 
     yield _make
 
-    for pg in created:
-        try:
-            ray.util.remove_placement_group(pg)
-        except Exception:
-            pass
+    for harness in harnesses:
+        harness.kill_all()
 
 
-def build_cells(
-    *,
-    pg_tuple: tuple,
-    num_cells: int = 2,
-    num_gpus_per_engine: int = 1,
-    rank_offset: int = 0,
-    gpu_offset: int = 0,
-    debug_train_only: bool = False,
-    worker_type: str = "regular",
-    needs_offload: bool = False,
-    update_weights: bool = True,
-    model_path: str | None = None,
-):
-    """Build configured cells for one placement group.
-
-    ``rank_offset`` is a global rank (engines of several groups share it), while
-    gpu indices are positions inside this placement group, so the two offsets
-    are independent: a group with its own pg still starts at gpu index 0.
-    """
-    from tests.fast.ray.rollout.conftest import make_args
-
-    from miles.ray.rollout.server_cell import ServerCell
-    from miles.ray.specs.inference import _compute_nodes_per_engine
-
-    args = make_args(num_gpus_per_node=8, debug_train_only=debug_train_only)
-    nodes_per_engine = _compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
-    num_gpu_per_engine = min(num_gpus_per_engine, 8)
-    return [
-        ServerCell(
-            args=args,
-            cell_id=f"cell-{cell_index}",
-            num_nodes=nodes_per_engine,
-            pg=pg_tuple,
-            num_gpus_per_engine=num_gpus_per_engine,
-            worker_type=worker_type,
-            rank_offset=rank_offset + cell_index * nodes_per_engine,
-            gpu_offset=gpu_offset + cell_index * nodes_per_engine * num_gpu_per_engine,
-            needs_offload=needs_offload,
-            model_path=model_path,
-            update_weights=update_weights,
-        )
-        for cell_index in range(num_cells)
-    ]
+def _wait_names_gone(names: list[str]) -> None:
+    deadline = time.monotonic() + _ACTORS_GONE_TIMEOUT_SECONDS
+    remaining = set(names)
+    while remaining:
+        remaining = {name for name in remaining if _actor_exists(name)}
+        if not remaining:
+            return
+        assert time.monotonic() < deadline, f"actors {sorted(remaining)} still resolvable during test teardown"
+        time.sleep(0.1)
 
 
-async def start_cells(cells, allocator=None, *, mark_alive: bool = False):
-    """Start every cell's engines through one shared allocator."""
-    import asyncio
-
-    from miles.ray.rollout.addr_allocator import PortAllocator
-
-    allocator = allocator if allocator is not None else PortAllocator()
-    await asyncio.gather(*[cell.start_engines(allocator) for cell in cells])
-    if mark_alive:
-        for cell in cells:
-            cell._mark_alive()
-
-
-def kill_cells(cells) -> None:
-    for cell in cells:
-        if cell.is_allocated:
-            for actor_handle in cell.actor_handles:
-                try:
-                    ray.kill(actor_handle)
-                except Exception:
-                    pass
-
-
-@pytest.fixture
-def mock_engine_class(ray_local_mode):
-    """Unwrapped MockSGLangEngine class.
-
-    Production wraps via ``ray.remote(SGLangEngine)``; substituting the
-    already-wrapped class would double-wrap, so callers monkeypatch the
-    unwrapped class inside ``miles.ray.rollout.server_cell``."""
-    from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
-
-    return MockSGLangEngine.__ray_actor_class__
-
-
-@pytest.fixture
-def patched_sglang_engine(monkeypatch, mock_engine_class):
-    """Replace SGLangEngine with the mock; the real addr allocator runs, and
-    each mock engine serves HTTP on the port it is allocated, so the urls
-    the cell derives from the allocator actually serve requests."""
-    import miles.ray.rollout.server_cell as cell_mod
-
-    monkeypatch.setattr(cell_mod, "SGLangEngine", mock_engine_class)
+def _actor_exists(name: str) -> bool:
+    try:
+        ray.get_actor(name)
+    except ValueError:
+        return False
+    return True

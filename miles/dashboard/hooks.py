@@ -314,10 +314,10 @@ def register_engines(servers) -> None:
         return
     try:
         chunks = _alive_engine_chunks(servers)
-        fingerprint = tuple(id(actor_handle) for chunk in chunks for actor_handle in chunk)
+        fingerprint = tuple(id(handle) for chunk in chunks for handle in chunk)
         if fingerprint == _engines_fingerprint:
             return
-        infos = _ray_get([actor_handle.get_topology_info.remote() for chunk in chunks for actor_handle in chunk])
+        infos = _ray_get([handle.actor.get_topology_info.remote() for chunk in chunks for handle in chunk])
         handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=_group_engines(chunks, infos)))
         _engines_fingerprint = fingerprint
     except Exception:
@@ -350,7 +350,7 @@ def _alive_engine_chunks(servers) -> list[list]:
     for server in servers.values():
         for cell in server.server_cells.values():
             if cell.is_alive:
-                chunks.append(cell.actor_handles)
+                chunks.append(cell.worker_handles)
     return chunks
 
 

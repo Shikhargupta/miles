@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import ray
 
 from miles.utils.misc import get_free_port
 from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer
@@ -35,6 +34,14 @@ class MockSGLangEngine:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._faults: dict[str, BaseException] = {}
         self._http_server: MockSGLangHttpServer | None = None
+        self._addr_ports: dict = {}
+
+    def configure_addrs_and_ports(self, **kwargs):
+        self._record("configure_addrs_and_ports", (), kwargs)
+        self._addr_ports = kwargs
+
+    def get_addr_and_ports(self) -> dict:
+        return dict(self._addr_ports)
 
     def set_fault(self, method: str, exception: BaseException | None):
         if exception is None:
@@ -60,7 +67,9 @@ class MockSGLangEngine:
     def init(self, **kwargs):
         self._record("init", (), kwargs)
         self._maybe_fault("init")
-        self._http_server = MockSGLangHttpServer(port=kwargs["port"])
+        port = kwargs.get("port") or self._addr_ports.get("server_port")
+        assert port is not None, "init needs a port from arguments or configure_addrs_and_ports"
+        self._http_server = MockSGLangHttpServer(port=port)
         self.initialized = True
         return None
 
@@ -89,6 +98,3 @@ class MockSGLangEngine:
         exc = self._faults.pop(method, None)
         if exc is not None:
             raise exc
-
-
-MockSGLangEngine = ray.remote(MockSGLangEngine)

@@ -36,6 +36,8 @@ class RayTrainCell:
         with_opd_teacher: bool = False,
         cell_index: int,
         actor_factory: ActorFactory,
+        actor_releaser: Callable[[], None] | None = None,
+        indep_dp_store_addr: str | None = None,
         rollout_executor: object | None,
         health_checker: BaseHealthChecker,
     ) -> None:
@@ -46,6 +48,8 @@ class RayTrainCell:
         self.with_opd_teacher = with_opd_teacher
         self.rollout_executor = rollout_executor
         self.actor_factory = actor_factory
+        self.actor_releaser = actor_releaser
+        self.indep_dp_store_addr = indep_dp_store_addr
         self.health_checker = health_checker
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
@@ -60,8 +64,7 @@ class RayTrainCell:
         indep_dp_info: IndepDPInfo,
         recv_ckpt_src_rank: int | None = None,
     ):
-        results = await self.execute(
-            "init",
+        init_kwargs = dict(
             args=self.args,
             role=self.role,
             with_ref=self.with_ref,
@@ -69,6 +72,9 @@ class RayTrainCell:
             indep_dp_info=indep_dp_info,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
+        if self.indep_dp_store_addr is not None:
+            init_kwargs["indep_dp_store_addr"] = self.indep_dp_store_addr
+        results = await self.execute("init", **init_kwargs)
         self._mark_as_alive(indep_dp_info=indep_dp_info)
         await self.health_checker.start()
         return results
@@ -121,8 +127,11 @@ class RayTrainCell:
             return
 
         if self.is_allocated:
-            for actor in self._get_actor_handles():
-                ray.kill(actor)
+            if self.actor_releaser is not None:
+                self.actor_releaser()
+            else:
+                for actor in self._get_actor_handles():
+                    ray.kill(actor)
 
         self._change_state("stop", (StatePending, StateAllocatedBase), StateStopped())
 

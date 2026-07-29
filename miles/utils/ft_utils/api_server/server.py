@@ -27,17 +27,18 @@ def start_api_server(
     ft_components: list[str],
 ) -> None:
     registry = _CellRegistry()
+    driver_loop = asyncio.get_running_loop()
 
     if "train" in ft_components:
         for i in range(len(actor_model._cells)):
             registry.register(_ActorCellHandle(group=actor_model, cell_index=i))
 
     if "rollout" in ft_components:
-        # TODO the code will NOT work before implementing rollout ft
         for rollout_cell_id in inference_controller.list_cell_ids():
             registry.register(
                 _RolloutCellHandle(
                     inference_controller=inference_controller,
+                    driver_loop=driver_loop,
                     rollout_cell_id=rollout_cell_id,
                 )
             )

@@ -57,20 +57,27 @@ class TrainRayActor(RayActor):
         self._rank = rank
         self._indep_dp_store_addr = indep_dp_store_addr
         if master_addr:
-            self.master_addr, self.master_port = master_addr, master_port
+            self._apply_master_addr(master_addr=master_addr, master_port=master_port)
         else:
-            self.master_addr, self.master_port = self._get_current_node_ip_and_free_port(
-                start_port=random.randint(20000, 21000)
-            )
+            picked_addr, picked_port = self._get_current_node_ip_and_free_port(start_port=random.randint(20000, 21000))
+            self._apply_master_addr(master_addr=picked_addr, master_port=picked_port)
 
-        os.environ["MASTER_ADDR"] = self.master_addr
-        os.environ["MASTER_PORT"] = str(self.master_port)
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)
         # TODO: currently this doesn't work as ray has already set torch.cuda.device_count().
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+
+    def configure_addrs_and_ports(self, **kwargs) -> None:
+        self._addr_ports = dict(kwargs)
+        if "master_addr" in kwargs:
+            self._apply_master_addr(master_addr=kwargs["master_addr"], master_port=kwargs["master_port"])
+
+    def _apply_master_addr(self, *, master_addr, master_port) -> None:
+        self.master_addr, self.master_port = master_addr, master_port
+        os.environ["MASTER_ADDR"] = str(self.master_addr)
+        os.environ["MASTER_PORT"] = str(self.master_port)
 
     # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):

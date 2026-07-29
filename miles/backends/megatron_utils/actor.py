@@ -80,6 +80,7 @@ class MegatronTrainRayActor(TrainRayActor):
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None = None,
     ) -> int | None:
         monkey_patch_torch_dist()
 
@@ -88,6 +89,9 @@ class MegatronTrainRayActor(TrainRayActor):
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
         routing_replay_manager.register_replay_list_func = register_replay_list_moe
+
+        if indep_dp_store_addr is not None:
+            self._indep_dp_store_addr = indep_dp_store_addr
 
         init(
             args,

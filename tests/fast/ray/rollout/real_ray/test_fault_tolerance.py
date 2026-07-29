@@ -1,91 +1,85 @@
-"""Real ``ray.kill`` is required so follow-up ``.remote()`` calls surface
-``RayActorError``; a MagicMock handle can't simulate that."""
+"""Real ``ray.kill`` plus a real manager restart drive rollout recovery here;
+a MagicMock handle can't simulate actors actually dying and coming back."""
 
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args
-from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, start_cells
 
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.rollout_server import RolloutServer
 
 
-# ----------------------------- single-engine kill + recover -----------------------------
+class _NoopRouterApiClient:
+    async def add_worker(self, **kwargs):
+        return None
+
+    async def remove_worker(self, **kwargs):
+        return None
+
+
+def _raw_actor(cell):
+    return cell.primary_worker_handle.actor
+
+
+def _with_noop_router():
+    return patch.object(RolloutServer, "_router_api_client", property(lambda self: _NoopRouterApiClient()))
+
+
+async def _start_server(harness, args) -> RolloutServer:
+    cells = harness.build_cells(args)
+    srv = RolloutServer(server_cells=cells, args=args, router_ip="10.0.0.9", router_port=9000)
+    with _with_noop_router():
+        await srv.start_all_cells()
+    return srv
 
 
 @pytest.mark.asyncio
 class TestKillAndRecover:
-    async def test_recover_creates_new_actor_after_real_kill(
-        self,
-        patched_sglang_engine,
-        placement_group_factory,
-    ):
-        """Kill cell 0's engine for real, recover, verify a fresh actor replaces
-        it and the surviving cell is untouched."""
-        pg = placement_group_factory(2)
-        cells = build_cells(pg_tuple=pg, num_cells=2)
-        await start_cells(cells, mark_alive=True)
+    async def test_recover_relaunches_a_killed_cell_through_the_manager(self, manager_harness_factory):
+        """Kill cell 0's engine for real, recover, verify a fresh actor serves it
+        and the surviving cell keeps its call history."""
+        args = make_args(num_gpus_per_node=8, rollout_num_gpus=2)
+        harness = await manager_harness_factory(args)
+        srv = await _start_server(harness, args)
+        cells = list(srv.server_cells.values())
+        survivor_calls_before = len(ray.get(_raw_actor(cells[1]).get_calls.remote()))
 
-        original_handles = [cell.primary_actor_handle for cell in cells]
-        # Real fault: kill engine 0 + mark its slot stopped (production code's
-        # health monitor would do this; here we simulate it directly).
-        ray.kill(original_handles[0])
-        cells[0].stop()
+        ray.kill(_raw_actor(cells[0]))
+        cells[0]._mark_stopped()
 
-        try:
-            await cells[0].recover(PortAllocator())
-            # New actor for cell 0
-            assert cells[0].is_allocated
-            assert cells[0].primary_actor_handle is not original_handles[0]
-            calls = ray.get(cells[0].primary_actor_handle.get_calls.remote())
-            assert "init" in [c[0] for c in calls]
-
-            # Cell 1 untouched, still the same actor
-            assert cells[1].primary_actor_handle is original_handles[1]
-        finally:
-            kill_cells(cells)
-
-    async def test_recover_default_filter_picks_all_dead_cells(
-        self,
-        patched_sglang_engine,
-        placement_group_factory,
-    ):
-        """When ``cell_ids=None``, the server recovers every cell with a
-        dead engine. We kill 0 and 2, leave 1 alive, expect only 0 and 2 to
-        be re-created."""
-        pg = placement_group_factory(3)
-        cells = build_cells(pg_tuple=pg, num_cells=3)
-        await start_cells(cells, mark_alive=True)
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=make_args(num_gpus_per_node=8)
-        )
-
-        old = [cell.primary_actor_handle for cell in cells]
-        for i in (0, 2):
-            ray.kill(old[i])
-            cells[i].stop()
-
-        try:
+        with _with_noop_router():
             await srv.recover()
-            for i in (0, 2):
-                assert cells[i].is_allocated
-                assert cells[i].primary_actor_handle is not old[i]
-            assert cells[1].primary_actor_handle is old[1]
-        finally:
-            kill_cells(cells)
 
-    async def test_recover_publishes_the_new_url_to_the_router(
-        self,
-        patched_sglang_engine,
-        placement_group_factory,
-    ):
-        """A recovered engine gets a fresh port, so the router must be told the new url."""
-        from unittest.mock import patch
+        assert cells[0].is_allocated
+        recovered_calls = [name for name, _, _ in ray.get(_raw_actor(cells[0]).get_calls.remote())]
+        assert recovered_calls.count("init") == 1
+        assert len(ray.get(_raw_actor(cells[1]).get_calls.remote())) == survivor_calls_before
 
+    async def test_recover_default_filter_picks_all_dead_cells(self, manager_harness_factory):
+        """When ``cell_ids=None``, recover touches every stopped cell and no live one."""
+        args = make_args(num_gpus_per_node=8, rollout_num_gpus=3)
+        harness = await manager_harness_factory(args)
+        srv = await _start_server(harness, args)
+        cells = list(srv.server_cells.values())
+        survivor_calls_before = len(ray.get(_raw_actor(cells[1]).get_calls.remote()))
+
+        for i in (0, 2):
+            ray.kill(_raw_actor(cells[i]))
+            cells[i]._mark_stopped()
+
+        with _with_noop_router():
+            await srv.recover()
+
+        for i in (0, 2):
+            assert cells[i].is_allocated
+        assert len(ray.get(_raw_actor(cells[1]).get_calls.remote())) == survivor_calls_before
+
+    async def test_recover_publishes_the_new_url_only_after_promotion(self, manager_harness_factory):
+        """A recovered updatable engine reaches the router with its fresh url only once promoted."""
         events: list[dict] = []
 
         class _Recorder:
@@ -95,171 +89,120 @@ class TestKillAndRecover:
             async def remove_worker(self, **kwargs):
                 events.append(kwargs)
 
-        pg = placement_group_factory(1)
-        cells = build_cells(pg_tuple=pg, num_cells=1)
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=make_args(num_gpus_per_node=8),
-            router_ip="10.0.0.9",
-            router_port=9000,
-        )
-        await start_cells(cells, mark_alive=True)
-        ray.kill(cells[0].primary_actor_handle)
-        cells[0].stop()
+        args = make_args(num_gpus_per_node=8, rollout_num_gpus=1)
+        harness = await manager_harness_factory(args)
+        srv = await _start_server(harness, args)
+        (cell,) = srv.server_cells.values()
+        url_before = cell.addr_info.server_url
 
-        try:
-            with patch.object(RolloutServer, "_router_api_client", property(lambda self: _Recorder())):
-                await srv.recover(cell_ids=["cell-0"])
+        ray.kill(_raw_actor(cell))
+        cell._mark_stopped()
 
-            assert [event["worker_url"] for event in events] == [cells[0].addr_info.server_url]
-            assert cells[0].is_alive
-        finally:
-            kill_cells(cells)
+        with patch.object(RolloutServer, "_router_api_client", property(lambda self: _Recorder())):
+            await srv.recover()
+            assert events == []
+            assert cell.is_allocated and not cell.is_alive
 
-    async def test_recover_with_offload_calls_release_then_resume(
-        self,
-        patched_sglang_engine,
-        placement_group_factory,
-    ):
-        """``needs_offload=True`` + ``update_weights=True`` means recover()
-        must release_memory_occupation, then resume with WEIGHTS tag.
-        Verify by reading the recovered engine's mock HTTP server log."""
-        pg = placement_group_factory(2)
-        cells = build_cells(pg_tuple=pg, num_cells=2, needs_offload=True, update_weights=True)
-        await start_cells(cells, mark_alive=True)
-        old = [cell.primary_actor_handle for cell in cells]
+            await srv.promote_weight_synced_cells()
 
-        ray.kill(old[0])
-        cells[0].stop()
+        assert [event["worker_url"] for event in events] == [cell.addr_info.server_url]
+        assert cell.addr_info.server_url != url_before
+        assert cell.is_alive
 
-        try:
-            await cells[0].recover(PortAllocator())
-            recovered_actor = cells[0].primary_actor_handle
-            calls = ray.get(recovered_actor.get_calls.remote())
-            assert "init" in [c[0] for c in calls]
+    async def test_recover_with_offload_calls_release_then_resume(self, manager_harness_factory):
+        """``needs_offload=True`` + ``update_weights=True`` means recover() must
+        release_memory_occupation, then resume with the WEIGHTS tag."""
+        from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-            paths = ray.get(recovered_actor.get_http_paths.remote())
-            assert "/release_memory_occupation" in paths
-            assert "/resume_memory_occupation" in paths
+        args = make_args(num_gpus_per_node=8, rollout_num_gpus=1, colocate=True, offload_rollout=True)
+        harness = await manager_harness_factory(args)
+        srv = await _start_server(harness, args)
+        (cell,) = srv.server_cells.values()
+        assert cell.needs_offload
 
-            # Ordering claim: release must precede resume — otherwise GPU
-            # memory would be re-occupied before being released, defeating
-            # the offload. Use the first occurrence of each.
-            release_idx = paths.index("/release_memory_occupation")
-            resume_idx = paths.index("/resume_memory_occupation")
-            assert release_idx < resume_idx, f"release must precede resume; saw order {paths}"
-            # The client drains the working queue before releasing.
-            assert paths.index("/flush_cache") < release_idx
+        ray.kill(_raw_actor(cell))
+        cell._mark_stopped()
 
-            from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
+        with _with_noop_router():
+            await srv.recover()
 
-            # Recovery releases everything, not just the weights: an engine that kept its kv cache
-            # would leave the trainer short of GPU memory when it takes the device back.
-            assert ray.get(recovered_actor.get_http_payloads_of.remote("/release_memory_occupation")) == [
-                {"tags": None}
-            ]
-            assert ray.get(recovered_actor.get_http_payloads_of.remote("/resume_memory_occupation")) == [
-                {"tags": [GPU_MEMORY_TYPE_WEIGHTS]}
-            ]
-        finally:
-            kill_cells(cells)
-
-
-# ----------------------------- concurrent recover -----------------------------
+        recovered_actor = _raw_actor(cell)
+        paths = ray.get(recovered_actor.get_http_paths.remote())
+        assert "/release_memory_occupation" in paths
+        assert "/resume_memory_occupation" in paths
+        assert paths.index("/release_memory_occupation") < paths.index("/resume_memory_occupation")
+        assert ray.get(recovered_actor.get_http_payloads_of.remote("/release_memory_occupation")) == [{"tags": None}]
+        assert ray.get(recovered_actor.get_http_payloads_of.remote("/resume_memory_occupation")) == [
+            {"tags": [GPU_MEMORY_TYPE_WEIGHTS]}
+        ]
 
 
 @pytest.mark.asyncio
 class TestConcurrentRecover:
-    async def test_two_cell_batches_recover_in_parallel_completes_without_deadlock(
-        self,
-        patched_sglang_engine,
-        placement_group_factory,
-    ):
-        """Two cell batches recovering simultaneously through real
-        ``asyncio.gather`` must both complete — no deadlock, no exception
-        leaking out of the gather chain.
+    async def test_two_servers_recover_in_parallel_without_deadlock(self, manager_harness_factory):
+        """Two cells recovering simultaneously through real ``asyncio.gather``
+        must both complete — no deadlock, no exception leaking out."""
+        args = make_args(num_gpus_per_node=8, rollout_num_gpus=2)
+        harness = await manager_harness_factory(args)
+        srv = await _start_server(harness, args)
+        cells = list(srv.server_cells.values())
 
-        The batches share one PortAllocator, as they do in production: each
-        batch's ports are only bound once its engine inits, so concurrent
-        recovers with independent allocators could probe the same free port
-        twice. The real-ray claim being verified is end-to-end gather
-        completion across two batches."""
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        a = build_cells(pg_tuple=pg_a, num_cells=2)
-        b = build_cells(pg_tuple=pg_b, num_cells=2)
-        await start_cells(a, mark_alive=True)
-        await start_cells(b, mark_alive=True)
+        for cell in cells:
+            ray.kill(_raw_actor(cell))
+            cell._mark_stopped()
 
-        # Kill one engine in each batch
-        for cells in (a, b):
-            old = cells[0].primary_actor_handle
-            ray.kill(old)
-            cells[0].stop()
-
-        try:
-            # Real concurrent recover via asyncio.gather
-            shared_allocator = PortAllocator()
+        with _with_noop_router():
             await asyncio.gather(
-                a[0].recover(shared_allocator),
-                b[0].recover(shared_allocator),
+                srv.recover(cell_ids=[cells[0].cell_id]),
+                srv.recover(cell_ids=[cells[1].cell_id]),
             )
-            assert a[0].is_allocated
-            assert b[0].is_allocated
-        finally:
-            kill_cells(a)
-            kill_cells(b)
 
-
-# ----------------------------- simulate_crash at cell level -----------------------------
+        assert cells[0].is_allocated
+        assert cells[1].is_allocated
 
 
 @pytest.mark.asyncio
 class TestSimulateCrashKeepsActorReachable:
     """``MockSGLangEngine.simulate_crash`` self-calls ``shutdown()`` (mirror
-    of real SGLangEngine). The actor stays alive at the Ray level; this is
-    important because the rollout health monitor uses follow-up ``.remote()``
-    calls to determine liveness."""
+    of real SGLangEngine). The actor stays alive at the Ray level, so
+    follow-up ``.remote()`` calls must still return."""
 
-    async def test_simulate_crash_then_health_check_still_returns(
-        self,
-        patched_sglang_engine,
-        placement_group_factory,
-    ):
-        pg = placement_group_factory(1)
-        cells = build_cells(pg_tuple=pg, num_cells=1)
-        await start_cells(cells, mark_alive=True)
-        actor = cells[0].primary_actor_handle
+    async def test_simulate_crash_then_follow_up_call_still_returns(self, manager_harness_factory):
+        args = make_args(num_gpus_per_node=8, rollout_num_gpus=1)
+        harness = await manager_harness_factory(args)
+        srv = await _start_server(harness, args)
+        (cell,) = srv.server_cells.values()
+        actor = _raw_actor(cell)
 
-        try:
-            ray.get(actor.simulate_crash.remote())
-            # Actor handle still reachable at Ray level — follow-up returns.
-            ray.get(actor.get_calls.remote(), timeout=10.0)
-        finally:
-            kill_cells(cells)
+        ray.get(actor.simulate_crash.remote())
+
+        ray.get(actor.get_calls.remote(), timeout=10.0)
 
 
 @pytest.mark.asyncio
 class TestRecoverMultiNodeEngine:
-    async def test_recover_releases_and_resumes_only_on_node0(
-        self,
-        patched_sglang_engine,
-        placement_group_factory,
-    ):
+    async def test_recover_releases_and_resumes_only_on_node0(self, manager_harness_factory):
         """Recovering a 2-node engine must not send release/resume to node 1."""
-        pg = placement_group_factory(16)
-        (cell,) = build_cells(pg_tuple=pg, num_cells=1, num_gpus_per_engine=16, needs_offload=True)
+        args = make_args(
+            num_gpus_per_node=8,
+            rollout_num_gpus=16,
+            rollout_num_gpus_per_engine=16,
+            colocate=True,
+            offload_rollout=True,
+        )
+        harness = await manager_harness_factory(args)
+        (cell,) = harness.build_cells(args).values()
         assert cell.num_nodes == 2
+        assert cell.needs_offload
 
-        try:
-            await cell.recover(PortAllocator())
+        srv = RolloutServer(server_cells={cell.cell_id: cell}, args=args, router_ip="10.0.0.9", router_port=9000)
+        with _with_noop_router():
+            await srv.recover()
 
-            node0_actor, node1_actor = cell.actor_handles
-            node0_paths = ray.get(node0_actor.get_http_paths.remote())
-            node1_paths = ray.get(node1_actor.get_http_paths.remote())
+        node0_actor, node1_actor = [handle.actor for handle in cell.worker_handles]
+        node0_paths = ray.get(node0_actor.get_http_paths.remote())
+        node1_paths = ray.get(node1_actor.get_http_paths.remote())
 
-            assert "/release_memory_occupation" in node0_paths
-            assert "/resume_memory_occupation" in node0_paths
-            assert node1_paths == []
-        finally:
-            kill_cells([cell])
+        assert "/release_memory_occupation" in node0_paths
+        assert "/resume_memory_occupation" in node0_paths
+        assert node1_paths == []

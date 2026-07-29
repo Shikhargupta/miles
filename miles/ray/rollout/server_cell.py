@@ -1,19 +1,14 @@
 import asyncio
 import dataclasses
-import functools
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import ray
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
+from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.cell_state import (
     AddrInfo,
     CellState,
@@ -22,7 +17,9 @@ from miles.ray.rollout.cell_state import (
     StateAllocatedUninitialized,
     StateStopped,
 )
-from miles.ray.specs.inference import _compute_engine_env_vars
+from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +32,16 @@ class ServerCell:
     worker_type: Literal["regular", "prefill", "decode"]
     cell_id: str
     num_nodes: int = 1
-    pg: Any = None  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
     num_gpus_per_engine: int = 1
-    rank_offset: int = 0
     gpu_offset: int = 0
-    sglang_overrides: dict = dataclasses.field(default_factory=dict)
     needs_offload: bool = False
     model_path: str | None = None
     update_weights: bool = True
+    spec_name: str = ""
+    cell_index: int = 0
+    provider: BaseWorkerProvider | None = None
+    worker_cell_control: Any = None
+    observed_members_hash: str | None = None
     _state: CellState = dataclasses.field(default_factory=StateStopped)
 
     @property
@@ -54,13 +53,13 @@ class ServerCell:
         return isinstance(self._state, StateAllocatedAlive)
 
     @property
-    def actor_handles(self) -> list[ray.actor.ActorHandle]:
+    def worker_handles(self) -> list[BaseWorkerHandle]:
         assert isinstance(self._state, StateAllocatedBase)
-        return self._state.actor_handles
+        return self._state.worker_handles
 
     @property
-    def primary_actor_handle(self) -> ray.actor.ActorHandle:
-        return self.actor_handles[0]
+    def primary_worker_handle(self) -> BaseWorkerHandle:
+        return self.worker_handles[0]
 
     @property
     def addr_infos(self) -> list[AddrInfo]:
@@ -76,95 +75,55 @@ class ServerCell:
     def api_client(self) -> SGLangApiClient:
         return SGLangApiClient(server_url=self.addr_info.server_url)
 
-    async def start_engines(self, port_allocator: PortAllocator) -> None:
-        assert not ({"host", "port"} & set(self.sglang_overrides)), (
-            f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
-            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
-        )
+    async def start(self, router_api_client: SGLangRouterApiClient) -> None:
+        await self.start_engines()
+        await self.promote_to_alive(router_api_client)
+
+    async def recover_unsynced(self) -> None:
+        assert self.worker_cell_control is not None, f"cell {self.cell_id} has no worker cell control"
+        await self.worker_cell_control.restart_cell(cell_id=self.cell_id)
+        await self.attach_unsynced()
+
+    async def start_engines(self) -> None:
         assert not self.is_allocated, "the caller starts only stopped cells"
+        assert self.provider is not None, f"cell {self.cell_id} was built without a worker provider"
+        self.observed_members_hash = None
 
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
-
-        num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
-
-        actor_handles = [
-            launch_sglang_ray_actor(
-                args=self.args,
-                pg=self.pg,
-                global_rank=self.rank_offset + local_index,
-                gpu_index=self.gpu_offset + local_index * num_gpu_per_engine,
-                worker_type=self.worker_type,
-                sglang_overrides=self.sglang_overrides,
-                num_gpus_per_engine=self.num_gpus_per_engine,
-            )
-            for local_index in range(self.num_nodes)
+        worker_names = [
+            compute_worker_name(spec_name=self.spec_name, cell_index=self.cell_index, worker_index=worker_index)
+            for worker_index in range(self.num_nodes)
         ]
+        handles = [await self.provider.get_handle(worker_name) for worker_name in worker_names]
+        self._mark_allocated_uninitialized(handles)
 
-        self._mark_allocated_uninitialized(actor_handles)
-
-        global_ranks = [self.rank_offset + local_index for local_index in range(self.num_nodes)]
-
-        node_ips = [
-            node_ip
-            for node_ip, _ in await asyncio.gather(
-                *[actor._get_current_node_ip_and_free_port.remote() for actor in actor_handles]
-            )
-        ]
-
-        addr_and_ports: dict[int, dict[str, Any]] = {}
-        dist_init_addr = None
-        for local_index, (rank, actor) in enumerate(zip(global_ranks, actor_handles, strict=True)):
-            node_ip = node_ips[local_index]
-            alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
-
-            if local_index == 0:
-                dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
-
-            addr_and_ports[rank] = dict(
-                host=node_ip,
-                port=alloc(),
-                nccl_port=alloc(),
-                engine_info_bootstrap_port=alloc(),
-                dist_init_addr=dist_init_addr,
-            )
-            if self.worker_type == "prefill":
-                addr_and_ports[rank]["disaggregation_bootstrap_port"] = alloc()
-
+        addr_and_ports = await asyncio.gather(*[handle.get_addr_and_ports() for handle in handles])
         self._mark_addressing(
             [
                 AddrInfo(
-                    server_url=build_server_url(
-                        host=addr_and_ports[global_rank]["host"], port=addr_and_ports[global_rank]["port"]
-                    ),
-                    bootstrap_port=addr_and_ports[global_rank].get("disaggregation_bootstrap_port"),
+                    server_url=build_server_url(host=addr_ports["server_addr"], port=addr_ports["server_port"]),
+                    bootstrap_port=addr_ports.get("disaggregation_bootstrap_port"),
                 )
-                for global_rank in global_ranks
+                for addr_ports in addr_and_ports
             ]
         )
 
-        await asyncio.gather(
-            *[
-                actor.init.remote(**addr_and_ports[global_rank])
-                for global_rank, actor in zip(global_ranks, actor_handles, strict=True)
-            ]
-        )
+        await asyncio.gather(*[handle.init() for handle in handles])
 
-    async def start(
-        self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient, recover: bool = False
-    ) -> None:
-        await self.start_engines(port_allocator)
+    async def attach_unsynced(self) -> None:
+        try:
+            await self.start_engines()
 
-        if recover and self.needs_offload:
-            await self.api_client.release_memory_occupation()
-            if self.update_weights or self.model_path:
-                await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+            if self.needs_offload:
+                await self.api_client.release_memory_occupation()
+                if self.update_weights or self.model_path:
+                    await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+        except Exception:
+            await self._rollback_failed_attach()
+            raise
 
-        self._mark_alive()
-
+    async def promote_to_alive(self, router_api_client: SGLangRouterApiClient) -> None:
         await self.register(router_api_client)
+        self._mark_alive()
 
     async def stop(self, router_api_client: SGLangRouterApiClient) -> None:
         if self.is_allocated:
@@ -173,41 +132,50 @@ class ServerCell:
             except Exception as e:
                 logger.warning(f"Unregistering cell {self.cell_id} from the router failed, tearing down anyway ({e})")
 
-            for local_index, actor_handle in enumerate(self.actor_handles):
-                logger.info(f"Cell {self.cell_id}: shutting down and killing engine at cell-local index {local_index}")
+            for local_index, handle in enumerate(self.worker_handles):
+                logger.info(f"Cell {self.cell_id}: shutting down engine at cell-local index {local_index}")
                 try:
-                    ray.get(actor_handle.shutdown.remote(), timeout=SHUTDOWN_TIMEOUT)
+                    await asyncio.wait_for(handle.shutdown(), timeout=SHUTDOWN_TIMEOUT)
                 except Exception as e:
                     logger.warning(
                         f"Cell {self.cell_id}: graceful shutdown of engine at cell-local index {local_index} "
                         f"failed, killing anyway ({e})"
                     )
-                try:
-                    ray.kill(actor_handle)
-                    logger.info(f"Cell {self.cell_id}: killed engine at cell-local index {local_index}")
-                except Exception as e:
-                    logger.warning(f"Cell {self.cell_id}: fail to kill engine at cell-local index {local_index} ({e})")
+
+            assert self.worker_cell_control is not None, f"cell {self.cell_id} has no worker cell control"
+            await self.worker_cell_control.stop_cell(cell_id=self.cell_id)
         else:
             logger.info(f"Cell {self.cell_id} is already stopped")
         self._mark_stopped()
 
-    def _mark_allocated_uninitialized(self, actor_handles: list[ray.actor.ActorHandle]) -> None:
+    async def _rollback_failed_attach(self) -> None:
+        """Converge to fully stopped: a half-attached cell must not keep manager
+        workers running, or the next reconcile poll would double-init them."""
+        if self.is_allocated:
+            self._mark_stopped()
+        if self.worker_cell_control is not None:
+            try:
+                await self.worker_cell_control.stop_cell(cell_id=self.cell_id)
+            except Exception:
+                logger.exception(f"Stopping the manager cell {self.cell_id} after a failed attach failed")
+
+    def _mark_allocated_uninitialized(self, worker_handles: list[BaseWorkerHandle]) -> None:
         self._change_state(
-            "mark_allocated_uninitialized", StateStopped, StateAllocatedUninitialized(actor_handles=actor_handles)
+            "mark_allocated_uninitialized", StateStopped, StateAllocatedUninitialized(worker_handles=worker_handles)
         )
 
     def _mark_addressing(self, addr_infos: list[AddrInfo]) -> None:
         self._change_state(
             "mark_addressing",
             StateAllocatedUninitialized,
-            StateAllocatedUninitialized(actor_handles=self.actor_handles, addr_infos=addr_infos),
+            StateAllocatedUninitialized(worker_handles=self.worker_handles, addr_infos=addr_infos),
         )
 
     def _mark_alive(self) -> None:
         self._change_state(
             "mark_alive",
             StateAllocatedUninitialized,
-            StateAllocatedAlive(actor_handles=self.actor_handles, addr_infos=self.addr_infos),
+            StateAllocatedAlive(worker_handles=self.worker_handles, addr_infos=self.addr_infos),
         )
 
     def _mark_stopped(self) -> None:
@@ -249,50 +217,3 @@ class ServerCell:
             worker_url=self.addr_info.server_url,
             use_legacy_api=use_legacy_router_api(self.args),
         )
-
-
-def launch_sglang_ray_actor(
-    *,
-    args: Any,
-    pg: Any,
-    global_rank: int,
-    gpu_index: int,
-    worker_type: str,
-    sglang_overrides: dict,
-    num_gpus_per_engine: int,
-) -> ray.actor.ActorHandle:
-    pg, reordered_bundle_indices, reordered_gpu_ids = pg
-
-    num_gpus = 0.2
-    num_cpus = num_gpus
-    base_gpu_id = int(reordered_gpu_ids[gpu_index])
-
-    scheduling_strategy = PlacementGroupSchedulingStrategy(
-        placement_group=pg,
-        placement_group_capture_child_tasks=True,
-        placement_group_bundle_index=reordered_bundle_indices[gpu_index],
-    )
-
-    env_vars = _compute_engine_env_vars(args)
-    # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
-    # to enable this isolation.
-    env_vars["SGLANG_DG_CACHE_DIR"] = os.environ.get(
-        "SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{worker_type}_rank_{global_rank}"
-    )
-
-    RolloutRayActor = ray.remote(SGLangEngine)
-    return RolloutRayActor.options(
-        num_cpus=num_cpus,
-        num_gpus=num_gpus,
-        scheduling_strategy=scheduling_strategy,
-        runtime_env={
-            "env_vars": env_vars,
-        },
-    ).remote(
-        args,
-        rank=global_rank,
-        worker_type=worker_type,
-        base_gpu_id=base_gpu_id,
-        sglang_overrides=sglang_overrides,
-        num_gpus_per_engine=num_gpus_per_engine,
-    )

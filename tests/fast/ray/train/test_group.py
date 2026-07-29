@@ -47,20 +47,27 @@ def _make_mock_args(
     )
 
 
+class _FakeWorkerSource:
+    """Manager-less stand-in: allocates dummy actors and kills them on release."""
+
+    def __init__(self, *, manager, spec_name: str, cell_index: int, num_workers: int) -> None:
+        self._num_workers = num_workers
+        self._handles: list = []
+
+    def allocate(self) -> list:
+        self._handles = [DummyTrainActor.remote() for _ in range(self._num_workers)]
+        return self._handles
+
+    def release(self) -> None:
+        for handle in self._handles:
+            ray.kill(handle)
+        self._handles = []
+
+
 @pytest.fixture(autouse=True)
-def _patch_actor_alloc():
-    """Persist allocate_gpus_for_actor patch across the whole test (incl. healing path).
-
-    Previously _make_group used `with patch(...)` which expired when _make_group
-    returned, so any later `allocate_gpus_for_actor` call during _refresh_cells
-    healing hit the real implementation (which dereferences mock args fields).
-    """
-
-    def _alloc(*, gpus_per_cell: int, num_gpus_per_actor: float, **_kwargs) -> list:
-        actor_count = max(int(gpus_per_cell // num_gpus_per_actor), 1)
-        return [DummyTrainActor.remote() for _ in range(actor_count)]
-
-    with patch("miles.ray.train.group.allocate_gpus_for_actor", side_effect=_alloc):
+def _patch_worker_source():
+    """Persist the worker-source patch across the whole test (incl. healing path)."""
+    with patch("miles.ray.train.group.ManagerTrainWorkerSource", _FakeWorkerSource):
         yield
 
 
@@ -71,13 +78,13 @@ def _make_group(
     inference_controller: object | None = None,
     rollout_executor: object | None = None,
 ) -> RayTrainGroup:
-    """Create a RayTrainGroup through real __init__ with mocked pg and actor factory."""
+    """Create a RayTrainGroup through real __init__ with a fake worker source."""
     total_gpus = num_cells * actor_count_per_cell
     return RayTrainGroup(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell),
         num_nodes=1,
         num_gpus_per_node=total_gpus,
-        pg=(MagicMock(), list(range(total_gpus)), list(range(total_gpus))),
+        worker_manager=MagicMock(),
         role="actor",
         with_ref=False,
         inference_controller=inference_controller,
@@ -122,12 +129,12 @@ class TestInit:
 
     def test_single_cell_no_tcp_store(self):
         # indep_dp=False forces single cell regardless of TP/PP/CP product;
-        # the autouse fixture handles allocate_gpus_for_actor.
+        # the autouse fixture fakes the worker source.
         group = RayTrainGroup(
             args=_make_mock_args(indep_dp=False),
             num_nodes=1,
             num_gpus_per_node=1,
-            pg=(MagicMock(), [0], [0]),
+            worker_manager=MagicMock(),
             role="actor",
             with_ref=False,
             inference_controller=None,

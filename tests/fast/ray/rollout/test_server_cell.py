@@ -3,10 +3,16 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import (
+    FakeWorkerCellControl,
+    FakeWorkerHandle,
+    FakeWorkerProvider,
+    fake_worker_handle,
+    make_args,
+)
 
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, format_cell_id, list_cell_ids
+from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.specs.inference import _compute_nodes_per_engine
 
@@ -15,7 +21,7 @@ def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool =
     cell = ServerCell(
         num_nodes=num_nodes, args=make_args(num_gpus_per_node=8), worker_type="regular", cell_id="cell-0"
     )
-    cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(num_nodes)])
+    cell._mark_allocated_uninitialized([fake_worker_handle() for _ in range(num_nodes)])
     if not addressed:
         return cell
     cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{i + 1}:3000{i}") for i in range(num_nodes)])
@@ -32,11 +38,11 @@ class TestServerCellState:
         assert not cell.is_alive
 
     def test_allocating_covers_every_node_rank(self):
-        """The cell's actors are the node-ranks of one engine, so they are held together."""
+        """The cell's workers are the node-ranks of one engine, so they are held together."""
         cell = _allocated_cell(num_nodes=2, alive=False)
         assert cell.is_allocated and not cell.is_alive
-        assert len(cell.actor_handles) == 2
-        assert cell.primary_actor_handle is cell.actor_handles[0]
+        assert len(cell.worker_handles) == 2
+        assert cell.primary_worker_handle is cell.worker_handles[0]
 
     def test_the_primary_addr_is_the_router_visible_one(self):
         """Only node 0 serves the endpoint the router routes to."""
@@ -70,11 +76,114 @@ class TestServerCellState:
         assert cell.api_client.server_url == "http://10.0.0.1:30000"
 
         cell._mark_stopped()
-        cell._mark_allocated_uninitialized([fake_actor_handle()])
+        cell._mark_allocated_uninitialized([fake_worker_handle()])
         cell._mark_addressing([AddrInfo(server_url="http://10.0.0.9:39999")])
         cell._mark_alive()
 
         assert cell.api_client.server_url == "http://10.0.0.9:39999"
+
+
+def _make_handle(*, port: int, bootstrap_port: int | None = None) -> FakeWorkerHandle:
+    addr_and_ports: dict = {"server_addr": "10.0.0.1", "server_port": port}
+    if bootstrap_port is not None:
+        addr_and_ports["disaggregation_bootstrap_port"] = bootstrap_port
+    return FakeWorkerHandle(addr_and_ports=addr_and_ports)
+
+
+def _provider_cell(
+    *, num_nodes: int = 1, worker_type: str = "regular", bootstrap_port: int | None = None
+) -> tuple[ServerCell, list[FakeWorkerHandle], FakeWorkerCellControl]:
+    handles = [_make_handle(port=30000 + i, bootstrap_port=bootstrap_port) for i in range(num_nodes)]
+    provider = FakeWorkerProvider(
+        {f"sglang-default-group0-0-{i}": handle for i, handle in enumerate(handles)},
+    )
+    control = FakeWorkerCellControl()
+    cell = ServerCell(
+        args=make_args(num_gpus_per_node=8),
+        worker_type=worker_type,
+        cell_id="sglang-default-group0-0",
+        num_nodes=num_nodes,
+        spec_name="sglang-default-group0",
+        cell_index=0,
+        provider=provider,
+        worker_cell_control=control,
+    )
+    return cell, handles, control
+
+
+class TestStartEngines:
+    async def test_attaches_provider_handles_and_inits_every_worker(self):
+        """start_engines looks up each node-rank's handle by name and drives its init."""
+        cell, handles, _control = _provider_cell(num_nodes=2)
+
+        await cell.start_engines()
+
+        assert cell.is_allocated
+        assert cell.worker_handles == handles
+        for handle in handles:
+            assert handle.calls == ["get_addr_and_ports", "init"]
+
+    async def test_derives_the_server_url_from_the_manager_ports(self):
+        """The cell's addr comes from the addr/ports the manager pushed into the engine."""
+        cell, _handles, _control = _provider_cell(num_nodes=2)
+
+        await cell.start_engines()
+
+        assert cell.addr_info.server_url == "http://10.0.0.1:30000"
+        assert cell.addr_infos[1].server_url == "http://10.0.0.1:30001"
+
+    async def test_carries_the_bootstrap_port_of_a_prefill_worker(self):
+        """PD disaggregation needs the decode side to dial the prefill bootstrap port."""
+        cell, _handles, _control = _provider_cell(worker_type="prefill", bootstrap_port=8998)
+
+        await cell.start_engines()
+
+        assert cell.addr_info.bootstrap_port == 8998
+
+    async def test_rejects_an_already_allocated_cell(self):
+        """A second start_engines call must not replace a running cell's workers."""
+        cell, _handles, _control = _provider_cell()
+        await cell.start_engines()
+        with pytest.raises(AssertionError, match="stopped cells"):
+            await cell.start_engines()
+
+    async def test_recover_restarts_the_cell_and_stays_unsynced(self):
+        """Recovery relaunches the manager cell, re-attaches, and does not touch the router."""
+        cell, _handles, control = _provider_cell()
+
+        await cell.recover_unsynced()
+
+        assert control.events == [("restart_cell", {"cell_id": "sglang-default-group0-0"})]
+        assert cell.is_allocated and not cell.is_alive
+
+    async def test_failed_init_rolls_the_attach_back_to_stopped(self):
+        """A failed attach must not linger allocated, or a later promotion would register a broken engine."""
+        cell, handles, control = _provider_cell()
+
+        async def _boom() -> None:
+            raise RuntimeError("engine died during init")
+
+        handles[0].init_effect = _boom
+
+        with pytest.raises(RuntimeError, match="engine died during init"):
+            await cell.attach_unsynced()
+
+        assert not cell.is_allocated
+        assert control.events == [("stop_cell", {"cell_id": "sglang-default-group0-0"})]
+
+    async def test_failed_weight_restore_rolls_the_attach_back_to_stopped(self):
+        """An engine whose weight-memory restore failed is not ready and must not stay attached."""
+        cell, _handles, control = _provider_cell()
+        cell.needs_offload = True
+        client = MagicMock()
+        client.release_memory_occupation = AsyncMock(side_effect=RuntimeError("oom"))
+
+        with patch.object(ServerCell, "api_client", property(lambda self: client)):
+            with pytest.raises(RuntimeError, match="oom"):
+                await cell.attach_unsynced()
+
+        assert not cell.is_allocated
+        assert control.events == [("stop_cell", {"cell_id": "sglang-default-group0-0"})]
 
 
 class TestServerCellApiCalls:
@@ -120,7 +229,7 @@ def _addressed_cell(
         num_nodes=2,
         cell_id="cell-0",
     )
-    cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(2)])
+    cell._mark_allocated_uninitialized([fake_worker_handle() for _ in range(2)])
     cell._mark_addressing(
         [
             AddrInfo(server_url=f"http://10.0.0.{index + 1}:3000{index}", bootstrap_port=bootstrap_port)
@@ -183,7 +292,7 @@ def _build_servers(
         for cell in cells:
             cell.num_gpus_per_engine = num_gpus_per_engine
         servers[model_name] = RolloutServer(
-            server_cells={format_cell_id(server_id=model_name, index=i): cell for i, cell in enumerate(cells)},
+            server_cells={f"{model_name}-{i}": cell for i, cell in enumerate(cells)},
             args=args,
             model_name=model_name,
             update_weights=True,

@@ -137,6 +137,7 @@ def test_register_train_actor_attaches_train_sink(monkeypatch):
 class FakeEngineHandle:
     def __init__(self, info):
         self._info = info
+        self.actor = self
         self.get_topology_info = self
 
     def remote(self):
@@ -144,10 +145,10 @@ class FakeEngineHandle:
 
 
 class FakeCell:
-    """Duck-typed ServerCell: the hooks only read is_alive and actor_handles."""
+    """Duck-typed ServerCell: the hooks only read is_alive and worker_handles."""
 
     def __init__(self, infos, alive=True):
-        self.actor_handles = [FakeEngineHandle(info) for info in infos]
+        self.worker_handles = [FakeEngineHandle(info) for info in infos]
         self.is_alive = alive
 
 
@@ -183,7 +184,7 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     hooks.register_engines(servers)  # steady state: no remote traffic
     assert len(handle.update_topology.calls) == 1
 
-    single_cell[0].actor_handles = [FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))]  # recovery: new actor
+    single_cell[0].worker_handles = [FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))]  # recovery: new actor
     hooks.register_engines(servers)
     assert len(handle.update_topology.calls) == 2
     assert handle.update_topology.calls[-1][0][0].engines[1].addr == "http://b:2"

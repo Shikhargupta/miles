@@ -1,5 +1,6 @@
 import logging
 import socket
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import ray
@@ -8,20 +9,19 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.async_utils import eager_create_task
 from miles.utils.environ import enable_experimental_ft_trainer
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.inference_controller import InferenceController
 from .rollout.rollout_executor import RolloutExecutor
+from .specs.inference import InferenceDeployment, compute_inference_deployments
+from .specs.trainer import compute_trainer_specs
+from .wiring import compute_inference_placements, compute_trainer_placements, launch_worker_manager
 
 logger = logging.getLogger(__name__)
 
-
-def _select_train_group_class():
-    if enable_experimental_ft_trainer():
-        from miles.ray.train.group import RayTrainGroup
-    else:
-        from miles.ray.actor_group import RayTrainGroup
-    return RayTrainGroup
+_WORKER_PROVIDER_POLL_INTERVAL_SECONDS = 5.0
 
 
 @ray.remote(num_gpus=1)
@@ -89,6 +89,47 @@ def _create_placement_group(num_gpus):
     return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
 
 
+@dataclass
+class WorkerInfra:
+    pgs: dict
+    manager: "ray.actor.ActorHandle | None" = None
+    inference_deployments: list[InferenceDeployment] = field(default_factory=list)
+    inference_providers: dict[str, RayWorkerProvider] = field(default_factory=dict)
+    worker_cell_control: RayWorkerHandle | None = None
+
+
+def create_worker_infra(args) -> WorkerInfra:
+    pgs = create_placement_groups(args)
+
+    inference_deployments = compute_inference_deployments(args)
+    trainer_specs = compute_trainer_specs(args) if enable_experimental_ft_trainer() else []
+    worker_specs = [deployment.spec for deployment in inference_deployments] + trainer_specs
+    if not worker_specs:
+        return WorkerInfra(pgs=pgs)
+
+    placements = {
+        **compute_inference_placements(deployments=inference_deployments, pg=pgs["rollout"]),
+        **compute_trainer_placements(args, trainer_specs=trainer_specs, pgs=pgs),
+    }
+    manager = launch_worker_manager(worker_specs, placements=placements)
+
+    inference_providers = {
+        deployment.spec.name: RayWorkerProvider(
+            manager=manager,
+            spec_name=deployment.spec.name,
+            poll_interval_seconds=_WORKER_PROVIDER_POLL_INTERVAL_SECONDS,
+        )
+        for deployment in inference_deployments
+    }
+    return WorkerInfra(
+        pgs=pgs,
+        manager=manager,
+        inference_deployments=inference_deployments,
+        inference_providers=inference_providers,
+        worker_cell_control=RayWorkerHandle(manager),
+    )
+
+
 def create_placement_groups(args):
     """Create placement groups for actor and rollout engines."""
 
@@ -136,19 +177,36 @@ def allocate_train_group(
     args,
     num_nodes,
     num_gpus_per_node,
-    pg,
+    infra: WorkerInfra,
     role: str,
     with_ref: bool,
     inference_controller,
     rollout_executor,
     with_opd_teacher: bool = False,
 ):
-    train_group_cls = _select_train_group_class()
-    return train_group_cls(
+    if enable_experimental_ft_trainer():
+        from miles.ray.train.group import RayTrainGroup
+
+        assert infra.manager is not None, "the experimental ft trainer requires a launched worker manager"
+        return RayTrainGroup(
+            args=args,
+            num_nodes=num_nodes,
+            num_gpus_per_node=num_gpus_per_node,
+            worker_manager=infra.manager,
+            role=role,
+            with_ref=with_ref,
+            inference_controller=inference_controller,
+            rollout_executor=rollout_executor,
+            with_opd_teacher=with_opd_teacher,
+        )
+
+    from miles.ray.actor_group import RayTrainGroup
+
+    return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
-        pg=pg,
+        pg=infra.pgs[role],
         num_gpus_per_actor=0.4,
         role=role,
         with_ref=with_ref,
@@ -158,12 +216,12 @@ def allocate_train_group(
     )
 
 
-async def create_training_models(args, pgs, inference_controller, rollout_executor):
+async def create_training_models(args, infra: WorkerInfra, inference_controller, rollout_executor):
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
         num_gpus_per_node=args.actor_num_gpus_per_node,
-        pg=pgs["actor"],
+        infra=infra,
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
         inference_controller=inference_controller,
@@ -175,7 +233,7 @@ async def create_training_models(args, pgs, inference_controller, rollout_execut
             args=args,
             num_nodes=args.critic_num_nodes,
             num_gpus_per_node=args.critic_num_gpus_per_node,
-            pg=pgs["critic"],
+            infra=infra,
             role="critic",
             with_ref=False,
             inference_controller=None,
@@ -207,8 +265,13 @@ class RolloutComponents(NamedTuple):
     num_rollout_per_epoch: int | None
 
 
-async def create_rollout_components(args, pg) -> RolloutComponents:
-    inference_controller = await InferenceController.create(args, pg)
+async def create_rollout_components(args, infra: WorkerInfra) -> RolloutComponents:
+    inference_controller = await InferenceController.create(
+        args,
+        deployments=infra.inference_deployments,
+        providers=infra.inference_providers,
+        worker_cell_control=infra.worker_cell_control,
+    )
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})

@@ -19,5 +19,5 @@ class TestSpecRolloutExecutor:
         """ctor_kwargs stays lazy and passes the args through."""
         args = make_args()
         spec = spec_rollout_executor(args)
-        assert spec.ctor_kwargs() == dict(args=args)
+        assert spec.ctor_kwargs(0, 0) == dict(args=args)
         assert spec.worker_class == "miles.ray.rollout.rollout_executor.RolloutExecutor"

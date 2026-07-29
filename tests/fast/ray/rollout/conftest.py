@@ -2,25 +2,84 @@ from __future__ import annotations
 
 import textwrap
 from argparse import Namespace
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-import ray
 
 from miles.utils.types import Sample
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 
-def fake_actor_handle() -> MagicMock:
-    """MagicMock that passes ``isinstance(x, ray.actor.ActorHandle)``.
+class FakeWorkerHandle(BaseWorkerHandle):
+    """In-memory stand-in for a manager-launched engine worker handle."""
 
-    Setting ``_spec_class`` directly (rather than ``spec=...``) keeps
-    arbitrary-attribute auto-creation working so ``actor.shutdown.remote(...)``
-    chains still resolve — ``ActorHandle`` routes its methods via
-    ``__getattr__`` and they don't show up as class attributes."""
-    m = MagicMock()
-    m._spec_class = ray.actor.ActorHandle
-    return m
+    def __init__(
+        self,
+        *,
+        addr_and_ports: dict | None = None,
+        shutdown_effect: Callable[[], Awaitable[None]] | None = None,
+        init_effect: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        self.calls: list[str] = []
+        self.addr_and_ports_value = dict(addr_and_ports or {})
+        self.shutdown_effect = shutdown_effect
+        self.init_effect = init_effect
+        self.actor = MagicMock()
+
+    async def wait_ready(self, *, timeout: float) -> None:
+        pass
+
+    async def init(self) -> None:
+        self.calls.append("init")
+        if self.init_effect is not None:
+            await self.init_effect()
+
+    async def get_addr_and_ports(self) -> dict:
+        self.calls.append("get_addr_and_ports")
+        return dict(self.addr_and_ports_value)
+
+    async def shutdown(self) -> None:
+        self.calls.append("shutdown")
+        if self.shutdown_effect is not None:
+            await self.shutdown_effect()
+
+
+class FakeWorkerProvider:
+    """Hands out pre-registered FakeWorkerHandles by worker name."""
+
+    def __init__(self, handles: dict[str, FakeWorkerHandle] | None = None) -> None:
+        self.handles: dict[str, FakeWorkerHandle] = dict(handles or {})
+
+    async def get_handle(self, worker_name: str) -> FakeWorkerHandle:
+        return self.handles[worker_name]
+
+    async def get_url(self, worker_name: str) -> str:
+        raise NotImplementedError
+
+    async def watch_cells(self, reconcile_fn):
+        raise NotImplementedError
+
+
+class FakeWorkerCellControl:
+    """Records start/stop/restart cell calls the way the manager would see them."""
+
+    def __init__(self, events: list[tuple[str, dict]] | None = None) -> None:
+        self.events = events if events is not None else []
+
+    async def start_cell(self, *, cell_id: str) -> None:
+        self.events.append(("start_cell", {"cell_id": cell_id}))
+
+    async def restart_cell(self, *, cell_id: str) -> None:
+        self.events.append(("restart_cell", {"cell_id": cell_id}))
+
+    async def stop_cell(self, *, cell_id: str) -> None:
+        self.events.append(("stop_cell", {"cell_id": cell_id}))
+
+
+def fake_worker_handle(**kwargs) -> FakeWorkerHandle:
+    return FakeWorkerHandle(**kwargs)
 
 
 def make_args(**overrides: Any) -> Namespace:
@@ -264,7 +323,7 @@ def make_dataclass_cells(
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
 ):
-    """Build configured ``ServerCell``s with ``pg=None`` (no actor scheduling).
+    """Build configured ``ServerCell``s without a provider (no actor lookup).
     Each cell starts unallocated."""
     from miles.ray.rollout.server_cell import ServerCell
     from miles.ray.specs.inference import _compute_nodes_per_engine
@@ -277,44 +336,9 @@ def make_dataclass_cells(
             worker_type="regular",
             cell_id=f"cell-{cell_index}",
             num_nodes=nodes_per_engine,
-            pg=None,
             num_gpus_per_engine=num_gpus_per_engine,
-            rank_offset=cell_index * nodes_per_engine,
             gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
+            cell_index=cell_index,
         )
         for cell_index in range(num_cells)
     ]
-
-
-def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
-    """MagicMock that mimics ``SGLangEngine`` enough for ``addr_allocator``.
-
-    Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
-    with a deterministic ``max(seq, start_port)`` counter so allocator tests
-    can predict and assert on port assignment. The argument-less form is the
-    node-ip probe, which the cell awaits, so it returns an awaitable just like a
-    real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
-    so it can be handed to ``mark_allocated_uninitialized``."""
-    e = MagicMock()
-    e._spec_class = ray.actor.ActorHandle
-    e._port_cursor = port_seed
-
-    def _alloc(start_port: int = 15000, consecutive: int = 1):
-        port = max(e._port_cursor, start_port)
-        e._port_cursor = port + consecutive
-        return (host, port)
-
-    async def _probe():
-        return _alloc()
-
-    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw) if kw else _probe()
-    return e
-
-
-@pytest.fixture
-def patch_ray_get(monkeypatch):
-    """Make ``ray.get(remote_call(...))`` return the MagicMock's value directly,
-    so allocator tests don't need a real Ray cluster."""
-    import miles.ray.rollout.addr_allocator as mod
-
-    monkeypatch.setattr(mod.ray, "get", lambda x: x)

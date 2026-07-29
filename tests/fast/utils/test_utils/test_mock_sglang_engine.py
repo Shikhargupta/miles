@@ -20,11 +20,16 @@ def _grep_engine_method_calls(directory: Path) -> set[str]:
     """Find every ``<engine|actor_handle>.<method>.remote(...)`` call in the
     rollout dir. The set returned is method names that the rollout code
     expects to exist on every SGLangEngine actor."""
-    pattern = re.compile(r"(?:engine|actor_handle|rollout_engine)\.([a-zA-Z_][a-zA-Z0-9_]*)\.remote\(")
+    patterns = [
+        re.compile(r"(?:engine|actor_handle|rollout_engine)\.([a-zA-Z_][a-zA-Z0-9_]*)\.remote\("),
+        re.compile(r"\bhandle\.([a-zA-Z_][a-zA-Z0-9_]*)\("),
+    ]
     methods: set[str] = set()
     for py in directory.rglob("*.py"):
-        for m in pattern.finditer(py.read_text()):
-            methods.add(m.group(1))
+        text = py.read_text()
+        for pattern in patterns:
+            for m in pattern.finditer(text):
+                methods.add(m.group(1))
     return methods
 
 
@@ -80,7 +85,7 @@ class TestApiContractMatchesRealEngine:
         """``init`` is the most important signature to keep aligned because
         the rollout code passes addr/port kwargs from addr_allocator."""
         real_sig = inspect.signature(SGLangEngine.init)
-        mock_sig = inspect.signature(MockSGLangEngine.__ray_actor_class__.init)
+        mock_sig = inspect.signature(MockSGLangEngine.init)
         real_params = set(real_sig.parameters) - {"self"}
         mock_params = set(mock_sig.parameters) - {"self"}
 
@@ -98,13 +103,17 @@ class TestRealRayActorLifecycle:
         """End-to-end: every method rollout code touches round-trips through
         Ray with the right args, and the call log preserves ordering."""
         args = make_args(rollout_num_gpus_per_engine=1)
-        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote(
-            args,
-            rank=0,
-            worker_type="regular",
-            base_gpu_id=0,
-            sglang_overrides={},
-            num_gpus_per_engine=1,
+        actor = (
+            ray.remote(MockSGLangEngine)
+            .options(num_cpus=0.1, num_gpus=0)
+            .remote(
+                args,
+                rank=0,
+                worker_type="regular",
+                base_gpu_id=0,
+                sglang_overrides={},
+                num_gpus_per_engine=1,
+            )
         )
         try:
             ray.get(actor.init.remote(host="127.0.0.1", port=get_free_port(start_port=20000)))
@@ -129,13 +138,17 @@ class TestRealRayActorLifecycle:
         """``set_fault`` schedules an exception; it must surface back via
         ``ray.get`` and be one-shot (cleared after firing)."""
         args = make_args(rollout_num_gpus_per_engine=1)
-        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote(
-            args,
-            rank=0,
-            worker_type="regular",
-            base_gpu_id=0,
-            sglang_overrides={},
-            num_gpus_per_engine=1,
+        actor = (
+            ray.remote(MockSGLangEngine)
+            .options(num_cpus=0.1, num_gpus=0)
+            .remote(
+                args,
+                rank=0,
+                worker_type="regular",
+                base_gpu_id=0,
+                sglang_overrides={},
+                num_gpus_per_engine=1,
+            )
         )
         try:
             ray.get(actor.set_fault.remote("shutdown", RuntimeError("boom")))

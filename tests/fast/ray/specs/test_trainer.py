@@ -65,11 +65,23 @@ class TestSpecTrainerRanks:
         assert "MegatronTrainRayActor" in spec_trainer_ranks(make_args(), role="actor").worker_class
         assert "FSDPTrainRayActor" in spec_trainer_ranks(make_args(train_backend="fsdp"), role="actor").worker_class
 
-    def test_ctor_kwargs_carries_args_and_role(self):
-        """ctor_kwargs stays lazy and yields the shared constructor arguments."""
+    def test_ctor_kwargs_carries_per_worker_rank_and_cell(self):
+        """ctor_kwargs yields the per-worker rank/cell besides the shared arguments."""
         args = make_args()
         spec = spec_trainer_ranks(args, role="actor")
-        assert spec.ctor_kwargs() == dict(args=args, role="actor")
+        kwargs = spec.ctor_kwargs(1, 3)
+        assert kwargs["args"] is args
+        assert kwargs["role"] == "actor"
+        assert kwargs["cell_index"] == 1
+        assert kwargs["rank"] == 3
+        assert kwargs["world_size"] == spec.scheduling.num_workers_per_cell
+        assert kwargs["master_addr"] is None and kwargs["master_port"] is None
+        assert kwargs["indep_dp_store_addr"] is None
+
+    def test_fault_tolerance_selects_the_ft_wrapped_actor_class(self):
+        """use_fault_tolerance routes to the lazily wrapped concurrency-group class."""
+        spec = spec_trainer_ranks(make_args(use_fault_tolerance=True), role="actor")
+        assert spec.worker_class == "miles.ray.train.ft_actor_classes.MegatronTrainRayActorFt"
 
     def test_unknown_role_is_rejected(self):
         """Roles other than actor/critic are a programming error."""

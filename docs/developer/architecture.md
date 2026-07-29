@@ -50,6 +50,7 @@ miles/
 │   └── experimental/
 │       └── fsdp_utils/   # FSDP-flavoured trainer (in progress)
 ├── ray/                  # Ray actors + rollout driver
+│   └── specs/            # worker specs: how each worker kind is launched
 ├── rollout/
 │   ├── sglang_rollout.py # default rollout function
 │   ├── data_source.py    # buffer + JSONL loader
@@ -57,10 +58,35 @@ miles/
 │   └── inference_rollout/# experimental refactor
 ├── router/               # FastAPI proxy + worker load-balancer (router.py)
 └── utils/                # async, types, IO, distributed helpers, arguments.py
+    └── workers/          # deployment-agnostic worker layer: manager, providers, handles
 ```
 
 `train.py` and `train_async.py` are the two entry points. They're thin: ~200 lines
 each. Most logic lives in the modules above.
+
+## The worker layer
+
+Processes are launched and observed through a dedicated worker layer instead of ad-hoc
+actor creation:
+
+* **Specs** (`miles/ray/specs/`) — pure functions that compute, per worker kind
+  (trainer ranks, sglang engines, routers, session servers), how many cells and workers
+  to run, their ports, env vars, and constructor arguments.
+* **RayWorkerManager** (`miles/utils/workers/ray_worker_manager.py`) — a single named
+  actor that owns every worker actor: it launches them from the specs, allocates ports,
+  pushes addresses via `configure_addrs_and_ports`, and exposes `start_cell` /
+  `stop_cell` / `restart_cell` plus a worker listing.
+* **Providers** (`miles/utils/workers/worker_provider/`) — how consumers observe
+  workers: `get_handle` / `get_url` lookups and `watch_cells(reconcile_fn)`
+  change notifications.
+
+Consumers never launch processes themselves. `create_worker_infra` computes the specs,
+launches the manager on the shared placement groups, and injects providers:
+the `InferenceController` reconciles its rollout cells from a provider watch (a cell
+that reappears stays out of the router until the next weight update completes), and the
+experimental ft trainer group attaches each cell to manager-launched actors. The api
+server's suspend/resume calls go straight to the manager; the reconcile watchers pick
+up the change.
 
 ## A request's life
 

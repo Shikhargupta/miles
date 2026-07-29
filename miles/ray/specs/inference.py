@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
@@ -11,8 +12,29 @@ _ENGINE_INFO_BOOTSTRAP_PORT = 31000
 _ENGINE_DIST_INIT_PORT = 31500
 _ENGINE_DISAGGREGATION_BOOTSTRAP_PORT = 32000
 
+ENGINE_RAY_NUM_GPUS_PER_WORKER = 0.2
+ENGINE_RAY_NUM_CPUS_PER_WORKER = 0.2
+
+
+@dataclass(frozen=True)
+class InferenceDeployment:
+    spec: ServeWorkerSpec
+    model_name: str
+    worker_type: str
+    update_weights: bool
+    needs_offload: bool
+    num_gpus_per_engine: int
+    num_gpus_per_engine_local: int
+    nodes_per_engine: int
+    group_gpu_offset: int
+    model_path: str | None
+
 
 def compute_inference_specs(args) -> list[ServeWorkerSpec]:
+    return [deployment.spec for deployment in compute_inference_deployments(args)]
+
+
+def compute_inference_deployments(args) -> list[InferenceDeployment]:
     if args.debug_train_only or args.rollout_external:
         return []
 
@@ -20,33 +42,41 @@ def compute_inference_specs(args) -> list[ServeWorkerSpec]:
     rollout_pg_offset = _compute_rollout_pg_offset(args)
     megatron_num_gpus = _compute_megatron_num_gpus(args)
 
-    specs: list[ServeWorkerSpec] = []
+    deployments: list[InferenceDeployment] = []
     gpu_offset = 0
+    engine_offset = 0
     for model_cfg in config.models:
         model_cfg.resolve(args)
         for group_index, group_cfg in enumerate(model_cfg.server_groups):
             needs_offload = args.offload_rollout and rollout_pg_offset + gpu_offset < megatron_num_gpus
-            spec = _spec_engine_group(
+            deployment = _deployment_engine_group(
                 args,
                 model_cfg=model_cfg,
                 group_cfg=group_cfg,
                 group_index=group_index,
                 needs_offload=needs_offload,
+                engine_offset=engine_offset,
+                group_gpu_offset=gpu_offset,
             )
-            if spec is not None:
-                specs.append(spec)
+            if deployment is not None:
+                deployments.append(deployment)
+
+            gpus_per_engine_local = min(group_cfg.num_gpus_per_engine, args.num_gpus_per_node)
+            engine_offset += group_cfg.num_gpus // gpus_per_engine_local
             gpu_offset += group_cfg.num_gpus
-    return specs
+    return deployments
 
 
-def _spec_engine_group(
+def _deployment_engine_group(
     args,
     *,
     model_cfg: ModelConfig,
     group_cfg: ServerGroupConfig,
     group_index: int,
     needs_offload: bool,
-) -> ServeWorkerSpec | None:
+    engine_offset: int,
+    group_gpu_offset: int,
+) -> InferenceDeployment | None:
     if group_cfg.worker_type == "placeholder":
         return None
 
@@ -60,13 +90,22 @@ def _spec_engine_group(
         f"group '{group_cfg.worker_type}' of model '{model_cfg.name}' has {num_engines=} which is not a whole "
         f"number of {nodes_per_engine=} engines"
     )
+    assert engine_offset % nodes_per_engine == 0, (
+        f"group '{group_cfg.worker_type}' of model '{model_cfg.name}' starts at {engine_offset=}, which is not "
+        f"aligned to {nodes_per_engine=}: sglang derives each engine's node_rank from its global rank, so a "
+        f"misaligned start would make the cell's primary a worker node"
+    )
 
     overrides = dict(group_cfg.overrides)
     if args.offload_rollout and not needs_offload:
         overrides.setdefault("enable_memory_saver", False)
+    assert not ({"host", "port"} & set(overrides)), (
+        f"sglang_overrides must not override host/port ({overrides=}): each engine's url comes from the worker "
+        f"manager's port allocation, so an override would make miles talk to the wrong endpoint"
+    )
 
     worker_type = group_cfg.worker_type
-    return ServeWorkerSpec(
+    spec = ServeWorkerSpec(
         name=f"sglang-{model_cfg.name}-group{group_index}",
         port_infos=_engine_port_infos(args, worker_type=worker_type),
         env_var=lambda: _compute_engine_env_vars(args),
@@ -74,20 +113,36 @@ def _spec_engine_group(
             num_cells=num_engines // nodes_per_engine,
             num_workers_per_cell=nodes_per_engine,
             num_gpus_per_worker=gpus_per_engine_local,
+            num_cpus_per_worker=1,
         ),
         worker_class="miles.backends.sglang_utils.sglang_engine.SGLangEngine",
-        ctor_kwargs=lambda: dict(
+        ctor_kwargs=lambda cell_index, worker_index: dict(
             args=args,
+            rank=engine_offset + cell_index * nodes_per_engine + worker_index,
             worker_type=worker_type,
             sglang_overrides=overrides,
             num_gpus_per_engine=gpus_per_engine,
         ),
     )
+    return InferenceDeployment(
+        spec=spec,
+        model_name=model_cfg.name,
+        worker_type=worker_type,
+        update_weights=model_cfg.update_weights,
+        needs_offload=needs_offload,
+        num_gpus_per_engine=gpus_per_engine,
+        num_gpus_per_engine_local=gpus_per_engine_local,
+        nodes_per_engine=nodes_per_engine,
+        group_gpu_offset=group_gpu_offset,
+        model_path=overrides.get("model_path", args.hf_checkpoint),
+    )
 
 
 def _engine_port_infos(args, *, worker_type: str) -> list[PortInfo]:
     port_infos = [
-        PortInfo(name="server", static_port=_ENGINE_SERVER_PORT, mode="per_worker", allow_dynamic=True),
+        PortInfo(
+            name="server", static_port=_ENGINE_SERVER_PORT, mode="per_worker", allow_dynamic=True, url_scheme="http"
+        ),
         PortInfo(name="nccl", static_port=_ENGINE_NCCL_PORT, mode="per_worker", allow_dynamic=True),
         PortInfo(
             name="engine_info_bootstrap",

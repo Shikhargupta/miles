@@ -40,7 +40,7 @@ def _spec_router(args, *, model_name: str, has_pd_disaggregation: bool) -> Comma
         name=f"router-{model_name}",
         port_infos=port_infos,
         env_var=lambda: {},
-        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
+        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0, num_cpus_per_worker=1),
         launch_command=_compute_router_launch_command(args, has_pd_disaggregation=has_pd_disaggregation),
     )
 

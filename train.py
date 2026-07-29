@@ -4,7 +4,7 @@ import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models, create_worker_infra
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -22,17 +22,15 @@ async def train(args):
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
-    pgs = create_placement_groups(args)
+    infra = create_worker_infra(args)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
-        args, pgs["rollout"]
-    )
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args, infra)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, inference_controller, rollout_executor)
+    actor_model, critic_model = await create_training_models(args, infra, inference_controller, rollout_executor)
 
     if args.api_server_port:
         start_api_server(

@@ -6,12 +6,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import ray
-from ray.util.placement_group import PlacementGroup
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.ray.train.worker_source import ManagerTrainWorkerSource
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -47,14 +46,7 @@ class RayTrainGroup:
         args (Namespace): Arguments for the actor group.
         num_nodes (int): Number of nodes for this actor group.
         num_gpus_per_node (int): Number of gpus for this actor group.
-        pg (PlacementGroup, optional): Placement group to schedule actor on.
-            If none, create new placement group automatically. Defaults to None.
-        num_gpus_per_actor (float, optional): Number of gpus allocated for each actor.
-            If < 1.0, multiple models can share same gpu. Defaults to 1.
-        resources (Dict[str, float], optional): Custom resources to allocate for each actor.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
-        num_resources_per_node (int, optional): Number of custom resources to allocate for each node.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
+        worker_manager: RayWorkerManager actor that owns the trainer worker actors.
     """
 
     def __init__(
@@ -62,11 +54,10 @@ class RayTrainGroup:
         args,
         num_nodes: int,
         num_gpus_per_node: int,
-        pg: tuple[PlacementGroup, list[int], list[int]],
         *,
+        worker_manager: ray.actor.ActorHandle,
         inference_controller: object | None,
         rollout_executor: object | None,
-        num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
@@ -93,7 +84,12 @@ class RayTrainGroup:
         )
 
         def _create_cell(cell_index: int):
-            cell_pg = _slice_pg(pg, start=cell_index * gpus_per_cell, end=(cell_index + 1) * gpus_per_cell)
+            worker_source = ManagerTrainWorkerSource(
+                manager=worker_manager,
+                spec_name=f"train-{role}",
+                cell_index=cell_index,
+                num_workers=gpus_per_cell,
+            )
 
             cell = RayTrainCell(
                 args=args,
@@ -102,15 +98,9 @@ class RayTrainGroup:
                 with_opd_teacher=with_opd_teacher,
                 cell_index=cell_index,
                 rollout_executor=rollout_executor,
-                actor_factory=lambda _pg=cell_pg, _ci=cell_index: allocate_gpus_for_actor(
-                    args=args,
-                    gpus_per_cell=gpus_per_cell,
-                    pg=_pg,
-                    num_gpus_per_actor=num_gpus_per_actor,
-                    indep_dp_store_addr=indep_dp_store_addr,
-                    role=role,
-                    cell_index=_ci,
-                ),
+                actor_factory=worker_source.allocate,
+                actor_releaser=worker_source.release,
+                indep_dp_store_addr=indep_dp_store_addr,
                 health_checker=NoopHealthChecker(),
             )
 
@@ -504,14 +494,6 @@ class RayTrainGroup:
     @property
     def num_cells(self) -> int:
         return len(self._cells)
-
-
-PGTuple = tuple[PlacementGroup, list[int], list[int]]
-
-
-def _slice_pg(pg: PGTuple, start: int, end: int) -> PGTuple:
-    placement_group, bundle_indices, gpu_ids = pg
-    return placement_group, bundle_indices[start:end], gpu_ids[start:end]
 
 
 def _create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:

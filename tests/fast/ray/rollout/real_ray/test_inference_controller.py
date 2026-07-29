@@ -30,16 +30,13 @@ class _NoopRouterApiClient:
 @pytest.fixture
 def patch_low_level(monkeypatch):
     """Replace, in the test process:
-    - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks
-      (the real addr allocator runs; each mock serves HTTP on its port).
     - ``SGLangRouterApiClient`` → no-op (no router runs at the placeholder address).
-    - ``start_session_server`` → no-op (the production default touches network)."""
+    - ``start_session_server`` → no-op (the production default touches network).
+    Engines are mocked by pointing the deployments' worker class at
+    ``MockSGLangEngine`` (see ``make_mock_deployments``)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
-    import miles.ray.rollout.server_cell as scell
-    from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
-    monkeypatch.setattr(scell, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
     # multi-model tests would otherwise spawn a real router subprocess for
     # ``model_idx > 0`` (force_new=True bypasses the args.sglang_router_ip cache).
     monkeypatch.setattr(
@@ -50,6 +47,16 @@ def patch_low_level(monkeypatch):
 
     monkeypatch.setattr(rsrv, "SGLangRouterApiClient", _NoopRouterApiClient)
     monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
+
+
+async def _create_controller(args, harness_factory) -> InferenceController:
+    harness = await harness_factory(args)
+    return await InferenceController.create(
+        args,
+        deployments=harness.deployments,
+        providers=harness.providers,
+        worker_cell_control=harness.worker_cell_control,
+    )
 
 
 def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
@@ -119,7 +126,7 @@ class TestInferenceControllerInit:
     async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
@@ -128,16 +135,14 @@ class TestInferenceControllerInit:
         http via the public ``get_updatable_engines_and_lock``, and their launcher
         actors are reachable through the engine slots."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2
         for api_client in eal.rollout_engines:
             assert isinstance(api_client, SGLangApiClient)
             assert await api_client.health_generate(timeout=5.0) is True
         for cell in _cells(controller):
-            assert isinstance(ray.get(cell.primary_actor_handle.get_calls.remote()), list)
+            assert isinstance(ray.get(cell.primary_worker_handle.actor.get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
@@ -145,19 +150,17 @@ class TestStartStopCell:
     async def test_stop_cell_kills_target_engine_only(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
         """``stop_cell`` kills cell 0's actor; cell 1 untouched."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         await controller.get_updatable_engines_and_lock()
-        actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
+        actor0, actor1 = [cell.primary_worker_handle.actor for cell in _cells(controller)]
 
-        await controller.stop_cell("actor-0")
+        await controller.stop_cell("sglang-actor-group0-0")
 
         await _assert_engine_dies(actor0)
         assert isinstance(ray.get(actor1.get_calls.remote()), list)
@@ -165,25 +168,23 @@ class TestStartStopCell:
     async def test_start_cell_recovers_after_stop_cell(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
         """stop_cell → start_cell drives a real ``recover()`` that spawns
         a fresh mock actor in place of the killed one."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         eal_before = await controller.get_updatable_engines_and_lock()
-        actor0_before = _cells(controller)[0].primary_actor_handle
+        actor0_before = _cells(controller)[0].primary_worker_handle.actor
         url_before = eal_before.rollout_engines[0].server_url
 
-        await controller.stop_cell("actor-0")
-        await controller.start_cell("actor-0")
+        await controller.stop_cell("sglang-actor-group0-0")
+        await controller.start_cell("sglang-actor-group0-0")
 
         eal_after = await controller.get_updatable_engines_and_lock()
-        actor0_after = _cells(controller)[0].primary_actor_handle
+        actor0_after = _cells(controller)[0].primary_worker_handle.actor
 
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
         assert eal_after.rollout_engines[0].server_url != url_before, "the recovered engine serves on a new port"
@@ -193,20 +194,18 @@ class TestStartStopCell:
     async def test_stop_cell_targets_high_id_correctly(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
-        """``stop_cell("actor-1")`` (not 0) must kill engine 1, leaving engine 0
+        """``stop_cell("sglang-actor-group0-1")`` (not 0) must kill engine 1, leaving engine 0
         alive — guards against addressing the wrong cell."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         await controller.get_updatable_engines_and_lock()
-        actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
+        actor0, actor1 = [cell.primary_worker_handle.actor for cell in _cells(controller)]
 
-        await controller.stop_cell("actor-1")
+        await controller.stop_cell("sglang-actor-group0-1")
 
         assert isinstance(ray.get(actor0.get_calls.remote()), list)
         await _assert_engine_dies(actor1)
@@ -214,20 +213,18 @@ class TestStartStopCell:
     async def test_stop_cell_is_idempotent_on_already_stopped(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
         """Calling ``stop_cell`` twice does not raise — production code logs
         and proceeds when the engine is already de-allocated."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         await controller.get_updatable_engines_and_lock()  # ensure engines are alive
 
-        await controller.stop_cell("actor-0")
-        await controller.stop_cell("actor-0")  # must not raise
+        await controller.stop_cell("sglang-actor-group0-0")
+        await controller.stop_cell("sglang-actor-group0-0")  # must not raise
 
 
 @pytest.mark.asyncio
@@ -235,7 +232,7 @@ class TestCellDispatchAcrossModels:
     async def test_cells_route_to_correct_model_by_sorted_srv_key(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
@@ -243,13 +240,11 @@ class TestCellDispatchAcrossModels:
         "ref") the cells map (0,1)→actor, (2,3)→ref. Stopping cell 2 must hit
         ref's first engine and leave actor's engines untouched."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
-        pg = placement_group_factory(4)
+        controller = await _create_controller(args, manager_harness_factory)
+        actor_handles = [cell.primary_worker_handle.actor for cell in _cells(controller, "actor")]
+        ref_handles = [cell.primary_worker_handle.actor for cell in _cells(controller, "ref")]
 
-        controller = await InferenceController.create(args, pg)
-        actor_handles = [cell.primary_actor_handle for cell in _cells(controller, "actor")]
-        ref_handles = [cell.primary_actor_handle for cell in _cells(controller, "ref")]
-
-        await controller.stop_cell("ref-0")
+        await controller.stop_cell("sglang-ref-group0-0")
 
         # actor untouched
         for h in actor_handles:
@@ -264,16 +259,14 @@ class TestGetUpdatableEnginesAndLock:
     async def test_returns_only_updatable_servers_engines_in_multi_model_setup(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
         """With actor (update_weights=True) + ref (update_weights=False), the
         returned EnginesAndLock contains the actor's engines only."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
-        pg = placement_group_factory(4)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
         assert eal.engine_gpu_counts == [1, 1]
@@ -283,7 +276,7 @@ class TestGetUpdatableEnginesAndLock:
     async def test_returns_empty_when_no_updatable_model(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
@@ -291,9 +284,7 @@ class TestGetUpdatableEnginesAndLock:
         deployment), the returned EnginesAndLock has empty engines list and
         the lock handle is still present (callers always need a lock)."""
         args = _make_test_args(tmp_path, models=[("ref", False)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         eal = await controller.get_updatable_engines_and_lock()
         assert eal.rollout_engines == []
         assert eal.engine_gpu_counts == []
@@ -303,7 +294,7 @@ class TestGetUpdatableEnginesAndLock:
     async def test_has_new_engines_flag_lifecycle(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
@@ -311,9 +302,7 @@ class TestGetUpdatableEnginesAndLock:
         init, False after ``clear_updatable_has_new_engines``, True again
         after ``start_cell`` spawns a fresh engine."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         eal_init = await controller.get_updatable_engines_and_lock()
         assert eal_init.has_new_engines is True
 
@@ -321,24 +310,22 @@ class TestGetUpdatableEnginesAndLock:
         eal_cleared = await controller.get_updatable_engines_and_lock()
         assert eal_cleared.has_new_engines is False
 
-        await controller.stop_cell("actor-0")
-        await controller.start_cell("actor-0")
+        await controller.stop_cell("sglang-actor-group0-0")
+        await controller.start_cell("sglang-actor-group0-0")
         eal_recovered = await controller.get_updatable_engines_and_lock()
         assert eal_recovered.has_new_engines is True
 
     async def test_clear_does_not_affect_non_updatable_server(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
         """``clear_updatable_has_new_engines`` must touch only the updatable
         server's flag; non-updatable (ref) servers keep their flag intact."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
-        pg = placement_group_factory(4)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         # Force ref's flag True so we can detect any erroneous clear.
         controller.servers["ref"].has_new_engines = True
 
@@ -350,16 +337,14 @@ class TestGetUpdatableEnginesAndLock:
     async def test_multiple_updatable_servers_raises_assertion(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
         """Production guards against misconfiguration where two models both set
         ``update_weights=True``; that's ambiguous for the trainer."""
         args = _make_test_args(tmp_path, models=[("actor1", True), ("actor2", True)])
-        pg = placement_group_factory(4)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         with pytest.raises(ValueError, match="Multiple servers"):
             await controller.get_updatable_engines_and_lock()
 
@@ -369,7 +354,7 @@ class TestCheckWeights:
     async def test_check_weights_targets_only_updatable_model(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
@@ -377,9 +362,7 @@ class TestCheckWeights:
         compare round-trip is meaningless for a frozen model (restored from disk,
         never re-synced via update_weights), so it must be skipped there."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
-        pg = placement_group_factory(4)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
         await controller.get_updatable_engines_and_lock()  # wait for engines to be alive
 
         results = await controller.check_weights(action="pre_update")
@@ -406,10 +389,10 @@ class TestCheckWeights:
         assert updatable_cells and frozen_cells
 
         for cell in updatable_cells:
-            paths = ray.get(cell.primary_actor_handle.get_http_paths.remote())
+            paths = ray.get(cell.primary_worker_handle.actor.get_http_paths.remote())
             assert "/weights_checker" in paths, f"updatable engine {cell.addr_info.server_url} was not checked"
         for cell in frozen_cells:
-            paths = ray.get(cell.primary_actor_handle.get_http_paths.remote())
+            paths = ray.get(cell.primary_worker_handle.actor.get_http_paths.remote())
             assert "/weights_checker" not in paths, f"frozen engine {cell.addr_info.server_url} must not be checked"
 
 
@@ -418,7 +401,7 @@ class TestRecoverUpdatableEngines:
     async def test_skips_recovery_when_no_rollout_started(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
@@ -426,99 +409,118 @@ class TestRecoverUpdatableEngines:
         (initial state) — the trainer hasn't issued a rollout yet, so even if
         a slot looks dead the controller must not pre-emptively recover."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
+        await controller.dispose()
         await controller.get_updatable_engines_and_lock()
-        actor0_before = _cells(controller)[0].primary_actor_handle
+        actor0_before = _cells(controller)[0].primary_worker_handle.actor
 
         # Kill engine 0 directly + mark stopped (simulates a fault before any
         # rollout). recover_updatable_engines must not bring it back yet.
         ray.kill(actor0_before)
-        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
+        controller.servers["actor"].server_cells["sglang-actor-group0-0"]._mark_stopped()
 
         await controller.recover_updatable_engines()
 
         # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
-        assert not controller.servers["actor"].server_cells["actor-0"].is_allocated
+        assert not controller.servers["actor"].server_cells["sglang-actor-group0-0"].is_allocated
 
     async def test_recovers_dead_engine_after_rollout_started(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
         """Once ``rollout_id`` advances past -1 (mid-training), a dead slot on
         the updatable server is brought back by ``recover_updatable_engines``."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
+        await controller.dispose()
         await controller.get_updatable_engines_and_lock()
-        actor0_before = _cells(controller)[0].primary_actor_handle
+        actor0_before = _cells(controller)[0].primary_worker_handle.actor
 
         ray.kill(actor0_before)
-        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
+        controller.servers["actor"].server_cells["sglang-actor-group0-0"]._mark_stopped()
 
         await controller.prepare_rollout(0)
         await controller.recover_updatable_engines()
 
-        slot0 = controller.servers["actor"].server_cells["actor-0"]
+        slot0 = controller.servers["actor"].server_cells["sglang-actor-group0-0"]
         assert slot0.is_allocated
-        assert slot0.primary_actor_handle is not actor0_before
-        assert isinstance(ray.get(slot0.primary_actor_handle.get_calls.remote()), list)
+        assert slot0.primary_worker_handle.actor is not actor0_before
+        assert isinstance(ray.get(slot0.primary_worker_handle.actor.get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
-class TestRolloutFaultToleranceIsUnsupported:
-    async def test_health_monitoring_hooks_are_noops_without_fault_tolerance(
+class TestHealthMonitoringGate:
+    async def test_pause_and_resume_round_trip(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
-        """A plain run never asked for fault tolerance, so the hooks stay out of its way."""
+        """The reconcile gate pauses and resumes without wedging a plain run."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
 
         await controller.health_monitoring_pause()
         await controller.health_monitoring_resume()
 
-    async def test_health_monitoring_hooks_refuse_to_run_under_fault_tolerance(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """Asking for fault tolerance must fail loudly, not run unmonitored."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
-        controller.args.use_fault_tolerance = True
-
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_pause()
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_resume()
-
     async def test_fault_injection_refuses_to_run(
         self,
         ray_local_mode,
-        placement_group_factory,
+        manager_harness_factory,
         tmp_path,
         patch_low_level,
     ):
-        """The injector depended on the deleted monitor to observe the crash."""
+        """CI fault injection is not rebuilt on the worker manager yet."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
+        controller = await _create_controller(args, manager_harness_factory)
 
         with pytest.raises(NotImplementedError):
             await controller._try_ci_fault_injection()
+
+
+async def _wait_until(predicate, *, timeout_s: float = 30.0, interval_s: float = 0.2) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        if time.monotonic() >= deadline:
+            pytest.fail("timed out waiting for the reconcile watcher")
+        await asyncio.sleep(interval_s)
+
+
+@pytest.mark.asyncio
+class TestManagerDrivenSuspendResume:
+    async def test_suspend_and_resume_flow_through_the_reconcile_watcher(
+        self,
+        ray_local_mode,
+        manager_harness_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """The simple-ft loop: the api server stops/starts the manager cell and the
+        controller's watcher removes, re-attaches, and (after the weight sync)
+        promotes it back behind the router."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        harness = await manager_harness_factory(args)
+        controller = await InferenceController.create(
+            args,
+            deployments=harness.deployments,
+            providers=harness.providers,
+            worker_cell_control=harness.worker_cell_control,
+        )
+        cell = controller.servers["actor"].server_cells["sglang-actor-group0-0"]
+        assert cell.is_alive
+
+        await harness.worker_cell_control.stop_cell(cell_id="sglang-actor-group0-0")
+        await _wait_until(lambda: not cell.is_allocated)
+        assert controller.compute_cell_status("sglang-actor-group0-0").phase == "Suspended"
+
+        await harness.worker_cell_control.start_cell(cell_id="sglang-actor-group0-0")
+        await _wait_until(lambda: cell.is_allocated)
+        assert not cell.is_alive
+
+        await controller.clear_updatable_has_new_engines()
+        assert cell.is_alive
+        await controller.dispose()

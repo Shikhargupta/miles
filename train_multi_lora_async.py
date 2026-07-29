@@ -7,7 +7,7 @@ from pathlib import Path
 import ray
 
 from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller
-from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models, create_worker_infra
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -33,11 +33,9 @@ async def main(args):
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
-    pgs = create_placement_groups(args)
+    infra = create_worker_infra(args)
     init_tracking(args)
-    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(
-        args, pgs["rollout"]
-    )
+    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args, infra)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     controller = create_multilora_controller(args, f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
@@ -46,7 +44,7 @@ async def main(args):
     api_port = await controller.api_port.remote()
     logger.info(f"Multi-LoRA control API listening on http://{host}:{api_port} (head node)")
 
-    actor_model, _ = await create_training_models(args, pgs, inference_controller, rollout_executor)
+    actor_model, _ = await create_training_models(args, infra, inference_controller, rollout_executor)
 
     # CLI-registered adapters are loaded and pushed by the loop's first
     # reconcile + update_weights.

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -18,13 +18,15 @@ class PortInfo(FrozenStrictBaseModel):
     static_port: int
     mode: Literal["per_worker", "master"]
     allow_dynamic: bool
-    num_consecutive: int = 1
+    url_scheme: str | None = None
+    num_consecutive: int = Field(default=1, ge=1)
 
 
 class SchedulingSpec(FrozenStrictBaseModel):
     num_cells: int
     num_workers_per_cell: int
     num_gpus_per_worker: float
+    num_cpus_per_worker: float
 
 
 class BaseWorkerSpec(FrozenStrictBaseModel):
@@ -40,7 +42,7 @@ class CommandWorkerSpec(BaseWorkerSpec):
 
 class ServeWorkerSpec(BaseWorkerSpec):
     worker_class: str
-    ctor_kwargs: Callable[[], dict[str, Any]]
+    ctor_kwargs: Callable[[int, int], dict[str, Any]]
 
     @model_validator(mode="before")
     @classmethod
