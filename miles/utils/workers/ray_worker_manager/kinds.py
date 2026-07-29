@@ -10,7 +10,7 @@ from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.ray_worker_manager.addressing import WorkerAddressing
 from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
 from miles.utils.workers.ray_worker_manager.resources import ActorOptions
-from miles.utils.workers.ray_worker_manager.state import CellState, WorkerState
+from miles.utils.workers.ray_worker_manager.state import ActorState, CellLaunch
 from miles.utils.workers.worker_spec import BaseWorkerSpec, CommandWorkerSpec, ServeWorkerSpec
 
 
@@ -19,7 +19,7 @@ class WorkerKind(abc.ABC):
     def create_actor(
         self,
         *,
-        cell: CellState,
+        cell: CellLaunch,
         worker_index: int,
         name: str,
         env_vars: dict[str, str],
@@ -31,7 +31,7 @@ class WorkerKind(abc.ABC):
     async def activate_workers(
         self,
         *,
-        workers: list[WorkerState],
+        workers: list[ActorState],
         addressings: dict[str, WorkerAddressing],
         env_vars: dict[str, str],
     ) -> None: ...
@@ -44,7 +44,7 @@ class ServeWorkerKind(WorkerKind):
     def create_actor(
         self,
         *,
-        cell: CellState,
+        cell: CellLaunch,
         worker_index: int,
         name: str,
         env_vars: dict[str, str],
@@ -69,11 +69,11 @@ class ServeWorkerKind(WorkerKind):
     async def activate_workers(
         self,
         *,
-        workers: list[WorkerState],
+        workers: list[ActorState],
         addressings: dict[str, WorkerAddressing],
         env_vars: dict[str, str],
     ) -> None:
-        spec = workers[0].cell.spec
+        spec = workers[0].spec
         if not spec.port_infos:
             return
         await asyncio.gather(
@@ -99,7 +99,7 @@ class CommandWorkerKind(WorkerKind):
     def create_actor(
         self,
         *,
-        cell: CellState,
+        cell: CellLaunch,
         worker_index: int,
         name: str,
         env_vars: dict[str, str],
@@ -121,11 +121,11 @@ class CommandWorkerKind(WorkerKind):
     async def activate_workers(
         self,
         *,
-        workers: list[WorkerState],
+        workers: list[ActorState],
         addressings: dict[str, WorkerAddressing],
         env_vars: dict[str, str],
     ) -> None:
-        spec = workers[0].cell.spec
+        spec = workers[0].spec
         assert isinstance(spec, CommandWorkerSpec)
         for worker in workers:
             command = spec.launch_command.format(**addressings[worker.name].addr_port_kwargs)

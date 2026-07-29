@@ -1,7 +1,7 @@
 from typing import Any
 
 from miles.utils.workers.ray_worker_manager.addressing import compute_worker_addressings
-from miles.utils.workers.ray_worker_manager.state import CellState, WorkerState
+from miles.utils.workers.ray_worker_manager.state import ActorState
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
 
 
@@ -16,11 +16,18 @@ def _make_spec(port_infos: list[PortInfo]) -> ServeWorkerSpec:
     )
 
 
-def _make_workers(spec: ServeWorkerSpec, *, ports_by_worker: list[dict[str, int]]) -> list[WorkerState]:
-    cell = CellState(spec=spec, cell_id="spec-0", cell_index=0, generation=0)
+def _make_workers(spec: ServeWorkerSpec, *, ports_by_worker: list[dict[str, int]]) -> list[ActorState]:
     fake_actor: Any = object()
     return [
-        WorkerState(name=f"spec-0-{i}", cell=cell, actor=fake_actor, node_ip=f"10.0.0.{i}", owned_ports=ports)
+        ActorState(
+            name=f"spec-0-{i}",
+            spec=spec,
+            cell_id="spec-0",
+            generation=0,
+            actor=fake_actor,
+            node_ip=f"10.0.0.{i}",
+            owned_ports=ports,
+        )
         for i, ports in enumerate(ports_by_worker)
     ]
 

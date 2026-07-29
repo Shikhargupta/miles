@@ -9,7 +9,7 @@ from miles.utils.workers.ray_worker_manager.kinds import WorkerKind, make_worker
 from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
 from miles.utils.workers.ray_worker_manager.ports import PortAllocator
 from miles.utils.workers.ray_worker_manager.resources import resolve_actor_options
-from miles.utils.workers.ray_worker_manager.state import CellState, WorkerState
+from miles.utils.workers.ray_worker_manager.state import ActorState, CellLaunch
 from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 
@@ -19,7 +19,7 @@ class CellLauncher:
         self._worker_kinds = make_worker_kinds()
         self._port_allocator = PortAllocator()
 
-    async def bring_up_cells(self, *, cells: list[CellState], register_worker: Callable[[WorkerState], None]) -> None:
+    async def bring_up_cells(self, *, cells: list[CellLaunch], register_worker: Callable[[ActorState], None]) -> None:
         env_vars_by_cell_id = {cell.cell_id: cell.spec.env_var() for cell in cells}
 
         workers_by_cell_id = {}
@@ -48,16 +48,20 @@ class CellLauncher:
             ]
         )
 
-    def _launch_cell_actors(self, *, cell: CellState, env_vars: dict[str, str]) -> list[WorkerState]:
+    def _launch_cell_actors(self, *, cell: CellLaunch, env_vars: dict[str, str]) -> list[ActorState]:
         workers = []
         for worker_index in range(cell.spec.scheduling.num_workers_per_cell):
             name = compute_worker_name(spec_name=cell.spec.name, cell_index=cell.cell_index, worker_index=worker_index)
             actor = self._launch_actor(cell=cell, worker_index=worker_index, name=name, env_vars=env_vars)
-            workers.append(WorkerState(name=name, cell=cell, actor=actor))
+            workers.append(
+                ActorState(
+                    name=name, spec=cell.spec, cell_id=cell.cell_id, generation=cell.generation, actor=actor
+                )
+            )
         return workers
 
     def _launch_actor(
-        self, *, cell: CellState, worker_index: int, name: str, env_vars: dict[str, str]
+        self, *, cell: CellLaunch, worker_index: int, name: str, env_vars: dict[str, str]
     ) -> ray.actor.ActorHandle:
         spec = cell.spec
         placement = self._placements.get(spec.name)
@@ -70,8 +74,8 @@ class CellLauncher:
             cell=cell, worker_index=worker_index, name=name, env_vars=env_vars, options=options, placement=placement
         )
 
-    async def _activate_cell(self, *, workers: list[WorkerState], env_vars: dict[str, str]) -> None:
-        spec = workers[0].cell.spec
+    async def _activate_cell(self, *, workers: list[ActorState], env_vars: dict[str, str]) -> None:
+        spec = workers[0].spec
         addressings = compute_worker_addressings(spec=spec, workers=workers)
         for worker in workers:
             worker.url = addressings[worker.name].url

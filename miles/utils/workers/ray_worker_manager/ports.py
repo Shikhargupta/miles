@@ -2,7 +2,7 @@ import asyncio
 
 import ray
 
-from miles.utils.workers.ray_worker_manager.state import WorkerState
+from miles.utils.workers.ray_worker_manager.state import ActorState
 
 _DYNAMIC_PORT_START = 15000
 
@@ -12,8 +12,8 @@ class PortAllocator:
         self._cursors: dict[str, int] = {}
         self._lock = asyncio.Lock()
 
-    async def collect_worker_ports(self, *, worker: WorkerState, is_master: bool) -> None:
-        owned_port_infos = [p for p in worker.cell.spec.port_infos if p.mode == "per_worker" or is_master]
+    async def collect_worker_ports(self, *, worker: ActorState, is_master: bool) -> None:
+        owned_port_infos = [p for p in worker.spec.port_infos if p.mode == "per_worker" or is_master]
 
         dynamic_port_infos = [p for p in owned_port_infos if p.allow_dynamic]
         if dynamic_port_infos:

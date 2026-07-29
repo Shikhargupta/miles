@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from miles.utils.workers.ray_worker_manager.state import WorkerState
+from miles.utils.workers.ray_worker_manager.state import ActorState
 from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 
@@ -10,7 +10,7 @@ class WorkerAddressing:
     url: str | None
 
 
-def compute_worker_addressings(*, spec: BaseWorkerSpec, workers: list[WorkerState]) -> dict[str, WorkerAddressing]:
+def compute_worker_addressings(*, spec: BaseWorkerSpec, workers: list[ActorState]) -> dict[str, WorkerAddressing]:
     master = workers[0]
 
     addressings: dict[str, WorkerAddressing] = {}
