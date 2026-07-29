@@ -7,6 +7,7 @@ from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 class CellInfo(FrozenStrictBaseModel):
     cell_id: str
+    spec_name: str
     members_hash: str
     member_urls: list[str]
 

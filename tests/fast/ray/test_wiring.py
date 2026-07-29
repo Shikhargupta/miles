@@ -30,7 +30,7 @@ class TestLaunchWorkerManager:
         """The manager is reachable under its well-known name with all spec workers launched."""
         manager = launch_worker_manager([_make_serve_spec()], placements={})
 
-        infos = ray.get(get_worker_manager().get_worker_infos.remote(spec_name="wiring-dummy"))
+        infos = ray.get(get_worker_manager().get_worker_infos.remote(spec_names=["wiring-dummy"]))
         assert [info.name for info in infos] == ["wiring-dummy-0-0", "wiring-dummy-0-1"]
         described = ray.get(ray.get_actor("wiring-dummy-0-0").describe.remote())
         assert described["tag"] == "wired"

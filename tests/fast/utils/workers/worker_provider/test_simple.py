@@ -9,6 +9,7 @@ from miles.utils.workers.worker_provider.simple import SimpleWorkerProvider
 def _make_cell(index: int) -> CellInfo:
     return CellInfo(
         cell_id=f"cell-{index}",
+        spec_name="engine",
         members_hash=f"hash-{index}",
         member_urls=[f"http://host-{index}:8000"],
     )

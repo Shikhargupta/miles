@@ -13,6 +13,7 @@ from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInf
 
 class RayWorkerInfo(FrozenStrictBaseModel):
     name: str
+    spec_name: str
     cell_id: str
     generation: int
     url: str | None
@@ -23,12 +24,12 @@ class RayWorkerProvider(BaseWorkerProvider):
         self,
         *,
         manager: ray.actor.ActorHandle,
-        spec_name: str,
+        spec_names: list[str],
         poll_interval_seconds: float,
         clock: Clock | None = None,
     ) -> None:
         self._manager = manager
-        self._spec_name = spec_name
+        self._spec_names = list(spec_names)
         self._poll_interval_seconds = poll_interval_seconds
         self._clock = clock
 
@@ -58,6 +59,7 @@ class RayWorkerProvider(BaseWorkerProvider):
         return [
             CellInfo(
                 cell_id=cell_id,
+                spec_name=_single_spec_name(members),
                 members_hash=_compute_members_hash(members),
                 member_urls=[member.url for member in members if member.url is not None],
             )
@@ -65,13 +67,19 @@ class RayWorkerProvider(BaseWorkerProvider):
         ]
 
     async def _fetch_worker_infos(self) -> list[RayWorkerInfo]:
-        return await self._manager.get_worker_infos.remote(spec_name=self._spec_name)
+        return await self._manager.get_worker_infos.remote(spec_names=self._spec_names)
 
     def _find_worker_info(self, *, worker_infos: list[RayWorkerInfo], worker_name: str) -> RayWorkerInfo:
         matches = [worker_info for worker_info in worker_infos if worker_info.name == worker_name]
         names = sorted(worker_info.name for worker_info in worker_infos)
-        assert len(matches) == 1, f"{worker_name=} must name exactly one worker of {self._spec_name=}, got {names=}"
+        assert len(matches) == 1, f"{worker_name=} must name exactly one worker of {self._spec_names=}, got {names=}"
         return matches[0]
+
+
+def _single_spec_name(members: list[RayWorkerInfo]) -> str:
+    spec_names = {member.spec_name for member in members}
+    assert len(spec_names) == 1, f"cell members must share one spec, got {sorted(spec_names)=}"
+    return next(iter(spec_names))
 
 
 def _compute_members_hash(members: list[RayWorkerInfo]) -> str:

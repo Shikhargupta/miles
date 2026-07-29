@@ -64,7 +64,9 @@ def _make_setup(*, update_weights: bool = True):
 
 
 def _observed(cell: ServerCell, members_hash: str = "hash-a") -> CellInfo:
-    return CellInfo(cell_id=cell.cell_id, members_hash=members_hash, member_urls=["http://10.0.0.1:30000"])
+    return CellInfo(
+        cell_id=cell.cell_id, spec_name=cell.spec_name, members_hash=members_hash, member_urls=["http://10.0.0.1:30000"]
+    )
 
 
 def _with_recording_client():
@@ -109,7 +111,7 @@ class TestReconcileAdd:
     async def test_partially_started_cell_is_skipped(self):
         """A cell whose members have not all published urls is not attached yet."""
         controller, _srv, cell, handle, _router_client = _make_setup()
-        observed = CellInfo(cell_id=cell.cell_id, members_hash="hash-a", member_urls=[])
+        observed = CellInfo(cell_id=cell.cell_id, spec_name=cell.spec_name, members_hash="hash-a", member_urls=[])
 
         with _with_recording_client():
             await controller._reconcile(cell.cell_id, observed)

@@ -48,7 +48,7 @@ class ManagerHarness:
         return {
             deployment.spec.name: RayWorkerProvider(
                 manager=self.manager,
-                spec_name=deployment.spec.name,
+                spec_names=[deployment.spec.name],
                 poll_interval_seconds=_PROVIDER_POLL_INTERVAL_SECONDS,
             )
             for deployment in self.deployments
@@ -67,11 +67,8 @@ class ManagerHarness:
         )
 
     def kill_all(self) -> None:
-        worker_names = [
-            info.name
-            for deployment in self.deployments
-            for info in ray.get(self.manager.get_worker_infos.remote(spec_name=deployment.spec.name))
-        ]
+        spec_names = [deployment.spec.name for deployment in self.deployments]
+        worker_names = [info.name for info in ray.get(self.manager.get_worker_infos.remote(spec_names=spec_names))]
         for name in worker_names:
             try:
                 ray.kill(ray.get_actor(name), no_restart=True)

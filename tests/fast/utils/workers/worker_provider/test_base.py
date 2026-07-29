@@ -5,7 +5,7 @@ from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInf
 
 
 def _make_cell_info(**overrides) -> CellInfo:
-    kwargs = dict(cell_id="cell-0", members_hash="hash-0", member_urls=["http://host-0:8000"])
+    kwargs = dict(cell_id="cell-0", spec_name="engine", members_hash="hash-0", member_urls=["http://host-0:8000"])
     kwargs.update(overrides)
     return CellInfo(**kwargs)
 
@@ -15,6 +15,7 @@ class TestCellInfo:
         """A cell info keeps its id, members hash, and member urls as provided."""
         cell_info = _make_cell_info(member_urls=["http://host-0:8000", "http://host-1:8000"])
         assert cell_info.cell_id == "cell-0"
+        assert cell_info.spec_name == "engine"
         assert cell_info.members_hash == "hash-0"
         assert cell_info.member_urls == ["http://host-0:8000", "http://host-1:8000"]
 

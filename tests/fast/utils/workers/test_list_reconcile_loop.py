@@ -10,6 +10,7 @@ _POLL_INTERVAL_SECONDS = 10.0
 def _make_cell(index: int, *, members_hash: str | None = None) -> CellInfo:
     return CellInfo(
         cell_id=f"cell-{index}",
+        spec_name="engine",
         members_hash=members_hash or f"hash-{index}",
         member_urls=[f"http://host-{index}:8000"],
     )

@@ -9,7 +9,7 @@ _POLL_INTERVAL_SECONDS = 10.0
 
 
 def _make_worker_info(**overrides) -> RayWorkerInfo:
-    kwargs = dict(name="engine-0-0", cell_id="cell-0", generation=0, url="http://host-0:8000")
+    kwargs = dict(name="engine-0-0", spec_name="engine", cell_id="cell-0", generation=0, url="http://host-0:8000")
     kwargs.update(overrides)
     return RayWorkerInfo(**kwargs)
 
@@ -25,11 +25,11 @@ class _FakeManagerMethod:
 class _FakeManager:
     def __init__(self, worker_infos: list[RayWorkerInfo]) -> None:
         self.worker_infos = list(worker_infos)
-        self.requested_spec_names: list[str] = []
+        self.requested_spec_names: list[list[str]] = []
         self.get_worker_infos = _FakeManagerMethod(self._get_worker_infos)
 
-    async def _get_worker_infos(self, *, spec_name: str) -> list[RayWorkerInfo]:
-        self.requested_spec_names.append(spec_name)
+    async def _get_worker_infos(self, *, spec_names: list[str]) -> list[RayWorkerInfo]:
+        self.requested_spec_names.append(spec_names)
         return list(self.worker_infos)
 
 
@@ -40,7 +40,7 @@ class _Harness:
         self.reconcile_calls: list[tuple[str, CellInfo | None]] = []
         self.provider = RayWorkerProvider(
             manager=self.manager,
-            spec_name="engine",
+            spec_names=["engine"],
             poll_interval_seconds=_POLL_INTERVAL_SECONDS,
             clock=self.clock,
         )
@@ -74,7 +74,7 @@ class TestGetUrl:
         """The url comes from the manager's worker info for that name."""
         harness = _Harness([_make_worker_info()])
         assert await harness.provider.get_url("engine-0-0") == "http://host-0:8000"
-        assert harness.manager.requested_spec_names == ["engine"]
+        assert harness.manager.requested_spec_names == [["engine"]]
 
     async def test_rejects_unknown_worker_name(self):
         """A name the manager does not report is rejected."""
@@ -104,6 +104,7 @@ class TestWatchCells:
 
         assert [cell_id for cell_id, _ in harness.reconcile_calls] == ["cell-0", "cell-1"]
         cell_0 = harness.reconcile_calls[0][1]
+        assert cell_0.spec_name == "engine"
         assert cell_0.member_urls == ["http://host-0:8000", "http://host-1:8000"]
         await stop_watch_fn()
 

@@ -130,10 +130,11 @@ class TestGetWorkerInfos:
         spec_name = _unique_name("serve")
         manager = await _make_manager([_make_serve_spec(spec_name)])
 
-        infos = await manager.get_worker_infos.remote(spec_name=spec_name)
+        infos = await manager.get_worker_infos.remote(spec_names=[spec_name])
 
         assert [info.name for info in infos] == [f"{spec_name}-{c}-{w}" for c in range(2) for w in range(2)]
         assert [info.cell_id for info in infos] == [f"{spec_name}-{c}" for c in range(2) for w in range(2)]
+        assert all(info.spec_name == spec_name for info in infos)
         assert all(info.generation == 0 for info in infos)
         assert all(info.url and info.url.startswith("http://") and info.url.endswith(":18123") for info in infos)
         ray.kill(manager)
@@ -144,7 +145,7 @@ class TestGetWorkerInfos:
         port_infos = [PortInfo(name="http", static_port=18123, mode="per_worker", allow_dynamic=False)]
         manager = await _make_manager([_make_serve_spec(spec_name, port_infos=port_infos)])
 
-        infos = await manager.get_worker_infos.remote(spec_name=spec_name)
+        infos = await manager.get_worker_infos.remote(spec_names=[spec_name])
 
         assert all(info.url is None for info in infos)
         ray.kill(manager)
@@ -154,7 +155,7 @@ class TestGetWorkerInfos:
         spec_name = _unique_name("serve")
         manager = await _make_manager([_make_serve_spec(spec_name)])
 
-        assert await manager.get_worker_infos.remote(spec_name="nonexistent") == []
+        assert await manager.get_worker_infos.remote(spec_names=["nonexistent"]) == []
         ray.kill(manager)
 
 
@@ -167,7 +168,7 @@ class TestStopStartCell:
         await manager.stop_cell.remote(f"{spec_name}-0")
 
         assert not _actor_exists(f"{spec_name}-0-0")
-        infos = await manager.get_worker_infos.remote(spec_name=spec_name)
+        infos = await manager.get_worker_infos.remote(spec_names=[spec_name])
         assert [info.cell_id for info in infos] == [f"{spec_name}-1", f"{spec_name}-1"]
         ray.kill(manager)
 
@@ -181,7 +182,7 @@ class TestStopStartCell:
 
         described = ray.get(ray.get_actor(f"{spec_name}-0-0").describe.remote())
         assert described["tag"] == "hello"
-        infos = await manager.get_worker_infos.remote(spec_name=spec_name)
+        infos = await manager.get_worker_infos.remote(spec_names=[spec_name])
         generations = {info.cell_id: info.generation for info in infos}
         assert generations == {f"{spec_name}-0": 1, f"{spec_name}-1": 0}
         ray.kill(manager)

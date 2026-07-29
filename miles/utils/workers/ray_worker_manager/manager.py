@@ -42,11 +42,17 @@ class RayWorkerManager:
 
         await self._launcher.bring_up_cells(cells=cells, register_worker=self._register_worker)
 
-    async def get_worker_infos(self, *, spec_name: str) -> list[RayWorkerInfo]:
+    async def get_worker_infos(self, *, spec_names: list[str]) -> list[RayWorkerInfo]:
         return [
-            RayWorkerInfo(name=w.name, cell_id=w.cell.cell_id, generation=w.cell.generation, url=w.url)
+            RayWorkerInfo(
+                name=w.name,
+                spec_name=w.cell.spec.name,
+                cell_id=w.cell.cell_id,
+                generation=w.cell.generation,
+                url=w.url,
+            )
             for w in self._workers.values()
-            if w.cell.spec.name == spec_name
+            if w.cell.spec.name in spec_names
         ]
 
     async def start_cell(self, cell_id: str) -> None:

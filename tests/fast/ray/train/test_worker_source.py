@@ -48,7 +48,7 @@ class TestManagerTrainWorkerSource:
 
         second = source.allocate()
         assert [ray.get(handle.describe.remote())["tag"] for handle in second] == ["0-0", "0-1"]
-        infos = await manager.get_worker_infos.remote(spec_name="wsrc-b")
+        infos = await manager.get_worker_infos.remote(spec_names=["wsrc-b"])
         assert all(info.generation == 1 for info in infos)
         ray.kill(manager)
         for handle in second:
