@@ -282,11 +282,6 @@ class UpdateWeightFromTensor:
                 )
                 _wait_for_colocated_transfer(refs, self._ipc_gather_group, is_lora=True)
                 del long_lived_tensors
-                # Reap this chunk's IPC storage. Only safe here: the receiver
-                # finished the chunk, every producer rank crossed the engine
-                # barrier, and the flattened bucket is deleted, so no handle is
-                # in flight. Collecting earlier double-unlinks shm files.
-                torch.cuda.ipc_collect()
                 sent_chunks += 1
                 hf_named_tensors = next_hf_named_tensors
                 is_first_chunk = False
@@ -298,12 +293,9 @@ class UpdateWeightFromTensor:
             )
             _wait_for_colocated_transfer(refs, self._ipc_gather_group, is_lora=True)
             del long_lived_tensors
-            torch.cuda.ipc_collect()
             sent_chunks += 1
 
             del chunks, hf_named_tensors, next_hf_named_tensors
-            # Backstop for anything the per-chunk collections left behind.
-            torch.cuda.ipc_collect()
             torch.cuda.empty_cache()
 
             if rank == 0:
