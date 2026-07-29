@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # The framework supports other asynchronous approaches such as fully async (which is shown in
-# examples/infra_features/fully_async).
+# examples/fully_async).
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
     validate_async_off_policy_correction(args)

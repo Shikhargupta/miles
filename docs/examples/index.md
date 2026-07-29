@@ -21,6 +21,13 @@ Each example follows the same template:
 
 <CardGroup cols={2}>
 
+  <Card title="Fully Async Rollout" icon="bolt" href="/examples/fully-async">
+
+    Continuous background generation with a queue between rollout and training.
+    Up to 2× end-to-end speedup.
+
+  </Card>
+
   <Card title="Search-R1 (Tool Use)" icon="magnifying-glass" href="/examples/search-r1">
 
     Multi-turn rollout where the model can issue `<search>...` actions, get
