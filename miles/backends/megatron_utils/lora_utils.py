@@ -459,13 +459,10 @@ def save_lora_checkpoint(
     pp_rank = parallel_state.pp.rank
     ep_rank = parallel_state.ep.rank
 
-    # EVERY rank creates the directory: the save dir may be node-local storage, where a
-    # dp0-only mkdir misses the other nodes.
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
         dist.barrier()
 
-    # ---- Megatron-native format (per TP/PP/EP rank, fast resume) ----
     if is_dp_cp_rank_0:
         adapter_state: dict[str, torch.Tensor] = {}
         for model_chunk in model:
@@ -477,7 +474,6 @@ def save_lora_checkpoint(
         torch.save(adapter_state, native_path)
         logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
-    # ---- HF PEFT format ----
     lora_state_dict: dict[str, torch.Tensor] = {}
     if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)

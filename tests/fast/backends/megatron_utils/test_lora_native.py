@@ -40,19 +40,12 @@ def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, nu
     return SimpleNamespace(config=cfg, decoder=SimpleNamespace(layers=layers))
 
 
-# ---------------------------------------------------------------------------
-# _build_qkv_perm
-# ---------------------------------------------------------------------------
-
-
 class TestBuildQkvPerm:
     def test_mha_single_group(self):
-        # 1 query head, 1 group, head_dim 2 -> plain [q; k; v] is already interleaved
         perm = _build_qkv_perm(num_q_heads=1, num_groups=1, head_dim=2, device="cpu")
         assert perm.tolist() == [0, 1, 2, 3, 4, 5]
 
     def test_gqa_two_groups_matches_mcore_layout(self):
-        # 4 query heads / 2 groups / head_dim 1: mcore emits [q0 q1 k0 v0 q2 q3 k1 v1]
         perm = _build_qkv_perm(num_q_heads=4, num_groups=2, head_dim=1, device="cpu")
         assert perm.tolist() == [0, 1, 4, 6, 2, 3, 5, 7]
 
@@ -66,10 +59,8 @@ class TestBuildQkvPerm:
     def test_applied_to_delta_places_projections_per_group(self):
         nq, ng, hd = 4, 2, 1
         perm = _build_qkv_perm(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
-        # plain layout: q rows 0..3, k rows 4..5, v rows 6..7
         plain = torch.tensor([[10.0, 11.0, 12.0, 13.0, 20.0, 21.0, 30.0, 31.0]])
         out = plain.index_select(-1, perm)
-        # group 0 -> q0 q1 k0 v0, group 1 -> q2 q3 k1 v1
         assert out.tolist() == [[10.0, 11.0, 20.0, 30.0, 12.0, 13.0, 21.0, 31.0]]
 
     def test_output_gate_deinterleaves_the_query_slices(self):
@@ -90,11 +81,6 @@ class TestBuildQkvPerm:
         assert out.tolist() == [[10.0, 11.0, 40.0, 41.0, 20.0, 30.0, 12.0, 13.0, 42.0, 43.0, 21.0, 31.0]]
 
 
-# ---------------------------------------------------------------------------
-# Recomputing the fused layernorm the branch input goes through
-# ---------------------------------------------------------------------------
-
-
 class TestRmsNorm:
     def test_plain_gamma_scales_by_the_stored_weight(self):
         x = torch.tensor([[3.0, 4.0]])
@@ -111,11 +97,6 @@ class TestRmsNorm:
             _rmsnorm(x, stored, eps=0.0, zero_centered_gamma=True),
             _rmsnorm(x, stored + 1.0, eps=0.0),
         )
-
-
-# ---------------------------------------------------------------------------
-# Keeping the graph alive through activation recomputation
-# ---------------------------------------------------------------------------
 
 
 class TestFirstActivationGrad:
@@ -140,11 +121,6 @@ class TestFirstActivationGrad:
 
     def test_stage_without_an_embedding_is_a_noop(self):
         assert _require_grad_on_first_activation(SimpleNamespace()) is None
-
-
-# ---------------------------------------------------------------------------
-# HF naming read off the checkpoint
-# ---------------------------------------------------------------------------
 
 
 def _write_index(tmp_path, keys):
@@ -184,30 +160,25 @@ class TestHfNaming:
         assert _hf_naming(None) == ("model.layers.", "mlp.shared_expert.")
 
 
-# ---------------------------------------------------------------------------
-# Architecture guards
-# ---------------------------------------------------------------------------
-
-
 class TestArchitectureGuards:
     def test_plain_gqa_model_passes(self):
         model = _fake_model()
-        _assert_supported_architecture(model.config)  # does not raise
+        _assert_supported_architecture(model.config)
 
     def test_output_gate_is_supported(self):
         """The gated query slice is handled by the permutation, not rejected."""
         model = _fake_model(output_gate=True)
-        _assert_supported_architecture(model.config)  # does not raise
+        _assert_supported_architecture(model.config)
 
     def test_mla_is_supported(self):
         """MLA has its own projection set; the fused-qkv guards must not fire on it."""
         model = _fake_model(mla=True, with_qkv=False)
-        _assert_supported_architecture(model.config, tp_size=2)  # does not raise
+        _assert_supported_architecture(model.config, tp_size=2)
 
     def test_missing_linear_qkv_is_not_an_error(self):
         """Mixer-only layers carry no attention adapter; apply_native_lora reports them."""
         model = _fake_model(with_qkv=False)
-        _assert_supported_architecture(model.config)  # does not raise
+        _assert_supported_architecture(model.config)
 
     def test_query_groups_below_tp_size_rejected(self):
         model = _fake_model(num_query_groups=2)
@@ -216,17 +187,12 @@ class TestArchitectureGuards:
 
     def test_query_groups_equal_to_tp_size_passes(self):
         model = _fake_model(num_query_groups=4)
-        _assert_supported_architecture(model.config, tp_size=4)  # does not raise
+        _assert_supported_architecture(model.config, tp_size=4)
 
     def test_error_names_the_escape_hatch(self):
         model = _fake_model(num_query_groups=2)
         with pytest.raises(AssertionError, match="--lora-provider-path"):
             _assert_supported_architecture(model.config, tp_size=4)
-
-
-# ---------------------------------------------------------------------------
-# Real checkpoints that need their own provider
-# ---------------------------------------------------------------------------
 
 
 class TestShippedRegistries:
@@ -241,11 +207,8 @@ class TestShippedRegistries:
     @pytest.mark.parametrize(
         "registry,kwargs",
         [
-            # glm4.7-flash.sh: --multi-latent-attention --q-lora-rank 768 --kv-lora-rank 512
             ("glm4.7-flash", dict(mla=True)),
-            # kimi-k25_2layer.sh -> kimi-k2-thinking.sh: --multi-latent-attention
             ("kimi-k25_2layer", dict(mla=True)),
-            # glm5-744B-A40B_4layer.sh -> glm5-744B-A40B.sh: --multi-latent-attention
             ("glm5-744B-A40B_4layer", dict(mla=True)),
             ("deepseek-v4-flash-4layer", dict(mla=True)),
         ],
@@ -254,7 +217,7 @@ class TestShippedRegistries:
         """MLA is covered by _attach_mla_attention, including when TP exceeds the
         (meaningless for MLA) query-group count."""
         model = _fake_model(num_query_groups=2, **kwargs)
-        _assert_supported_architecture(model.config, tp_size=4)  # does not raise
+        _assert_supported_architecture(model.config, tp_size=4)
 
     def test_qwen3_5_gated_hybrid_is_accepted(self):
         """qwen3.5-35B-A3B.sh: --attention-output-gate plus GDN mixer layers.
@@ -263,7 +226,7 @@ class TestShippedRegistries:
         carries no attention adapter, so TP <= num_query_groups is the only bar left.
         """
         model = _fake_model(output_gate=True, num_query_groups=2)
-        _assert_supported_architecture(model.config, tp_size=2)  # does not raise
+        _assert_supported_architecture(model.config, tp_size=2)
 
     def test_qwen3_5_above_query_group_count_still_rejected(self):
         model = _fake_model(output_gate=True, num_query_groups=2)
@@ -272,11 +235,6 @@ class TestShippedRegistries:
         message = str(excinfo.value)
         assert "num_query_groups" in message
         assert "--lora-provider-path" in message
-
-
-# ---------------------------------------------------------------------------
-# resolve_lora_provider
-# ---------------------------------------------------------------------------
 
 
 class TestResolveLoraProvider:
@@ -296,11 +254,6 @@ class TestResolveLoraProvider:
             resolve_lora_provider(args)
 
 
-# ---------------------------------------------------------------------------
-# wrap_model_provider_with_lora
-# ---------------------------------------------------------------------------
-
-
 class TestWrapModelProvider:
     def test_provider_args_are_forwarded_and_result_wrapped(self):
         seen = {}
@@ -311,7 +264,6 @@ class TestWrapModelProvider:
 
         calls = []
         wrapped = wrap_model_provider_with_lora(provider, Namespace(lora_rank=8))
-        # patch the applier so the test stays free of megatron parallel state
         import miles.backends.megatron_utils.lora_native as ln
 
         orig = ln.apply_native_lora
@@ -323,11 +275,6 @@ class TestWrapModelProvider:
 
         assert seen == {"pre_process": True, "post_process": False, "vp_stage": 1}
         assert out is calls[0][0]
-
-
-# ---------------------------------------------------------------------------
-# Per-rank adapter shard naming
-# ---------------------------------------------------------------------------
 
 
 class TestNativeAdapterShardName:
@@ -342,24 +289,13 @@ class TestNativeAdapterShardName:
         assert len(names) == 4
 
 
-# ---------------------------------------------------------------------------
-# reduce_marked_lora_grads
-# ---------------------------------------------------------------------------
-
-
 class TestReduceMarkedLoraGrads:
     def test_no_marked_params_is_a_noop_without_distributed(self):
         chunk = torch.nn.Linear(2, 2)
-        # no _lora_grad_sum_group tags -> returns before touching parallel state
         reduce_marked_lora_grads([chunk])
 
     def test_empty_model_list_is_a_noop(self):
         reduce_marked_lora_grads([])
-
-
-# ---------------------------------------------------------------------------
-# lora_rollout_enabled
-# ---------------------------------------------------------------------------
 
 
 class TestLoraRolloutEnabled:

@@ -42,12 +42,10 @@ app = typer.Typer()
 _MEGATRON_MODEL_TYPE = {
     "Qwen3-8B": "qwen3-8B",
     "Qwen3-4B": "qwen3-4B",
-    "Qwen3-0.6B": "qwen3-0.6B",  # cheapest config that still exercises the whole loop
-    "Qwen3-30B-A3B": "qwen3-30B-A3B",  # MoE: attention-only coverage, see the note below
+    "Qwen3-0.6B": "qwen3-0.6B",
+    "Qwen3-30B-A3B": "qwen3-30B-A3B",
 }
 
-# TP must stay <= num_query_groups: below that mcore splits a query group across ranks
-# and the local qkv rows stop being a per-group slice, which native LoRA rejects.
 _NUM_QUERY_GROUPS = {"Qwen3-8B": 8, "Qwen3-4B": 8, "Qwen3-0.6B": 8, "Qwen3-30B-A3B": 4}
 
 
@@ -64,31 +62,24 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     megatron_path: str = "/root/Megatron-LM"
 
-    # performance
     num_gpus_per_node: int = 8
     tensor_model_parallel_size: int = 2
 
-    # LoRA. target modules are HF leaf names; the native path maps them onto the
-    # fused megatron modules (q/k/v -> linear_qkv, gate/up -> linear_fc1, ...).
     lr: float = 1e-5
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
     target_modules: str = "all-linear"
     lora_adapter_path: str | None = None
-    # Train adapters but keep rollout on the frozen base policy (no LoRA serving).
     lora_train_only: bool = False
-    # Verify the megatron->sglang adapter sync with a per-tensor sha256 manifest.
     check_lora_weight_equal: bool = False
 
-    # rollout
     num_rollout: int = 10
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 8
-    rollout_max_response_len: int = 0  # 0 => per-task default (gsm8k 512, dapo-math 4096)
+    rollout_max_response_len: int = 0
     global_batch_size: int = 64
 
-    # rollout engine
     rollout_num_gpus_per_engine: int = 2
     sglang_mem_fraction_static: float = 0.6
     sglang_lora_backend: str = "triton"
@@ -102,8 +93,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.torch_dist is None:
             self.torch_dist = f"{self.model_dir}/{self.model_name}_torch_dist"
         if self.rollout_max_response_len == 0:
-            # Qwen3 checkpoints think before answering; a response truncated inside
-            # <think> never reaches \boxed{} and scores 0, so leave room to finish.
             self.rollout_max_response_len = 4096 if self.task == "dapo-math" else 2048
 
     @property
@@ -167,7 +156,6 @@ def _train(args: ScriptArgs):
     )
     load_save_path = f"{args.save_dir}/{args.run_id}"
 
-    # raw mode: adapters are attached inside the model provider, not by the bridge.
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} --load {args.torch_dist} "
         "--megatron-to-hf-mode raw --no-load-optim --no-load-rng --finetune "
@@ -198,9 +186,9 @@ def _train(args: ScriptArgs):
         f"--global-batch-size {args.global_batch_size} "
     )
     match args.task:
-        case "gsm8k":  # zhuzilin/gsm8k ships {messages, label} parquet
+        case "gsm8k":
             rollout_args += f"--prompt-data {args.data_dir}/gsm8k/train.parquet --input-key messages "
-        case "dapo-math":  # zhuzilin/dapo-math-17k ships {prompt, label} jsonl (prompt = chat messages)
+        case "dapo-math":
             rollout_args += f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl --input-key prompt "
 
     grpo_args = "--advantage-estimator grpo --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "

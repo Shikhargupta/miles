@@ -76,14 +76,9 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
-# Adapter kinds. The wrapped module determines the sharding, so each kind carries a
-# fixed sharding contract (see the tables above).
 _QKV, _O, _FC1, _FC2 = "qkv", "o", "fc1", "fc2"
-# MLA kinds: a replicated down-projection ("_A") feeding a column-parallel
-# up-projection ("_B"), plus the un-compressed query path when q_lora_rank is unset.
 _MLA_Q_A, _MLA_Q_B, _MLA_KV_A, _MLA_KV_B, _MLA_Q = "mla_q_a", "mla_q_b", "mla_kv_a", "mla_kv_b", "mla_q"
 
-# MLA kind -> HF leaf name, split by how the adapter is sharded.
 COLUMN, ROW, REPLICATED = "column", "row", "replicated"
 
 
@@ -227,11 +222,6 @@ class _Spec:
         return bool(self.targets.intersection(names))
 
 
-# ---------------------------------------------------------------------------
-# Adapter parameters and the shared forward pieces
-# ---------------------------------------------------------------------------
-
-
 def _new_param(reference: torch.Tensor, shape, *, init: str, grad_sum_group: str | None = None) -> nn.Parameter:
     """Adapter param matching ``reference``'s dtype/device.
 
@@ -334,11 +324,6 @@ def _build_qkv_perm(
         index.extend(range(k_base + g * head_dim, k_base + (g + 1) * head_dim))
         index.extend(range(v_base + g * head_dim, v_base + (g + 1) * head_dim))
     return torch.tensor(index, dtype=torch.long, device=device)
-
-
-# ---------------------------------------------------------------------------
-# Attaching adapters
-# ---------------------------------------------------------------------------
 
 
 def _wrap_forward(module: nn.Module, delta_fn, scale: float) -> None:
@@ -491,8 +476,6 @@ def _attach_mla_attention(attn: nn.Module, hf_prefix: str, spec: _Spec, config) 
             f"this build shards it ({tuple(module.weight.shape)} vs full out {full_out}). "
             "Use --lora-provider-path for this variant."
         )
-        # Replicated on both sides, so a partial gradient only appears under sequence
-        # parallelism, where each rank feeds a different sequence shard.
         tag = "tp" if spec.sequence_parallel else None
         ad = NativeLoRAAdapter(kind, hf_prefix, tp_rank=tp_rank)
         ad.register_parameter(
@@ -517,8 +500,6 @@ def _attach_mla_attention(attn: nn.Module, hf_prefix: str, spec: _Spec, config) 
         setattr(attn, f"lora_{kind}_adapter", ad)
 
         def delta(x, _m=module, _ad=ad):
-            # _branch_input handles the sequence-parallel gather; there is no fused
-            # layernorm on these modules, so nothing is recomputed.
             return F.linear(F.linear(_branch_input(x, _m, spec), _ad.b_A), _ad.b_B)
 
         _wrap_forward(module, delta, spec.scale)
@@ -552,7 +533,6 @@ def _attach_mlp(mlp: nn.Module, hf_prefix: str, spec: _Spec) -> int:
 
     n = 0
     tp_rank = ps.get_tensor_model_parallel_rank()
-    # fc1 is the fused gated projection, so its local rows are [gate_local; up_local].
     inter_local = mlp.linear_fc1.weight.shape[0] // 2
 
     if spec.wants("gate_proj", "up_proj"):
@@ -655,7 +635,6 @@ def apply_native_lora(model, args):
                 mixer_only_layers.append(layer.layer_number - 1)
 
         mlp = layer.mlp
-        # A dense MLP, or the shared expert of an MoE layer: both are plain gated MLPs.
         if hasattr(mlp, "linear_fc1"):
             assert getattr(mlp.config, "gated_linear_unit", True), "native LoRA assumes a gated (SwiGLU) MLP"
             wrapped += _attach_mlp(mlp, hf_layer + "mlp.", spec)
@@ -702,11 +681,6 @@ def wrap_model_provider_with_lora(provider_func, args):
         return apply_native_lora(provider_func(*args_, **kwargs), args)
 
     return wrapped
-
-
-# ---------------------------------------------------------------------------
-# Export to HF names (adapter weight sync + checkpointing)
-# ---------------------------------------------------------------------------
 
 
 class _TpGather:
@@ -775,7 +749,7 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     """
     started = time.perf_counter()
     gather = _TpGather()
-    plan: list[tuple[str, object]] = []  # (hf_name, tensor or callable)
+    plan: list[tuple[str, object]] = []
 
     for adapter in _iter_adapters(model_chunks):
         prefix = adapter.hf_prefix
@@ -808,11 +782,6 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     return exported
 
 
-# ---------------------------------------------------------------------------
-# Loading an HF/PEFT adapter
-# ---------------------------------------------------------------------------
-
-
 def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     """Load an HF/PEFT adapter into the attached params, slicing each to this rank.
 
@@ -828,7 +797,6 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     )
     loaded = 0
     with safe_open(path, framework="pt") as f:
-        # PEFT checkpoints prefix names with base_model.model.; index both spellings.
         keys = {re.sub(r"^base_model\.model\.", "", k): k for k in f.keys()}
 
         def take(name: str) -> torch.Tensor:

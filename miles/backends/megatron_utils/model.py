@@ -148,7 +148,6 @@ def setup_model_and_optimizer(
     else:
         provider_func = get_model_provider_func(args, role)
         if is_lora_enabled(args) and role == "actor":
-            # Native (raw-mode) LoRA: apply adapters inside the provider so DDP wraps an already-frozen base.
             from .lora_native import resolve_lora_provider
 
             provider_func = resolve_lora_provider(args).wrap_model_provider_with_lora(provider_func, args)
@@ -632,7 +631,6 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
-    # Sum native-LoRA replicated-param partial grads over TP/EP before the DP reduce-scatter; no-op otherwise.
     from .lora_utils import reduce_marked_lora_grads
 
     reduce_marked_lora_grads(args[0])
@@ -979,8 +977,6 @@ def initialize_model_and_optimizer(
             checkpointing_context=checkpointing_context,
             skip_load_to_model_and_opt=False,
         )
-    # Native LoRA: adapter params live outside the dist-checkpoint, so a pretrained
-    # adapter is loaded after the base weights are in place.
     if (
         is_lora_enabled(args)
         and role == "actor"

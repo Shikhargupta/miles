@@ -77,7 +77,7 @@ def build(tp, seq_parallel, seed=1234, mla=False, output_gate=False):
         num_layers=2,
         hidden_size=256,
         num_attention_heads=8,
-        num_query_groups=4,  # GQA, >= tp
+        num_query_groups=4,
         ffn_hidden_size=512,
         kv_channels=32,
         use_cpu_initialization=False,
@@ -149,7 +149,6 @@ class Args:
     lora_dropout = 0.0
     lora_A_init_method = "xavier"
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-    # MLA attention surface plus the same MLP targets as the dense case
     mla_target_modules = [
         "q_a_proj",
         "q_b_proj",
@@ -183,9 +182,6 @@ def main():
     label = f"TP{a.tp}{'+SP' if a.sp else ''}{'+MLA' if a.mla else ''}{'+GATE' if a.gate else ''}"
     if a.mla:
         Args.target_modules = Args.mla_target_modules
-    # per-layer adapter modules and exported tensors
-    # MLA: q_a, q_b, kv_a, kv_b, o, fc1, fc2 -> 2+2+2+2+2+4+2 tensors
-    # GQA: qkv, o, fc1, fc2                   -> 6+2+4+2 tensors
     n_mods_per_layer, n_tensors_per_layer = (7, 16) if a.mla else (4, 14)
 
     torch.manual_seed(7)
@@ -194,14 +190,11 @@ def main():
     pos = torch.arange(s, device="cuda").unsqueeze(0).expand(b, s)
     mask = torch.ones(b, 1, s, s, dtype=torch.bool, device="cuda").tril().logical_not()
 
-    # ---- 1. fresh adapter is a no-op -------------------------------------
     lora_model, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     lora_model.eval()
     with torch.no_grad():
         out_base = fwd(lora_model, tokens, pos, mask).clone()
 
-    # Capture per-module base outputs BEFORE wrapping, so the delta check below
-    # compares only the adapter branch and never has to reproduce TE's base GEMM.
     layer0 = lora_model.decoder.layers[0]
     fc1_mod, fc2_mod = layer0.mlp.linear_fc1, layer0.mlp.linear_fc2
     torch.manual_seed(31337)
@@ -246,7 +239,6 @@ def main():
         f"n_trainable={len(trainable)}",
     )
 
-    # ---- 2. adapter delta matches an independent dense reference ----------
     torch.manual_seed(99)
     for m in lora_model.modules():
         if isinstance(m, NativeLoRAAdapter):
@@ -262,7 +254,6 @@ def main():
         dist.all_gather(parts, t.contiguous(), group=tp_group)
         return torch.cat(parts, dim=dim)
 
-    # column-parallel fc1: A replicated, B row-sharded -> local delta uses local B.
     ad1 = layer0.mlp.lora_fc1_adapter
     with torch.no_grad():
         got1 = fc1_mod(x_fc1)[0] - y0_fc1
@@ -276,12 +267,9 @@ def main():
     r1 = e1 / max(ref1.abs().max().item(), 1e-9)
     check(f"{label} column-parallel (fc1) delta == dense reference", r1 < 1e-5, f"max|d|={e1:.3e} rel={r1:.2e}")
 
-    # row-parallel fc2: A column-sharded + TP-reduced -> reference from FULL A and x.
     ad2 = layer0.mlp.lora_fc2_adapter
     with torch.no_grad():
         got2 = fc2_mod(x_fc2)[0] - y0_fc2
-        # sum_j A_j @ x_j == A_full @ x_full; under SP that sum is reduce-SCATTERED,
-        # so this rank keeps only its sequence shard before applying B.
         s_full = F.linear(gather_cat(x_fc2, -1), gather_cat(ad2.down_A, 1))
         if a.sp:
             s_full = s_full.chunk(a.tp, dim=0)[ps.get_tensor_model_parallel_rank()]
@@ -334,8 +322,6 @@ def main():
         )
 
     if a.mla:
-        # kv_b_proj: column-parallel, and its input is the already-normed latent
-        # (kv_layernorm runs before it), so the branch must NOT recompute a norm.
         attn0 = layer0.self_attention
         ad_kvb, kv_up = attn0.lora_mla_kv_b_adapter, attn0.linear_kv_up_proj
         with torch.no_grad():
@@ -346,7 +332,6 @@ def main():
         r_kv = e_kv / max(ref_kv.abs().max().item(), 1e-9)
         check(f"{label} MLA kv_b_proj delta == dense reference", r_kv < 1e-5, f"max|d|={e_kv:.3e} rel={r_kv:.2e}")
 
-        # kv_a_proj_with_mqa: fully replicated, so no gather and no reduce.
         ad_kva, kv_down = attn0.lora_mla_kv_a_adapter, attn0.linear_kv_down_proj
         with torch.no_grad():
             got_a = kv_down(mla_pre["x_h"])[0] - mla_pre["y0_kv_down"]
@@ -355,7 +340,6 @@ def main():
         r_a = e_a / max(ref_a.abs().max().item(), 1e-9)
         check(f"{label} MLA kv_a_proj delta == dense reference", r_a < 1e-5, f"max|d|={e_a:.3e} rel={r_a:.2e}")
 
-    # ---- 3/4. export: agreement across TP + round-trip through load ------
     exported = export_lora_hf_named([lora_model])
     expect_tensors = 2 * n_tensors_per_layer
     check(
@@ -386,7 +370,6 @@ def main():
 
     fresh, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(fresh, Args())
-    # copy the base (non-adapter) weights so only the adapter differs
     base_state = {k: v for k, v in lora_model.state_dict().items() if "lora" not in k}
     missing, unexpected = fresh.load_state_dict(base_state, strict=False)
     check(
@@ -405,7 +388,6 @@ def main():
     ):
         assert n1 == n2, (n1, n2)
         max_d = max(max_d, (p1.float() - p2.float()).abs().max().item())
-    # export casts to bf16, so the round-trip tolerance is bf16 resolution
     check(f"{label} export->load round-trip preserves params", max_d < 2e-2, f"max|d|={max_d:.3e}")
 
     fresh.eval()
@@ -416,9 +398,6 @@ def main():
     d = (o1 - o2).abs().max().item()
     check(f"{label} round-tripped model reproduces outputs", d < 5e-2, f"max|d|={d:.3e}")
 
-    # ---- 5. gradients: nonzero, TP-consistent, and honor B's zero init ----
-    # Fresh-adapter invariant: with B == 0, dL/dA == 0 and dL/dB != 0. Check that
-    # first on a clean model, then check the general case on the randomized one.
     fresh2, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(fresh2, Args())
     fresh2.train()
@@ -467,11 +446,9 @@ def main():
     check(f"{label} replicated-param grads consistent across TP", ok, f"max spread={worst:.3e}")
 
     if a.tp > 1:
-        # The sum must actually change the grads: partials differ per rank.
         changed = any(not torch.allclose(pre[n], q.main_grad) for n, q in tagged)
         check(f"{label} TP sum actually combined distinct partial grads", changed)
 
-    # ---- 6. the same thing through the wrapper training actually uses --------
     ddp_model, ddp_cfg = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(ddp_model, Args())
     from megatron.core.distributed import DistributedDataParallel as DDP

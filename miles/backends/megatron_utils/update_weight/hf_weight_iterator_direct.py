@@ -33,8 +33,6 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
         rank = dist.get_rank()
 
         if weight_type == "lora":
-            # Adapters are excluded from the base param infos; the native-LoRA
-            # provider gathers and names the whole adapter as one chunk.
             from ..lora_native import resolve_lora_provider
 
             yield resolve_lora_provider(self.args).export_lora_hf_named(self.model)
@@ -181,7 +179,6 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
     rank = dist.get_rank()
     for name, param in named_params_and_buffers(args, model):
         if _is_adapter_param_name(name):
-            # Adapters are excluded from the base sync; they ship via the LoRA path.
             continue
         param_infos[name] = ParamInfo(
             name=name,

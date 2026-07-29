@@ -68,7 +68,6 @@ def _pp_assemble_full_adapter(
             off = 0
             for n, shape in entries:
                 k = math.prod(shape)
-                # Tensors replicated across stages resolve to the last copy (identical by construction).
                 merged[n] = flat[off : off + k].view(shape)
                 off += k
     return sorted(merged.items())
@@ -289,9 +288,6 @@ class UpdateWeightFromTensor:
                     "the Megatron-Bridge or SGLang version is incompatible."
                 )
 
-            # Native path only: its exporter gathers TP/EP but not PP, so assemble the
-            # full adapter on every rank before serializing (the engine expects one
-            # complete adapter). Bridge mode keeps its existing behavior.
             if self.args.megatron_to_hf_mode != "bridge":
                 accumulated_named_tensors = _pp_assemble_full_adapter(accumulated_named_tensors)
 
