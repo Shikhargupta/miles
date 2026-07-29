@@ -1,11 +1,8 @@
-import os
-
 import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.utils.environ import default_fp8_block_scaling_fp32_scales
+from miles.ray.specs.trainer import _compute_trainer_env_vars
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus
 
 
@@ -24,30 +21,7 @@ def allocate_gpus_for_actor(
     assert pg is not None
     pg, reordered_bundle_indices, _reordered_gpu_ids = pg
 
-    env_vars = {
-        # because sglang will always set NCCL_CUMEM_ENABLE to 0
-        # we need also set it to 0 to prevent nccl error.
-        "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
-        "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": os.environ.get(
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES", default_fp8_block_scaling_fp32_scales()
-        ),
-        # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
-        "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
-        **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
-        **args.train_env_vars,
-    }
-
-    if source_patcher_config := args.dumper_source_patcher_config_train:
-        env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
-
-    if args.offload_train and args.train_backend == "megatron":
-        from torch_memory_saver.utils import get_binary_path_from_package
-
-        dynlib_path = str(get_binary_path_from_package("torch_memory_saver_hook_mode_preload"))
-
-        env_vars["LD_PRELOAD"] = dynlib_path
-        env_vars["TMS_INIT_ENABLE"] = "1"
-        env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
+    env_vars = _compute_trainer_env_vars(args)
 
     backend = args.train_backend
     if backend == "megatron":

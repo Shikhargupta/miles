@@ -54,10 +54,11 @@ def build_cells(
     """
     from tests.fast.ray.rollout.conftest import make_args
 
-    from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+    from miles.ray.rollout.server_cell import ServerCell
+    from miles.ray.specs.inference import _compute_nodes_per_engine
 
     args = make_args(num_gpus_per_node=8, debug_train_only=debug_train_only)
-    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
+    nodes_per_engine = _compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     num_gpu_per_engine = min(num_gpus_per_engine, 8)
     return [
         ServerCell(

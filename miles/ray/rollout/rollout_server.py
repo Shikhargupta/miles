@@ -4,11 +4,12 @@ import logging
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
+from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
-from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell
+from miles.ray.specs.inference import _compute_megatron_num_gpus, _compute_nodes_per_engine, _compute_rollout_pg_offset
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +19,14 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
     Returns a dict mapping model name -> ``RolloutServer``.
     """
-    config = _resolve_sglang_config(args)
+    config = resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
     gpu_offset = 0
     engine_offset = 0
     port_allocator = PortAllocator()
 
-    rollout_pg_offset = _compute_rollout_offset(args)
+    rollout_pg_offset = _compute_rollout_pg_offset(args)
     megatron_num_gpus = _compute_megatron_num_gpus(args)
 
     for model_idx, model_cfg in enumerate(config.models):
@@ -44,7 +45,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             gpus_per_engine = group_cfg.num_gpus_per_engine
             num_gpu_per_engine_local = min(gpus_per_engine, args.num_gpus_per_node)
             num_engines = group_cfg.num_gpus // num_gpu_per_engine_local
-            nodes_per_engine = compute_nodes_per_engine(
+            nodes_per_engine = _compute_nodes_per_engine(
                 num_gpus_per_engine=gpus_per_engine, num_gpus_per_node=args.num_gpus_per_node
             )
 
@@ -103,52 +104,6 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
     return servers
-
-
-def _resolve_sglang_config(args) -> SglangConfig:
-    """Build a SglangConfig from args, choosing the right source."""
-    if getattr(args, "sglang_config", None) is not None:
-        config = SglangConfig.from_yaml(args.sglang_config)
-        expected = args.rollout_num_gpus
-        actual = config.total_num_gpus
-        assert actual == expected, f"sglang_config total GPUs ({actual}) != rollout_num_gpus ({expected})"
-        return config
-
-    if args.prefill_num_servers is not None:
-        return SglangConfig.from_prefill_num_servers(args)
-
-    return SglangConfig(
-        models=[
-            ModelConfig(
-                name="default",
-                server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
-            )
-        ]
-    )
-
-
-def _compute_rollout_offset(args) -> int:
-    """Offset (in PG bundle slots) where rollout GPUs start."""
-    if args.debug_train_only or args.debug_rollout_only or args.colocate:
-        return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
-    offset = args.actor_num_nodes * args.actor_num_gpus_per_node
-    if getattr(args, "use_critic", False):
-        offset += args.critic_num_nodes * args.critic_num_gpus_per_node
-    return offset
-
-
-def _compute_megatron_num_gpus(args) -> int:
-    """Total number of megatron (actor + critic) GPU slots in the placement group."""
-    if getattr(args, "debug_rollout_only", False):
-        return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
-    num = args.actor_num_nodes * args.actor_num_gpus_per_node
-    if getattr(args, "use_critic", False):
-        num += args.critic_num_nodes * args.critic_num_gpus_per_node
-    return num
 
 
 @dataclasses.dataclass

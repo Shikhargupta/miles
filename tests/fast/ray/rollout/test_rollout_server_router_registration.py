@@ -7,7 +7,8 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
-from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell
+from miles.ray.specs.inference import _compute_nodes_per_engine
 
 _CELL_MODULE = "miles.ray.rollout.server_cell"
 
@@ -39,7 +40,7 @@ def _build_server(
     remove_worker_effect=None,
 ) -> RolloutServer:
     args = make_args(num_gpus_per_node=8, use_miles_router=use_miles_router)
-    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
+    nodes_per_engine = _compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     cells = []
     for cell_start in range(0, num_engines, nodes_per_engine):
         cell = ServerCell(

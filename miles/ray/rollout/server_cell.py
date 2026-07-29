@@ -22,8 +22,7 @@ from miles.ray.rollout.cell_state import (
     StateAllocatedUninitialized,
     StateStopped,
 )
-from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.utils import dumper_utils
+from miles.ray.specs.inference import _compute_engine_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -252,10 +251,6 @@ class ServerCell:
         )
 
 
-def compute_nodes_per_engine(*, num_gpus_per_engine: int, num_gpus_per_node: int) -> int:
-    return max(1, num_gpus_per_engine // num_gpus_per_node)
-
-
 def launch_sglang_ray_actor(
     *,
     args: Any,
@@ -278,26 +273,12 @@ def launch_sglang_ray_actor(
         placement_group_bundle_index=reordered_bundle_indices[gpu_index],
     )
 
-    env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
-        key: os.environ.get(key, default_val)
-        for key, default_val in {
-            # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
-            "NVSHMEM_DISABLE_NCCL": "1",
-            "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-            # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
-            # to enable this isolation.
-            "SGLANG_DG_CACHE_DIR": f"/tmp/sglang_deep_gemm/{worker_type}_rank_{global_rank}",
-            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
-            "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-            "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
-                "0" if args.colocate and args.rollout_num_gpus_per_engine > 1 else "1"
-            ),
-            "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
-            "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
-            "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
-        }.items()
-    }
-    env_vars.update(dumper_utils.get_sglang_env(args))
+    env_vars = _compute_engine_env_vars(args)
+    # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
+    # to enable this isolation.
+    env_vars["SGLANG_DG_CACHE_DIR"] = os.environ.get(
+        "SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{worker_type}_rank_{global_rank}"
+    )
 
     RolloutRayActor = ray.remote(SGLangEngine)
     return RolloutRayActor.options(

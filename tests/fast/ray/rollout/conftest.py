@@ -266,10 +266,11 @@ def make_dataclass_cells(
 ):
     """Build configured ``ServerCell``s with ``pg=None`` (no actor scheduling).
     Each cell starts unallocated."""
-    from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+    from miles.ray.rollout.server_cell import ServerCell
+    from miles.ray.specs.inference import _compute_nodes_per_engine
 
     args = make_args(num_gpus_per_node=8)
-    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
+    nodes_per_engine = _compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     return [
         ServerCell(
             args=args,

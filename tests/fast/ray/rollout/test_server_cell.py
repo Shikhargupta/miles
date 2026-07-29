@@ -7,7 +7,8 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, format_cell_id, list_cell_ids
-from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell
+from miles.ray.specs.inference import _compute_nodes_per_engine
 
 
 def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool = True) -> ServerCell:
@@ -174,7 +175,7 @@ def _build_servers(
     *, num_servers: int = 1, engines_per_server: int = 2, num_gpus_per_engine: int = 1
 ) -> dict[str, RolloutServer]:
     args = make_args(num_gpus_per_node=8)
-    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
+    nodes_per_engine = _compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     servers: dict[str, RolloutServer] = {}
     for s_idx in range(num_servers):
         model_name = f"model_{s_idx}"
