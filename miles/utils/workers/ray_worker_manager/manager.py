@@ -5,13 +5,13 @@ from collections.abc import Callable
 from typing import Any
 
 import ray
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.misc import NodeProbeMixin, load_function
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
 from miles.utils.workers.ray_worker_manager.ports import NodePortCursors
+from miles.utils.workers.ray_worker_manager.resources import resolve_actor_options
 from miles.utils.workers.ray_worker_manager.state import CellState, WorkerState
 from miles.utils.workers.worker_provider.ray import RayWorkerInfo
 from miles.utils.workers.worker_spec import BaseWorkerSpec, CommandWorkerSpec, ServeWorkerSpec
@@ -143,32 +143,22 @@ class RayWorkerManager:
         self, *, cell: CellState, worker_index: int, name: str, env_vars: dict[str, str]
     ) -> ray.actor.ActorHandle:
         spec = cell.spec
-        scheduling = spec.scheduling
         placement = self._placements.get(spec.name)
-
-        scheduling_strategy: PlacementGroupSchedulingStrategy | None = None
-        num_gpus = scheduling.num_gpus_per_worker
-        num_cpus = scheduling.num_cpus_per_worker
-        if placement is not None:
-            flat_index = cell.cell_index * scheduling.num_workers_per_cell + worker_index
-            scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=placement.placement_group,
-                placement_group_bundle_index=placement.bundle_indices[flat_index],
-            )
-            if placement.num_gpus_per_worker is not None:
-                num_gpus = placement.num_gpus_per_worker
-            if placement.num_cpus_per_worker is not None:
-                num_cpus = placement.num_cpus_per_worker
+        options = resolve_actor_options(
+            scheduling=spec.scheduling,
+            placement=placement,
+            flat_worker_index=cell.cell_index * spec.scheduling.num_workers_per_cell + worker_index,
+        )
 
         if isinstance(spec, ServeWorkerSpec):
             return (
                 self._serve_actor_class(spec)
                 .options(
                     name=name,
-                    num_cpus=num_cpus,
-                    num_gpus=num_gpus,
+                    num_cpus=options.num_cpus,
+                    num_gpus=options.num_gpus,
                     max_restarts=0,
-                    scheduling_strategy=scheduling_strategy,
+                    scheduling_strategy=options.scheduling_strategy,
                     runtime_env={"env_vars": env_vars},
                 )
                 .remote(ctor_kwargs_fn=spec.ctor_kwargs, cell_index=cell.cell_index, worker_index=worker_index)
@@ -179,10 +169,10 @@ class RayWorkerManager:
             ray.remote(CommandActor)
             .options(
                 name=name,
-                num_cpus=num_cpus,
-                num_gpus=num_gpus,
+                num_cpus=options.num_cpus,
+                num_gpus=options.num_gpus,
                 max_restarts=0,
-                scheduling_strategy=scheduling_strategy,
+                scheduling_strategy=options.scheduling_strategy,
             )
             .remote()
         )
