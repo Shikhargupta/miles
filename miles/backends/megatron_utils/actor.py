@@ -298,6 +298,24 @@ class MegatronTrainRayActor(TrainRayActor):
 
         return start_rollout_id
 
+    # Make sleep()/wake_up() idempotent: gpu peak mode wakes the trainer early.
+    _grad_buffer_offloaded = False
+
+    @with_logs
+    @timer
+    def offload_grad_buffer(self) -> None:
+        """Release the no-backup grad buffers ahead of the engine weight
+        resume: free host-side, and the heavy PP stages need the bytes."""
+        assert self.args.offload_train
+        if self._asleep or self._grad_buffer_offloaded:
+            return
+        if not is_lora_enabled(self.args):
+            return
+        print_memory("before offload grad_buffer")
+        torch_memory_saver.pause(tag="grad_buffer")
+        self._grad_buffer_offloaded = True
+        print_memory("after offload grad_buffer")
+
     @with_logs
     @timer
     def sleep(self) -> None:
@@ -343,6 +361,7 @@ class MegatronTrainRayActor(TrainRayActor):
         reload_process_groups()
         self._asleep = False
         print_memory("after wake_up model")
+        self._grad_buffer_offloaded = False
 
     @property
     def _enable_weight_backup(self) -> bool:

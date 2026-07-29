@@ -625,6 +625,9 @@ def _train(args: ScriptArgs):
         "--train-memory-margin-bytes 3221225472 "
         "--sglang-mem-fraction-static 0.7 "
         "--accumulate-allreduce-grads-in-fp32 "
+        # GB300 host RAM is smaller than the engine weight mirror plus the trainer
+        # backup, so overlap the handoff on the GPU instead.
+        f"{'--colocate-memory-peak-device gpu ' if args.hardware == 'GB300' else ''}"
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
         "--moe-router-freeze-gate "

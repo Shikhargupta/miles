@@ -293,10 +293,25 @@ class RolloutManager:
             await srv.onload(tags)
 
     async def onload_weights(self):
+        if "weight" not in self.args.offload_rollout_level:
+            return
         await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+
+    # Split offloads for --colocate-memory-peak-device gpu: kv/graphs are pure
+    # GPU memory, while releasing the weights builds their host mirror.
+    async def offload_kv(self):
+        tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+        if "kv_cache" in self.args.offload_rollout_level:
+            tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+        await self.offload(tags=tags)
+
+    async def offload_weights(self):
+        if "weight" not in self.args.offload_rollout_level:
+            return
+        await self.offload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     # -------------------------- engine management -----------------------------
 
