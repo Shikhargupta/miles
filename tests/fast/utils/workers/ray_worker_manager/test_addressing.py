@@ -47,7 +47,9 @@ class TestComputeWorkerAddressings:
 
     def test_url_comes_from_the_url_scheme_port(self):
         """The worker url is rendered from the port declaring a url scheme."""
-        spec = _make_spec([PortInfo(name="http", static_port=0, mode="per_worker", allow_dynamic=True, url_scheme="http")])
+        spec = _make_spec(
+            [PortInfo(name="http", static_port=0, mode="per_worker", allow_dynamic=True, url_scheme="http")]
+        )
         workers = _make_workers(spec, ports_by_worker=[{"http": 15000}, {"http": 15001}])
 
         addressings = compute_worker_addressings(spec=spec, workers=workers)
