@@ -11,7 +11,7 @@ from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager.addressing import compute_worker_addressings
 from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
-from miles.utils.workers.ray_worker_manager.ports import NodePortCursors
+from miles.utils.workers.ray_worker_manager.ports import PortAllocator
 from miles.utils.workers.ray_worker_manager.resources import resolve_actor_options
 from miles.utils.workers.ray_worker_manager.state import CellState, WorkerState
 from miles.utils.workers.worker_provider.ray import RayWorkerInfo
@@ -28,7 +28,7 @@ class RayWorkerManager:
         self._cells: dict[str, CellState] = {}
         self._workers: dict[str, WorkerState] = {}
         self._serve_actor_classes: dict[str, Any] = {}
-        self._port_cursors = NodePortCursors()
+        self._port_allocator = PortAllocator()
         self._cell_lifecycle_lock = asyncio.Lock()
 
     async def init(self, *, worker_specs: list[BaseWorkerSpec], placements: dict[str, SpecPlacement]) -> None:
@@ -117,7 +117,7 @@ class RayWorkerManager:
             worker.node_ip = node_ip
         await asyncio.gather(
             *[
-                self._collect_worker_ports(worker=worker, is_master=worker is workers[0])
+                self._port_allocator.collect_worker_ports(worker=worker, is_master=worker is workers[0])
                 for workers in workers_by_cell_id.values()
                 for worker in workers
             ]
@@ -189,25 +189,6 @@ class RayWorkerManager:
                 ray.remote(**remote_kwargs)(wrapped_cls) if remote_kwargs else ray.remote(wrapped_cls)
             )
         return self._serve_actor_classes[spec.name]
-
-    async def _collect_worker_ports(self, *, worker: WorkerState, is_master: bool) -> None:
-        owned_port_infos = [p for p in worker.cell.spec.port_infos if p.mode == "per_worker" or is_master]
-
-        dynamic_port_infos = [p for p in owned_port_infos if p.allow_dynamic]
-        if dynamic_port_infos:
-            first_port = await self._port_cursors.allocate(
-                actor=worker.actor,
-                node_ip=worker.node_ip,
-                count=sum(p.num_consecutive for p in dynamic_port_infos),
-            )
-            next_port = first_port
-            for port_info in dynamic_port_infos:
-                worker.owned_ports[port_info.name] = next_port
-                next_port += port_info.num_consecutive
-
-        for port_info in owned_port_infos:
-            if not port_info.allow_dynamic:
-                worker.owned_ports[port_info.name] = port_info.static_port
 
     async def _activate_cell(self, *, workers: list[WorkerState], env_vars: dict[str, str]) -> None:
         spec = workers[0].cell.spec
