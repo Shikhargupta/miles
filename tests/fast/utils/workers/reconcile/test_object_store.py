@@ -17,7 +17,7 @@ class TestIncrementalEvents:
         store = make_store()
         update = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
 
-        assert update.affected == {"cell-a"}
+        assert update.affected_parents == {"cell-a"}
         assert "pod-0" in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-0"]
 
@@ -27,7 +27,7 @@ class TestIncrementalEvents:
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
         update = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-b")))
 
-        assert update.affected == {"cell-a", "cell-b"}
+        assert update.affected_parents == {"cell-a", "cell-b"}
         assert store.get_by_parent("cell-a") == []
 
     def test_a_delete_reports_the_stored_parent(self):
@@ -36,7 +36,7 @@ class TestIncrementalEvents:
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
         update = store.handle_event(Delete(key="pod-0", last_obj=None))
 
-        assert update.affected == {"cell-a"}
+        assert update.affected_parents == {"cell-a"}
         assert "pod-0" not in store
 
     def test_a_delete_of_an_unknown_object_uses_the_tombstone(self):
@@ -44,7 +44,7 @@ class TestIncrementalEvents:
         store = make_store()
         update = store.handle_event(Delete(key="pod-0", last_obj=make_pod("pod-0", cell="cell-a")))
 
-        assert update.affected == {"cell-a"}
+        assert update.affected_parents == {"cell-a"}
 
     def test_an_unmappable_upsert_is_dropped_and_removes_any_stored_object(self):
         """A key_map failure turns the upsert into a departure, not a stale entry."""
@@ -52,7 +52,7 @@ class TestIncrementalEvents:
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
         update = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell=None)))
 
-        assert update.affected == {"cell-a"}
+        assert update.affected_parents == {"cell-a"}
         assert "pod-0" not in store
 
 
@@ -62,11 +62,11 @@ class TestSegments:
         store = make_store()
         store.handle_event(Upsert(key="pod-old", obj=make_pod("pod-old", cell="cell-a")))
 
-        assert store.handle_event(SyncStart()).affected == set()
-        assert store.handle_event(Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-b"))).affected == set()
+        assert store.handle_event(SyncStart()).affected_parents == set()
+        assert store.handle_event(Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-b"))).affected_parents == set()
         update = store.handle_event(SyncDone())
 
-        assert update.affected == {"cell-a", "cell-b"}
+        assert update.affected_parents == {"cell-a", "cell-b"}
         assert "pod-old" not in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-b")] == ["pod-new"]
 
@@ -87,7 +87,7 @@ class TestSegments:
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
         store.reset_segment()
 
-        assert store.handle_event(SyncStart()).affected == set()
+        assert store.handle_event(SyncStart()).affected_parents == set()
         store.handle_event(SyncDone())
         assert "pod-0" not in store
 

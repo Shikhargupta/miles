@@ -79,7 +79,7 @@ class SourceStreamDriver:
 
     def _apply(self, event: SourceEvent) -> bool:
         update = self._store.handle_event(event)
-        self._on_affected(update.affected)
+        self._on_affected(update.affected_parents)
         return isinstance(event, SyncDone)
 
 
