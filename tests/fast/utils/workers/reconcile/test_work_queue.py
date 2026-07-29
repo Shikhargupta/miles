@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
-
 import asyncio
+from collections import deque
 
 from tests.fast.utils.workers.reconcile.utils import settle
 
