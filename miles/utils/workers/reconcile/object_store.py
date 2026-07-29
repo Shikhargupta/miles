@@ -14,6 +14,12 @@ KeyMapFn = Callable[[Any], str]
 
 
 @dataclass(frozen=True)
+class _CachedObject:
+    obj: Any
+    parent: str
+
+
+@dataclass(frozen=True)
 class StoreUpdate:
     affected: set[str]
     synced: bool = False
@@ -22,18 +28,17 @@ class StoreUpdate:
 class ObjectStore:
     def __init__(self, *, key_map: KeyMapFn | None) -> None:
         self._key_map = key_map
-        self._objects: dict[str, Any] = {}
-        self._parents: dict[str, str] = {}
+        self._cache: dict[str, _CachedObject] = {}
         self._open_segment: dict[str, Any] | None = None
 
     def get_by_parent(self, parent_key: str) -> list[Any]:
-        return [self._objects[key] for key in sorted(self._parents) if self._parents[key] == parent_key]
+        return [self._cache[key].obj for key in sorted(self._cache) if self._cache[key].parent == parent_key]
 
     def parent_keys(self) -> set[str]:
-        return set(self._parents.values())
+        return {entry.parent for entry in self._cache.values()}
 
     def __contains__(self, key: str) -> bool:
-        return key in self._objects
+        return key in self._cache
 
     def reset_segment(self) -> None:
         self._open_segment = None
@@ -72,22 +77,18 @@ class ObjectStore:
         affected: set[str] = set()
         for key, obj in mapped.items():
             affected |= self._apply_upsert(key=key, obj=obj, parent=parents[key])
-        for key in [key for key in self._objects if key not in mapped]:
+        for key in [key for key in self._cache if key not in mapped]:
             affected |= self._apply_delete(key=key, last_obj=None)
         return affected
 
     def _apply_upsert(self, *, key: str, obj: Any, parent: str) -> set[str]:
-        new_parent = parent
-        old_parent = self._parents.get(key)
-
-        self._objects[key] = obj
-        self._parents[key] = new_parent
-
-        return {new_parent} if old_parent is None else {new_parent, old_parent}
+        previous = self._cache.get(key)
+        self._cache[key] = _CachedObject(obj=obj, parent=parent)
+        return {parent} if previous is None else {parent, previous.parent}
 
     def _apply_delete(self, *, key: str, last_obj: Any) -> set[str]:
-        self._objects.pop(key, None)
-        parent = self._parents.pop(key, None)
+        removed = self._cache.pop(key, None)
+        parent = removed.parent if removed is not None else None
         if parent is None:
             if last_obj is None:
                 logger.warning(f"ObjectStore dropping a delete it cannot attribute to a parent {key=}")
