@@ -40,7 +40,7 @@ class TestBackoff:
             await clock.elapse(0.5)
             await settle()
             assert "cell-a" in queue._keys
-            del queue._keys["cell-a"]
+            queue._keys.remove("cell-a")
 
     async def test_a_new_failure_replaces_the_pending_timer(self):
         """Latest-wins: the old timer is cancelled, only the new delay fires."""

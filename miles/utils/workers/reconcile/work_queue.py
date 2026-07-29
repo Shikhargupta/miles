@@ -2,26 +2,26 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 
 
 class WorkQueue:
     def __init__(self) -> None:
-        self._keys: dict[str, None] = {}
+        self._keys: deque[str] = deque()
         self._wakeup = asyncio.Event()
         self._shutdown = False
 
     def add(self, key: str) -> None:
         if self._shutdown:
             return
-        self._keys[key] = None
+        if key not in self._keys:
+            self._keys.append(key)
         self._wakeup.set()
 
     async def get(self) -> str | None:
         while not self._shutdown:
             if self._keys:
-                key = next(iter(self._keys))
-                del self._keys[key]
-                return key
+                return self._keys.popleft()
             self._wakeup.clear()
             if not self._keys:
                 await self._wakeup.wait()
