@@ -44,7 +44,7 @@ A test that isn't picked up fails silently — it just never appears, and CI sta
    python3 tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200 --match-all-labels --list-only
    # CPU: python3 tests/ci/run_suite.py --hw cpu --suite stage-a-cpu --match-all-labels --list-only
    ```
-   Your file must appear under `Enabled N test(s)`. This command also validates registration across all tests — if any discovered file is missing its declaration, it errors here.
+   Your file must appear under `Enabled N test(s)`. Add `--nightly` when verifying a `nightly=True` registration. This command also validates registration across all tests — if any discovered file is missing its declaration, it errors here.
 2. **On the PR**, open the matching stage job and read the **Resolve suite plan** step — it prints the same plan, so you can confirm your file is listed in the real environment.
 
 If your file does **not** show up, check, in order:
@@ -54,12 +54,18 @@ If your file does **not** show up, check, in order:
 
 ### Will it run on my PR?
 
-`labels` gates *which PRs* trigger your test:
+`labels` gates *which PRs* trigger your test within its eligible cadence:
 
-- `labels=[]` (or omitted) → **always runs** on every PR.
+- `labels=[]` (or omitted) → **always-on** within the eligible cadence; with the default `nightly=False`, this includes every PR.
 - `labels=["megatron"]` → runs only when the PR carries the GitHub label **`run-ci-megatron`** (the `run-ci-` prefix is added on the PR side). This keeps the heavy GPU matrix off unrelated PRs.
 
+Cadence is independent of labels: `nightly=True` makes a registration nightly-only, while a nightly run includes both ordinary and nightly-only registrations.
+
 So if your test is gated and you don't see it run, add the matching `run-ci-<label>` label to your PR. To force the full suite regardless of labels, a maintainer can add `run-ci-all`. Valid labels live in `tests/ci/labels.py`; using one outside that list is a hard error at collection time.
+
+### First PR from a fork: CI waits for approval
+
+Until your first PR merges, GitHub holds every CI run of your fork PR behind a maintainer's "Approve and run" — after **every** push. There is no separate trust flag: any `run-ci-*` label a maintainer adds (the same labels that select tests) also approves the held runs, for that push and each one after. Removing the labels restores manual approval.
 
 ## When CI fails: yours or the infra?
 

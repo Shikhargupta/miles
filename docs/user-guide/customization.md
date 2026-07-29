@@ -1,6 +1,6 @@
 ---
 title: Customization
-description: The 21 plug-points where you can drop in your own Python without forking Miles.
+description: The plug-points where you can drop in your own Python without forking Miles.
 ---
 Most of Miles's behavior can be replaced with user-supplied Python by passing a
 `--*-path` flag. This page lists every such hook, the function signature it expects,
@@ -28,6 +28,7 @@ and the default it replaces.
 | **Megatron hooks** | `--custom-megatron-init-path` | After Megatron init |
 | | `--custom-megatron-before-log-prob-hook-path` | Before logprob compute |
 | | `--custom-megatron-before-train-step-hook-path` | Before each train step |
+| | `--custom-megatron-post-save-hook-path` | After each checkpoint save |
 | **Logging** | `--custom-rollout-log-function-path` | Train-rollout logging |
 | | `--custom-eval-rollout-log-function-path` | Eval-rollout logging |
 | **Model** | `--custom-model-provider-path` | Megatron model factory |
@@ -51,7 +52,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when
 `enable_experimental_rollout_refactor()` is on.
 
-**Reference:** [`examples/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/multi_agent/rollout_with_multi_agents.py).
+**Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
 
 ### `--custom-generate-function-path`
 
@@ -63,7 +64,7 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
     ...
 ```
 
-**Reference:** [`examples/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/search-r1/generate_with_search.py).
+**Reference:** [`examples/experimental/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/experimental/search-r1/generate_with_search.py).
 
 ### `--data-source-path`
 
@@ -175,7 +176,7 @@ objectives or multi-objective work.
 Importance sampling correction for off-policy training when train and inference
 diverge.
 
-**Reference:** [`examples/train_infer_mismatch_helper/mis.py`](https://github.com/radixark/miles/blob/main/examples/train_infer_mismatch_helper/mis.py).
+**Reference:** [`examples/infra_features/train_infer_mismatch_helper/mis.py`](https://github.com/radixark/miles/blob/main/examples/infra_features/train_infer_mismatch_helper/mis.py).
 
 ### `--custom-pg-loss-reducer-function-path`
 
@@ -190,7 +191,7 @@ def get_pg_loss_reducer(
 ```
 
 Use case: Dr.GRPO divides by a constant instead of effective token count.
-**Reference:** [`examples/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/DrGRPO/custom_reducer.py).
+**Reference:** [`examples/experimental/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/experimental/DrGRPO/custom_reducer.py).
 
 ### `--custom-convert-samples-to-train-data-path`
 
@@ -223,9 +224,12 @@ def convert_samples_to_train_data(args, samples) -> dict:
 | `--custom-megatron-init-path` | `def custom_init(args) -> None` |
 | `--custom-megatron-before-log-prob-hook-path` | `def custom_hook(args, model, store_prefix) -> None` |
 | `--custom-megatron-before-train-step-hook-path` | `def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler) -> None` |
+| `--custom-megatron-post-save-hook-path` | `def hook(args, rollout_id: int, checkpoint_dir: str, hf_checkpoint_dir: str | None) -> None` |
 
-These give per-step access to the live Megatron model and optimizer, useful for
-custom probes, weight clipping, or surgical interventions.
+The Megatron init, log-prob, and train-step hooks give access to the live model
+and optimizer, useful for custom probes, weight clipping, or surgical interventions.
+The post-save hook runs on rank 0 after checkpoint save completion and receives
+the saved checkpoint paths instead of live model objects.
 
 ---
 

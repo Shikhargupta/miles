@@ -33,7 +33,7 @@ Key modules:
 |---|---|
 | `miles/rollout/base_types.py` | `GenerateFnInput` / `GenerateFnOutput` |
 | `miles/rollout/inference_rollout/inference_rollout_common.py` | Builds a `GenerateState` and calls the generate function |
-| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/experimental/swe-agent-v2`) |
+| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/swe-agent`) |
 
 ### Generate function basics
 
@@ -86,14 +86,14 @@ Helpers:
 
 - `compute_prompt_ids_from_sample` and `compute_request_payload` from
   `miles/rollout/generate_utils/generate_endpoint_utils.py` build `/generate` requests.
-- For multi-sample outputs, set `--generate-multi-samples` and return a list.
+- A generate function can set `GenerateFnOutput.samples` to a `Sample` or `list[Sample]`.
 
 ### Reference generators
 
 - **`single_turn.py`**: single-turn generation via `/generate`. Text or multimodal prompts.
 - **`multi_turn.py`**: multi-turn tool calling via `/generate`. Adds CLI flags
   `--generate-max-turns`, `--generate-tool-specs-path`, `--generate-tool-call-parser`,
-  `--generate-execute-tool-function-path`, `--generate-multi-samples`.
+  `--generate-execute-tool-function-path`.
 - **`benchmarkers.py`**: forces random output sequence length for benchmarking.
 
 ---
@@ -162,10 +162,10 @@ Generator entry point:
 
 Example:
 
-- [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2):
+- [`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent):
   multi-turn agentic SWE agent on the session-server TITO path, with ready-to-run launchers.
 
-Wire-up (as used by swe-agent-v2):
+Wire-up (as used by the swe-agent example):
 
 ```bash
 CUSTOM_ARGS=(
@@ -180,6 +180,34 @@ CUSTOM_ARGS=(
 remain a `messages` list. SGLang handles templating server-side.
 
 </Warning>
+
+### Optional teardown: the `abort` hook
+
+The module named by `--custom-agent-function-path` may expose an optional `abort`
+function alongside the agent entry point:
+
+```python
+async def abort(args) -> None:
+    ...  # tell this agent's backend to cancel its in-flight work
+```
+
+Miles calls it during **oversampling abort**. When dynamic sampling has collected
+enough groups, the rollout aborts in-flight SGLang generation (see
+[Partial rollout](/user-guide/training-script-walkthrough#partial-rollout-reclaim-aborted-work)).
+An external agent loop doesn't observe that abort on its own — it keeps issuing
+fresh completion requests until it hits its own `max_seq_len` or timeout. If your
+agent drives an external backend (e.g. a sandbox/agent server), define `abort` to
+tell that backend to tear down the trials tied to this rollout.
+
+The hook is **entirely optional and safe to omit**:
+
+- If the module defines no `abort`, nothing is called — existing plugins are
+  unaffected and their in-flight generations simply drain as before.
+- It only fires when `--custom-agent-function-path` is set, so non-agentic runs
+  never invoke it.
+
+See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent/swe_agent_function.py)
+for a reference implementation that flushes the Harbor agent server.
 
 ### Customizing the wrapper
 
@@ -206,7 +234,7 @@ TITO needs two things from every SGLang response:
 By default, `build_chat_request_kwargs` sets both flags. The session middleware
 forwards raw `messages` to SGLang, which tokenizes the prompt and returns the
 response. `_compute_sample_from_openai_record` in
-[`openai_endpoint_utils.py`](https://github.com/radixark/miles/blob/main/miles/rollout/generate_utils/openai_endpoint_utils.py)
+[`merge.py`](https://github.com/radixark/miles/blob/main/miles/rollout/session/samples/merge.py)
 extracts prompt and output ids from the response and concatenates them into
 `sample.tokens`. You don't need to provide `input_ids` yourself.
 
