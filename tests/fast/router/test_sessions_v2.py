@@ -20,10 +20,11 @@ import safetensors.numpy
 from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
+from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
+from miles.utils.function_registry import function_registry
 from miles.utils.http_utils import find_available_port
 from miles.utils.lora import LORA_ADAPTER_NAME
-from miles.utils.function_registry import function_registry
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -36,22 +37,36 @@ def _serve_router(extra_args: dict | None = None):
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
 
     with with_mock_server(process_fn=process_fn) as backend:
-        args = SimpleNamespace(
-            miles_router_timeout=30,
-            hf_checkpoint="Qwen/Qwen3-0.6B",
-            chat_template_path=None,
-            apply_chat_template_kwargs={"enable_thinking": False},
-            tito_model="default",
-            sglang_speculative_algorithm=None,
-            use_session_server="v2",
-            session_server_instance_id=uuid.uuid4().hex,
-            save_debug_trajectory_data=None,
-            session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
-            session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
-            **(extra_args or {}),
-        )
-        server_obj = SessionServer(args, backend_url=backend.url)
+        args_values = {
+            "miles_router_timeout": 30,
+            "hf_checkpoint": "Qwen/Qwen3-0.6B",
+            "chat_template_path": None,
+            "apply_chat_template_kwargs": {"enable_thinking": False},
+            "tito_model": "default",
+            "use_rollout_routing_replay": False,
+            "use_rollout_indexer_replay": False,
+            "sglang_speculative_algorithm": None,
+            "num_layers": None,
+            "moe_router_topk": None,
+            "save_debug_trajectory_data": None,
+            "lora_rank": 0,
+            "lora_adapter_path": None,
+            "use_session_server": "v2",
+            "session_server_instance_id": uuid.uuid4().hex,
+            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries",
+            "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+        }
+        args_values.update(extra_args or {})
+        args = SimpleNamespace(**args_values)
         port = find_available_port(31000)
+        config = compute_session_server_config(
+            args,
+            host="127.0.0.1",
+            port=port,
+            instance_id=args.session_server_instance_id,
+            backend_url=backend.url,
+        )
+        server_obj = SessionServer(config)
         server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
         server.start()
         try:
