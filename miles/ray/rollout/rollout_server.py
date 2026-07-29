@@ -18,7 +18,7 @@ async def start_rollout_servers(
     args,
     *,
     deployments: list[InferenceDeployment],
-    providers: dict[str, BaseWorkerProvider],
+    provider: BaseWorkerProvider | None,
     worker_cell_control: Any,
 ) -> dict[str, "RolloutServer"]:
     """Start rollout servers: one per model, each with its own router.
@@ -44,7 +44,7 @@ async def start_rollout_servers(
             args.sglang_router_port = router_port
 
         server_cells = build_server_cells(
-            args, deployments=model_deployments, providers=providers, worker_cell_control=worker_cell_control
+            args, deployments=model_deployments, provider=provider, worker_cell_control=worker_cell_control
         )
 
         servers[model_name] = RolloutServer(
@@ -67,7 +67,7 @@ def build_server_cells(
     args,
     *,
     deployments: list[InferenceDeployment],
-    providers: dict[str, BaseWorkerProvider],
+    provider: BaseWorkerProvider | None,
     worker_cell_control: Any,
 ) -> dict[str, ServerCell]:
     server_cells: dict[str, ServerCell] = {}
@@ -89,7 +89,7 @@ def build_server_cells(
                 update_weights=deployment.update_weights,
                 spec_name=deployment.spec.name,
                 cell_index=cell_index,
-                provider=providers[deployment.spec.name],
+                provider=provider,
                 worker_cell_control=worker_cell_control,
             )
     return server_cells

@@ -54,7 +54,7 @@ async def _create_controller(args, harness_factory) -> InferenceController:
     return await InferenceController.create(
         args,
         deployments=harness.deployments,
-        providers=harness.providers,
+        provider=harness.provider,
         worker_cell_control=harness.worker_cell_control,
     )
 
@@ -507,7 +507,7 @@ class TestManagerDrivenSuspendResume:
         controller = await InferenceController.create(
             args,
             deployments=harness.deployments,
-            providers=harness.providers,
+            provider=harness.provider,
             worker_cell_control=harness.worker_cell_control,
         )
         cell = controller.servers["actor"].server_cells["sglang-actor-group0-0"]

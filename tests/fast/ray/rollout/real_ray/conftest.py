@@ -44,15 +44,12 @@ class ManagerHarness:
     deployments: list[InferenceDeployment]
 
     @property
-    def providers(self) -> dict[str, RayWorkerProvider]:
-        return {
-            deployment.spec.name: RayWorkerProvider(
-                manager=self.manager,
-                spec_names=[deployment.spec.name],
-                poll_interval_seconds=_PROVIDER_POLL_INTERVAL_SECONDS,
-            )
-            for deployment in self.deployments
-        }
+    def provider(self) -> RayWorkerProvider:
+        return RayWorkerProvider(
+            manager=self.manager,
+            spec_names=[deployment.spec.name for deployment in self.deployments],
+            poll_interval_seconds=_PROVIDER_POLL_INTERVAL_SECONDS,
+        )
 
     @property
     def worker_cell_control(self) -> RayWorkerHandle:
@@ -62,7 +59,7 @@ class ManagerHarness:
         return build_server_cells(
             args,
             deployments=self.deployments,
-            providers=self.providers,
+            provider=self.provider,
             worker_cell_control=self.worker_cell_control,
         )
 

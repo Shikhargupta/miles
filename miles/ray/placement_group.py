@@ -94,7 +94,7 @@ class WorkerInfra:
     pgs: dict
     manager: "ray.actor.ActorHandle | None" = None
     inference_deployments: list[InferenceDeployment] = field(default_factory=list)
-    inference_providers: dict[str, RayWorkerProvider] = field(default_factory=dict)
+    inference_provider: RayWorkerProvider | None = None
     worker_cell_control: RayWorkerHandle | None = None
 
 
@@ -113,19 +113,20 @@ def create_worker_infra(args) -> WorkerInfra:
     }
     manager = launch_worker_manager(worker_specs, placements=placements)
 
-    inference_providers = {
-        deployment.spec.name: RayWorkerProvider(
+    inference_provider = (
+        RayWorkerProvider(
             manager=manager,
-            spec_name=deployment.spec.name,
+            spec_names=[deployment.spec.name for deployment in inference_deployments],
             poll_interval_seconds=_WORKER_PROVIDER_POLL_INTERVAL_SECONDS,
         )
-        for deployment in inference_deployments
-    }
+        if inference_deployments
+        else None
+    )
     return WorkerInfra(
         pgs=pgs,
         manager=manager,
         inference_deployments=inference_deployments,
-        inference_providers=inference_providers,
+        inference_provider=inference_provider,
         worker_cell_control=RayWorkerHandle(manager),
     )
 
@@ -269,7 +270,7 @@ async def create_rollout_components(args, infra: WorkerInfra) -> RolloutComponen
     inference_controller = await InferenceController.create(
         args,
         deployments=infra.inference_deployments,
-        providers=infra.inference_providers,
+        provider=infra.inference_provider,
         worker_cell_control=infra.worker_cell_control,
     )
 

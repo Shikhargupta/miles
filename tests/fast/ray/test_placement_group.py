@@ -45,7 +45,7 @@ def fake_components():
     controller.check_weights = AsyncMock()
     controller.offload = AsyncMock()
 
-    async def build_controller(args, *, deployments, providers, worker_cell_control):
+    async def build_controller(args, *, deployments, provider, worker_cell_control):
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
         return controller

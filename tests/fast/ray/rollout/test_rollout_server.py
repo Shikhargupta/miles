@@ -182,9 +182,8 @@ class TestStartRolloutServersCellBuilding:
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
         deployments = compute_inference_deployments(args)
-        providers = {deployment.spec.name: FakeWorkerProvider() for deployment in deployments}
         servers = await start_rollout_servers(
-            args, deployments=deployments, providers=providers, worker_cell_control=FakeWorkerCellControl()
+            args, deployments=deployments, provider=FakeWorkerProvider(), worker_cell_control=FakeWorkerCellControl()
         )
         return servers["default"].server_cells
 
@@ -230,5 +229,5 @@ class TestStartRolloutServersCellBuilding:
         args = make_args(rollout_external=True)
         with pytest.raises(NotImplementedError):
             await start_rollout_servers(
-                args, deployments=[], providers={}, worker_cell_control=FakeWorkerCellControl()
+                args, deployments=[], provider=None, worker_cell_control=FakeWorkerCellControl()
             )

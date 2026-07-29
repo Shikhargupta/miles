@@ -26,17 +26,17 @@ class InferenceController:
         args,
         *,
         deployments: list[InferenceDeployment],
-        providers: dict[str, BaseWorkerProvider],
+        provider: BaseWorkerProvider | None,
         worker_cell_control: Any,
     ) -> "InferenceController":
         controller = InferenceController(args)
         if not args.debug_train_only:
             controller.servers = await start_rollout_servers(
-                args, deployments=deployments, providers=providers, worker_cell_control=worker_cell_control
+                args, deployments=deployments, provider=provider, worker_cell_control=worker_cell_control
             )
             dashboard_hooks.register_router(args)
             start_session_server(args)
-            for provider in providers.values():
+            if provider is not None:
                 controller._watcher_disposers.append(await provider.watch_cells(controller._reconcile))
         return controller
 
