@@ -46,6 +46,15 @@ class TestIncrementalEvents:
 
         assert update.affected_parents == {"cell-a"}
 
+    def test_a_delete_whose_tombstone_disagrees_uses_the_stored_parent(self):
+        """A relabel we never saw must not crash the delete nor wake the wrong cell."""
+        store = make_store()
+        store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
+        update = store.handle_event(Delete(key="pod-0", last_obj=make_pod("pod-0", cell="cell-b")))
+
+        assert update.affected_parents == {"cell-a"}
+        assert "pod-0" not in store
+
     def test_an_unmappable_upsert_is_dropped_and_removes_any_stored_object(self):
         """A key_map failure turns the upsert into a departure, not a stale entry."""
         store = make_store()
@@ -63,7 +72,9 @@ class TestSegments:
         store.handle_event(Upsert(key="pod-old", obj=make_pod("pod-old", cell="cell-a")))
 
         assert store.handle_event(SyncStart()).affected_parents == set()
-        assert store.handle_event(Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-b"))).affected_parents == set()
+        assert (
+            store.handle_event(Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-b"))).affected_parents == set()
+        )
         update = store.handle_event(SyncDone())
 
         assert update.affected_parents == {"cell-a", "cell-b"}
