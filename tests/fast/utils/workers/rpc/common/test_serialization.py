@@ -473,8 +473,20 @@ class TestRejectedPayloads:
     def test_result_containing_the_reserved_marker_key_is_rejected(self):
         """A result dict already using the reserved marker key fails loudly instead of being ambiguous."""
         serializer = _serializer(dict)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=NON_FINITE_FLOAT_TAG):
             serializer.encode_result({NON_FINITE_FLOAT_TAG: "nan"})
+
+    def test_result_using_the_reserved_marker_key_alongside_others_is_rejected(self):
+        """The reserved key is refused even when it shares a dict with unrelated keys."""
+        serializer = _serializer(dict)
+        with pytest.raises(ValueError, match=NON_FINITE_FLOAT_TAG):
+            serializer.encode_result({NON_FINITE_FLOAT_TAG: "nan", "extra": 1})
+
+    def test_result_using_the_reserved_marker_key_with_an_unknown_token_is_rejected(self):
+        """The reserved key is refused whatever value it carries, not only recognized tokens."""
+        serializer = _serializer(dict)
+        with pytest.raises(ValueError, match=NON_FINITE_FLOAT_TAG):
+            serializer.encode_result({NON_FINITE_FLOAT_TAG: "not-a-token"})
 
     def test_nested_result_containing_the_reserved_marker_key_is_rejected(self):
         """A result carrying the reserved marker key deep inside is rejected too."""

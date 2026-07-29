@@ -183,6 +183,29 @@ class TestRpcTransport:
 
         assert seen_headers == ["boot-a", "boot-a"]
 
+    async def test_caller_headers_survive_but_cannot_override_the_pin(self) -> None:
+        """Caller headers are passed through, while a caller-supplied expectation loses to the pinned uuid."""
+        seen: list[httpx.Headers] = []
+        pin = BootUuidPin(required=True, worker_cls_name="Worker")
+        pin.verify(_response(boot_uuid="boot-a"))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers)
+            return httpx.Response(200, headers={BOOT_UUID_HEADER: "boot-a"}, json={"status": "ok"}, request=request)
+
+        transport, client = _transport_over(handler, pin=pin)
+        async with client:
+            await transport.request(
+                "GET",
+                "/v1/health",
+                seconds=1.0,
+                response_model=HealthResponse,
+                headers={"x-trace": "keep-me", EXPECTED_BOOT_UUID_HEADER: "caller-guess"},
+            )
+
+        assert seen[0]["x-trace"] == "keep-me"
+        assert seen[0][EXPECTED_BOOT_UUID_HEADER] == "boot-a"
+
     async def test_boot_uuid_mismatch_status_raises_server_restarted(self) -> None:
         """A 412 response is mapped to ServerRestartedError."""
 
