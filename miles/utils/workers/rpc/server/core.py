@@ -21,6 +21,7 @@ from miles.utils.workers.rpc.server.store import CallStore, DuplicateCallError
 
 logger = logging.getLogger(__name__)
 
+
 class RpcServer:
     def __init__(self, *, worker: object) -> None:
         self.boot_uuid = uuid.uuid4().hex
