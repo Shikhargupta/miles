@@ -6,7 +6,7 @@ from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 
 @dataclass
-class _CellState:
+class CellState:
     spec: BaseWorkerSpec
     cell_id: str
     cell_index: int
@@ -14,9 +14,9 @@ class _CellState:
 
 
 @dataclass
-class _WorkerState:
+class WorkerState:
     name: str
-    cell: _CellState
+    cell: CellState
     actor: ray.actor.ActorHandle
     node_ip: str = ""
     owned_ports: dict[str, int] = field(default_factory=dict)

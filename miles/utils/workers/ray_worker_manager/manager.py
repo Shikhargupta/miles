@@ -11,8 +11,8 @@ from miles.utils.misc import NodeProbeMixin, load_function
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
-from miles.utils.workers.ray_worker_manager.ports import _NodePortCursors
-from miles.utils.workers.ray_worker_manager.state import _CellState, _WorkerState
+from miles.utils.workers.ray_worker_manager.ports import NodePortCursors
+from miles.utils.workers.ray_worker_manager.state import CellState, WorkerState
 from miles.utils.workers.worker_provider.ray import RayWorkerInfo
 from miles.utils.workers.worker_spec import BaseWorkerSpec, CommandWorkerSpec, ServeWorkerSpec
 
@@ -24,10 +24,10 @@ _ACTOR_GONE_TIMEOUT_SECONDS = 30.0
 class RayWorkerManager:
     def __init__(self) -> None:
         self._placements: dict[str, SpecPlacement] = {}
-        self._cells: dict[str, _CellState] = {}
-        self._workers: dict[str, _WorkerState] = {}
+        self._cells: dict[str, CellState] = {}
+        self._workers: dict[str, WorkerState] = {}
         self._serve_actor_classes: dict[str, Any] = {}
-        self._port_cursors = _NodePortCursors()
+        self._port_cursors = NodePortCursors()
         self._cell_lifecycle_lock = asyncio.Lock()
 
     async def init(self, *, worker_specs: list[BaseWorkerSpec], placements: dict[str, SpecPlacement]) -> None:
@@ -38,7 +38,7 @@ class RayWorkerManager:
         cells = []
         for spec in worker_specs:
             for cell_index in range(spec.scheduling.num_cells):
-                cell = _CellState(
+                cell = CellState(
                     spec=spec,
                     cell_id=compute_cell_id(spec_name=spec.name, cell_index=cell_index),
                     cell_index=cell_index,
@@ -93,17 +93,17 @@ class RayWorkerManager:
             del self._workers[worker.name]
         await _wait_actors_gone([worker.name for worker in workers])
 
-    async def _rollback_cell_workers(self, cell: _CellState) -> None:
+    async def _rollback_cell_workers(self, cell: CellState) -> None:
         workers = [worker for worker in self._workers.values() if worker.cell is cell]
         for worker in workers:
             ray.kill(worker.actor, no_restart=True)
             del self._workers[worker.name]
         await _wait_actors_gone([worker.name for worker in workers])
 
-    def _cell_is_alive(self, cell: _CellState) -> bool:
+    def _cell_is_alive(self, cell: CellState) -> bool:
         return any(worker.cell is cell for worker in self._workers.values())
 
-    async def _bring_up_cells(self, cells: list[_CellState]) -> None:
+    async def _bring_up_cells(self, cells: list[CellState]) -> None:
         env_vars_by_cell_id = {cell.cell_id: cell.spec.env_var() for cell in cells}
         workers_by_cell_id = {
             cell.cell_id: self._launch_cell_actors(cell=cell, env_vars=env_vars_by_cell_id[cell.cell_id])
@@ -129,18 +129,18 @@ class RayWorkerManager:
             ]
         )
 
-    def _launch_cell_actors(self, *, cell: _CellState, env_vars: dict[str, str]) -> list[_WorkerState]:
+    def _launch_cell_actors(self, *, cell: CellState, env_vars: dict[str, str]) -> list[WorkerState]:
         workers = []
         for worker_index in range(cell.spec.scheduling.num_workers_per_cell):
             name = compute_worker_name(spec_name=cell.spec.name, cell_index=cell.cell_index, worker_index=worker_index)
             actor = self._launch_actor(cell=cell, worker_index=worker_index, name=name, env_vars=env_vars)
-            worker = _WorkerState(name=name, cell=cell, actor=actor)
+            worker = WorkerState(name=name, cell=cell, actor=actor)
             self._workers[name] = worker
             workers.append(worker)
         return workers
 
     def _launch_actor(
-        self, *, cell: _CellState, worker_index: int, name: str, env_vars: dict[str, str]
+        self, *, cell: CellState, worker_index: int, name: str, env_vars: dict[str, str]
     ) -> ray.actor.ActorHandle:
         spec = cell.spec
         scheduling = spec.scheduling
@@ -199,7 +199,7 @@ class RayWorkerManager:
             )
         return self._serve_actor_classes[spec.name]
 
-    async def _collect_worker_ports(self, *, worker: _WorkerState, is_master: bool) -> None:
+    async def _collect_worker_ports(self, *, worker: WorkerState, is_master: bool) -> None:
         owned_port_infos = [p for p in worker.cell.spec.port_infos if p.mode == "per_worker" or is_master]
 
         dynamic_port_infos = [p for p in owned_port_infos if p.allow_dynamic]
@@ -218,7 +218,7 @@ class RayWorkerManager:
             if not port_info.allow_dynamic:
                 worker.owned_ports[port_info.name] = port_info.static_port
 
-    async def _activate_cell(self, *, workers: list[_WorkerState], env_vars: dict[str, str]) -> None:
+    async def _activate_cell(self, *, workers: list[WorkerState], env_vars: dict[str, str]) -> None:
         spec = workers[0].cell.spec
         master = workers[0]
 

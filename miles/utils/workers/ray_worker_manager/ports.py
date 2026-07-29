@@ -5,7 +5,7 @@ import ray
 _DYNAMIC_PORT_START = 15000
 
 
-class _NodePortCursors:
+class NodePortCursors:
     def __init__(self) -> None:
         self._cursors: dict[str, int] = {}
         self._lock = asyncio.Lock()
