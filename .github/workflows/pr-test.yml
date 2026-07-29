@@ -93,7 +93,7 @@ jobs:
           # the recorded base.sha, which can lag main and pull in unrelated changes.
           # Dockerfile.rocm doesn't feed the cu13 multi-arch build this pipeline produces.
           if git diff --name-only HEAD^1 HEAD \
-              | grep -qE '^(docker/(Dockerfile|build\.py|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
+              | grep -qE '^(docker/(Dockerfile|build\.py|wheel_cache\.py|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -112,6 +112,7 @@ jobs:
     env:
       # Forks cannot push to the registry, so they keep the released image.
       BUILD: ${{ needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+      MILES_DOCKER_CACHE_DIR: /data/miles_ci/miles-docker-cache
     steps:
       - name: Checkout repository
         if: env.BUILD == 'true'

@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/build.py'
+      - 'docker/wheel_cache.py'
       - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
 
@@ -145,6 +147,8 @@ jobs:
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
     runs-on: ["h200", "2gpu"]
+    env:
+      MILES_DOCKER_CACHE_DIR: /data/miles_ci/miles-docker-cache
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

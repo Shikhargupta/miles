@@ -11,14 +11,18 @@ Usage:
 
 import os
 import subprocess
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
 import typer
 
-CACHE_DIR = "/tmp/miles-docker-cache"
+from wheel_cache import prepare_wheel_context
+
+DEFAULT_CACHE_DIR = Path("/tmp/miles-docker-cache")
 REPO_ROOT = Path(__file__).resolve().parent.parent
+WHEELS_REPOSITORY = "yueming-yuan/miles-wheels"
 
 VARIANTS = {
     "cu13": {
@@ -26,18 +30,24 @@ VARIANTS = {
         "platforms": ["linux/amd64", "linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
+        "wheel_releases": {
+            "amd64": "cu130-x86_64",
+            "arm64": "cu130-aarch64",
+        },
     },
     "cu13-x86": {
         "image": "radixark/miles",
         "platforms": ["linux/amd64"],
         "tag_postfix": "",
         "build_args": {},
+        "wheel_releases": {"amd64": "cu130-x86_64"},
     },
     "cu13-aarch64": {
         "image": "radixark/miles",
         "platforms": ["linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
+        "wheel_releases": {"arm64": "cu130-aarch64"},
     },
     "cu12-x86": {
         "image": "radixark/miles",
@@ -46,8 +56,8 @@ VARIANTS = {
         "build_args": {
             "ENABLE_CUDA_13": "0",
             "SGLANG_IMAGE_TAG": "v0.5.16-cu129",
-            "WHEELS_TAG_X86": "cu129-x86_64",
         },
+        "wheel_releases": {"amd64": "cu129-x86_64"},
     },
     "rocm700-mi35x": {
         "image": "rocm/sgl-dev",
@@ -95,6 +105,13 @@ def run(cmd: list[str], dry_run: bool) -> None:
     subprocess.run(cmd, check=True)
 
 
+def _cache_root() -> Path:
+    cache_root = Path(os.environ.get("MILES_DOCKER_CACHE_DIR", DEFAULT_CACHE_DIR)).expanduser()
+    if not cache_root.is_absolute():
+        raise typer.BadParameter(f"MILES_DOCKER_CACHE_DIR must be absolute: {cache_root}")
+    return cache_root
+
+
 def build_and_push(
     variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
 ) -> None:
@@ -104,6 +121,7 @@ def build_and_push(
     image = config["image"]
     postfix = config.get("tag_postfix", "")
     platforms = config.get("platforms")
+    wheel_releases = config.get("wheel_releases")
 
     if image_tag == "latest":
         tags = [f"{image}:latest{postfix}"]
@@ -118,40 +136,51 @@ def build_and_push(
     else:
         raise typer.BadParameter(f"Unknown image tag: {image_tag}")
 
-    cmd = [
-        "docker",
-        "buildx",
-        "build",
-        "-f",
-        dockerfile,
-    ]
+    if wheel_releases and dry_run:
+        wheel_context_manager = nullcontext(_cache_root() / "snapshots" / "DRY_RUN_CONTEXT")
+    elif wheel_releases:
+        wheel_context_manager = prepare_wheel_context(WHEELS_REPOSITORY, wheel_releases, _cache_root())
+    else:
+        wheel_context_manager = nullcontext(None)
 
-    if platforms:
-        cmd += ["--platform", ",".join(platforms)]
+    with wheel_context_manager as wheel_context:
+        cmd = [
+            "docker",
+            "buildx",
+            "build",
+            "-f",
+            dockerfile,
+        ]
 
-    if push:
-        cmd += ["--push"]
+        if platforms:
+            cmd += ["--platform", ",".join(platforms)]
 
-    # Proxy args (pass through if set in environment, check both cases)
-    for arg_name in ["HTTP_PROXY", "HTTPS_PROXY"]:
-        value = os.environ.get(arg_name.lower()) or os.environ.get(arg_name)
-        if value:
-            cmd += ["--build-arg", f"{arg_name}={value}"]
+        if wheel_context is not None:
+            cmd += ["--build-context", f"wheel_assets={wheel_context}"]
 
-    cmd += ["--build-arg", "NO_PROXY=localhost,127.0.0.1"]
+        if push:
+            cmd += ["--push"]
 
-    # Variant-specific build args
-    for key, value in config.get("build_args", {}).items():
-        cmd += ["--build-arg", f"{key}={value}"]
+        # Proxy args (pass through if set in environment, check both cases)
+        for arg_name in ["HTTP_PROXY", "HTTPS_PROXY"]:
+            value = os.environ.get(arg_name.lower()) or os.environ.get(arg_name)
+            if value:
+                cmd += ["--build-arg", f"{arg_name}={value}"]
 
-    for tag in tags:
-        cmd += ["-t", tag]
+        cmd += ["--build-arg", "NO_PROXY=localhost,127.0.0.1"]
 
-    # Context is repo root
-    cmd += ["."]
+        # Variant-specific build args
+        for key, value in config.get("build_args", {}).items():
+            cmd += ["--build-arg", f"{key}={value}"]
 
-    print(f"\n=== Building {' '.join(tags)} ===", flush=True)
-    run(cmd, dry_run)
+        for tag in tags:
+            cmd += ["-t", tag]
+
+        # Context is repo root
+        cmd += ["."]
+
+        print(f"\n=== Building {' '.join(tags)} ===", flush=True)
+        run(cmd, dry_run)
 
 
 class Variant(str, Enum):

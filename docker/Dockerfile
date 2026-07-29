@@ -1,17 +1,39 @@
 # doc-dev: docs/ci/02-docker-build.md
-# Build via docker/build.py (single source of truth for build-args, platforms,
+# Build published variants via docker/build.py (source of truth for platforms
 # and tags) — see docs/ci/02-docker-build.md. Examples:
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
 #       python docker/build.py --variant cu12-x86 --image-tag dev --push   # radixark/miles:dev-cu12 (CUDA 12.9)
 #
-# A multi-arch build runs the recipe once per platform; it installs the wheels
-# release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
-# WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
+# Direct builds download the selected wheels release. build.py instead injects
+# a verified per-architecture snapshot as the wheel_assets context.
 
 ARG SGLANG_IMAGE_TAG=v0.5.16
-FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
+FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang_base
+
+# build.py overrides this stage with its verified wheel snapshot.
+FROM sglang_base AS wheel_assets
+
+ARG WHEELS_REPO=yueming-yuan/miles-wheels
+ARG WHEELS_TAG_X86=cu130-x86_64
+ARG WHEELS_TAG_ARM64=cu130-aarch64
+ARG TARGETARCH
+
+COPY docker/wheel_cache.py /tmp/wheel_cache.py
+RUN case "${TARGETARCH}" in \
+      amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
+      arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    echo "Fetching wheels release ${WHEELS_TAG}" && \
+    python3 /tmp/wheel_cache.py \
+      --repository "${WHEELS_REPO}" \
+      --tag "${WHEELS_TAG}" \
+      --output "/${TARGETARCH}" && \
+    ls -lh "/${TARGETARCH}/"
+
+FROM sglang_base AS sglang
 
 # ======================================== Arguments =============================================
 
@@ -23,12 +45,7 @@ ARG MEGATRON_BRANCH=miles-main
 
 ARG ENABLE_CUDA_13=1
 
-ARG WHEELS_REPO=yueming-yuan/miles-wheels
-# Two complete wheels release tags (the wheels repo's own names). The build picks
-# one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-x86_64
-ARG WHEELS_TAG_ARM64=cu130-aarch64
 
 # ======================================== Setup =============================================
 
@@ -49,23 +66,8 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
     rm -rf /tmp/nccl-tests
 
 # ====================================== Collect pre-built wheels ============================================
-# Optional: drop pre-built wheels into <miles>/wheels/ to skip the release download below.
-# `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
-COPY wheel[s]/ /tmp/wheels/
-
-RUN case "${TARGETARCH}" in \
-      amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
-      arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
-      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac && \
-    echo "Fetching wheels release ${WHEELS_TAG}" && \
-    mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
-    | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
-[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
- for a in json.load(sys.stdin).get('assets',[]) \
- if a['name'].endswith(('.whl', '.tar.gz')) and not os.path.exists(os.path.join(w,a['name']))]" && \
-    ls -lh /tmp/wheels/
+COPY --from=wheel_assets /${TARGETARCH}/ /tmp/wheels/
+RUN ls -lh /tmp/wheels/
 
 # ====================================== Python dependencies ============================================
 
