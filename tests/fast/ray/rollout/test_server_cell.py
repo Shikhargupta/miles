@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import (
-    FakeWorkerCellControl,
     FakeWorkerHandle,
     FakeWorkerProvider,
     fake_worker_handle,
@@ -92,12 +91,11 @@ def _make_handle(*, port: int, bootstrap_port: int | None = None) -> FakeWorkerH
 
 def _provider_cell(
     *, num_nodes: int = 1, worker_type: str = "regular", bootstrap_port: int | None = None
-) -> tuple[ServerCell, list[FakeWorkerHandle], FakeWorkerCellControl]:
+) -> tuple[ServerCell, list[FakeWorkerHandle]]:
     handles = [_make_handle(port=30000 + i, bootstrap_port=bootstrap_port) for i in range(num_nodes)]
     provider = FakeWorkerProvider(
         {f"sglang-default-group0-0-{i}": handle for i, handle in enumerate(handles)},
     )
-    control = FakeWorkerCellControl()
     cell = ServerCell(
         args=make_args(num_gpus_per_node=8),
         worker_type=worker_type,
@@ -106,15 +104,14 @@ def _provider_cell(
         spec_name="sglang-default-group0",
         cell_index=0,
         provider=provider,
-        worker_cell_control=control,
     )
-    return cell, handles, control
+    return cell, handles
 
 
 class TestStartEngines:
     async def test_attaches_provider_handles_and_inits_every_worker(self):
         """start_engines looks up each node-rank's handle by name and drives its init."""
-        cell, handles, _control = _provider_cell(num_nodes=2)
+        cell, handles = _provider_cell(num_nodes=2)
 
         await cell.start_engines()
 
@@ -125,7 +122,7 @@ class TestStartEngines:
 
     async def test_derives_the_server_url_from_the_manager_ports(self):
         """The cell's addr comes from the addr/ports the manager pushed into the engine."""
-        cell, _handles, _control = _provider_cell(num_nodes=2)
+        cell, _handles = _provider_cell(num_nodes=2)
 
         await cell.start_engines()
 
@@ -134,7 +131,7 @@ class TestStartEngines:
 
     async def test_carries_the_bootstrap_port_of_a_prefill_worker(self):
         """PD disaggregation needs the decode side to dial the prefill bootstrap port."""
-        cell, _handles, _control = _provider_cell(worker_type="prefill", bootstrap_port=8998)
+        cell, _handles = _provider_cell(worker_type="prefill", bootstrap_port=8998)
 
         await cell.start_engines()
 
@@ -142,14 +139,14 @@ class TestStartEngines:
 
     async def test_rejects_an_already_allocated_cell(self):
         """A second start_engines call must not replace a running cell's workers."""
-        cell, _handles, _control = _provider_cell()
+        cell, _handles = _provider_cell()
         await cell.start_engines()
         with pytest.raises(AssertionError, match="stopped cells"):
             await cell.start_engines()
 
     async def test_failed_init_rolls_the_attach_back_to_stopped(self):
         """A failed attach must not linger allocated, or a later promotion would register a broken engine."""
-        cell, handles, control = _provider_cell()
+        cell, handles = _provider_cell()
 
         async def _boom() -> None:
             raise RuntimeError("engine died during init")
@@ -160,11 +157,10 @@ class TestStartEngines:
             await cell.attach_unsynced()
 
         assert not cell.is_allocated
-        assert control.events == [("stop_cell", {"cell_id": "sglang-default-group0-0"})]
 
     async def test_failed_weight_restore_rolls_the_attach_back_to_stopped(self):
         """An engine whose weight-memory restore failed is not ready and must not stay attached."""
-        cell, _handles, control = _provider_cell()
+        cell, _handles = _provider_cell()
         cell.needs_offload = True
         client = MagicMock()
         client.release_memory_occupation = AsyncMock(side_effect=RuntimeError("oom"))
@@ -174,7 +170,6 @@ class TestStartEngines:
                 await cell.attach_unsynced()
 
         assert not cell.is_allocated
-        assert control.events == [("stop_cell", {"cell_id": "sglang-default-group0-0"})]
 
 
 class TestServerCellApiCalls:

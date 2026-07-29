@@ -271,7 +271,6 @@ async def create_rollout_components(args, infra: WorkerInfra) -> RolloutComponen
         args,
         deployments=infra.inference_deployments,
         provider=infra.inference_provider,
-        worker_cell_control=infra.worker_cell_control,
     )
 
     rollout_executor = RolloutExecutor.options(

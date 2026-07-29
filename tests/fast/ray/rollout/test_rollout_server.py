@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from tests.fast.ray.rollout.conftest import (
-    FakeWorkerCellControl,
     FakeWorkerProvider,
     fake_worker_handle,
     make_args,
@@ -145,7 +144,6 @@ class TestFailedAttachPromotion:
             cell_index=0,
             update_weights=False,
             provider=FakeWorkerProvider({"sglang-default-group0-0-0": handle}),
-            worker_cell_control=FakeWorkerCellControl(),
         )
         srv = RolloutServer(server_cells={cell.cell_id: cell}, args=cell.args, update_weights=False)
 
@@ -177,9 +175,7 @@ class TestStartRolloutServersCellBuilding:
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
         deployments = compute_inference_deployments(args)
-        servers = await start_rollout_servers(
-            args, deployments=deployments, provider=FakeWorkerProvider(), worker_cell_control=FakeWorkerCellControl()
-        )
+        servers = await start_rollout_servers(args, deployments=deployments, provider=FakeWorkerProvider())
         return servers["default"].server_cells
 
     async def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
@@ -223,6 +219,4 @@ class TestStartRolloutServersCellBuilding:
         """The external allocator was removed; startup must fail loudly until the replacement lands."""
         args = make_args(rollout_external=True)
         with pytest.raises(NotImplementedError):
-            await start_rollout_servers(
-                args, deployments=[], provider=None, worker_cell_control=FakeWorkerCellControl()
-            )
+            await start_rollout_servers(args, deployments=[], provider=None)

@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -27,13 +26,10 @@ class InferenceController:
         *,
         deployments: list[InferenceDeployment],
         provider: BaseWorkerProvider | None,
-        worker_cell_control: Any,
     ) -> "InferenceController":
         controller = InferenceController(args)
         if not args.debug_train_only:
-            controller.servers = await start_rollout_servers(
-                args, deployments=deployments, provider=provider, worker_cell_control=worker_cell_control
-            )
+            controller.servers = await start_rollout_servers(args, deployments=deployments, provider=provider)
             dashboard_hooks.register_router(args)
             start_session_server(args)
             if provider is not None:
@@ -182,11 +178,13 @@ class InferenceController:
                 return
 
             if not cell.is_allocated:
-                await self._reconcile_add(srv=srv, cell=cell)
+                if observed.members_hash == cell.failed_attach_members_hash:
+                    return
+                await self._reconcile_add(srv=srv, cell=cell, observed=observed)
             elif cell.observed_members_hash is not None and observed.members_hash != cell.observed_members_hash:
                 logger.info(f"Cell {cell_id} changed members; replacing it")
                 await self._reconcile_remove(srv=srv, cell=cell)
-                await self._reconcile_add(srv=srv, cell=cell)
+                await self._reconcile_add(srv=srv, cell=cell, observed=observed)
             elif not srv.update_weights and not cell.is_alive:
                 await cell.promote_to_alive(srv._router_api_client)
             cell.observed_members_hash = observed.members_hash
@@ -202,9 +200,17 @@ class InferenceController:
         if srv.update_weights:
             srv.has_new_engines = True
 
-    async def _reconcile_add(self, *, srv: RolloutServer, cell) -> None:
+    async def _reconcile_add(self, *, srv: RolloutServer, cell, observed: CellInfo) -> None:
         logger.info(f"Reconcile adds cell {cell.cell_id}")
-        await cell.attach_unsynced()
+        try:
+            await cell.attach_unsynced()
+        except Exception:
+            # Attaching the same half-initialized workers again would double-init
+            # them, so this members hash is skipped until an external restart
+            # replaces the workers (which changes the hash).
+            cell.failed_attach_members_hash = observed.members_hash
+            raise
+        cell.failed_attach_members_hash = None
         if srv.update_weights:
             srv.has_new_engines = True
         else:

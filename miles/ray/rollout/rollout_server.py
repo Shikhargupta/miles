@@ -19,7 +19,6 @@ async def start_rollout_servers(
     *,
     deployments: list[InferenceDeployment],
     provider: BaseWorkerProvider | None,
-    worker_cell_control: Any,
 ) -> dict[str, "RolloutServer"]:
     """Start rollout servers: one per model, each with its own router.
 
@@ -43,9 +42,7 @@ async def start_rollout_servers(
             args.sglang_router_ip = router_ip
             args.sglang_router_port = router_port
 
-        server_cells = build_server_cells(
-            args, deployments=model_deployments, provider=provider, worker_cell_control=worker_cell_control
-        )
+        server_cells = build_server_cells(args, deployments=model_deployments, provider=provider)
 
         servers[model_name] = RolloutServer(
             server_cells=server_cells,
@@ -68,7 +65,6 @@ def build_server_cells(
     *,
     deployments: list[InferenceDeployment],
     provider: BaseWorkerProvider | None,
-    worker_cell_control: Any,
 ) -> dict[str, ServerCell]:
     server_cells: dict[str, ServerCell] = {}
     for deployment in deployments:
@@ -90,7 +86,6 @@ def build_server_cells(
                 spec_name=deployment.spec.name,
                 cell_index=cell_index,
                 provider=provider,
-                worker_cell_control=worker_cell_control,
             )
     return server_cells
 
@@ -137,16 +132,6 @@ class RolloutServer:
         cell_ids = [cell_id for cell_id, cell in self.server_cells.items() if not cell.is_allocated]
         await asyncio.gather(*[self.server_cells[cell_id].start(self._router_api_client) for cell_id in cell_ids])
         self.has_new_engines |= bool(cell_ids)
-
-    async def stop_cells(self, cell_ids: list[str]):
-        logger.info(f"Killing server {cell_ids=}...")
-        stopped_any = False
-        for cell_id in sorted(set(cell_ids)):
-            cell = self.server_cells[cell_id]
-            stopped_any |= cell.is_allocated
-            await cell.stop(self._router_api_client)
-        if self.update_weights and stopped_any:
-            self.has_new_engines = True
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(

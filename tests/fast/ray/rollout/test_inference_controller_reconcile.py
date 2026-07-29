@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from tests.fast.ray.rollout.conftest import FakeWorkerCellControl, FakeWorkerHandle, FakeWorkerProvider, make_args
+from tests.fast.ray.rollout.conftest import FakeWorkerHandle, FakeWorkerProvider, make_args
 
 from miles.ray.rollout.inference_controller import InferenceController, _ReconcileGate
 from miles.ray.rollout.rollout_server import RolloutServer
@@ -32,7 +32,6 @@ def _make_cell(*, update_weights: bool = True) -> tuple[ServerCell, FakeWorkerHa
         cell_index=0,
         update_weights=update_weights,
         provider=FakeWorkerProvider({"sglang-default-group0-0-0": handle}),
-        worker_cell_control=FakeWorkerCellControl(),
     )
     return cell, handle
 
@@ -138,6 +137,48 @@ class TestReconcileAdd:
                 pass
 
         assert not cell.is_allocated
+
+    async def test_failed_attach_is_not_retried_for_the_same_members(self):
+        """Re-initializing the same half-initialized workers would double-init them."""
+        controller, _srv, cell, handle, _router_client = _make_setup()
+
+        async def _boom() -> dict:
+            raise RuntimeError("engine gone")
+
+        handle.get_addr_and_ports = _boom
+
+        with _with_recording_client():
+            try:
+                await controller._reconcile(cell.cell_id, _observed(cell, members_hash="hash-a"))
+            except RuntimeError:
+                pass
+            calls_after_failure = list(handle.calls)
+
+            await controller._reconcile(cell.cell_id, _observed(cell, members_hash="hash-a"))
+
+        assert not cell.is_allocated
+        assert handle.calls == calls_after_failure
+
+    async def test_failed_attach_retries_when_members_change(self):
+        """An external restart replaces the workers, so the new members must be attached."""
+        controller, _srv, cell, handle, _router_client = _make_setup()
+        original_get_addr_and_ports = handle.get_addr_and_ports
+
+        async def _boom() -> dict:
+            raise RuntimeError("engine gone")
+
+        handle.get_addr_and_ports = _boom
+
+        with _with_recording_client():
+            try:
+                await controller._reconcile(cell.cell_id, _observed(cell, members_hash="hash-a"))
+            except RuntimeError:
+                pass
+            handle.get_addr_and_ports = original_get_addr_and_ports
+
+            await controller._reconcile(cell.cell_id, _observed(cell, members_hash="hash-b"))
+
+        assert cell.is_allocated
 
 
 class TestReconcileRemove:

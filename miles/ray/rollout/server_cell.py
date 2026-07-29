@@ -23,8 +23,6 @@ from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logger = logging.getLogger(__name__)
 
-SHUTDOWN_TIMEOUT = 30
-
 
 @dataclass
 class ServerCell:
@@ -40,8 +38,8 @@ class ServerCell:
     spec_name: str = ""
     cell_index: int = 0
     provider: BaseWorkerProvider | None = None
-    worker_cell_control: Any = None
     observed_members_hash: str | None = None
+    failed_attach_members_hash: str | None = None
     _state: CellState = dataclasses.field(default_factory=StateStopped)
 
     @property
@@ -113,46 +111,13 @@ class ServerCell:
                 if self.update_weights or self.model_path:
                     await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
         except Exception:
-            await self._rollback_failed_attach()
+            if self.is_allocated:
+                self._mark_stopped()
             raise
 
     async def promote_to_alive(self, router_api_client: SGLangRouterApiClient) -> None:
         await self.register(router_api_client)
         self._mark_alive()
-
-    async def stop(self, router_api_client: SGLangRouterApiClient) -> None:
-        if self.is_allocated:
-            try:
-                await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"Unregistering cell {self.cell_id} from the router failed, tearing down anyway ({e})")
-
-            for local_index, handle in enumerate(self.worker_handles):
-                logger.info(f"Cell {self.cell_id}: shutting down engine at cell-local index {local_index}")
-                try:
-                    await asyncio.wait_for(handle.shutdown(), timeout=SHUTDOWN_TIMEOUT)
-                except Exception as e:
-                    logger.warning(
-                        f"Cell {self.cell_id}: graceful shutdown of engine at cell-local index {local_index} "
-                        f"failed, killing anyway ({e})"
-                    )
-
-            assert self.worker_cell_control is not None, f"cell {self.cell_id} has no worker cell control"
-            await self.worker_cell_control.stop_cell(cell_id=self.cell_id)
-        else:
-            logger.info(f"Cell {self.cell_id} is already stopped")
-        self._mark_stopped()
-
-    async def _rollback_failed_attach(self) -> None:
-        """Converge to fully stopped: a half-attached cell must not keep manager
-        workers running, or the next reconcile poll would double-init them."""
-        if self.is_allocated:
-            self._mark_stopped()
-        if self.worker_cell_control is not None:
-            try:
-                await self.worker_cell_control.stop_cell(cell_id=self.cell_id)
-            except Exception:
-                logger.exception(f"Stopping the manager cell {self.cell_id} after a failed attach failed")
 
     def _mark_allocated_uninitialized(self, worker_handles: list[BaseWorkerHandle]) -> None:
         self._change_state(

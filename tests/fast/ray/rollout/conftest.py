@@ -62,22 +62,6 @@ class FakeWorkerProvider:
         raise NotImplementedError
 
 
-class FakeWorkerCellControl:
-    """Records start/stop/restart cell calls the way the manager would see them."""
-
-    def __init__(self, events: list[tuple[str, dict]] | None = None) -> None:
-        self.events = events if events is not None else []
-
-    async def start_cell(self, *, cell_id: str) -> None:
-        self.events.append(("start_cell", {"cell_id": cell_id}))
-
-    async def restart_cell(self, *, cell_id: str) -> None:
-        self.events.append(("restart_cell", {"cell_id": cell_id}))
-
-    async def stop_cell(self, *, cell_id: str) -> None:
-        self.events.append(("stop_cell", {"cell_id": cell_id}))
-
-
 def fake_worker_handle(**kwargs) -> FakeWorkerHandle:
     return FakeWorkerHandle(**kwargs)
 

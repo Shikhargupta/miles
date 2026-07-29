@@ -56,12 +56,7 @@ class ManagerHarness:
         return RayWorkerHandle(self.manager)
 
     def build_cells(self, args):
-        return build_server_cells(
-            args,
-            deployments=self.deployments,
-            provider=self.provider,
-            worker_cell_control=self.worker_cell_control,
-        )
+        return build_server_cells(args, deployments=self.deployments, provider=self.provider)
 
     def kill_all(self) -> None:
         spec_names = [deployment.spec.name for deployment in self.deployments]

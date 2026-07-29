@@ -51,12 +51,7 @@ def patch_low_level(monkeypatch):
 
 async def _create_controller(args, harness_factory):
     harness = await harness_factory(args)
-    controller = await InferenceController.create(
-        args,
-        deployments=harness.deployments,
-        provider=harness.provider,
-        worker_cell_control=harness.worker_cell_control,
-    )
+    controller = await InferenceController.create(args, deployments=harness.deployments, provider=harness.provider)
     return controller, harness
 
 
@@ -440,12 +435,7 @@ class TestManagerDrivenSuspendResume:
         promotes it back behind the router."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         harness = await manager_harness_factory(args)
-        controller = await InferenceController.create(
-            args,
-            deployments=harness.deployments,
-            provider=harness.provider,
-            worker_cell_control=harness.worker_cell_control,
-        )
+        controller = await InferenceController.create(args, deployments=harness.deployments, provider=harness.provider)
         cell = controller.servers["actor"].server_cells["sglang-actor-group0-0"]
         assert cell.is_alive
 
