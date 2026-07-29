@@ -28,40 +28,30 @@ class SourceStreamDriver:
         self._retry_delay = retry_delay
         self._clock = clock
         self._stream: AsyncGenerator[SourceEvent, None] | None = None
+        self._synced = asyncio.Event()
 
-    async def open_synced_stream(self) -> AsyncGenerator[SourceEvent, None]:
+    async def run(self) -> None:
         while True:
             self._store.reset_segment()
             stream: AsyncGenerator[SourceEvent, None] | None = None
             try:
                 stream = self._source()
-                await self._consume_until_synced(stream)
                 self._stream = stream
-                return stream
+                await self._pump(stream)
             except asyncio.CancelledError:
-                await _aclose_while_unwinding(stream)
-                raise
-            except Exception:
-                logger.error("SourceStreamDriver initial sync failed, retrying", exc_info=True)
-                await _aclose_while_unwinding(stream)
-                await self._clock.sleep(self._retry_delay)
-
-    async def run(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
-        while True:
-            try:
-                async for event in stream:
-                    self._apply(event)
-            except asyncio.CancelledError:
+                self._stream = None
                 await _aclose_while_unwinding(stream)
                 raise
             except Exception:
                 logger.error("SourceStreamDriver source stream failed, reopening", exc_info=True)
             else:
                 logger.warning("SourceStreamDriver source stream ended, reopening")
-            await _aclose_while_unwinding(stream)
             self._stream = None
+            await _aclose_while_unwinding(stream)
             await self._clock.sleep(self._retry_delay)
-            stream = await self.open_synced_stream()
+
+    async def wait_for_sync(self) -> None:
+        await self._synced.wait()
 
     async def aclose(self) -> None:
         stream = self._stream
@@ -69,20 +59,16 @@ class SourceStreamDriver:
         if stream is not None:
             await stream.aclose()
 
-    async def _consume_until_synced(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
+    async def _pump(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
         first = True
         async for event in stream:
             if first and not isinstance(event, SyncStart):
                 raise RuntimeError(f"A source stream must open with SyncStart, got {event=}")
             first = False
-            if self._apply(event):
-                return
-        raise RuntimeError("Source stream ended before the initial sync completed")
-
-    def _apply(self, event: SourceEvent) -> bool:
-        update = self._store.handle_event(event)
-        self._on_affected(update.affected_parents)
-        return isinstance(event, SyncDone)
+            update = self._store.handle_event(event)
+            self._on_affected(update.affected_parents)
+            if isinstance(event, SyncDone):
+                self._synced.set()
 
 
 async def _aclose_while_unwinding(stream: AsyncGenerator[SourceEvent, None] | None) -> None:

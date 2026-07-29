@@ -70,15 +70,15 @@ class ReconcileLoop:
         assert not self._start_called, "ReconcileLoop.start() must be called exactly once"
         self._start_called = True
 
-        sync_task = asyncio.create_task(self._driver.open_synced_stream())
+        driver_task = asyncio.create_task(self._driver.run())
         try:
-            stream = await sync_task
+            await self._driver.wait_for_sync()
         except asyncio.CancelledError:
-            sync_task.cancel()
-            await asyncio.gather(sync_task, return_exceptions=True)
+            driver_task.cancel()
+            await asyncio.gather(driver_task, return_exceptions=True)
             raise
 
-        self._tasks = [asyncio.create_task(self._worker_loop()), asyncio.create_task(self._driver.run(stream))]
+        self._tasks = [asyncio.create_task(self._worker_loop()), driver_task]
         if self._resync_period is not None:
             self._tasks.append(asyncio.create_task(self._resync_loop()))
 

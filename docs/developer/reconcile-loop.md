@@ -75,7 +75,7 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | Upstream | Solves | Decision | Reason |
 | --- | --- | --- | --- |
 | Cache-before-notify ordering | Handlers never read a stale state | **Kept** | Correctness, not volume |
-| WaitForCacheSync | Do not decide on a half-filled cache | **Kept** as the `start()` barrier | A partial engine list at step 0 would silently shrink the fleet |
+| WaitForCacheSync | Do not decide on a half-filled cache | **Kept**: `run()` + `wait_for_sync()`, the [`SyncingSource`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/source/source.go) shape; `start()` awaits it | A partial engine list at step 0 would silently shrink the fleet |
 | `source.Channel` | External event injection | **Dropped** | Miles-internal events are method calls |
 
 ### `loop.py`
