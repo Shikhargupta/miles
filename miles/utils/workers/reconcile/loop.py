@@ -19,6 +19,14 @@ ReconcileFn = Callable[[str], Awaitable[None]]
 
 
 class ReconcileLoop:
+    """A source stream feeds a store; every changed parent key is reconciled once, level-triggered.
+
+    `source` returns an async iterator of `SourceEvent`. A stream opens with `SyncStart`, closed by `SyncDone`:
+    events between them are buffered and applied as a whole-store replace that synthesizes deletions, while
+    events outside a segment apply immediately. Reconcile receives a key only and re-derives everything from
+    `get_by_parent()`.
+    """
+
     def __init__(
         self,
         *,

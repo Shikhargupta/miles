@@ -31,30 +31,6 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 - **`RetryScheduler` absorbed both retry pieces** — ours is latest-wins, not a `readyAt` heap, so splitting yields Go names over non-Go semantics.
 - **`SourceEvent` has no Go counterpart** — Go pushes into a `Store` by method call. A generator gives teardown and cancellation for free, and lets any non-Kubernetes source be an ordinary generator.
 
-## The source contract
-
-What `ReconcileLoop` requires and every source — `KubernetesReflector.watch`, or any other async generator — must provide. Defined in `source_event.py`.
-
-```python
-SourceEvent = Upsert(key, obj) | Delete(key, last_obj) | SyncStart() | SyncDone()
-SourceWatchFn = Callable[[], AsyncIterator[SourceEvent]]
-```
-
-- Every stream opens with `SyncStart`; every `SyncStart` is closed by a `SyncDone`. An unpaired marker raises.
-- In a segment events are buffered; `SyncDone` applies it as a **replace** of the whole store. Outside, `Upsert` / `Delete` apply immediately.
-- A stream ending mid-segment leaves that segment unapplied.
-- The reflector opens a segment whenever the server rejects its cursor — 410 `Expired`, or a resourceVersion it deems too large.
-- `Delete.last_obj` is the tombstone; an event with no attributable parent is dropped.
-
-## The Kubernetes contract
-
-What `KubernetesReflector` requires of a pod API, so a fake can replace the cluster. Defined in `k8s_api.py` as the `KubernetesPodApi` protocol.
-
-- `list_pods` returns `PodListPage(pods, resource_version)`; `stream_pods` yields `PodWatchEvent(type, obj)`.
-- The payload stays `Any`: a `V1Pod` for object frames, a status for `ERROR` frames, and possibly malformed — one unreadable frame must not stop the watch.
-- `type` is a plain `str`, not an enum: an unknown event type is logged and skipped, never a validation failure.
-- A filtered watch reports a pod leaving the selector as `DELETED` and reentry as `ADDED`, so losing a label is indistinguishable from a deletion — and must be, since both mean the pod left its cell.
-
 ## Decisions per module
 
 ### `k8s_reflector.py`
