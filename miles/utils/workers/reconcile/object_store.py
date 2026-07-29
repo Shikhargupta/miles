@@ -30,6 +30,12 @@ class ObjectStore:
         self._key_map = key_map
         self._cache: dict[str, _CachedObject] = {}
         self._open_segment: dict[str, Any] | None = None
+        self._handler_of_event: dict[type[SourceEvent], Callable[[Any], StoreUpdate]] = {
+            SyncStart: self._handle_sync_start,
+            Upsert: self._handle_upsert,
+            Delete: self._handle_delete,
+            SyncDone: self._handle_sync_done,
+        }
 
     def get_by_parent(self, parent_key: str) -> list[Any]:
         return [self._cache[key].obj for key in sorted(self._cache) if self._cache[key].parent == parent_key]
@@ -44,31 +50,37 @@ class ObjectStore:
         self._open_segment = None
 
     def handle_event(self, event: SourceEvent) -> StoreUpdate:
-        if isinstance(event, SyncStart):
-            if self._open_segment is not None:
-                raise RuntimeError("SyncStart while a LIST segment is still open")
-            self._open_segment = {}
+        handler = self._handler_of_event.get(type(event))
+        assert handler is not None, f"Unknown source event {event=}"
+        return handler(event)
+
+    def _handle_sync_start(self, event: SyncStart) -> StoreUpdate:
+        if self._open_segment is not None:
+            raise RuntimeError("SyncStart while a LIST segment is still open")
+        self._open_segment = {}
+        return StoreUpdate(affected=set())
+
+    def _handle_upsert(self, event: Upsert) -> StoreUpdate:
+        if self._open_segment is not None:
+            self._open_segment[event.key] = event.obj
             return StoreUpdate(affected=set())
-        if isinstance(event, Upsert):
-            if self._open_segment is not None:
-                self._open_segment[event.key] = event.obj
-                return StoreUpdate(affected=set())
-            parent = self._parent_key_or_none(key=event.key, obj=event.obj)
-            if parent is None:
-                return StoreUpdate(affected=self._apply_delete(key=event.key, last_obj=None))
-            return StoreUpdate(affected=self._apply_upsert(key=event.key, obj=event.obj, parent=parent))
-        if isinstance(event, Delete):
-            if self._open_segment is not None:
-                self._open_segment.pop(event.key, None)
-                return StoreUpdate(affected=set())
-            return StoreUpdate(affected=self._apply_delete(key=event.key, last_obj=event.last_obj))
-        if isinstance(event, SyncDone):
-            if self._open_segment is None:
-                raise RuntimeError("SyncDone must terminate a LIST opened by SyncStart")
-            affected = self._replace(self._open_segment)
-            self._open_segment = None
-            return StoreUpdate(affected=affected, synced=True)
-        raise AssertionError(f"Unknown source event {event=}")
+        parent = self._parent_key_or_none(key=event.key, obj=event.obj)
+        if parent is None:
+            return StoreUpdate(affected=self._apply_delete(key=event.key, last_obj=None))
+        return StoreUpdate(affected=self._apply_upsert(key=event.key, obj=event.obj, parent=parent))
+
+    def _handle_delete(self, event: Delete) -> StoreUpdate:
+        if self._open_segment is not None:
+            self._open_segment.pop(event.key, None)
+            return StoreUpdate(affected=set())
+        return StoreUpdate(affected=self._apply_delete(key=event.key, last_obj=event.last_obj))
+
+    def _handle_sync_done(self, event: SyncDone) -> StoreUpdate:
+        if self._open_segment is None:
+            raise RuntimeError("SyncDone must terminate a LIST opened by SyncStart")
+        affected = self._replace(self._open_segment)
+        self._open_segment = None
+        return StoreUpdate(affected=affected, synced=True)
 
     def _replace(self, listed: dict[str, Any]) -> set[str]:
         parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in listed.items()}
