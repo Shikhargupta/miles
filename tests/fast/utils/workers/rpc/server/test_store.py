@@ -271,6 +271,38 @@ class TestPurge:
 
         assert store.contains("c1")
 
+    async def test_finished_ttl_runs_from_finishing_not_from_submission(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A long running call still gets its whole finished TTL, counted from when it finished."""
+        now = [10.0]
+        monkeypatch.setattr(store_module.time, "monotonic", lambda: now[0])
+        store = _make_store(ttl=5.0, finished_ttl=100.0)
+        store.begin(call_id="c1")
+
+        now[0] = 500.0
+        store.finish(call_id="c1", outcome=CallStatusResponse(status="success", result=1))
+
+        now[0] = 599.0
+        store.begin(call_id="other")
+
+        assert store.contains("c1")
+
+    async def test_retrieval_just_before_the_finished_deadline_wins_the_retrieved_ttl(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once retrieved, the retrieved TTL alone decides, so a record may outlive its finished deadline."""
+        now = [10.0]
+        monkeypatch.setattr(store_module.time, "monotonic", lambda: now[0])
+        store = _make_store(ttl=5.0, finished_ttl=100.0)
+        store.begin(call_id="c1")
+        store.finish(call_id="c1", outcome=CallStatusResponse(status="success", result=1))
+
+        now[0] = 109.0
+        await store.wait(call_id="c1", timeout=0.01)
+        now[0] = 112.0
+        store.begin(call_id="other")
+
+        assert store.contains("c1")
+
 
 class TestDefaultTtls:
     async def test_finished_ttl_default_is_twelve_hours(self) -> None:

@@ -24,6 +24,14 @@ def _passthrough(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def _opaque_passthrough(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    wrapper.__wrapped__ = fn
+    return wrapper
+
+
 class _GoodWorker:
     demo_class_attribute = 3
 
@@ -117,6 +125,31 @@ class TestDecoratorChainConcurrencyGroup:
 
         specs = collect_rpc_method_specs(Worker)
         assert specs["demo_marker_nested"].concurrency_group == "heavy"
+
+    def test_marker_hidden_by_a_wrapper_that_copies_nothing_is_found(self):
+        """A wrapper that does not copy the wrapped function's attributes cannot hide the marker."""
+
+        class Worker:
+            @_opaque_passthrough
+            @rpc(concurrency_group="heavy")
+            def demo_marker_hidden(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_marker_hidden"].concurrency_group == "heavy"
+
+    def test_outermost_marker_wins_over_an_inner_one(self):
+        """When two decorator layers each declare a group, the outermost declaration decides."""
+
+        class Worker:
+            @rpc(concurrency_group="outer")
+            @_opaque_passthrough
+            @rpc(concurrency_group="inner")
+            def demo_marker_conflict(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_marker_conflict"].concurrency_group == "outer"
 
 
 class TestQueryModel:

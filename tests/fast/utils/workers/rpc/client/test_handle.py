@@ -312,6 +312,32 @@ class TestSubmitRetry:
                 await handle.demo_default_arg(a=1, b=2)
             assert time.monotonic() - started < 5.0
 
+    async def test_a_submit_attempt_never_outlives_the_remaining_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the retry window is shorter than the attempt budget, the attempt is cut down to the window."""
+        monkeypatch.setattr(rpc_client_module, "SUBMIT_RETRY_WINDOW_SECONDS", 0.5)
+        monkeypatch.setattr(rpc_client_module, "SUBMIT_ATTEMPT_TIMEOUT_SECONDS", 30.0)
+
+        class _TimeoutRecordingTransport(httpx.AsyncBaseTransport):
+            def __init__(self) -> None:
+                self.read_timeouts: list[float] = []
+
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                self.read_timeouts.append(request.extensions["timeout"]["read"])
+                raise httpx.ConnectError("refused", request=request)
+
+        transport = _TimeoutRecordingTransport()
+        async with _handle_over(transport) as handle:
+            with pytest.raises(WorkerUnreachableError):
+                await handle.demo_default_arg(a=1, b=2)
+
+        assert transport.read_timeouts
+        assert max(transport.read_timeouts) <= 0.5
+
+    async def test_submit_attempt_budget_defaults_stay_put(self) -> None:
+        """The submit attempt budget and its abort slack keep the values the retry design assumes."""
+        assert rpc_client_module.SUBMIT_ATTEMPT_TIMEOUT_SECONDS == 10.0
+        assert rpc_misc_module._ABORT_SLACK_SECONDS == 1.0
+
     async def test_a_redirected_submit_is_never_followed(self) -> None:
         """A redirect is refused outright, so an injected client cannot deliver one submit twice."""
 
@@ -499,6 +525,37 @@ class TestLongPoll:
                 assert await pending == "done"
                 assert "pending" in transport.poll_statuses
                 assert all(float(request.url.params["timeout"]) < 0.4 for request in transport.polls())
+
+    async def test_each_poll_waits_only_for_its_own_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A poll's local http timeout follows the poll window, not the whole remaining call budget."""
+        monkeypatch.setattr(rpc_client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.4)
+        worker = _Worker()
+
+        class _PollTimeoutRecordingTransport(_HookTransport):
+            def __init__(self, app: Any) -> None:
+                super().__init__(app)
+                self.poll_read_timeouts: list[float] = []
+
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                if request.method == "GET" and "/v1/calls/" in str(request.url):
+                    self.poll_read_timeouts.append(request.extensions["timeout"]["read"])
+                return await super().handle_async_request(request)
+
+        async with _running_app(worker) as app:
+            transport = _PollTimeoutRecordingTransport(app)
+            async with _handle_over(transport, call_timeout_seconds=30.0) as handle:
+                pending = asyncio.create_task(handle.demo_hang())
+                await asyncio.sleep(1.0)
+                worker.block_forever.set()
+
+                assert await pending == "done"
+
+        assert transport.poll_read_timeouts
+        assert max(transport.poll_read_timeouts) <= 0.4
+
+    async def test_poll_slack_default_stays_put(self) -> None:
+        """The poll slack keeps the value that lets the server answer before the client gives up."""
+        assert rpc_client_module.POLL_SLACK_SECONDS == 5.0
 
     async def test_restart_during_polling_is_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A pinned handle notices a server swap that happens while it is already polling."""
