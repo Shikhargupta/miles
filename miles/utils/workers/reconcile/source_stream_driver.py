@@ -78,7 +78,8 @@ class SourceStreamDriver:
         raise RuntimeError("Source stream ended before the initial sync completed")
 
     def _apply(self, event: SourceEvent) -> bool:
-        self._on_affected(self._store.handle_event(event))
+        update = self._store.handle_event(event)
+        self._on_affected(update.affected)
         return isinstance(event, SyncDone)
 
 

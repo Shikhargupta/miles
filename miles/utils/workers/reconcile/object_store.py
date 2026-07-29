@@ -22,6 +22,11 @@ KeyMapFn = Callable[[Any], ParentKey]
 
 
 @dataclass(frozen=True)
+class StoreUpdate:
+    affected: set[ParentKey]
+
+
+@dataclass(frozen=True)
 class _CachedObject:
     obj: Any
     parent: ParentKey
@@ -32,7 +37,7 @@ class ObjectStore:
         self._key_map = key_map
         self._cache: dict[ObjectKey, _CachedObject] = {}
         self._open_segment: dict[ObjectKey, Any] | None = None
-        self._handler_of_event: dict[type[SourceEvent], Callable[[Any], set[ParentKey]]] = {
+        self._handler_of_event: dict[type[SourceEvent], Callable[[Any], StoreUpdate]] = {
             SyncStart: self._handle_sync_start,
             Upsert: self._handle_upsert,
             Delete: self._handle_delete,
@@ -51,40 +56,40 @@ class ObjectStore:
     def reset_segment(self) -> None:
         self._open_segment = None
 
-    def handle_event(self, event: SourceEvent) -> set[ParentKey]:
+    def handle_event(self, event: SourceEvent) -> StoreUpdate:
         handler = self._handler_of_event.get(type(event))
         assert handler is not None, f"Unknown source event {event=}"
         return handler(event)
 
-    def _handle_sync_start(self, event: SyncStart) -> set[ParentKey]:
+    def _handle_sync_start(self, event: SyncStart) -> StoreUpdate:
         if self._open_segment is not None:
             raise RuntimeError("SyncStart while a LIST segment is still open")
         self._open_segment = {}
-        return set()
+        return StoreUpdate(affected=set())
 
-    def _handle_upsert(self, event: Upsert) -> set[ParentKey]:
+    def _handle_upsert(self, event: Upsert) -> StoreUpdate:
         if self._open_segment is not None:
             self._open_segment[event.key] = event.obj
-            return set()
+            return StoreUpdate(affected=set())
         parent = self._parent_key_or_none(key=event.key, obj=event.obj)
         if parent is None:
             return self._apply_delete(key=event.key, last_obj=None)
         return self._apply_upsert(key=event.key, obj=event.obj, parent=parent)
 
-    def _handle_delete(self, event: Delete) -> set[ParentKey]:
+    def _handle_delete(self, event: Delete) -> StoreUpdate:
         if self._open_segment is not None:
             self._open_segment.pop(event.key, None)
-            return set()
+            return StoreUpdate(affected=set())
         return self._apply_delete(key=event.key, last_obj=event.last_obj)
 
-    def _handle_sync_done(self, event: SyncDone) -> set[ParentKey]:
+    def _handle_sync_done(self, event: SyncDone) -> StoreUpdate:
         if self._open_segment is None:
             raise RuntimeError("SyncDone must terminate a LIST opened by SyncStart")
-        affected = self._replace(self._open_segment)
+        update = self._replace(self._open_segment)
         self._open_segment = None
-        return affected
+        return update
 
-    def _replace(self, listed: dict[ObjectKey, Any]) -> set[ParentKey]:
+    def _replace(self, listed: dict[ObjectKey, Any]) -> StoreUpdate:
         parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in listed.items()}
         mapped = {key: obj for key, obj in listed.items() if parents[key] is not None}
 
@@ -95,22 +100,22 @@ class ObjectStore:
             affected |= self._apply_delete(key=key, last_obj=None)
         return affected
 
-    def _apply_upsert(self, *, key: ObjectKey, obj: Any, parent: ParentKey) -> set[ParentKey]:
+    def _apply_upsert(self, *, key: ObjectKey, obj: Any, parent: ParentKey) -> StoreUpdate:
         previous = self._cache.get(key)
         self._cache[key] = _CachedObject(obj=obj, parent=parent)
-        return {parent} if previous is None else {parent, previous.parent}
+        return StoreUpdate(affected={parent} if previous is None else {parent, previous.parent})
 
-    def _apply_delete(self, *, key: ObjectKey, last_obj: Any) -> set[ParentKey]:
+    def _apply_delete(self, *, key: ObjectKey, last_obj: Any) -> StoreUpdate:
         removed = self._cache.pop(key, None)
         parent = removed.parent if removed is not None else None
         if parent is None:
             if last_obj is None:
                 logger.warning(f"ObjectStore dropping a delete it cannot attribute to a parent {key=}")
-                return set()
+                return StoreUpdate(affected=set())
             parent = self._parent_key_or_none(key=key, obj=last_obj)
             if parent is None:
-                return set()
-        return {parent}
+                return StoreUpdate(affected=set())
+        return StoreUpdate(affected={parent})
 
     def _parent_key_or_none(self, *, key: ObjectKey, obj: Any) -> ParentKey | None:
         try:
