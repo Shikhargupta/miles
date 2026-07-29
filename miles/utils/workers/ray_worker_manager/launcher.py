@@ -19,9 +19,7 @@ class CellLauncher:
         self._worker_kinds = make_worker_kinds()
         self._port_allocator = PortAllocator()
 
-    async def bring_up_cells(
-        self, *, cells: list[CellState], register_worker: Callable[[WorkerState], None]
-    ) -> None:
+    async def bring_up_cells(self, *, cells: list[CellState], register_worker: Callable[[WorkerState], None]) -> None:
         env_vars_by_cell_id = {cell.cell_id: cell.spec.env_var() for cell in cells}
 
         workers_by_cell_id = {}
