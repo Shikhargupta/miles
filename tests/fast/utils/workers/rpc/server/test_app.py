@@ -292,8 +292,8 @@ class TestConcurrencyGroups:
 
 
 class TestLifecycle:
-    async def test_shutdown_waits_for_in_flight_call(self):
-        """Lifespan shutdown blocks until an accepted call finishes instead of dropping it."""
+    async def test_shutdown_does_not_wait_for_an_in_flight_call(self):
+        """Lifespan shutdown returns without waiting for an accepted call to finish."""
         worker = _Worker()
         app = create_rpc_app(worker)
         lifespan = app.router.lifespan_context(app)
@@ -304,17 +304,12 @@ class TestLifecycle:
             submitted = await _submit(client, "demo_slow", {"tag": "s"})
             assert await asyncio.to_thread(worker.slow_started.wait, 5.0)
 
-        shutdown = asyncio.create_task(lifespan.__aexit__(None, None, None))
-        await asyncio.sleep(0.05)
-        assert not shutdown.done(), "shutdown returned while a call was still running"
-
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=10.0)
         worker.release_slow.set()
-        await asyncio.wait_for(shutdown, timeout=10.0)
-        assert worker.order == ["s_start", "s_end"]
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
             body = (await client.get(f"/v1/calls/{submitted.call_id}", params={"timeout": 0.0})).json()
-            assert body == {"status": "success", "result": "s", "error": None}
+            assert body["status"] == "failed"
 
     async def test_worker_cancellation_yields_terminal_outcome(self):
         """A worker method raising CancelledError still records a terminal failed outcome."""
@@ -322,10 +317,10 @@ class TestLifecycle:
             body = await _call(client, "demo_cancel_self", {})
             assert body["status"] == "failed"
 
-    async def test_shutdown_timeout_fails_pending_call(self):
-        """A call still running past the drain timeout is cancelled with a failed outcome."""
+    async def test_shutdown_cancels_a_pending_call(self):
+        """A call still running at shutdown is cancelled with a failed outcome."""
         worker = _AsyncCancelWorker()
-        app = create_rpc_app(worker, shutdown_drain_seconds=0.05)
+        app = create_rpc_app(worker)
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:

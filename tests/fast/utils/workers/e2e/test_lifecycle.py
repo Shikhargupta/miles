@@ -2,12 +2,25 @@ import asyncio
 import os
 import signal
 import time
+import uuid
 
+import httpx
 import pytest
-from tests.fast.utils.workers.e2e.harness import READY_TIMEOUT_SECONDS, port_is_refused, wait_until_serving
+from tests.fast.utils.workers.e2e.harness import (
+    READY_TIMEOUT_SECONDS,
+    ServerProcess,
+    port_is_refused,
+    wait_until_serving,
+)
 
 from miles.utils.workers.rpc.client.misc import RpcProtocolError, ServerRestartedError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
+
+
+async def _submit_and_disconnect(server: ServerProcess, method: str, query: dict) -> None:
+    async with httpx.AsyncClient(base_url=server.url, timeout=30.0, trust_env=False) as client:
+        response = await client.post(f"/v1/{method}", json={"call_id": uuid.uuid4().hex, "query": query})
+        assert response.status_code == 200
 
 
 class TestRestartDetection:
@@ -83,45 +96,33 @@ class TestShutdown:
         assert server.wait(timeout=15.0) is not None
         assert time.monotonic() - started < 15.0
 
-    async def test_sigterm_drains_an_in_flight_async_call(self, spawn, make_handle, state_dir):
-        """An accepted call finishes before the server exits."""
-        server = spawn(shutdown_drain_seconds=20.0)
-        handle = make_handle(server)
-        await handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
-
-        asyncio.create_task(handle.demo_marker_after_sleep_async(name="drained", seconds=2.0))
-        await asyncio.sleep(0.5)
+    async def test_sigterm_abandons_an_in_flight_async_call(self, spawn, state_dir):
+        """An accepted call is cancelled rather than allowed to finish."""
+        server = spawn()
+        await _submit_and_disconnect(server, "demo_marker_after_sleep_async", {"name": "abandoned", "seconds": 2.0})
 
         server.signal(signal.SIGTERM)
         assert server.wait(timeout=30.0) is not None
-        assert (state_dir / "drained").exists()
+        await asyncio.sleep(2.5)
+        assert not (state_dir / "abandoned").exists()
 
-    async def test_sigkill_skips_the_drain(self, spawn, make_handle, state_dir):
-        """SIGKILL is the control showing the drain is what preserved the side effect."""
+    async def test_sigterm_lets_the_worker_observe_cancellation(self, spawn, state_dir, tag):
+        """The in-flight call is cancelled, so the worker's cancellation handler still runs."""
         server = spawn()
-        handle = make_handle(server)
-        await handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
+        await _submit_and_disconnect(server, "demo_block_until_cancelled", {"tag": tag})
 
-        asyncio.create_task(handle.demo_marker_after_sleep_async(name="killed", seconds=3.0))
-        await asyncio.sleep(0.5)
+        server.signal(signal.SIGTERM)
+        assert server.wait(timeout=30.0) is not None
+        assert (state_dir / f"cancelled_{tag}").exists()
+
+    async def test_sigkill_gives_the_worker_no_cancellation(self, spawn, state_dir, tag):
+        """SIGKILL is the control showing SIGTERM is what let the handler run."""
+        server = spawn()
+        await _submit_and_disconnect(server, "demo_block_until_cancelled", {"tag": tag})
 
         server.kill()
         server.wait(timeout=10.0)
-        await asyncio.sleep(3.5)
-        assert not (state_dir / "killed").exists()
-
-    async def test_drain_timeout_cancels_the_call(self, spawn, make_handle, state_dir, tag):
-        """A call still running past the drain window is cancelled, not abandoned silently."""
-        server = spawn(shutdown_drain_seconds=1.0)
-        handle = make_handle(server)
-        await handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
-
-        asyncio.create_task(handle.demo_block_until_cancelled(tag=tag))
-        await asyncio.sleep(0.5)
-
-        server.signal(signal.SIGTERM)
-        assert server.wait(timeout=90.0) is not None
-        assert (state_dir / f"cancelled_{tag}").exists()
+        assert not (state_dir / f"cancelled_{tag}").exists()
 
     async def test_port_is_released_for_the_next_process(self, spawn):
         """A stopped server frees its port for an immediate successor."""

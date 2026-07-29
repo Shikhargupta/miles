@@ -10,7 +10,7 @@ from miles.utils.workers.rpc.server import executor as executor_module
 from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 
 
-class _DrainWorker:
+class _BlockingWorker:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
@@ -37,35 +37,28 @@ class _CancelResistantWorker:
         return "done"
 
 
-def _make_executor(*, worker: object, shutdown_drain_seconds: float) -> RpcCallExecutor:
-    return RpcCallExecutor(
-        worker=worker,
-        specs=collect_rpc_method_specs(type(worker)),
-        shutdown_drain_seconds=shutdown_drain_seconds,
-    )
+def _make_executor(*, worker: object) -> RpcCallExecutor:
+    return RpcCallExecutor(worker=worker, specs=collect_rpc_method_specs(type(worker)))
 
 
 class TestRpcCallExecutorShutdown:
-    async def test_shutdown_drains_in_flight_call(self) -> None:
-        """Shutdown waits for an in-flight call that completes during drain."""
-        worker = _DrainWorker()
-        executor = _make_executor(worker=worker, shutdown_drain_seconds=5.0)
+    async def test_shutdown_cancels_an_in_flight_call(self) -> None:
+        """Shutdown cancels an in-flight call instead of waiting for it."""
+        worker = _BlockingWorker()
+        executor = _make_executor(worker=worker)
         outcomes: list[CallStatusResponse] = []
         executor.start(
-            spec=collect_rpc_method_specs(_DrainWorker)["run"],
+            spec=collect_rpc_method_specs(_BlockingWorker)["run"],
             kwargs={"value": 7},
             call_id="c1",
             finish=lambda **kwargs: outcomes.append(kwargs["outcome"]),
         )
         await asyncio.wait_for(worker.started.wait(), timeout=1.0)
 
-        shutdown = asyncio.create_task(executor.shutdown())
-        await asyncio.sleep(0)
-        assert shutdown.done() is False
-        worker.release.set()
-        await asyncio.wait_for(shutdown, timeout=1.0)
+        await asyncio.wait_for(executor.shutdown(), timeout=1.0)
 
-        assert outcomes == [CallStatusResponse(status="success", result=7)]
+        assert worker.release.is_set() is False
+        assert [outcome.status for outcome in outcomes] == ["failed"]
 
     async def test_shutdown_returns_after_cancel_grace_for_unresponsive_call(
         self,
@@ -75,7 +68,7 @@ class TestRpcCallExecutorShutdown:
         """Shutdown abandons a task that ignores cancellation past its grace."""
         monkeypatch.setattr(executor_module, "_CANCEL_GRACE_SECONDS", 0.01)
         worker = _CancelResistantWorker()
-        executor = _make_executor(worker=worker, shutdown_drain_seconds=0.0)
+        executor = _make_executor(worker=worker)
         outcomes: list[CallStatusResponse] = []
 
         def finish(**kwargs: Any) -> None:

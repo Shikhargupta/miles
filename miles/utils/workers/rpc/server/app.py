@@ -27,8 +27,8 @@ from miles.utils.workers.rpc.server.core import RpcServer
 logger = logging.getLogger(__name__)
 
 
-def create_rpc_app(worker: object, *, shutdown_drain_seconds: float | None = None) -> FastAPI:
-    server = RpcServer(worker=worker, shutdown_drain_seconds=shutdown_drain_seconds)
+def create_rpc_app(worker: object) -> FastAPI:
+    server = RpcServer(worker=worker)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

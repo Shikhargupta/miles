@@ -11,7 +11,6 @@ def build_base_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--worker", required=True, help="Worker factory as 'package.module.callable'")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--shutdown-drain-seconds", type=float, default=None)
     return parser
 
 

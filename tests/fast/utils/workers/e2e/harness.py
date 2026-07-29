@@ -79,7 +79,6 @@ def spawn_server(
     env_var_fn: bool = True,
     extra_env: dict[str, str] | None = None,
     worker_path: str = WORKER_PATH,
-    shutdown_drain_seconds: float | None = None,
 ) -> ServerProcess:
     port = reserve_port() if port is None else port
 
@@ -92,8 +91,6 @@ def spawn_server(
     if env_var_fn:
         argv += ["--env-var-fn", ENV_FN_PATH]
     argv += ["--host", "127.0.0.1", "--port", str(port)]
-    if shutdown_drain_seconds is not None:
-        argv += ["--shutdown-drain-seconds", str(shutdown_drain_seconds)]
     argv += ["--", "--state-dir", str(state_dir)]
     argv += worker_argv or []
 

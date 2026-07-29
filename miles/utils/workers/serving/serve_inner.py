@@ -16,7 +16,7 @@ def main() -> None:
     factory = load_function(args.worker)
     worker = factory(worker_argv)
 
-    app = create_rpc_app(worker, shutdown_drain_seconds=args.shutdown_drain_seconds)
+    app = create_rpc_app(worker)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

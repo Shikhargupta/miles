@@ -19,9 +19,8 @@ _CANCEL_GRACE_SECONDS = 10.0
 
 
 class RpcCallExecutor:
-    def __init__(self, *, worker: object, specs: dict[str, RpcMethodSpec], shutdown_drain_seconds: float) -> None:
+    def __init__(self, *, worker: object, specs: dict[str, RpcMethodSpec]) -> None:
         self._worker = worker
-        self._shutdown_drain_seconds = shutdown_drain_seconds
         self._executors = {
             group: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"rpc-{group}")
             for group in sorted({spec.concurrency_group for spec in specs.values() if not spec.is_async})
@@ -38,18 +37,14 @@ class RpcCallExecutor:
         task.add_done_callback(self._background_tasks.discard)
 
     async def shutdown(self) -> None:
-        log_structured(logger.info, tag="rpc", op="server", phase="shutdown", in_flight=len(self._background_tasks))
-        if self._background_tasks:
-            _, pending = await asyncio.wait(self._background_tasks, timeout=self._shutdown_drain_seconds)
-            if pending:
-                log_structured(
-                    logger.warning, tag="rpc", op="server", phase="drain_timeout", still_running=len(pending)
-                )
-                for task in pending:
-                    task.cancel()
-                _, unresponsive = await asyncio.wait(pending, timeout=_CANCEL_GRACE_SECONDS)
-                for task in unresponsive:
-                    log_structured(logger.error, tag="rpc", op="server", phase="abandoned_call", task=repr(task))
+        pending = set(self._background_tasks)
+        log_structured(logger.info, tag="rpc", op="server", phase="shutdown", in_flight=len(pending))
+        if pending:
+            for task in pending:
+                task.cancel()
+            _, unresponsive = await asyncio.wait(pending, timeout=_CANCEL_GRACE_SECONDS)
+            for task in unresponsive:
+                log_structured(logger.error, tag="rpc", op="server", phase="abandoned_call", task=repr(task))
 
         for executor in self._executors.values():
             executor.shutdown(wait=False, cancel_futures=True)

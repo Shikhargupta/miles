@@ -21,22 +21,13 @@ from miles.utils.workers.rpc.server.store import CallStore, DuplicateCallError
 
 logger = logging.getLogger(__name__)
 
-SHUTDOWN_DRAIN_SECONDS = 60.0
-
-
 class RpcServer:
-    def __init__(self, *, worker: object, shutdown_drain_seconds: float | None) -> None:
+    def __init__(self, *, worker: object) -> None:
         self.boot_uuid = uuid.uuid4().hex
         self._closing = False
         self._specs = collect_rpc_method_specs(type(worker))
         self._store = CallStore()
-        self._executor = RpcCallExecutor(
-            worker=worker,
-            specs=self._specs,
-            shutdown_drain_seconds=(
-                SHUTDOWN_DRAIN_SECONDS if shutdown_drain_seconds is None else shutdown_drain_seconds
-            ),
-        )
+        self._executor = RpcCallExecutor(worker=worker, specs=self._specs)
         log_structured(
             logger.info,
             tag="rpc",

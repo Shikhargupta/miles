@@ -37,7 +37,6 @@ def spawn(state_dir, tmp_path, request) -> Iterator[Callable[..., ServerProcess]
 
     def start(*, wait: bool = True, **kwargs) -> ServerProcess:
         log_path = tmp_path / f"server-{len(started)}.log"
-        kwargs.setdefault("shutdown_drain_seconds", 2.0)
         server = spawn_server(state_dir=state_dir, log_path=log_path, **kwargs)
         started.append(server)
         if wait:
@@ -72,7 +71,7 @@ def shared_server(tmp_path_factory) -> Iterator[ServerProcess]:
     state_dir = directory / "state"
     state_dir.mkdir()
 
-    server = spawn_server(state_dir=state_dir, log_path=directory / "server.log", shutdown_drain_seconds=2.0)
+    server = spawn_server(state_dir=state_dir, log_path=directory / "server.log")
     wait_until_serving(server)
     yield server
 
