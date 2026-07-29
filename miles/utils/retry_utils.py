@@ -54,6 +54,7 @@ async def retry_until_deadline(
     max_delay: float = _DEFAULT_MAX_DELAY,
     backoff_factor: float = _DEFAULT_BACKOFF_FACTOR,
     jitter_ratio: float = _DEFAULT_JITTER_RATIO,
+    log_fields: dict[str, Any] | None = None,
 ) -> _T:
     expires_at = time.monotonic() + total_seconds
     delay = initial_delay
@@ -70,7 +71,7 @@ async def retry_until_deadline(
                 raise
             log_structured(
                 logger.info,
-                op="retry_until_deadline",
+                **{"op": "retry_until_deadline", **(log_fields or {})},
                 phase="attempt_failed",
                 attempt=attempt,
                 sleep_s=round(sleep_seconds, 3),

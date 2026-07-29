@@ -81,31 +81,20 @@ class RpcCall:
                 retry_on=NEVER_REACHED_SERVER_ERRORS,
                 initial_delay=RETRY_INITIAL_DELAY_SECONDS,
                 max_delay=RETRY_MAX_DELAY_SECONDS,
+                log_fields={**self._log_fields, "op": "submit"},
             )
         except RETRYABLE_ERRORS as e:
             log_structured(logger.warning, op="submit", phase="gave_up", **self._log_fields, error=repr(e))
             raise WorkerUnreachableError(f"{self._method_label} submit failed: {e!r}") from e
 
     async def _submit_attempt(self, *, request: SubmitRequest, remaining: float) -> None:
-        try:
-            await self._transport.request(
-                "POST",
-                SUBMIT_PATH.format(method_name=self._spec.name),
-                seconds=remaining,
-                response_model=SubmitResponse,
-                json=request.model_dump(exclude_none=True),
-            )
-        except RETRYABLE_ERRORS as e:
-            log_structured(
-                logger.debug,
-                op="submit",
-                phase="attempt_failed",
-                **self._log_fields,
-                never_reached=isinstance(e, NEVER_REACHED_SERVER_ERRORS),
-                error=repr(e),
-            )
-            raise
-
+        await self._transport.request(
+            "POST",
+            SUBMIT_PATH.format(method_name=self._spec.name),
+            seconds=remaining,
+            response_model=SubmitResponse,
+            json=request.model_dump(exclude_none=True),
+        )
         log_structured(logger.debug, op="submit", phase="accepted", **self._log_fields)
 
     async def _poll_until_done(self) -> CallStatusResponse:
@@ -115,6 +104,7 @@ class RpcCall:
                 total_seconds=self._call_timeout_seconds,
                 retry_on=_CallStillPendingError,
                 initial_delay=0.0,
+                log_fields={**self._log_fields, "op": "poll"},
             )
         except _CallStillPendingError:
             log_structured(
@@ -139,10 +129,8 @@ class RpcCall:
                 params={"timeout": poll_seconds},
             )
         except (TimeoutError, asyncio.TimeoutError) as e:
-            log_structured(logger.debug, op="poll", phase="timeout", **self._log_fields, poll_s=round(poll_seconds, 1))
             raise _CallStillPendingError(f"long poll timed out after {poll_seconds:.1f}s") from e
         except (httpx.TransportError, RetryableResponseError) as e:
-            log_structured(logger.debug, op="poll", phase="attempt_failed", **self._log_fields, error=repr(e))
             await asyncio.sleep(RETRY_INITIAL_DELAY_SECONDS)
             raise _CallStillPendingError(f"poll attempt failed: {e!r}") from e
 

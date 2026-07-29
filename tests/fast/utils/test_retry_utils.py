@@ -401,6 +401,33 @@ class TestRetryUntilDeadline:
             assert "remaining_s=" in record.message
             assert f"error=ValueError('failure-{attempt_number}')" in record.message
 
+    async def test_caller_log_fields_are_merged_into_the_attempt_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Caller-supplied fields land in the retry log and may override the default op."""
+        attempts = 0
+
+        async def attempt(remaining: float) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ValueError("failure")
+            return "done"
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.retry_utils"):
+            await retry_until_deadline(
+                attempt,
+                total_seconds=1.0,
+                retry_on=ValueError,
+                initial_delay=0.0,
+                jitter_ratio=0.0,
+                log_fields={"op": "submit", "call": "c1"},
+            )
+
+        records = [record for record in caplog.records if "phase=attempt_failed" in record.message]
+        assert len(records) == 1
+        assert "op=submit" in records[0].message
+        assert "call=c1" in records[0].message
+        assert "op=retry_until_deadline" not in records[0].message
+
 
 async def _immediately(value):
     return value
