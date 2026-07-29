@@ -41,7 +41,7 @@ class TestRayWorkerHandle:
     def test_rejects_private_attribute_forwarding(self):
         """Underscore attributes are not forwarded to the actor."""
         with pytest.raises(AttributeError):
-            RayWorkerHandle(_FakeActor())._nonexistent
+            _ = RayWorkerHandle(_FakeActor())._nonexistent
 
     async def test_wait_ready_is_a_noop(self):
         """wait_ready returns immediately because a resolvable named actor is already initialized."""
