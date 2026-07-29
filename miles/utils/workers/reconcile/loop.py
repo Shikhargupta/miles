@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from miles.utils.test_utils.clock import Clock, RealClock
@@ -64,7 +64,7 @@ class ReconcileLoop:
 
         self._started = False
         self._stopped = False
-        self._sync_task: asyncio.Task[AsyncIterator[SourceEvent]] | None = None
+        self._sync_task: asyncio.Task[AsyncGenerator[SourceEvent, None]] | None = None
         self._stop_task: asyncio.Task[None] | None = None
         self._tasks: list[asyncio.Task[None]] = []
 

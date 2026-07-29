@@ -1,7 +1,7 @@
 # doc-dev: docs/developer/reconcile-loop.md
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -29,7 +29,7 @@ class CountingPodApi:
 
     def stream_pods(
         self, *, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
-    ) -> AsyncIterator[PodWatchEvent]:
+    ) -> AsyncGenerator[PodWatchEvent, None]:
         self.stream_cursors.append(resource_version)
         return self._inner.stream_pods(
             namespace=namespace,

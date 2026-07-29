@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from kubernetes_asyncio import client as kubernetes_client
@@ -459,7 +459,7 @@ class _GatedPodApi:
 
     def stream_pods(
         self, *, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
-    ) -> AsyncIterator[PodWatchEvent]:
+    ) -> AsyncGenerator[PodWatchEvent, None]:
         return self._gated_stream(
             namespace=namespace,
             label_selector=label_selector,
@@ -469,7 +469,7 @@ class _GatedPodApi:
 
     async def _gated_stream(
         self, *, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
-    ) -> AsyncIterator[PodWatchEvent]:
+    ) -> AsyncGenerator[PodWatchEvent, None]:
         if not self._gate.is_set():
             self.blocked_attempts += 1
             await self._gate.wait()
@@ -493,7 +493,7 @@ async def _write_pods_outside_the_selector(core_v1_api: kubernetes_client.CoreV1
         await core_v1_api.create_namespaced_pod(namespace=namespace, body=body)
 
 
-async def _first_watch_outcome(stream: AsyncIterator[PodWatchEvent]) -> Any:
+async def _first_watch_outcome(stream: AsyncGenerator[PodWatchEvent, None]) -> Any:
     try:
         async for event in stream:
             return event
@@ -511,7 +511,7 @@ def _reads_as_expired(outcome: Any) -> bool:
 
 
 class _StreamCollector:
-    def __init__(self, stream: AsyncIterator[PodWatchEvent]) -> None:
+    def __init__(self, stream: AsyncGenerator[PodWatchEvent, None]) -> None:
         self.events: list[PodWatchEvent] = []
         self._stream = stream
         self._task = asyncio.create_task(self._run())

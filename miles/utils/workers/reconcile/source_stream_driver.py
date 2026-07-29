@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 
 from miles.utils.test_utils.clock import Clock
 from miles.utils.workers.reconcile.object_store import ObjectStore
@@ -27,12 +27,12 @@ class SourceStreamDriver:
         self._on_affected = on_affected
         self._retry_delay = retry_delay
         self._clock = clock
-        self._stream: AsyncIterator[SourceEvent] | None = None
+        self._stream: AsyncGenerator[SourceEvent, None] | None = None
 
-    async def open_synced_stream(self) -> AsyncIterator[SourceEvent]:
+    async def open_synced_stream(self) -> AsyncGenerator[SourceEvent, None]:
         while True:
             self._store.reset_segment()
-            stream: AsyncIterator[SourceEvent] | None = None
+            stream: AsyncGenerator[SourceEvent, None] | None = None
             try:
                 stream = self._source()
                 await self._consume_until_synced(stream)
@@ -46,7 +46,7 @@ class SourceStreamDriver:
                 await _aclose(stream)
                 await self._clock.sleep(self._retry_delay)
 
-    async def run(self, stream: AsyncIterator[SourceEvent]) -> None:
+    async def run(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
         while True:
             try:
                 async for event in stream:
@@ -67,7 +67,7 @@ class SourceStreamDriver:
         await _aclose(self._stream)
         self._stream = None
 
-    async def _consume_until_synced(self, stream: AsyncIterator[SourceEvent]) -> None:
+    async def _consume_until_synced(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
         first = True
         async for event in stream:
             if first and not isinstance(event, SyncStart):
@@ -83,11 +83,10 @@ class SourceStreamDriver:
         return update.synced
 
 
-async def _aclose(stream: AsyncIterator[SourceEvent] | None) -> None:
-    aclose = getattr(stream, "aclose", None)
-    if aclose is None:
+async def _aclose(stream: AsyncGenerator[SourceEvent, None] | None) -> None:
+    if stream is None:
         return
     try:
-        await aclose()
+        await stream.aclose()
     except Exception:
         logger.error("SourceStreamDriver failed to close a source stream", exc_info=True)

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,7 +17,6 @@ from miles.utils.workers.reconcile.k8s_api import (
     EVENT_TYPE_MODIFIED,
     KubernetesPodApi,
     PodWatchEvent,
-    close_quietly,
 )
 from miles.utils.workers.reconcile.source_event import Delete, SourceEvent, SyncDone, SyncStart, Upsert
 
@@ -47,7 +47,7 @@ class KubernetesReflector:
         self._retry_delay = retry_delay
         self._clock = clock or RealClock()
 
-    async def watch(self) -> AsyncIterator[SourceEvent]:
+    async def watch(self) -> AsyncGenerator[SourceEvent, None]:
         cursor = _WatchCursor()
         while True:
             try:
@@ -64,7 +64,7 @@ class KubernetesReflector:
                     logger.error("KubernetesReflector stream failed, retrying", exc_info=True)
                 await self._clock.sleep(self._retry_delay)
 
-    async def _watch_once(self, cursor: _WatchCursor) -> AsyncIterator[SourceEvent]:
+    async def _watch_once(self, cursor: _WatchCursor) -> AsyncGenerator[SourceEvent, None]:
         if cursor.resource_version is None:
             page = await self._kube_client.list_pods(namespace=self._namespace, label_selector=self._label_selector)
             upserts = [Upsert(key=_pod_key(pod), obj=pod) for pod in page.pods]
@@ -74,13 +74,14 @@ class KubernetesReflector:
             yield SyncDone()
             cursor.resource_version = page.resource_version
 
-        stream = self._kube_client.stream_pods(
-            namespace=self._namespace,
-            label_selector=self._label_selector,
-            resource_version=cursor.resource_version,
-            timeout_seconds=self._watch_timeout_seconds,
-        )
-        try:
+        async with aclosing(
+            self._kube_client.stream_pods(
+                namespace=self._namespace,
+                label_selector=self._label_selector,
+                resource_version=cursor.resource_version,
+                timeout_seconds=self._watch_timeout_seconds,
+            )
+        ) as stream:
             async for raw_event in stream:
                 if raw_event.type == EVENT_TYPE_ERROR:
                     if not _is_cursor_invalid(raw_event.obj):
@@ -93,8 +94,6 @@ class KubernetesReflector:
                 cursor.resource_version = _resource_version_of(raw_event.obj) or cursor.resource_version
                 if event is not None:
                     yield event
-        finally:
-            await close_quietly(getattr(stream, "aclose", _noop)())
 
 
 @dataclass
@@ -121,10 +120,6 @@ def _pod_key_or_none(obj: Any) -> str | None:
     except Exception:
         logger.error(f"KubernetesReflector skipping a watch event whose key cannot be read {obj=}", exc_info=True)
         return None
-
-
-async def _noop() -> None:
-    return None
 
 
 def _pod_key(pod: Any) -> str:

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any, Protocol
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -31,7 +31,7 @@ class KubernetesPodApi(Protocol):
 
     def stream_pods(
         self, *, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
-    ) -> AsyncIterator[PodWatchEvent]: ...
+    ) -> AsyncGenerator[PodWatchEvent, None]: ...
 
 
 class KubernetesAsyncioPodApi:
@@ -44,7 +44,7 @@ class KubernetesAsyncioPodApi:
 
     async def stream_pods(
         self, *, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
-    ) -> AsyncIterator[PodWatchEvent]:
+    ) -> AsyncGenerator[PodWatchEvent, None]:
         from kubernetes_asyncio import watch as kubernetes_watch
 
         watcher = kubernetes_watch.Watch()
@@ -59,10 +59,10 @@ class KubernetesAsyncioPodApi:
             ):
                 yield PodWatchEvent(type=event["type"], obj=event["object"])
         finally:
-            await close_quietly(watcher.close())
+            await _close_quietly(watcher.close())
 
 
-async def close_quietly(closing: Any) -> None:
+async def _close_quietly(closing: Any) -> None:
     try:
         await closing
     except Exception:

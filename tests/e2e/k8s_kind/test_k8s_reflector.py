@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from kubernetes_asyncio import client as kubernetes_client
@@ -214,7 +214,7 @@ class TestWatchProtocolAgainstACluster:
         assert _resource_version_of(bookmarks[0].obj) is not None, f"the cursor would not advance {bookmarks[0]=}"
 
 
-async def _collect_bookmarks(stream: AsyncIterator[PodWatchEvent], bookmarks: list[PodWatchEvent]) -> None:
+async def _collect_bookmarks(stream: AsyncGenerator[PodWatchEvent, None], bookmarks: list[PodWatchEvent]) -> None:
     async for event in stream:
         if event.type == "BOOKMARK":
             bookmarks.append(event)

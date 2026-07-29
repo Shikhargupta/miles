@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
 
-from miles.utils.workers.reconcile.k8s_api import PodListPage
+from miles.utils.workers.reconcile.k8s_api import PodListPage, PodWatchEvent
 from miles.utils.workers.reconcile.source_event import SourceEvent
 
 
@@ -32,7 +32,7 @@ class FakeSource:
         self._fail_calls = fail_calls
         self._queues: list[asyncio.Queue[Any]] = []
 
-    def __call__(self) -> AsyncIterator[SourceEvent]:
+    def __call__(self) -> AsyncGenerator[SourceEvent, None]:
         self.open_count += 1
         if self.open_count <= self._fail_calls:
             raise RuntimeError("fake source factory failure")
@@ -40,7 +40,7 @@ class FakeSource:
         self._queues.append(queue)
         return self._iterate(queue, fail=self.open_count <= self._fail_opens)
 
-    async def _iterate(self, queue: asyncio.Queue[Any], *, fail: bool) -> AsyncIterator[SourceEvent]:
+    async def _iterate(self, queue: asyncio.Queue[Any], *, fail: bool) -> AsyncGenerator[SourceEvent, None]:
         try:
             if fail:
                 raise RuntimeError("fake source open failure")
@@ -68,7 +68,7 @@ class KeyRecorder:
 
 
 class EventCollector:
-    def __init__(self, stream: AsyncIterator[SourceEvent]) -> None:
+    def __init__(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
         self.events: list[SourceEvent] = []
         self.error: BaseException | None = None
         self._stream = stream
@@ -86,9 +86,7 @@ class EventCollector:
     async def close(self) -> None:
         self._task.cancel()
         await asyncio.gather(self._task, return_exceptions=True)
-        aclose = getattr(self._stream, "aclose", None)
-        if aclose is not None:
-            await aclose()
+        await self._stream.aclose()
         assert self.error is None, f"stream failed with {self.error=}"
 
 
@@ -127,7 +125,7 @@ class FakePodApi:
 
     async def stream_pods(
         self, *, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncGenerator[PodWatchEvent, None]:
         self.stream_calls.append(
             dict(
                 namespace=namespace,

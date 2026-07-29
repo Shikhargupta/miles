@@ -1,7 +1,7 @@
 # doc-dev: docs/developer/reconcile-loop.md
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,4 +30,4 @@ class SyncDone:
 
 SourceEvent = Upsert | Delete | SyncStart | SyncDone
 
-SourceWatchFn = Callable[[], AsyncIterator[SourceEvent]]
+SourceWatchFn = Callable[[], AsyncGenerator[SourceEvent, None]]
