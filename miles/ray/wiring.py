@@ -10,7 +10,8 @@ from miles.ray.specs.trainer import (
     TRAINER_RAY_NUM_CPUS_PER_WORKER,
     TRAINER_RAY_NUM_GPUS_PER_WORKER,
 )
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, SpecPlacement
+from miles.utils.workers.ray_worker_manager.manager import RayWorkerManager
+from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
 from miles.utils.workers.worker_spec import BaseWorkerSpec, ServeWorkerSpec
 
 _WORKER_MANAGER_ACTOR_NAME = "miles_ray_worker_manager"

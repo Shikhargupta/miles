@@ -2,7 +2,7 @@ import pytest
 import ray
 
 from miles.ray.train.worker_source import ManagerTrainWorkerSource
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.ray_worker_manager.manager import RayWorkerManager
 from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
 
 _DUMMY_WORKER_CLASS = "tests.fast.utils.workers.manager_dummy_worker.DummyServeWorker"

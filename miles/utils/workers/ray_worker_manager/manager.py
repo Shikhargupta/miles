@@ -2,50 +2,23 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
 import ray
-from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.misc import NodeProbeMixin, load_function
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
+from miles.utils.workers.ray_worker_manager.ports import _NodePortCursors
+from miles.utils.workers.ray_worker_manager.state import _CellState, _WorkerState
 from miles.utils.workers.worker_provider.ray import RayWorkerInfo
 from miles.utils.workers.worker_spec import BaseWorkerSpec, CommandWorkerSpec, ServeWorkerSpec
 
 logger = logging.getLogger(__name__)
 
-_DYNAMIC_PORT_START = 15000
 _ACTOR_GONE_TIMEOUT_SECONDS = 30.0
-
-
-@dataclass(frozen=True)
-class SpecPlacement:
-    placement_group: PlacementGroup
-    bundle_indices: list[int]
-    num_gpus_per_worker: float | None = None
-    num_cpus_per_worker: float | None = None
-    concurrency_groups: dict[str, int] | None = None
-
-
-@dataclass
-class _CellState:
-    spec: BaseWorkerSpec
-    cell_id: str
-    cell_index: int
-    generation: int
-
-
-@dataclass
-class _WorkerState:
-    name: str
-    cell: _CellState
-    actor: ray.actor.ActorHandle
-    node_ip: str = ""
-    owned_ports: dict[str, int] = field(default_factory=dict)
-    url: str | None = None
 
 
 class RayWorkerManager:
@@ -275,19 +248,6 @@ class RayWorkerManager:
         for worker in workers:
             command = spec.launch_command.format(**addr_port_kwargs_by_worker[worker.name])
             worker.actor.run.remote(cmd=command, envs=env_vars)
-
-
-class _NodePortCursors:
-    def __init__(self) -> None:
-        self._cursors: dict[str, int] = {}
-        self._lock = asyncio.Lock()
-
-    async def allocate(self, *, actor: ray.actor.ActorHandle, node_ip: str, count: int) -> int:
-        async with self._lock:
-            start_port = self._cursors.get(node_ip, _DYNAMIC_PORT_START)
-            first_port = await actor._get_free_port_block.remote(start_port=start_port, count=count)
-            self._cursors[node_ip] = first_port + count
-            return first_port
 
 
 def _validate_specs(*, worker_specs: list[BaseWorkerSpec], placements: dict[str, SpecPlacement]) -> None:

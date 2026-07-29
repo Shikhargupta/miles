@@ -12,7 +12,7 @@ import ray
 from miles.ray.rollout.rollout_server import build_server_cells
 from miles.ray.specs.inference import InferenceDeployment, compute_inference_deployments
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.ray_worker_manager.manager import RayWorkerManager
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 _MOCK_ENGINE_CLASS = "miles.utils.test_utils.mock_sglang_engine.MockSGLangEngine"
