@@ -91,14 +91,13 @@ class ReconcileLoop:
         self._queue.shutdown()
         self._retry.shutdown()
 
-        tasks = [*self._tasks, *self._retry.pending_timers()]
+        tasks = [*self._tasks, *self._retry.take_timers()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
         await self._driver.aclose()
         self._tasks = []
-        self._retry.drop_timers()
 
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)

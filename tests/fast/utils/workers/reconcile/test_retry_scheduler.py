@@ -96,5 +96,5 @@ class TestShutdown:
         scheduler.shutdown()
         scheduler.note_failure("cell-a")
 
-        assert scheduler.pending_timers() == []
+        assert scheduler.take_timers() == []
         assert clock.pending_count == 0
