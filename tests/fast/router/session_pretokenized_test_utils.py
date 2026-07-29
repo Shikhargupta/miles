@@ -7,6 +7,7 @@ from typing import Any
 import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import MismatchType, apply_chat_template, get_tito_tokenizer
@@ -45,15 +46,14 @@ def make_router_env(
     tito_model: str,
     allowed_append_roles: list[str],
 ):
-    args = SimpleNamespace(
-        miles_router_timeout=30,
+    config = make_session_server_config(
+        backend_url=backend.url,
         hf_checkpoint=hf_checkpoint,
         chat_template_path=chat_template_path,
         tito_model=tito_model,
         tito_allowed_append_roles=allowed_append_roles,
-        use_rollout_routing_replay=False,
     )
-    session_server = SessionServer(args, backend_url=backend.url)
+    session_server = SessionServer(config)
 
     port = find_available_port(31000)
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
