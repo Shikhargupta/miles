@@ -368,7 +368,7 @@ class TestRetryUntilDeadline:
         with pytest.raises(ValueError, match="still down"):
             await retry_until_deadline(attempt, total_seconds=0.1, retry_on=ValueError, initial_delay=0.02)
 
-    async def test_failed_attempts_emit_structured_debug_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_failed_attempts_emit_structured_info_logs(self, caplog: pytest.LogCaptureFixture) -> None:
         """Each failed attempt emits its structured retry diagnostics."""
         attempts = 0
 
@@ -379,7 +379,7 @@ class TestRetryUntilDeadline:
                 raise ValueError(f"failure-{attempts}")
             return "done"
 
-        with caplog.at_level(logging.DEBUG, logger="miles.utils.retry_utils"):
+        with caplog.at_level(logging.INFO, logger="miles.utils.retry_utils"):
             result = await retry_until_deadline(
                 attempt,
                 total_seconds=1.0,

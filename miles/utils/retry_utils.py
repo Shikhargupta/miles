@@ -69,7 +69,7 @@ async def retry_until_deadline(
                 logger.warning(f"retry_until_deadline: giving up after {total_seconds:.1f}s", exc_info=True)
                 raise
             log_structured(
-                logger.debug,
+                logger.info,
                 op="retry_until_deadline",
                 phase="attempt_failed",
                 attempt=attempt,
