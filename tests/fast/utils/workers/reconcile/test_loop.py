@@ -1084,34 +1084,6 @@ class TestStop:
         assert clock.pending_count == 0
         assert source.closed_count == 1
 
-    async def test_a_second_stop_waits_for_the_first_to_finish(self):
-        """stop() is a completion barrier for every caller, not just the first."""
-        source = FakeSource()
-        unwind = asyncio.Event()
-
-        async def reconcile(key: str) -> None:
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                await unwind.wait()
-                raise
-
-        loop = ReconcileLoop(source=source, reconcile=reconcile, key_map=pod_cell, clock=FakeClock())
-        start_task = asyncio.create_task(loop.start())
-        await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
-        await settle()
-        await start_task
-
-        first = asyncio.create_task(loop.stop())
-        second = asyncio.create_task(loop.stop())
-        await settle()
-        assert not first.done()
-        assert not second.done()
-
-        unwind.set()
-        await asyncio.gather(first, second)
-
     async def test_stop_closes_the_source_stream(self):
         """The open stream is closed even if the source task never got to run."""
         loop, source, _, _ = await make_loop(initial=[make_pod("pod-0")])
@@ -1120,11 +1092,12 @@ class TestStop:
         await loop.stop()
         assert source.closed_count == 1
 
-    async def test_stop_is_idempotent(self):
-        """stop() can be called repeatedly."""
+    async def test_a_second_stop_is_rejected(self):
+        """stop() runs exactly once; a second call is a caller error, not a wait."""
         loop, _, _, _ = await make_loop(initial=[])
         await loop.stop()
-        await loop.stop()
+        with pytest.raises(AssertionError):
+            await loop.stop()
 
     async def test_stop_cancels_pending_backoff_retries(self):
         """Pending retry timers do not survive stop()."""
@@ -1137,13 +1110,14 @@ class TestStop:
         await settle()
         assert recorder.keys == []
 
-    async def test_stop_without_start_is_safe(self):
-        """stop() on a never-started loop is a no-op."""
+    async def test_stop_before_start_is_rejected(self):
+        """stop() has nothing to wait for before start(); calling it early is a caller error."""
         loop = ReconcileLoop(source=FakeSource(), reconcile=Recorder(), clock=FakeClock())
-        await loop.stop()
+        with pytest.raises(AssertionError):
+            await loop.stop()
 
-    async def test_stop_unblocks_a_start_still_waiting_for_the_initial_sync(self):
-        """stop() releases start() even if the source never finishes its LIST."""
+    async def test_cancelling_start_aborts_the_initial_sync(self):
+        """A start() hung on the initial LIST is aborted by cancelling its task, which closes the source."""
         source = FakeSource()
         recorder = Recorder()
         loop = ReconcileLoop(source=source, reconcile=recorder, key_map=pod_cell, clock=FakeClock())
@@ -1151,22 +1125,12 @@ class TestStop:
         await settle()
         assert not start_task.done()
 
-        await loop.stop()
+        start_task.cancel()
+        await asyncio.gather(start_task, return_exceptions=True)
         await settle()
-        assert start_task.done()
-        await start_task
 
+        assert start_task.cancelled()
+        assert source.closed_count == 1
         source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
         await settle()
-        assert recorder.keys == []
-
-    async def test_start_after_stop_does_not_start_anything(self):
-        """A loop stopped before it ever started stays stopped."""
-        source = FakeSource()
-        recorder = Recorder()
-        loop = ReconcileLoop(source=source, reconcile=recorder, key_map=pod_cell, clock=FakeClock())
-        await loop.stop()
-        await loop.start()
-
-        assert source.open_count == 0
         assert recorder.keys == []

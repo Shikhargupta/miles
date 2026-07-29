@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from miles.utils.test_utils.clock import Clock, RealClock
 from miles.utils.workers.reconcile.object_store import KeyMapFn, ObjectStore
 from miles.utils.workers.reconcile.retry_scheduler import RetryScheduler
-from miles.utils.workers.reconcile.source_event import ParentKey, SourceEvent, SourceWatchFn
+from miles.utils.workers.reconcile.source_event import ParentKey, SourceWatchFn
 from miles.utils.workers.reconcile.source_stream_driver import SourceStreamDriver
 from miles.utils.workers.reconcile.work_queue import WorkQueue
 
@@ -63,42 +63,35 @@ class ReconcileLoop:
         )
 
         self._start_called = False
-        self._stop_requested = False
-        self._sync_task: asyncio.Task[AsyncGenerator[SourceEvent, None]] | None = None
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
         assert not self._start_called, "ReconcileLoop.start() must be called exactly once"
         self._start_called = True
-        if self._stop_requested:
-            return
 
-        self._sync_task = asyncio.create_task(self._driver.open_synced_stream())
+        sync_task = asyncio.create_task(self._driver.open_synced_stream())
         try:
-            stream = await self._sync_task
+            stream = await sync_task
         except asyncio.CancelledError:
-            self._sync_task.cancel()
-            if self._stop_requested:
-                return
+            sync_task.cancel()
+            await asyncio.gather(sync_task, return_exceptions=True)
             raise
-        if self._stop_requested:
-            return
 
         self._tasks = [asyncio.create_task(self._worker_loop()), asyncio.create_task(self._driver.run(stream))]
         if self._resync_period is not None:
             self._tasks.append(asyncio.create_task(self._resync_loop()))
 
     async def stop(self) -> None:
+        assert self._tasks, "ReconcileLoop.stop() must come after start(); abort a hung start() by cancelling its task"
         assert asyncio.current_task() not in self._tasks, (
             "ReconcileLoop.stop() waits for the worker, so it cannot be awaited from inside reconcile; "
             "call asyncio.create_task(loop.stop()) instead"
         )
 
-        self._stop_requested = True
         self._queue.shutdown()
         self._retry.shutdown()
 
-        tasks = [task for task in (*self._tasks, *self._retry.pending_timers(), self._sync_task) if task is not None]
+        tasks = [*self._tasks, *self._retry.pending_timers()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -106,7 +99,6 @@ class ReconcileLoop:
         await self._driver.aclose()
         self._tasks = []
         self._retry.drop_timers()
-        self._sync_task = None
 
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)
