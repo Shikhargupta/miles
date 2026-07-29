@@ -10,7 +10,7 @@ from tests.fast.ray.rollout.conftest import make_args, make_sample
 
 
 def _load_length_reward_module():
-    path = Path(__file__).resolve().parents[3] / "examples" / "search-r1" / "length_reward.py"
+    path = Path(__file__).resolve().parents[3] / "examples" / "experimental" / "search-r1" / "length_reward.py"
     spec = importlib.util.spec_from_file_location("search_r1_length_reward", path)
     assert spec is not None
     assert spec.loader is not None
