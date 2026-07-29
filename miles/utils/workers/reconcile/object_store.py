@@ -93,12 +93,12 @@ class ObjectStore:
         parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in listed.items()}
         mapped = {key: obj for key, obj in listed.items() if parents[key] is not None}
 
-        affected: set[str] = set()
+        affected: set[ParentKey] = set()
         for key, obj in mapped.items():
-            affected |= self._apply_upsert(key=key, obj=obj, parent=parents[key])
+            affected |= self._apply_upsert(key=key, obj=obj, parent=parents[key]).affected
         for key in [key for key in self._cache if key not in mapped]:
-            affected |= self._apply_delete(key=key, last_obj=None)
-        return affected
+            affected |= self._apply_delete(key=key, last_obj=None).affected
+        return StoreUpdate(affected=affected)
 
     def _apply_upsert(self, *, key: ObjectKey, obj: Any, parent: ParentKey) -> StoreUpdate:
         previous = self._cache.get(key)
