@@ -6,30 +6,38 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from miles.utils.workers.reconcile.source_event import Delete, SourceEvent, SyncDone, SyncStart, Upsert
+from miles.utils.workers.reconcile.source_event import (
+    Delete,
+    ObjectKey,
+    ParentKey,
+    SourceEvent,
+    SyncDone,
+    SyncStart,
+    Upsert,
+)
 
 logger = logging.getLogger(__name__)
 
-KeyMapFn = Callable[[Any], str]
+KeyMapFn = Callable[[Any], ParentKey]
 
 
 @dataclass(frozen=True)
 class _CachedObject:
     obj: Any
-    parent: str
+    parent: ParentKey
 
 
 @dataclass(frozen=True)
 class StoreUpdate:
-    affected: set[str]
+    affected: set[ParentKey]
     synced: bool = False
 
 
 class ObjectStore:
     def __init__(self, *, key_map: KeyMapFn | None) -> None:
         self._key_map = key_map
-        self._cache: dict[str, _CachedObject] = {}
-        self._open_segment: dict[str, Any] | None = None
+        self._cache: dict[ObjectKey, _CachedObject] = {}
+        self._open_segment: dict[ObjectKey, Any] | None = None
         self._handler_of_event: dict[type[SourceEvent], Callable[[Any], StoreUpdate]] = {
             SyncStart: self._handle_sync_start,
             Upsert: self._handle_upsert,
@@ -37,13 +45,13 @@ class ObjectStore:
             SyncDone: self._handle_sync_done,
         }
 
-    def get_by_parent(self, parent_key: str) -> list[Any]:
+    def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return [self._cache[key].obj for key in sorted(self._cache) if self._cache[key].parent == parent_key]
 
-    def parent_keys(self) -> set[str]:
+    def parent_keys(self) -> set[ParentKey]:
         return {entry.parent for entry in self._cache.values()}
 
-    def __contains__(self, key: str) -> bool:
+    def __contains__(self, key: ObjectKey) -> bool:
         return key in self._cache
 
     def reset_segment(self) -> None:
@@ -82,7 +90,7 @@ class ObjectStore:
         self._open_segment = None
         return StoreUpdate(affected=affected, synced=True)
 
-    def _replace(self, listed: dict[str, Any]) -> set[str]:
+    def _replace(self, listed: dict[ObjectKey, Any]) -> set[ParentKey]:
         parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in listed.items()}
         mapped = {key: obj for key, obj in listed.items() if parents[key] is not None}
 
@@ -93,12 +101,12 @@ class ObjectStore:
             affected |= self._apply_delete(key=key, last_obj=None)
         return affected
 
-    def _apply_upsert(self, *, key: str, obj: Any, parent: str) -> set[str]:
+    def _apply_upsert(self, *, key: ObjectKey, obj: Any, parent: ParentKey) -> set[ParentKey]:
         previous = self._cache.get(key)
         self._cache[key] = _CachedObject(obj=obj, parent=parent)
         return {parent} if previous is None else {parent, previous.parent}
 
-    def _apply_delete(self, *, key: str, last_obj: Any) -> set[str]:
+    def _apply_delete(self, *, key: ObjectKey, last_obj: Any) -> set[ParentKey]:
         removed = self._cache.pop(key, None)
         parent = removed.parent if removed is not None else None
         if parent is None:
@@ -110,7 +118,7 @@ class ObjectStore:
                 return set()
         return {parent}
 
-    def _parent_key_or_none(self, *, key: str, obj: Any) -> str | None:
+    def _parent_key_or_none(self, *, key: ObjectKey, obj: Any) -> ParentKey | None:
         try:
             return key if self._key_map is None else self._key_map(obj)
         except Exception:

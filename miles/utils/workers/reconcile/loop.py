@@ -9,13 +9,13 @@ from typing import Any
 from miles.utils.test_utils.clock import Clock, RealClock
 from miles.utils.workers.reconcile.object_store import KeyMapFn, ObjectStore
 from miles.utils.workers.reconcile.retry_scheduler import RetryScheduler
-from miles.utils.workers.reconcile.source_event import SourceEvent, SourceWatchFn
+from miles.utils.workers.reconcile.source_event import ParentKey, SourceEvent, SourceWatchFn
 from miles.utils.workers.reconcile.source_stream_driver import SourceStreamDriver
 from miles.utils.workers.reconcile.work_queue import WorkQueue
 
 logger = logging.getLogger(__name__)
 
-ReconcileFn = Callable[[str], Awaitable[None]]
+ReconcileFn = Callable[[ParentKey], Awaitable[None]]
 
 
 class ReconcileLoop:
@@ -117,10 +117,10 @@ class ReconcileLoop:
             self._retry.drop_timers()
             self._sync_task = None
 
-    def get_by_parent(self, parent_key: str) -> list[Any]:
+    def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)
 
-    def _enqueue_all(self, keys: set[str]) -> None:
+    def _enqueue_all(self, keys: set[ParentKey]) -> None:
         for key in sorted(keys):
             self._queue.add(key)
 

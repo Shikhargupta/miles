@@ -6,15 +6,19 @@ from dataclasses import dataclass
 from typing import Any
 
 
+ObjectKey = str
+ParentKey = str
+
+
 @dataclass(frozen=True)
 class Upsert:
-    key: str
+    key: ObjectKey
     obj: Any
 
 
 @dataclass(frozen=True)
 class Delete:
-    key: str
+    key: ObjectKey
     last_obj: Any
 
 

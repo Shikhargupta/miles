@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Callable
 
 from miles.utils.test_utils.clock import Clock
 from miles.utils.workers.reconcile.object_store import ObjectStore
-from miles.utils.workers.reconcile.source_event import SourceEvent, SourceWatchFn, SyncStart
+from miles.utils.workers.reconcile.source_event import ParentKey, SourceEvent, SourceWatchFn, SyncStart
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class SourceStreamDriver:
         *,
         source: SourceWatchFn,
         store: ObjectStore,
-        on_affected: Callable[[set[str]], None],
+        on_affected: Callable[[set[ParentKey]], None],
         retry_delay: float,
         clock: Clock,
     ) -> None:
