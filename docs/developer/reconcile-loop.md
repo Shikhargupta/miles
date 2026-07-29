@@ -53,6 +53,7 @@ What `KubernetesReflector` requires of a pod API, so a fake can replace the clus
 - `list_pods` returns `PodListPage(pods, resource_version)`; `stream_pods` yields `PodWatchEvent(type, obj)`.
 - The payload stays `Any`: a `V1Pod` for object frames, a status for `ERROR` frames, and possibly malformed — one unreadable frame must not stop the watch.
 - `type` is a plain `str`, not an enum: an unknown event type is logged and skipped, never a validation failure.
+- A filtered watch reports a pod leaving the selector as `DELETED` and reentry as `ADDED`, so losing a label is indistinguishable from a deletion — and must be, since both mean the pod left its cell.
 
 ## Decisions per module
 
@@ -144,10 +145,6 @@ A fake encodes what we *believe* a dependency does, so it can never catch a wron
 | Real apiserver, no kubelet | `tests/e2e/k8s_apiserver/` | API semantics: cursors, watch timeouts, real 410, relist |
 | kind cluster | `tests/e2e/k8s_kind/` | What only a kubelet produces: Running, restarts, graceful deletion, bookmarks |
 
-- Each environment directory proves itself with a `test_environment.py` touching no Miles code, so environments land ahead of the loop.
-- Both self-provision from a Docker daemon: `pytest tests/e2e/k8s_apiserver tests/e2e/k8s_kind` runs etcd and the apiserver as containers and downloads a pinned kind binary on demand.
-- The real suites drive a recording reconcile, not a no-op: real events must wake the right cell, an untouched cell must never be woken, and reconcile must already see the object its event announced.
-- Label edits are watch-protocol behavior: a filtered watch reports leaving the selector as `DELETED` and reentry as `ADDED`.
-- Cursor expiry needs a second apiserver with `--watch-cache=false`; with the cache on, an old `resourceVersion` is still served after compaction.
-- The missed-deletion test holds the reconnect shut while a pod is deleted and etcd is compacted past the event, so only a synthesizing relist can pass it.
-- `MILES_K8S_KEEP=1` leaves the environment up, `MILES_K8S_KUBECONFIG=<path>` reuses a cluster, `MILES_K8S_REQUIRE=1` (default in CI) turns missing Docker into a failure.
+- Each environment directory imports no Miles code, so it can be verified before anything uses it.
+- `pytest tests/e2e/k8s_apiserver tests/e2e/k8s_kind` self-provisions from a Docker daemon: etcd and the apiserver as containers, a pinned kind binary on demand. `MILES_K8S_KEEP=1` leaves the environment up, `MILES_K8S_KUBECONFIG=<path>` reuses a cluster, `MILES_K8S_REQUIRE=1` (default in CI) turns missing Docker into a failure.
+- Cursor expiry needs a second apiserver with `--watch-cache=false`: with the cache on, an old `resourceVersion` is still served after etcd is compacted, so nothing can invalidate a live cursor.
