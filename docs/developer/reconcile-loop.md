@@ -31,7 +31,9 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 - **`RetryScheduler` absorbed both retry pieces** — ours is latest-wins, not a `readyAt` heap, so splitting yields Go names over non-Go semantics.
 - **`SourceEvent` has no Go counterpart** — Go pushes into a `Store` by method call. A generator gives teardown and cancellation for free, and lets any non-Kubernetes source be an ordinary generator.
 
-## Contracts
+## The source contract
+
+What `ReconcileLoop` requires and every source — `KubernetesReflector.watch`, or any other async generator — must provide. Defined in `source_event.py`.
 
 ```python
 SourceEvent = Upsert(key, obj) | Delete(key, last_obj) | SyncStart() | SyncDone()
@@ -44,7 +46,13 @@ SourceWatchFn = Callable[[], AsyncIterator[SourceEvent]]
 - The reflector opens a segment whenever the server rejects its cursor — 410 `Expired`, or a resourceVersion it deems too large.
 - `Delete.last_obj` is the tombstone; an event with no attributable parent is dropped.
 
-`k8s_api.py` returns `PodListPage(pods, resource_version)` and `PodWatchEvent(type, obj)`. The payload stays `Any`: it is a `V1Pod` for object frames and a status for `ERROR` frames.
+## The Kubernetes contract
+
+What `KubernetesReflector` requires of a pod API, so a fake can replace the cluster. Defined in `k8s_api.py` as the `KubernetesPodApi` protocol.
+
+- `list_pods` returns `PodListPage(pods, resource_version)`; `stream_pods` yields `PodWatchEvent(type, obj)`.
+- The payload stays `Any`: a `V1Pod` for object frames, a status for `ERROR` frames, and possibly malformed — one unreadable frame must not stop the watch.
+- `type` is a plain `str`, not an enum: an unknown event type is logged and skipped, never a validation failure.
 
 ## Decisions per module
 
