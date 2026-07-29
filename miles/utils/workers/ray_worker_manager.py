@@ -74,9 +74,9 @@ class RayWorkerManager:
         for spec in worker_specs:
             placement = placements.get(spec.name)
             num_workers = spec.scheduling.num_cells * spec.scheduling.num_workers_per_cell
-            assert placement is None or len(placement.bundle_indices) == num_workers, (
-                f"{spec.name=} needs one bundle per worker: {num_workers=} vs {len(placement.bundle_indices)=}"
-            )
+            assert (
+                placement is None or len(placement.bundle_indices) == num_workers
+            ), f"{spec.name=} needs one bundle per worker: {num_workers=} vs {len(placement.bundle_indices)=}"
 
         cells = []
         for spec in worker_specs:
@@ -182,7 +182,9 @@ class RayWorkerManager:
         for worker in workers:
             for port_info in cell.spec.port_infos:
                 owner = master if port_info.mode == "master" else worker
-                worker.addr_ports[port_info.name] = _AddrPort(addr=owner.node_ip, port=owner.owned_ports[port_info.name])
+                worker.addr_ports[port_info.name] = _AddrPort(
+                    addr=owner.node_ip, port=owner.owned_ports[port_info.name]
+                )
 
         if isinstance(cell.spec, ServeWorkerSpec):
             if cell.spec.port_infos:
