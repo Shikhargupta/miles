@@ -11,7 +11,6 @@ from tests.e2e.k8s_apiserver.reflector_utils import pod_names_of, running_reconc
 from tests.e2e.k8s_apiserver.utils import BUSYBOX_IMAGE, CELL_LABEL, pod_body, wait_until
 
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi, PodWatchEvent
-from miles.utils.workers.reconcile.k8s_reflector import _resource_version_of
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 
 register_cpu_ci(est_time=660, suite="stage-b-cpu", labels=[])
@@ -187,7 +186,7 @@ class TestWatchProtocolAgainstACluster:
     async def test_a_bookmark_carries_a_resource_version_the_cursor_can_advance_to(
         self, cluster_core_v1: kubernetes_client.CoreV1Api, cluster_namespace: str
     ) -> None:
-        """A real BOOKMARK frame is shaped so that `_resource_version_of` can read it."""
+        """A real BOOKMARK frame carries a resourceVersion the pod API can read off it."""
         api = KubernetesAsyncioPodApi(core_v1_api=cluster_core_v1)
         listed = await api.list_pods(namespace=cluster_namespace, label_selector=CELL_LABEL)
 
@@ -211,7 +210,7 @@ class TestWatchProtocolAgainstACluster:
             await asyncio.gather(collector, return_exceptions=True)
             await stream.aclose()
 
-        assert _resource_version_of(bookmarks[0].obj) is not None, f"the cursor would not advance {bookmarks[0]=}"
+        assert bookmarks[0].resource_version is not None, f"the cursor would not advance {bookmarks[0]=}"
 
 
 async def _collect_bookmarks(stream: AsyncGenerator[PodWatchEvent, None], bookmarks: list[PodWatchEvent]) -> None:

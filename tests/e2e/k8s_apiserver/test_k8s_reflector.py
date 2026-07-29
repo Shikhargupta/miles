@@ -11,8 +11,12 @@ from tests.e2e.k8s_apiserver.apiserver import ApiserverEnvironment, compact_etcd
 from tests.e2e.k8s_apiserver.reflector_utils import CountingPodApi, pod_names_of, running_reconcile_loop
 from tests.e2e.k8s_apiserver.utils import CELL_LABEL, pod_body, wait_until, wait_until_serving
 
-from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi, KubernetesPodApi, PodWatchEvent
-from miles.utils.workers.reconcile.k8s_reflector import _is_cursor_invalid
+from miles.utils.workers.reconcile.k8s_api import (
+    KubernetesAsyncioPodApi,
+    KubernetesPodApi,
+    PodWatchEvent,
+    exception_rejects_cursor,
+)
 
 register_cpu_ci(est_time=600, suite="stage-b-cpu", labels=[])
 
@@ -506,8 +510,8 @@ async def _first_watch_outcome(stream: AsyncGenerator[PodWatchEvent, None]) -> A
 
 def _reads_as_expired(outcome: Any) -> bool:
     if isinstance(outcome, BaseException):
-        return _is_cursor_invalid(outcome)
-    return isinstance(outcome, PodWatchEvent) and outcome.type == "ERROR" and _is_cursor_invalid(outcome.obj)
+        return exception_rejects_cursor(outcome)
+    return isinstance(outcome, PodWatchEvent) and outcome.rejects_cursor
 
 
 class _StreamCollector:

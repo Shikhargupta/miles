@@ -27,7 +27,7 @@ from miles.utils.workers.reconcile.source_event import Delete, SyncDone, SyncSta
 
 
 def raw_event(event_type: str, obj: Any) -> PodWatchEvent:
-    return PodWatchEvent(type=event_type, obj=obj)
+    return PodWatchEvent.from_frame(event_type=event_type, obj=obj)
 
 
 def make_status(*, code: int, reason: str = "Expired") -> SimpleNamespace:
@@ -702,7 +702,7 @@ class TestKubernetesAsyncioPodApi:
         ):
             events.append(event)
 
-        assert events == [PodWatchEvent(type="ADDED", obj="pod")]
+        assert events == [PodWatchEvent.from_frame(event_type="ADDED", obj="pod")]
         assert state["func"] is list_namespaced_pod
         assert state["kwargs"] == dict(
             namespace="ns",

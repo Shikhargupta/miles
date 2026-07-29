@@ -9,6 +9,9 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
 
+_CURSOR_REJECTED_CODES = (410, 504)
+_CURSOR_REJECTED_REASONS = ("Expired", "ResourceVersionTooLarge")
+
 EVENT_TYPE_ADDED = "ADDED"
 EVENT_TYPE_MODIFIED = "MODIFIED"
 EVENT_TYPE_DELETED = "DELETED"
@@ -24,6 +27,17 @@ class PodListPage(FrozenStrictBaseModel):
 class PodWatchEvent(FrozenStrictBaseModel):
     type: str
     obj: Any
+    resource_version: str | None
+    rejects_cursor: bool
+
+    @classmethod
+    def from_frame(cls, *, event_type: str, obj: Any) -> PodWatchEvent:
+        return cls(
+            type=event_type,
+            obj=obj,
+            resource_version=_read_resource_version(obj),
+            rejects_cursor=event_type == EVENT_TYPE_ERROR and _status_rejects_cursor(obj),
+        )
 
 
 class KubernetesPodApi(Protocol):
@@ -57,7 +71,7 @@ class KubernetesAsyncioPodApi:
                 timeout_seconds=timeout_seconds,
                 allow_watch_bookmarks=True,
             ):
-                yield PodWatchEvent(type=event["type"], obj=event["object"])
+                yield PodWatchEvent.from_frame(event_type=event["type"], obj=event["object"])
         finally:
             await _close_quietly(watcher.close())
 
@@ -67,3 +81,30 @@ async def _close_quietly(closing: Any) -> None:
         await closing
     except Exception:
         logger.error("failed to close a Kubernetes watch stream", exc_info=True)
+
+
+def exception_rejects_cursor(exception: BaseException) -> bool:
+    status = getattr(exception, "status", None)
+    if status in _CURSOR_REJECTED_CODES or status in {str(code) for code in _CURSOR_REJECTED_CODES}:
+        return True
+    return getattr(exception, "code", None) in _CURSOR_REJECTED_CODES
+
+
+def _read_resource_version(obj: Any) -> str | None:
+    if isinstance(obj, dict):
+        metadata = obj.get("metadata")
+        if not isinstance(metadata, dict):
+            return None
+        return metadata.get("resourceVersion") or metadata.get("resource_version")
+    metadata = getattr(obj, "metadata", None)
+    if metadata is None:
+        return None
+    return getattr(metadata, "resource_version", None)
+
+
+def _status_rejects_cursor(obj: Any) -> bool:
+    if isinstance(obj, dict):
+        return obj.get("code") in _CURSOR_REJECTED_CODES or obj.get("reason") in _CURSOR_REJECTED_REASONS
+    return getattr(obj, "code", None) in _CURSOR_REJECTED_CODES or (
+        getattr(obj, "reason", None) in _CURSOR_REJECTED_REASONS
+    )

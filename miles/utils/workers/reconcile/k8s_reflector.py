@@ -17,13 +17,11 @@ from miles.utils.workers.reconcile.k8s_api import (
     EVENT_TYPE_MODIFIED,
     KubernetesPodApi,
     PodWatchEvent,
+    exception_rejects_cursor,
 )
 from miles.utils.workers.reconcile.source_event import Delete, SourceEvent, SyncDone, SyncStart, Upsert
 
 logger = logging.getLogger(__name__)
-
-_CURSOR_INVALID_STATUS_CODES = (410, 504)
-_CURSOR_INVALID_REASONS = ("Expired", "ResourceVersionTooLarge")
 
 
 class KubernetesReflector:
@@ -57,7 +55,7 @@ class KubernetesReflector:
             except asyncio.CancelledError:
                 raise
             except Exception as exception:
-                if _is_cursor_invalid(exception):
+                if exception_rejects_cursor(exception):
                     logger.warning(f"KubernetesReflector cursor is no longer usable, relisting {cursor=}")
                     cursor.resource_version = None
                 else:
@@ -84,14 +82,14 @@ class KubernetesReflector:
         ) as stream:
             async for raw_event in stream:
                 if raw_event.type == EVENT_TYPE_ERROR:
-                    if not _is_cursor_invalid(raw_event.obj):
+                    if not raw_event.rejects_cursor:
                         raise RuntimeError(f"KubernetesReflector received error event {raw_event=}")
                     logger.warning(f"KubernetesReflector received a cursor error event, relisting {raw_event=}")
                     cursor.resource_version = None
                     return
 
                 event = _to_source_event(raw_event)
-                cursor.resource_version = _resource_version_of(raw_event.obj) or cursor.resource_version
+                cursor.resource_version = raw_event.resource_version or cursor.resource_version
                 if event is not None:
                     yield event
 
@@ -124,26 +122,3 @@ def _pod_key_or_none(obj: Any) -> str | None:
 
 def _pod_key(pod: Any) -> str:
     return pod.metadata.name
-
-
-def _resource_version_of(obj: Any) -> str | None:
-    if isinstance(obj, dict):
-        metadata = obj.get("metadata")
-        if not isinstance(metadata, dict):
-            return None
-        return metadata.get("resourceVersion") or metadata.get("resource_version")
-    metadata = getattr(obj, "metadata", None)
-    if metadata is None:
-        return None
-    return getattr(metadata, "resource_version", None)
-
-
-def _is_cursor_invalid(candidate: Any) -> bool:
-    if isinstance(candidate, dict):
-        return (
-            candidate.get("code") in _CURSOR_INVALID_STATUS_CODES or candidate.get("reason") in _CURSOR_INVALID_REASONS
-        )
-    status = getattr(candidate, "status", None)
-    if status in _CURSOR_INVALID_STATUS_CODES or status in {str(code) for code in _CURSOR_INVALID_STATUS_CODES}:
-        return True
-    return getattr(candidate, "code", None) in _CURSOR_INVALID_STATUS_CODES
