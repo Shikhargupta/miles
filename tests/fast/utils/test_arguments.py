@@ -12,7 +12,7 @@ from miles.utils.arguments import (
     get_miles_extra_args_provider,
     miles_validate_args,
 )
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
