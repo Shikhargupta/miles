@@ -15,7 +15,6 @@ from miles.utils.workers.reconcile.k8s_api import (
     EVENT_TYPE_ERROR,
     EVENT_TYPE_MODIFIED,
     KubernetesPodApi,
-    PodListPage,
     PodWatchEvent,
     close_quietly,
 )
@@ -67,7 +66,9 @@ class KubernetesReflector:
 
     async def _watch_once(self, cursor: _WatchCursor) -> AsyncIterator[SourceEvent]:
         if cursor.resource_version is None:
-            page = await self._list()
+            page = await self._kube_client.list_pods(
+                namespace=self._namespace, label_selector=self._label_selector
+            )
             upserts = [Upsert(key=_pod_key(pod), obj=pod) for pod in page.pods]
             yield SyncStart()
             for upsert in upserts:
@@ -96,9 +97,6 @@ class KubernetesReflector:
                     yield event
         finally:
             await close_quietly(getattr(stream, "aclose", _noop)())
-
-    async def _list(self) -> PodListPage:
-        return await self._kube_client.list_pods(namespace=self._namespace, label_selector=self._label_selector)
 
 
 @dataclass
