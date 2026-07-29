@@ -62,16 +62,16 @@ class ReconcileLoop:
             clock=self._clock,
         )
 
-        self._started = False
-        self._stopped = False
+        self._start_called = False
+        self._stop_requested = False
         self._sync_task: asyncio.Task[AsyncGenerator[SourceEvent, None]] | None = None
         self._stop_task: asyncio.Task[None] | None = None
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
-        assert not self._started, "ReconcileLoop.start() must be called exactly once"
-        self._started = True
-        if self._stopped:
+        assert not self._start_called, "ReconcileLoop.start() must be called exactly once"
+        self._start_called = True
+        if self._stop_requested:
             return
 
         self._sync_task = asyncio.create_task(self._driver.open_synced_stream())
@@ -79,10 +79,10 @@ class ReconcileLoop:
             stream = await self._sync_task
         except asyncio.CancelledError:
             self._sync_task.cancel()
-            if self._stopped:
+            if self._stop_requested:
                 return
             raise
-        if self._stopped:
+        if self._stop_requested:
             return
 
         self._tasks = [asyncio.create_task(self._worker_loop()), asyncio.create_task(self._driver.run(stream))]
@@ -95,7 +95,7 @@ class ReconcileLoop:
             "call asyncio.create_task(loop.stop()) instead"
         )
 
-        self._stopped = True
+        self._stop_requested = True
         self._queue.shutdown()
         self._retry.shutdown()
         if self._stop_task is None:
