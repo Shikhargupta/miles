@@ -122,6 +122,141 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
             time.sleep(2)
 
 
+# --- Router worker lifecycle (observable-boundary registration/removal) ---
+#
+# The SGLang Router queues worker registration and removal: a 202 Accepted means
+# the background job was accepted, not that the worker is active or absent yet.
+# We therefore treat the POST/DELETE as the START of an operation and poll the
+# router registry until the worker is observably present (register) or absent
+# (remove), rather than returning on the acceptance response. This is the
+# publication boundary issue #1724 needs: a recovered engine must not look
+# routable before it truly is.
+#
+# Version handling mirrors the two router identity schemes:
+#   - URL API   (miles router, or sglang-router <= 0.2.1): worker identified by URL,
+#     registered via POST /add_worker?url=..., removed via POST /remove_worker?url=...
+#   - registry API (sglang-router >= 0.2.x): POST /workers, DELETE /workers/{id|url},
+#     and GET /workers exposes the observable registry we poll.
+
+_ROUTER_POLL_INTERVAL_S = 0.5
+_ROUTER_OPERATION_TIMEOUT_S = 120.0
+_ROUTER_REQUEST_TIMEOUT_S = 30.0
+
+
+def _router_uses_url_api(args) -> bool:
+    """True when the router identifies workers by URL (miles router or sglang-router <= 0.2.1)."""
+    return parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router
+
+
+def _router_registry_supports_listing(args) -> bool:
+    """True when GET /workers exposes an observable registry to poll against."""
+    return not _router_uses_url_api(args)
+
+
+def _router_list_workers(router_base: str) -> list[dict]:
+    """Return the router's current worker registry (registry-API routers only)."""
+    response = requests.get(f"{router_base}/workers", timeout=_ROUTER_REQUEST_TIMEOUT_S)
+    response.raise_for_status()
+    return response.json()["workers"]
+
+
+def _poll_until(predicate, *, deadline: float, description: str) -> bool:
+    """Poll ``predicate()`` until it returns True or ``deadline`` (monotonic s) passes.
+
+    Returns whether the predicate became True. Never raises on timeout — the caller
+    decides whether an unconfirmed operation is fatal.
+    """
+    while True:
+        if predicate():
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Router did not confirm %s before the %.0fs deadline", description, _ROUTER_OPERATION_TIMEOUT_S
+            )
+            return False
+        time.sleep(min(_ROUTER_POLL_INTERVAL_S, remaining))
+
+
+def _router_worker_is_registered(router_base: str, worker_url: str) -> bool:
+    return any(worker.get("url") == worker_url for worker in _router_list_workers(router_base))
+
+
+def _register_worker_with_router(
+    *,
+    router_base: str,
+    worker_url: str,
+    worker_type: str,
+    bootstrap_port: int | None,
+    args,
+) -> None:
+    """Register a worker and block until it is observable in the router, not just accepted.
+
+    Treats the acceptance response as the start of the operation: on registry-API
+    routers we poll GET /workers until ``worker_url`` appears (reconciling a lost or
+    ambiguous acceptance response without re-POSTing, which would duplicate the job).
+    A definitive 4xx rejection (excluding 408/429) fails fast; other statuses raise.
+    """
+    if _router_uses_url_api(args):
+        assert worker_type == "regular", "pd disaggregation is not supported in old router or miles router."
+        response = requests.post(f"{router_base}/add_worker?url={worker_url}", timeout=_ROUTER_REQUEST_TIMEOUT_S)
+    else:
+        payload = {"url": worker_url, "worker_type": worker_type}
+        if worker_type == "prefill":
+            payload["bootstrap_port"] = bootstrap_port
+        response = requests.post(f"{router_base}/workers", json=payload, timeout=_ROUTER_REQUEST_TIMEOUT_S)
+
+    if 400 <= response.status_code < 500 and response.status_code not in {408, 429}:
+        raise RuntimeError(f"Router rejected worker registration for {worker_url} (status {response.status_code})")
+    response.raise_for_status()
+
+    # URL-API routers register synchronously and expose no registry to poll; the
+    # raised-for-status response above is the only available boundary.
+    if not _router_registry_supports_listing(args):
+        return
+
+    deadline = time.monotonic() + _ROUTER_OPERATION_TIMEOUT_S
+    if not _poll_until(
+        lambda: _router_worker_is_registered(router_base, worker_url),
+        deadline=deadline,
+        description=f"registration of worker {worker_url}",
+    ):
+        raise TimeoutError(f"Worker {worker_url} was accepted but never became observable in the router")
+
+
+def _remove_worker_from_router(*, router_base: str, worker_url: str, args) -> None:
+    """Remove a worker and block until it is observably absent from the router.
+
+    Reconciles the >= 0.3.0 UUID scheme by resolving the worker's id from the
+    registry, then polls until the worker URL is gone so a recovered engine cannot
+    be re-registered against a stale entry.
+    """
+    if _router_uses_url_api(args):
+        response = requests.post(f"{router_base}/remove_worker?url={worker_url}", timeout=_ROUTER_REQUEST_TIMEOUT_S)
+        response.raise_for_status()
+        return
+
+    if parse(sglang_router.__version__) < parse("0.3.0"):
+        response = requests.delete(
+            f"{router_base}/workers/{quote(worker_url, safe='')}", timeout=_ROUTER_REQUEST_TIMEOUT_S
+        )
+        response.raise_for_status()
+    else:
+        worker_id = next((w["id"] for w in _router_list_workers(router_base) if w["url"] == worker_url), None)
+        if worker_id is None:
+            logger.warning("Worker %s not found in router during removal; treating as already absent.", worker_url)
+            return
+        response = requests.delete(f"{router_base}/workers/{worker_id}", timeout=_ROUTER_REQUEST_TIMEOUT_S)
+        response.raise_for_status()
+
+    deadline = time.monotonic() + _ROUTER_OPERATION_TIMEOUT_S
+    _poll_until(
+        lambda: not _router_worker_is_registered(router_base, worker_url),
+        deadline=deadline,
+        description=f"removal of worker {worker_url}",
+    )
+
+
 class SGLangEngine(RayActor):
     def __init__(
         self,
@@ -248,25 +383,13 @@ class SGLangEngine(RayActor):
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
-                assert (
-                    self.worker_type == "regular"
-                ), "pd disaggregation is not supported in old router or miles router."
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
-                )
-            else:
-                payload = {
-                    "url": f"http://{self.server_host}:{self.server_port}",
-                    "worker_type": self.worker_type,
-                }
-                if self.worker_type == "prefill":
-                    payload["bootstrap_port"] = server_args_dict["disaggregation_bootstrap_port"]
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/workers",
-                    json=payload,
-                )
-            response.raise_for_status()
+            _register_worker_with_router(
+                router_base=f"http://{self.router_ip}:{self.router_port}",
+                worker_url=f"http://{self.server_host}:{self.server_port}",
+                worker_type=self.worker_type,
+                bootstrap_port=server_args_dict.get("disaggregation_bootstrap_port"),
+                args=self.args,
+            )
 
     def _make_request(self, endpoint: str, payload: dict | None = None):
         """Make a POST request to the specified endpoint with the given payload.
@@ -456,32 +579,15 @@ class SGLangEngine(RayActor):
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
-            worker_url = f"http://{self.server_host}:{self.server_port}"
-            response = None
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}"
+            try:
+                _remove_worker_from_router(
+                    router_base=f"http://{self.router_ip}:{self.router_port}",
+                    worker_url=f"http://{self.server_host}:{self.server_port}",
+                    args=self.args,
                 )
-            elif parse(sglang_router.__version__) < parse("0.3.0"):
-                worker_url = quote(worker_url, safe="")
-                response = requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}")
-            else:
-                try:
-                    all_workers = requests.get(f"http://{self.router_ip}:{self.router_port}/workers").json()["workers"]
-                    for worker in all_workers:
-                        if worker["url"] == worker_url:
-                            worker_id = worker["id"]
-                            response = requests.delete(
-                                f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}"
-                            )
-                            break
-                    else:
-                        logger.warning(f"Worker {worker_url} not found in router during shutdown.")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch workers list or remove worker: {e}")
-
-            if response is not None:
-                response.raise_for_status()
+            except Exception as e:
+                # Shutdown must still reap the process even if the router is unreachable.
+                logger.warning(f"Failed to remove worker from router during shutdown: {e}")
         kill_process_tree(self.process.pid)
 
     def get_weight_version(self):
