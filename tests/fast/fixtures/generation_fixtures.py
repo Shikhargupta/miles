@@ -6,11 +6,12 @@ import uuid
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from tests.fast.fixtures.session_fixtures import make_session_server_config
+
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -233,16 +234,16 @@ def with_session_server(
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = uuid.uuid4().hex
     args.session_server_instance_ids = {port: instance_id}
-    server_args = SimpleNamespace(
-        miles_router_timeout=30,
+    config = make_session_server_config(
+        backend_url=backend_url,
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
         tito_allowed_append_roles=args.tito_allowed_append_roles,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
-        session_server_instance_id=instance_id,
+        instance_id=instance_id,
     )
-    session_server = SessionServer(server_args, backend_url=backend_url)
+    session_server = SessionServer(config)
 
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     server.start()
