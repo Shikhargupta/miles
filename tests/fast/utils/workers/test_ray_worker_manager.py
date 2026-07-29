@@ -1,6 +1,6 @@
 import itertools
-import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,39 +16,28 @@ _unique_counter = itertools.count()
 
 
 @pytest.fixture(scope="module", autouse=True)
-def ray_env():
-    if ray.is_initialized():
-        yield
-        return
-
-    init_kwargs: dict = {"ignore_reinit_error": True}
-    if "RAY_ADDRESS" not in os.environ:
-        init_kwargs["address"] = "local"
-        init_kwargs["num_cpus"] = 16
-        init_kwargs["num_gpus"] = 0
-    ray.init(**init_kwargs)
+def _ray_cluster(ray_local_mode):
     yield
-    ray.shutdown()
 
 
 def _unique_name(prefix: str) -> str:
     return f"{prefix}-{next(_unique_counter)}"
 
 
-def _make_serve_spec(name: str, **overrides) -> ServeWorkerSpec:
-    kwargs = dict(
-        name=name,
-        port_infos=[
-            PortInfo(name="http", static_port=18123, mode="per_worker", allow_dynamic=False),
+def _make_serve_spec(name: str, *, port_infos: list[PortInfo] | None = None) -> ServeWorkerSpec:
+    if port_infos is None:
+        port_infos = [
+            PortInfo(name="http", static_port=18123, mode="per_worker", allow_dynamic=False, url_scheme="http"),
             PortInfo(name="rendezvous", static_port=0, mode="master", allow_dynamic=True),
-        ],
+        ]
+    return ServeWorkerSpec(
+        name=name,
+        port_infos=port_infos,
         env_var=lambda: {"MANAGER_DUMMY_ENV": "42"},
-        scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=2, num_gpus_per_worker=0),
+        scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=2, num_gpus_per_worker=0, num_cpus_per_worker=0.1),
         worker_class=_DUMMY_WORKER_CLASS,
         ctor_kwargs=lambda: {"tag": "hello"},
     )
-    kwargs.update(overrides)
-    return ServeWorkerSpec(**kwargs)
 
 
 async def _make_manager(worker_specs) -> "ray.actor.ActorHandle":
@@ -57,7 +46,7 @@ async def _make_manager(worker_specs) -> "ray.actor.ActorHandle":
     return manager
 
 
-def _wait_until(condition, *, message: str) -> None:
+def _wait_until(condition: Callable[[], bool], *, message: str) -> None:
     deadline = time.monotonic() + _WAIT_TIMEOUT_SECONDS
     while not condition():
         assert time.monotonic() < deadline, f"timed out waiting for: {message}"
@@ -108,10 +97,24 @@ class TestInit:
             )
         ray.kill(manager)
 
+    async def test_rejects_multiple_url_ports(self):
+        """A spec declaring two url ports is rejected."""
+        spec_name = _unique_name("serve")
+        port_infos = [
+            PortInfo(name="http", static_port=18123, mode="per_worker", allow_dynamic=False, url_scheme="http"),
+            PortInfo(name="grpc", static_port=18124, mode="per_worker", allow_dynamic=False, url_scheme="grpc"),
+        ]
+        manager = ray.remote(RayWorkerManager).options(name=_unique_name("test-manager"), num_cpus=1).remote()
+        with pytest.raises(ray.exceptions.RayTaskError):
+            await manager.init.remote(
+                worker_specs=[_make_serve_spec(spec_name, port_infos=port_infos)], placements={}
+            )
+        ray.kill(manager)
+
 
 class TestGetWorkerInfos:
     async def test_reports_names_cells_generation_and_urls(self):
-        """Worker infos expose stable names, cell ids, generation 0, and the http url."""
+        """Worker infos expose stable names, cell ids, generation 0, and the declared url port's url."""
         spec_name = _unique_name("serve")
         manager = await _make_manager([_make_serve_spec(spec_name)])
 
@@ -120,7 +123,18 @@ class TestGetWorkerInfos:
         assert [info.name for info in infos] == [f"{spec_name}-{c}-{w}" for c in range(2) for w in range(2)]
         assert [info.cell_id for info in infos] == [f"{spec_name}-{c}" for c in range(2) for w in range(2)]
         assert all(info.generation == 0 for info in infos)
-        assert all(info.url and info.url.endswith(":18123") for info in infos)
+        assert all(info.url and info.url.startswith("http://") and info.url.endswith(":18123") for info in infos)
+        ray.kill(manager)
+
+    async def test_url_is_none_without_a_declared_url_port(self):
+        """A spec whose ports declare no url scheme yields url-less workers."""
+        spec_name = _unique_name("serve")
+        port_infos = [PortInfo(name="http", static_port=18123, mode="per_worker", allow_dynamic=False)]
+        manager = await _make_manager([_make_serve_spec(spec_name, port_infos=port_infos)])
+
+        infos = await manager.get_worker_infos.remote(spec_name=spec_name)
+
+        assert all(info.url is None for info in infos)
         ray.kill(manager)
 
     async def test_filters_by_spec_name(self):
@@ -181,7 +195,9 @@ class TestCommandSpec:
             name=spec_name,
             port_infos=[PortInfo(name="http", static_port=19001, mode="per_worker", allow_dynamic=False)],
             env_var=lambda: {"MANAGER_DUMMY_ENV": "cmd-env"},
-            scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=2, num_gpus_per_worker=0),
+            scheduling=SchedulingSpec(
+                num_cells=1, num_workers_per_cell=2, num_gpus_per_worker=0, num_cpus_per_worker=0.1
+            ),
             launch_command=f"echo port={{http_port}} env=$MANAGER_DUMMY_ENV > {tmp_path}/out-$$.txt",
         )
         manager = await _make_manager([spec])

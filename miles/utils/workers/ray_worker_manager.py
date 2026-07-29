@@ -1,21 +1,21 @@
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import Any
 
 import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.utils.misc import get_current_node_ip, get_free_port, load_function
+from miles.utils.misc import load_function
 from miles.utils.workers.command_actor import CommandActor
+from miles.utils.workers.node_probe import NodeProbeMixin
 from miles.utils.workers.worker_provider.ray import RayWorkerInfo
 from miles.utils.workers.worker_spec import BaseWorkerSpec, CommandWorkerSpec, ServeWorkerSpec
 
 logger = logging.getLogger(__name__)
-
-RAY_WORKER_MANAGER_ACTOR_NAME = "miles_ray_worker_manager"
 
 _DYNAMIC_PORT_START = 15000
 _ACTOR_GONE_TIMEOUT_SECONDS = 30.0
@@ -27,77 +27,47 @@ class SpecPlacement:
     bundle_indices: list[int]
 
 
-class _AddrPort(NamedTuple):
-    addr: str
-    port: int
-
-
 @dataclass
 class _CellState:
     spec: BaseWorkerSpec
-    placement: SpecPlacement | None
     cell_id: str
     cell_index: int
     generation: int
-    alive: bool
 
 
 @dataclass
 class _WorkerState:
     name: str
     cell: _CellState
-    worker_index: int
     actor: ray.actor.ActorHandle
     node_ip: str = ""
     owned_ports: dict[str, int] = field(default_factory=dict)
-    addr_ports: dict[str, _AddrPort] = field(default_factory=dict)
-
-    @property
-    def url(self) -> str | None:
-        addr_port = self.addr_ports.get("http")
-        if addr_port is None:
-            return None
-        return f"http://{addr_port.addr}:{addr_port.port}"
+    url: str | None = None
 
 
 class RayWorkerManager:
     def __init__(self) -> None:
+        self._placements: dict[str, SpecPlacement] = {}
         self._cells: dict[str, _CellState] = {}
         self._workers: dict[str, _WorkerState] = {}
-        self._port_cursors: dict[str, int] = {}
+        self._serve_actor_classes: dict[str, Any] = {}
+        self._port_cursors = _NodePortCursors()
 
     async def init(self, *, worker_specs: list[BaseWorkerSpec], placements: dict[str, SpecPlacement]) -> None:
         assert not self._cells, "RayWorkerManager.init() must be called exactly once"
-        spec_names = [spec.name for spec in worker_specs]
-        assert len(spec_names) == len(set(spec_names)), f"{spec_names=} must be unique"
-        assert set(placements) <= set(spec_names), f"{sorted(placements)=} must be a subset of {spec_names=}"
-        for spec in worker_specs:
-            placement = placements.get(spec.name)
-            num_workers = spec.scheduling.num_cells * spec.scheduling.num_workers_per_cell
-            assert (
-                placement is None or len(placement.bundle_indices) == num_workers
-            ), f"{spec.name=} needs one bundle per worker: {num_workers=} vs {len(placement.bundle_indices)=}"
+        _validate_specs(worker_specs=worker_specs, placements=placements)
+        self._placements = dict(placements)
 
         cells = []
         for spec in worker_specs:
             for cell_index in range(spec.scheduling.num_cells):
                 cell = _CellState(
-                    spec=spec,
-                    placement=placements.get(spec.name),
-                    cell_id=f"{spec.name}-{cell_index}",
-                    cell_index=cell_index,
-                    generation=0,
-                    alive=True,
+                    spec=spec, cell_id=f"{spec.name}-{cell_index}", cell_index=cell_index, generation=0
                 )
                 self._cells[cell.cell_id] = cell
                 cells.append(cell)
 
-        workers_by_cell_id = {cell.cell_id: self._launch_cell_actors(cell) for cell in cells}
-        for cell in cells:
-            await self._collect_cell_ports(workers=workers_by_cell_id[cell.cell_id])
-        await asyncio.gather(
-            *[self._activate_cell(cell=cell, workers=workers_by_cell_id[cell.cell_id]) for cell in cells]
-        )
+        await self._bring_up_cells(cells)
 
     async def get_worker_infos(self, *, spec_name: str) -> list[RayWorkerInfo]:
         return [
@@ -108,133 +78,210 @@ class RayWorkerManager:
 
     async def start_cell(self, cell_id: str) -> None:
         cell = self._cells[cell_id]
-        assert not cell.alive, f"{cell_id=} must be stopped before starting"
+        assert not self._cell_is_alive(cell), f"{cell_id=} must be stopped before starting"
         cell.generation += 1
-        cell.alive = True
 
-        workers = self._launch_cell_actors(cell)
-        await self._collect_cell_ports(workers=workers)
-        await self._activate_cell(cell=cell, workers=workers)
+        await self._bring_up_cells([cell])
 
     async def stop_cell(self, cell_id: str) -> None:
         cell = self._cells[cell_id]
-        assert cell.alive, f"{cell_id=} must be alive before stopping"
-        cell.alive = False
+        assert self._cell_is_alive(cell), f"{cell_id=} must be alive before stopping"
 
         workers = [worker for worker in self._workers.values() if worker.cell is cell]
         for worker in workers:
             ray.kill(worker.actor, no_restart=True)
             del self._workers[worker.name]
-        await asyncio.gather(*[_wait_actor_gone(worker.name) for worker in workers])
+        await _wait_actors_gone([worker.name for worker in workers])
 
-    def _launch_cell_actors(self, cell: _CellState) -> list[_WorkerState]:
+    def _cell_is_alive(self, cell: _CellState) -> bool:
+        return any(worker.cell is cell for worker in self._workers.values())
+
+    async def _bring_up_cells(self, cells: list[_CellState]) -> None:
+        env_vars_by_cell_id = {cell.cell_id: cell.spec.env_var() for cell in cells}
+        workers_by_cell_id = {
+            cell.cell_id: self._launch_cell_actors(cell=cell, env_vars=env_vars_by_cell_id[cell.cell_id])
+            for cell in cells
+        }
+        all_workers = [worker for workers in workers_by_cell_id.values() for worker in workers]
+
+        node_ips = await asyncio.gather(*[worker.actor._get_node_ip.remote() for worker in all_workers])
+        for worker, node_ip in zip(all_workers, node_ips):
+            worker.node_ip = node_ip
+        await asyncio.gather(
+            *[
+                self._collect_worker_ports(worker=worker, is_master=worker is workers[0])
+                for workers in workers_by_cell_id.values()
+                for worker in workers
+            ]
+        )
+
+        await asyncio.gather(
+            *[
+                self._activate_cell(workers=workers, env_vars=env_vars_by_cell_id[cell_id])
+                for cell_id, workers in workers_by_cell_id.items()
+            ]
+        )
+
+    def _launch_cell_actors(self, *, cell: _CellState, env_vars: dict[str, str]) -> list[_WorkerState]:
         workers = []
         for worker_index in range(cell.spec.scheduling.num_workers_per_cell):
             name = f"{cell.cell_id}-{worker_index}"
-            actor = self._launch_actor(cell=cell, worker_index=worker_index, name=name)
-            worker = _WorkerState(name=name, cell=cell, worker_index=worker_index, actor=actor)
+            actor = self._launch_actor(cell=cell, worker_index=worker_index, name=name, env_vars=env_vars)
+            worker = _WorkerState(name=name, cell=cell, actor=actor)
             self._workers[name] = worker
             workers.append(worker)
         return workers
 
-    def _launch_actor(self, *, cell: _CellState, worker_index: int, name: str) -> ray.actor.ActorHandle:
+    def _launch_actor(
+        self, *, cell: _CellState, worker_index: int, name: str, env_vars: dict[str, str]
+    ) -> ray.actor.ActorHandle:
         spec = cell.spec
-        num_gpus = spec.scheduling.num_gpus_per_worker
-        options: dict = dict(name=name, num_cpus=num_gpus or 1, num_gpus=num_gpus, max_restarts=0)
-        if cell.placement is not None:
-            flat_index = cell.cell_index * spec.scheduling.num_workers_per_cell + worker_index
-            options["scheduling_strategy"] = PlacementGroupSchedulingStrategy(
-                placement_group=cell.placement.placement_group,
-                placement_group_bundle_index=cell.placement.bundle_indices[flat_index],
+        scheduling = spec.scheduling
+
+        scheduling_strategy: PlacementGroupSchedulingStrategy | None = None
+        placement = self._placements.get(spec.name)
+        if placement is not None:
+            flat_index = cell.cell_index * scheduling.num_workers_per_cell + worker_index
+            scheduling_strategy = PlacementGroupSchedulingStrategy(
+                placement_group=placement.placement_group,
+                placement_group_bundle_index=placement.bundle_indices[flat_index],
             )
 
         if isinstance(spec, ServeWorkerSpec):
-            options["runtime_env"] = {"env_vars": spec.env_var()}
-            wrapped_cls = _make_wrapped_worker_cls(load_function(spec.worker_class))
-            return ray.remote(wrapped_cls).options(**options).remote(ctor_kwargs_fn=spec.ctor_kwargs)
+            return (
+                self._serve_actor_class(spec)
+                .options(
+                    name=name,
+                    num_cpus=scheduling.num_cpus_per_worker,
+                    num_gpus=scheduling.num_gpus_per_worker,
+                    max_restarts=0,
+                    scheduling_strategy=scheduling_strategy,
+                    runtime_env={"env_vars": env_vars},
+                )
+                .remote(ctor_kwargs_fn=spec.ctor_kwargs)
+            )
 
         assert isinstance(spec, CommandWorkerSpec), f"unsupported worker spec type: {type(spec)=}"
-        return ray.remote(CommandActor).options(**options).remote()
+        return (
+            ray.remote(CommandActor)
+            .options(
+                name=name,
+                num_cpus=scheduling.num_cpus_per_worker,
+                num_gpus=scheduling.num_gpus_per_worker,
+                max_restarts=0,
+                scheduling_strategy=scheduling_strategy,
+            )
+            .remote()
+        )
 
-    async def _collect_cell_ports(self, *, workers: list[_WorkerState]) -> None:
-        for worker in workers:
-            worker.node_ip = await worker.actor._get_node_ip.remote()
+    def _serve_actor_class(self, spec: ServeWorkerSpec) -> Any:
+        if spec.name not in self._serve_actor_classes:
+            wrapped_cls = _make_wrapped_worker_cls(load_function(spec.worker_class))
+            self._serve_actor_classes[spec.name] = ray.remote(wrapped_cls)
+        return self._serve_actor_classes[spec.name]
 
-            owned_port_infos = [
-                p for p in worker.cell.spec.port_infos if p.mode == "per_worker" or worker.worker_index == 0
-            ]
-            dynamic_port_infos = [p for p in owned_port_infos if p.allow_dynamic]
-            if dynamic_port_infos:
-                start_port = self._port_cursors.get(worker.node_ip, _DYNAMIC_PORT_START)
-                first_port = await worker.actor._get_free_consecutive_ports.remote(
-                    start_port=start_port, consecutive=len(dynamic_port_infos)
-                )
-                self._port_cursors[worker.node_ip] = first_port + len(dynamic_port_infos)
-                for offset, port_info in enumerate(dynamic_port_infos):
-                    worker.owned_ports[port_info.name] = first_port + offset
+    async def _collect_worker_ports(self, *, worker: _WorkerState, is_master: bool) -> None:
+        owned_port_infos = [p for p in worker.cell.spec.port_infos if p.mode == "per_worker" or is_master]
 
-            for port_info in owned_port_infos:
-                if not port_info.allow_dynamic:
-                    worker.owned_ports[port_info.name] = port_info.static_port
+        dynamic_port_infos = [p for p in owned_port_infos if p.allow_dynamic]
+        if dynamic_port_infos:
+            first_port = await self._port_cursors.allocate(
+                actor=worker.actor, node_ip=worker.node_ip, count=len(dynamic_port_infos)
+            )
+            for offset, port_info in enumerate(dynamic_port_infos):
+                worker.owned_ports[port_info.name] = first_port + offset
 
-    async def _activate_cell(self, *, cell: _CellState, workers: list[_WorkerState]) -> None:
+        for port_info in owned_port_infos:
+            if not port_info.allow_dynamic:
+                worker.owned_ports[port_info.name] = port_info.static_port
+
+    async def _activate_cell(self, *, workers: list[_WorkerState], env_vars: dict[str, str]) -> None:
+        spec = workers[0].cell.spec
         master = workers[0]
-        for worker in workers:
-            for port_info in cell.spec.port_infos:
-                owner = master if port_info.mode == "master" else worker
-                worker.addr_ports[port_info.name] = _AddrPort(
-                    addr=owner.node_ip, port=owner.owned_ports[port_info.name]
-                )
 
-        if isinstance(cell.spec, ServeWorkerSpec):
-            if cell.spec.port_infos:
+        addr_port_kwargs_by_worker: dict[str, dict[str, str | int]] = {}
+        for worker in workers:
+            kwargs: dict[str, str | int] = {}
+            for port_info in spec.port_infos:
+                owner = master if port_info.mode == "master" else worker
+                port = owner.owned_ports[port_info.name]
+                kwargs[f"{port_info.name}_addr"] = owner.node_ip
+                kwargs[f"{port_info.name}_port"] = port
+                if port_info.url_scheme is not None:
+                    worker.url = f"{port_info.url_scheme}://{owner.node_ip}:{port}"
+            addr_port_kwargs_by_worker[worker.name] = kwargs
+
+        if isinstance(spec, ServeWorkerSpec):
+            if spec.port_infos:
                 await asyncio.gather(
                     *[
-                        worker.actor.configure_addrs_and_ports.remote(**_flatten_addr_ports(worker.addr_ports))
+                        worker.actor.configure_addrs_and_ports.remote(**addr_port_kwargs_by_worker[worker.name])
                         for worker in workers
                     ]
                 )
             return
 
-        assert isinstance(cell.spec, CommandWorkerSpec), f"unsupported worker spec type: {type(cell.spec)=}"
-        envs = cell.spec.env_var()
+        assert isinstance(spec, CommandWorkerSpec), f"unsupported worker spec type: {type(spec)=}"
         for worker in workers:
-            command = cell.spec.launch_command.format(**_flatten_addr_ports(worker.addr_ports))
-            worker.actor.run.remote(cmd=command, envs=envs)
+            command = spec.launch_command.format(**addr_port_kwargs_by_worker[worker.name])
+            worker.actor.run.remote(cmd=command, envs=env_vars)
+
+
+class _NodePortCursors:
+    def __init__(self) -> None:
+        self._cursors: dict[str, int] = {}
+        self._lock = asyncio.Lock()
+
+    async def allocate(self, *, actor: ray.actor.ActorHandle, node_ip: str, count: int) -> int:
+        async with self._lock:
+            start_port = self._cursors.get(node_ip, _DYNAMIC_PORT_START)
+            first_port = await actor._get_free_port_block.remote(start_port=start_port, count=count)
+            self._cursors[node_ip] = first_port + count
+            return first_port
+
+
+def _validate_specs(*, worker_specs: list[BaseWorkerSpec], placements: dict[str, SpecPlacement]) -> None:
+    spec_names = [spec.name for spec in worker_specs]
+    assert len(spec_names) == len(set(spec_names)), f"{spec_names=} must be unique"
+    assert set(placements) <= set(spec_names), f"{sorted(placements)=} must be a subset of {spec_names=}"
+
+    for spec in worker_specs:
+        url_port_names = [p.name for p in spec.port_infos if p.url_scheme is not None]
+        assert len(url_port_names) <= 1, f"{spec.name=} may declare at most one url port, got {url_port_names=}"
+
+        placement = placements.get(spec.name)
+        num_workers = spec.scheduling.num_cells * spec.scheduling.num_workers_per_cell
+        assert placement is None or len(placement.bundle_indices) == num_workers, (
+            f"{spec.name=} needs one bundle per worker: {num_workers=} vs {len(placement.bundle_indices)=}"
+        )
 
 
 def _make_wrapped_worker_cls(worker_cls: type) -> type:
-    class _WrappedWorker(worker_cls):
-        def __init__(self, *, ctor_kwargs_fn) -> None:
+    class _WrappedWorker(worker_cls, NodeProbeMixin):
+        def __init__(self, *, ctor_kwargs_fn: Callable[[], dict[str, Any]]) -> None:
             super().__init__(**ctor_kwargs_fn())
-
-        @staticmethod
-        def _get_node_ip() -> str:
-            return get_current_node_ip()
-
-        @staticmethod
-        def _get_free_consecutive_ports(*, start_port: int, consecutive: int) -> int:
-            return get_free_port(start_port=start_port, consecutive=consecutive)
 
     _WrappedWorker.__name__ = worker_cls.__name__
     _WrappedWorker.__qualname__ = worker_cls.__qualname__
     return _WrappedWorker
 
 
-def _flatten_addr_ports(addr_ports: dict[str, _AddrPort]) -> dict[str, str | int]:
-    result: dict[str, str | int] = {}
-    for name, addr_port in addr_ports.items():
-        result[f"{name}_addr"] = addr_port.addr
-        result[f"{name}_port"] = addr_port.port
-    return result
-
-
-async def _wait_actor_gone(name: str) -> None:
+async def _wait_actors_gone(names: list[str]) -> None:
     deadline = time.monotonic() + _ACTOR_GONE_TIMEOUT_SECONDS
+    remaining = set(names)
     while True:
-        try:
-            ray.get_actor(name)
-        except ValueError:
+        remaining = {name for name in remaining if _actor_exists(name)}
+        if not remaining:
             return
-        assert time.monotonic() < deadline, f"actor {name=} still resolvable after {_ACTOR_GONE_TIMEOUT_SECONDS}s"
+        assert time.monotonic() < deadline, (
+            f"actors {sorted(remaining)} still resolvable after {_ACTOR_GONE_TIMEOUT_SECONDS}s"
+        )
         await asyncio.sleep(0.1)
+
+
+def _actor_exists(name: str) -> bool:
+    try:
+        ray.get_actor(name)
+    except ValueError:
+        return False
+    return True
