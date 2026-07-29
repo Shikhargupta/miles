@@ -23,8 +23,7 @@ class WorkQueue:
             if self._keys:
                 return self._keys.popleft()
             self._wakeup.clear()
-            if not self._keys:
-                await self._wakeup.wait()
+            await self._wakeup.wait()
         return None
 
     def shutdown(self) -> None:
