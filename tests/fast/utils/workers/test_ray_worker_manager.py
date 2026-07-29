@@ -106,9 +106,7 @@ class TestInit:
         ]
         manager = ray.remote(RayWorkerManager).options(name=_unique_name("test-manager"), num_cpus=1).remote()
         with pytest.raises(ray.exceptions.RayTaskError):
-            await manager.init.remote(
-                worker_specs=[_make_serve_spec(spec_name, port_infos=port_infos)], placements={}
-            )
+            await manager.init.remote(worker_specs=[_make_serve_spec(spec_name, port_infos=port_infos)], placements={})
         ray.kill(manager)
 
 

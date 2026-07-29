@@ -24,9 +24,9 @@ def _create_placements(worker_specs: list[BaseWorkerSpec]) -> dict[str, SpecPlac
         scheduling = spec.scheduling
         if scheduling.num_gpus_per_worker == 0:
             continue
-        assert scheduling.num_gpus_per_worker <= 1, (
-            f"{spec.name=} needs one single-gpu bundle per worker, got {scheduling.num_gpus_per_worker=}"
-        )
+        assert (
+            scheduling.num_gpus_per_worker <= 1
+        ), f"{spec.name=} needs one single-gpu bundle per worker, got {scheduling.num_gpus_per_worker=}"
 
         num_workers = scheduling.num_cells * scheduling.num_workers_per_cell
         placement_group, bundle_indices, _gpu_ids = _create_placement_group(num_workers)

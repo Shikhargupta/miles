@@ -61,9 +61,7 @@ class RayWorkerManager:
         cells = []
         for spec in worker_specs:
             for cell_index in range(spec.scheduling.num_cells):
-                cell = _CellState(
-                    spec=spec, cell_id=f"{spec.name}-{cell_index}", cell_index=cell_index, generation=0
-                )
+                cell = _CellState(spec=spec, cell_id=f"{spec.name}-{cell_index}", cell_index=cell_index, generation=0)
                 self._cells[cell.cell_id] = cell
                 cells.append(cell)
 
@@ -105,7 +103,7 @@ class RayWorkerManager:
         all_workers = [worker for workers in workers_by_cell_id.values() for worker in workers]
 
         node_ips = await asyncio.gather(*[worker.actor._get_node_ip.remote() for worker in all_workers])
-        for worker, node_ip in zip(all_workers, node_ips):
+        for worker, node_ip in zip(all_workers, node_ips, strict=True):
             worker.node_ip = node_ip
         await asyncio.gather(
             *[
@@ -251,9 +249,9 @@ def _validate_specs(*, worker_specs: list[BaseWorkerSpec], placements: dict[str,
 
         placement = placements.get(spec.name)
         num_workers = spec.scheduling.num_cells * spec.scheduling.num_workers_per_cell
-        assert placement is None or len(placement.bundle_indices) == num_workers, (
-            f"{spec.name=} needs one bundle per worker: {num_workers=} vs {len(placement.bundle_indices)=}"
-        )
+        assert (
+            placement is None or len(placement.bundle_indices) == num_workers
+        ), f"{spec.name=} needs one bundle per worker: {num_workers=} vs {len(placement.bundle_indices)=}"
 
 
 def _make_wrapped_worker_cls(worker_cls: type) -> type:
@@ -273,9 +271,9 @@ async def _wait_actors_gone(names: list[str]) -> None:
         remaining = {name for name in remaining if _actor_exists(name)}
         if not remaining:
             return
-        assert time.monotonic() < deadline, (
-            f"actors {sorted(remaining)} still resolvable after {_ACTOR_GONE_TIMEOUT_SECONDS}s"
-        )
+        assert (
+            time.monotonic() < deadline
+        ), f"actors {sorted(remaining)} still resolvable after {_ACTOR_GONE_TIMEOUT_SECONDS}s"
         await asyncio.sleep(0.1)
 
 
