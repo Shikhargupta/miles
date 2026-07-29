@@ -5,9 +5,9 @@ import ray
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.clock import Clock
+from miles.utils.workers.list_reconcile_loop import ListBasedReconcileLoop
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-from miles.utils.workers.list_reconcile_loop import ListBasedReconcileLoop
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
 
 
