@@ -16,6 +16,8 @@ class _Payload(StrictBaseModel):
 
 
 class _GoodWorker:
+    demo_class_attribute = 3
+
     def demo_default_arg(self, a: int, b: int = 10) -> int:
         return a + b
 
@@ -26,6 +28,18 @@ class _GoodWorker:
     def demo_grouped(self, step: int) -> None:
         pass
 
+    @classmethod
+    def demo_classmethod(cls, x: int) -> int:
+        return x
+
+    @staticmethod
+    def demo_staticmethod(x: int) -> int:
+        return x
+
+    @property
+    def demo_property(self) -> int:
+        return 1
+
     def _demo_private(self, x):
         pass
 
@@ -35,6 +49,11 @@ class TestCollectSpecs:
         """Public methods are collected; underscore-prefixed ones are skipped."""
         specs = collect_rpc_method_specs(_GoodWorker)
         assert set(specs) == {"demo_default_arg", "demo_async_model", "demo_grouped"}
+
+    def test_non_instance_method_members_are_skipped(self):
+        """Classmethods, staticmethods and properties are skipped like plain attributes."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert {"demo_classmethod", "demo_staticmethod", "demo_property", "demo_class_attribute"}.isdisjoint(specs)
 
     def test_default_concurrency_group(self):
         """Undecorated methods fall into the default concurrency group."""
@@ -183,28 +202,6 @@ class TestFailLoud:
         with pytest.raises(TypeError, match="positional-only"):
             collect_rpc_method_specs(Worker)
 
-    def test_classmethod_rejected(self):
-        """A public classmethod fails loudly instead of being silently skipped."""
-
-        class Worker:
-            @classmethod
-            def demo_classmethod(cls, x: int) -> int:
-                return x
-
-        with pytest.raises(TypeError, match="plain instance method"):
-            collect_rpc_method_specs(Worker)
-
-    def test_staticmethod_rejected(self):
-        """A public staticmethod fails loudly instead of losing its first argument."""
-
-        class Worker:
-            @staticmethod
-            def demo_staticmethod(x: int) -> int:
-                return x
-
-        with pytest.raises(TypeError, match="plain instance method"):
-            collect_rpc_method_specs(Worker)
-
     def test_non_self_receiver_rejected(self):
         """An unconventionally named receiver is refused rather than silently dropped."""
 
@@ -223,17 +220,6 @@ class TestFailLoud:
                 return a + b
 
         with pytest.raises(TypeError, match="receiver parameter 'self'"):
-            collect_rpc_method_specs(Worker)
-
-    def test_property_rejected(self):
-        """A public property fails loudly rather than being exposed as a method."""
-
-        class Worker:
-            @property
-            def demo_property(self) -> int:
-                return 1
-
-        with pytest.raises(TypeError, match="property"):
             collect_rpc_method_specs(Worker)
 
     def test_wrapped_async_method_stays_async(self):

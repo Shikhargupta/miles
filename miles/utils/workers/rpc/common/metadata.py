@@ -40,10 +40,8 @@ def collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
         if name.startswith("_"):
             continue
         static_attr = inspect.getattr_static(worker_cls, name)
-        if isinstance(static_attr, (classmethod, staticmethod)):
-            raise TypeError(f"{worker_cls.__name__}.{name} must be a plain instance method for rpc exposure")
-        if isinstance(static_attr, property):
-            raise TypeError(f"{worker_cls.__name__}.{name} is a property and cannot be exposed over rpc")
+        if isinstance(static_attr, (classmethod, staticmethod, property)):
+            continue
         if not callable(static_attr):
             continue
         specs[name] = _build_method_spec(worker_cls=worker_cls, name=name, fn=inspect.unwrap(static_attr))
