@@ -65,7 +65,10 @@ def _make_setup(*, update_weights: bool = True):
 
 def _observed(cell: ServerCell, members_hash: str = "hash-a") -> CellInfo:
     return CellInfo(
-        cell_id=cell.cell_id, spec_name=cell.spec_name, members_hash=members_hash, member_urls=["http://10.0.0.1:30000"]
+        cell_id=cell.cell_id,
+        spec_name=cell.spec_name,
+        members_hash=members_hash,
+        member_urls=["http://10.0.0.1:30000"],
     )
 
 
