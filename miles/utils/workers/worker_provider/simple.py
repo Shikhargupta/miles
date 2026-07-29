@@ -10,10 +10,10 @@ class SimpleWorkerProvider(BaseWorkerProvider):
         self._worker_urls = dict(worker_urls)
         self._cells = list(cells)
 
-    def get_handle(self, worker_name: str) -> BaseWorkerHandle:
+    async def get_handle(self, worker_name: str) -> BaseWorkerHandle:
         raise NotImplementedError("SimpleWorkerProvider.get_handle requires the rpc worker handle layer")
 
-    def get_url(self, worker_name: str) -> str:
+    async def get_url(self, worker_name: str) -> str:
         url = self._worker_urls.get(worker_name)
         assert url is not None, f"{worker_name=} not found in {sorted(self._worker_urls)=}"
         return url

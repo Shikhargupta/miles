@@ -41,7 +41,7 @@ class TestInit:
         with pytest.raises(AssertionError):
             _make_provider(cells=[_make_cell(0), _make_cell(0)])
 
-    def test_is_isolated_from_later_input_mutation(self):
+    async def test_is_isolated_from_later_input_mutation(self):
         """Mutating the input containers after construction does not change the provider."""
         worker_urls = {"router": "http://router:30000"}
         cells = [_make_cell(0)]
@@ -50,27 +50,27 @@ class TestInit:
         worker_urls["router"] = "http://other:1"
         cells.clear()
 
-        assert provider.get_url("router") == "http://router:30000"
+        assert await provider.get_url("router") == "http://router:30000"
 
 
 class TestGetUrl:
-    def test_returns_url_from_address_book(self):
+    async def test_returns_url_from_address_book(self):
         """A configured worker name resolves to its url."""
         provider = _make_provider()
-        assert provider.get_url("router") == "http://router:30000"
-        assert provider.get_url("session-server") == "http://session:20000"
+        assert await provider.get_url("router") == "http://router:30000"
+        assert await provider.get_url("session-server") == "http://session:20000"
 
-    def test_rejects_unknown_worker_name(self):
+    async def test_rejects_unknown_worker_name(self):
         """An unknown worker name is rejected instead of returning a guess."""
         with pytest.raises(AssertionError):
-            _make_provider().get_url("nonexistent")
+            await _make_provider().get_url("nonexistent")
 
 
 class TestGetHandle:
-    def test_raises_not_implemented(self):
+    async def test_raises_not_implemented(self):
         """Handles are not supported until the rpc worker handle layer lands."""
         with pytest.raises(NotImplementedError):
-            _make_provider().get_handle("router")
+            await _make_provider().get_handle("router")
 
 
 class TestWatchCells:
