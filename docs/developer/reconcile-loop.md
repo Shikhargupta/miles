@@ -60,7 +60,7 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | Upstream | Solves | Decision | Reason |
 | --- | --- | --- | --- |
 | workqueue | The scheduling core | **Kept** as a dedup set; delayed retry lives in `retry_scheduler.py` | With one worker, the dirty/processing protocol collapses into the set |
-| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` cancels the worker and is a completion barrier. Awaiting it inside reconcile asserts — use `asyncio.create_task(loop.stop())` | Drain exists for many Go workers. One worker means one in-flight key, and reconcile is idempotent, so abandoning it costs a re-derivation |
+| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` cancels the worker, then waits for it. Awaiting it inside reconcile asserts — use `asyncio.create_task(loop.stop())`. A caller cancelled mid-teardown may leave the stream open: shutdown runs once, from whoever owns the loop | Drain exists for many Go workers. One worker means one in-flight key, and reconcile is idempotent, so abandoning it costs a re-derivation |
 
 ### `retry_scheduler.py`
 

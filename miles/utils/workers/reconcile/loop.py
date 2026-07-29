@@ -65,7 +65,6 @@ class ReconcileLoop:
         self._start_called = False
         self._stop_requested = False
         self._sync_task: asyncio.Task[AsyncGenerator[SourceEvent, None]] | None = None
-        self._stop_task: asyncio.Task[None] | None = None
         self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
@@ -98,24 +97,16 @@ class ReconcileLoop:
         self._stop_requested = True
         self._queue.shutdown()
         self._retry.shutdown()
-        if self._stop_task is None:
-            self._stop_task = asyncio.create_task(self._teardown(self._running_tasks()))
-        await asyncio.shield(self._stop_task)
 
-    def _running_tasks(self) -> list[asyncio.Task[Any]]:
-        candidates = [*self._tasks, *self._retry.pending_timers(), self._sync_task]
-        return [task for task in candidates if task is not None]
-
-    async def _teardown(self, tasks: list[asyncio.Task[Any]]) -> None:
+        tasks = [task for task in (*self._tasks, *self._retry.pending_timers(), self._sync_task) if task is not None]
         for task in tasks:
             task.cancel()
-        try:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        finally:
-            await self._driver.aclose()
-            self._tasks = []
-            self._retry.drop_timers()
-            self._sync_task = None
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        await self._driver.aclose()
+        self._tasks = []
+        self._retry.drop_timers()
+        self._sync_task = None
 
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)
