@@ -23,11 +23,11 @@ def start_api_server(
     *,
     actor_model: RayTrainGroup,
     inference_controller: object,
+    worker_cell_control: object,
     port: int,
     ft_components: list[str],
 ) -> None:
     registry = _CellRegistry()
-    driver_loop = asyncio.get_running_loop()
 
     if "train" in ft_components:
         for i in range(len(actor_model._cells)):
@@ -38,7 +38,7 @@ def start_api_server(
             registry.register(
                 _RolloutCellHandle(
                     inference_controller=inference_controller,
-                    driver_loop=driver_loop,
+                    worker_cell_control=worker_cell_control,
                     rollout_cell_id=rollout_cell_id,
                 )
             )

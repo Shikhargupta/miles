@@ -139,15 +139,7 @@ class InferenceController:
                     f"Only one updatable server is supported."
                 )
 
-    # -------------------------- external start/stop -----------------------------
-
-    async def start_cell(self, cell_id: str):
-        async with self._reconcile_gate.operate(), self._cell_ops_lock:
-            await self._server_of(cell_id).recover(cell_ids=[cell_id])
-
-    async def stop_cell(self, cell_id: str):
-        async with self._reconcile_gate.operate(), self._cell_ops_lock:
-            await self._server_of(cell_id).stop_cells([cell_id])
+    # -------------------------- external observation -----------------------------
 
     def list_cell_ids(self) -> list[str]:
         return list_cell_ids(self.servers)
@@ -168,9 +160,6 @@ class InferenceController:
             phase="Running",
             conditions=[CellCondition.allocated(TriState.TRUE), CellCondition.healthy(TriState.TRUE)],
         )
-
-    def get_cell_is_suspended(self, cell_id: str) -> bool:
-        return not self._server_of(cell_id).server_cells[cell_id].is_allocated
 
     def _server_of(self, cell_id: str) -> RolloutServer:
         owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]

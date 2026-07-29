@@ -56,7 +56,7 @@ class RayWorkerManager:
 
     async def restart_cell(self, cell_id: str) -> None:
         async with self._cell_lifecycle_lock:
-            if self._cell_is_alive(cell_id):
+            if self.cell_is_alive(cell_id):
                 await self._stop_cell_locked(cell_id)
             await self._start_cell_locked(cell_id)
 
@@ -64,9 +64,12 @@ class RayWorkerManager:
         async with self._cell_lifecycle_lock:
             await self._stop_cell_locked(cell_id)
 
+    def cell_is_alive(self, cell_id: str) -> bool:
+        return any(worker.cell_id == cell_id for worker in self._actors.values())
+
     async def _start_cell_locked(self, cell_id: str) -> None:
         assert self._launcher is not None
-        assert not self._cell_is_alive(cell_id), f"{cell_id=} must be stopped before starting"
+        assert not self.cell_is_alive(cell_id), f"{cell_id=} must be stopped before starting"
         spec, cell_index = self._resolve_cell_id(cell_id)
         cell = _make_cell_launch(spec=spec, cell_index=cell_index, generation=self._next_generation)
         self._next_generation += 1
@@ -79,7 +82,7 @@ class RayWorkerManager:
             raise
 
     async def _stop_cell_locked(self, cell_id: str) -> None:
-        assert self._cell_is_alive(cell_id), f"{cell_id=} must be alive before stopping"
+        assert self.cell_is_alive(cell_id), f"{cell_id=} must be alive before stopping"
         await self._kill_cell_workers(cell_id)
 
     async def _kill_cell_workers(self, cell_id: str) -> None:
@@ -88,9 +91,6 @@ class RayWorkerManager:
             ray.kill(worker.actor, no_restart=True)
             del self._actors[worker.name]
         await _wait_actors_gone([worker.name for worker in workers])
-
-    def _cell_is_alive(self, cell_id: str) -> bool:
-        return any(worker.cell_id == cell_id for worker in self._actors.values())
 
     def _resolve_cell_id(self, cell_id: str) -> tuple[BaseWorkerSpec, int]:
         matches = [

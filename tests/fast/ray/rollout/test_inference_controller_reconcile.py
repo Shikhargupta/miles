@@ -176,21 +176,21 @@ class TestReconcileRemove:
 
         assert handle.calls == calls_after_first
 
-
-class TestSuspendResumeMembership:
-    async def test_api_stop_cell_flags_membership_change_for_the_updater(self):
-        """Suspending an updatable cell must force the next update to rebuild its groups."""
+    async def test_vanished_updatable_cell_flags_membership_change_for_the_updater(self):
+        """A suspended updatable cell must force the next update to rebuild its groups."""
         controller, srv, cell, _handle, _router_client = _make_setup()
         with _with_recording_client():
             await controller._reconcile(cell.cell_id, _observed(cell))
             await controller.clear_updatable_has_new_engines()
             assert srv.has_new_engines is False
 
-            await controller.stop_cell(cell.cell_id)
+            await controller._reconcile(cell.cell_id, None)
 
         assert not cell.is_allocated
         assert srv.has_new_engines is True
 
+
+class TestReconcileRetry:
     async def test_frozen_promotion_failure_is_retried_on_the_next_poll(self):
         """A transient router failure must not leave a frozen cell out of the router forever."""
         controller, srv, cell, _handle, router_client = _make_setup(update_weights=False)
@@ -270,7 +270,6 @@ class TestComputeCellStatus:
 
         assert status.phase == "Running"
         assert [c.status for c in status.conditions] == ["True", "True"]
-        assert controller.get_cell_is_suspended(cell.cell_id) is False
 
     async def test_weight_unsynced_cell_reports_unknown_health(self):
         """An attached-but-unsynced cell must not look unhealthy, or the ft loop would heal it."""
@@ -290,4 +289,3 @@ class TestComputeCellStatus:
         status = controller.compute_cell_status(cell.cell_id)
 
         assert status.phase == "Suspended"
-        assert controller.get_cell_is_suspended(cell.cell_id) is True

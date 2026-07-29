@@ -91,28 +91,33 @@ class MockInferenceController:
         self,
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
-        is_suspended: bool = False,
     ) -> None:
         self._phase = phase
         self._conditions = conditions or [
             {"type": "Allocated", "status": "True"},
             {"type": "Healthy", "status": "True"},
         ]
-        self._is_suspended = is_suspended
-        self.stopped_cells: list[str] = []
-        self.started_cells: list[str] = []
 
     def compute_cell_status(self, cell_id: str) -> CellStatus:
         return CellStatus(phase=self._phase, conditions=[CellCondition(**c) for c in self._conditions])
 
-    def get_cell_is_suspended(self, cell_id: str) -> bool:
-        return self._is_suspended
 
-    async def stop_cell(self, cell_id: str) -> None:
+class MockWorkerCellControl:
+    def __init__(self, *, is_alive: bool = True) -> None:
+        self._is_alive = is_alive
+        self.stopped_cells: list[str] = []
+        self.started_cells: list[str] = []
+
+    async def cell_is_alive(self, *, cell_id: str) -> bool:
+        return self._is_alive
+
+    async def stop_cell(self, *, cell_id: str) -> None:
         self.stopped_cells.append(cell_id)
+        self._is_alive = False
 
-    async def start_cell(self, cell_id: str) -> None:
+    async def start_cell(self, *, cell_id: str) -> None:
         self.started_cells.append(cell_id)
+        self._is_alive = True
 
 
 class MockRayTrainCell:

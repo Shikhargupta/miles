@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import abc
-import asyncio
 
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.api_server.models import Cell, CellMetadata, CellSpec
@@ -81,11 +80,9 @@ class _ActorCellHandle(_CellHandle):
 
 
 class _RolloutCellHandle(_CellHandle):
-    def __init__(
-        self, *, inference_controller: object, driver_loop: asyncio.AbstractEventLoop, rollout_cell_id: str
-    ) -> None:
+    def __init__(self, *, inference_controller: object, worker_cell_control: object, rollout_cell_id: str) -> None:
         self._inference_controller = inference_controller
-        self._driver_loop = driver_loop
+        self._worker_cell_control = worker_cell_control
         self._rollout_cell_id = rollout_cell_id
 
     @property
@@ -98,7 +95,7 @@ class _RolloutCellHandle(_CellHandle):
 
     async def get_cell(self) -> Cell:
         status = self._inference_controller.compute_cell_status(self._rollout_cell_id)
-        is_suspended = self._inference_controller.get_cell_is_suspended(self._rollout_cell_id)
+        is_suspended = not await self._worker_cell_control.cell_is_alive(cell_id=self._rollout_cell_id)
         return Cell(
             metadata=CellMetadata(
                 name=self.cell_id,
@@ -112,12 +109,9 @@ class _RolloutCellHandle(_CellHandle):
         )
 
     async def suspend(self) -> None:
-        await self._run_on_driver_loop(self._inference_controller.stop_cell(self._rollout_cell_id))
+        if await self._worker_cell_control.cell_is_alive(cell_id=self._rollout_cell_id):
+            await self._worker_cell_control.stop_cell(cell_id=self._rollout_cell_id)
 
     async def resume(self) -> None:
-        await self._run_on_driver_loop(self._inference_controller.start_cell(self._rollout_cell_id))
-
-    async def _run_on_driver_loop(self, coroutine) -> None:
-        # The api server runs on its own uvicorn thread, but the controller's
-        # reconcile gate and cell-ops lock live on the driver's event loop.
-        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coroutine, self._driver_loop))
+        if not await self._worker_cell_control.cell_is_alive(cell_id=self._rollout_cell_id):
+            await self._worker_cell_control.start_cell(cell_id=self._rollout_cell_id)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,7 +8,7 @@ from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
 from miles.utils.test_utils.fault_injector import FailureMode
 
-from .conftest import MockInferenceController, MockRayTrainCell, make_mock_group
+from .conftest import MockInferenceController, MockRayTrainCell, MockWorkerCellControl, make_mock_group
 
 
 class TestActorCellHandle:
@@ -90,10 +89,12 @@ class TestActorCellHandle:
 
 class TestRolloutCellHandle:
     @pytest.mark.asyncio
-    async def test_get_cell_delegates_to_controller(self) -> None:
-        controller = MockInferenceController()
+    async def test_get_cell_reads_status_from_controller_and_suspend_from_manager(self) -> None:
+        """get_cell reports the controller's status and the manager's aliveness as spec.suspend."""
         handle = _RolloutCellHandle(
-            inference_controller=controller, driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+            inference_controller=MockInferenceController(),
+            worker_cell_control=MockWorkerCellControl(is_alive=True),
+            rollout_cell_id="actor-0",
         )
         cell = await handle.get_cell()
 
@@ -103,27 +104,61 @@ class TestRolloutCellHandle:
         assert cell.spec.suspend is False
 
     @pytest.mark.asyncio
-    async def test_suspend_runs_the_gated_controller_stop_on_the_driver_loop(self) -> None:
-        controller = MockInferenceController()
+    async def test_get_cell_reports_a_manager_stopped_cell_as_suspended(self) -> None:
+        """A cell the manager no longer runs shows spec.suspend=True."""
         handle = _RolloutCellHandle(
-            inference_controller=controller, driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+            inference_controller=MockInferenceController(),
+            worker_cell_control=MockWorkerCellControl(is_alive=False),
+            rollout_cell_id="actor-0",
         )
-        await handle.suspend()
-        assert controller.stopped_cells == ["actor-0"]
+        cell = await handle.get_cell()
+
+        assert cell.spec.suspend is True
 
     @pytest.mark.asyncio
-    async def test_resume_runs_the_gated_controller_start_on_the_driver_loop(self) -> None:
-        controller = MockInferenceController()
+    async def test_suspend_stops_the_manager_cell(self) -> None:
+        """suspend commands the worker manager to stop the cell."""
+        control = MockWorkerCellControl(is_alive=True)
         handle = _RolloutCellHandle(
-            inference_controller=controller, driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+            inference_controller=MockInferenceController(), worker_cell_control=control, rollout_cell_id="actor-0"
+        )
+        await handle.suspend()
+        assert control.stopped_cells == ["actor-0"]
+
+    @pytest.mark.asyncio
+    async def test_suspend_is_a_noop_when_already_stopped(self) -> None:
+        """suspend on an already-stopped cell does not command the manager again."""
+        control = MockWorkerCellControl(is_alive=False)
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(), worker_cell_control=control, rollout_cell_id="actor-0"
+        )
+        await handle.suspend()
+        assert control.stopped_cells == []
+
+    @pytest.mark.asyncio
+    async def test_resume_starts_the_manager_cell(self) -> None:
+        """resume commands the worker manager to start the cell."""
+        control = MockWorkerCellControl(is_alive=False)
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(), worker_cell_control=control, rollout_cell_id="actor-0"
         )
         await handle.resume()
-        assert controller.started_cells == ["actor-0"]
+        assert control.started_cells == ["actor-0"]
+
+    @pytest.mark.asyncio
+    async def test_resume_is_a_noop_when_already_running(self) -> None:
+        """resume on a running cell does not command the manager again."""
+        control = MockWorkerCellControl(is_alive=True)
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(), worker_cell_control=control, rollout_cell_id="actor-0"
+        )
+        await handle.resume()
+        assert control.started_cells == []
 
     @pytest.mark.asyncio
     async def test_cell_type_is_rollout(self) -> None:
         handle = _RolloutCellHandle(
-            inference_controller=object(), driver_loop=asyncio.get_running_loop(), rollout_cell_id="actor-0"
+            inference_controller=object(), worker_cell_control=object(), rollout_cell_id="actor-0"
         )
         assert handle.cell_type == "rollout"
         assert handle.cell_id == "rollout-actor-0"

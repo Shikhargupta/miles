@@ -36,6 +36,7 @@ async def train(args):
         start_api_server(
             actor_model=actor_model,
             inference_controller=inference_controller,
+            worker_cell_control=infra.worker_cell_control,
             port=args.api_server_port,
             ft_components=args.ft_components,
         )
