@@ -59,9 +59,6 @@ class RunningLoop:
     loop: ReconcileLoop
     reconciles: ReconcileRecorder
 
-    def pod_names(self, cell: str) -> list[str]:
-        return pod_names_of(self.loop, cell)
-
 
 @asynccontextmanager
 async def running_reconcile_loop(
