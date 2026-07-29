@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Callable
 
 from miles.utils.test_utils.clock import Clock
 from miles.utils.workers.reconcile.object_store import ObjectStore
-from miles.utils.workers.reconcile.source_event import ParentKey, SourceEvent, SourceWatchFn, SyncStart
+from miles.utils.workers.reconcile.source_event import ParentKey, SourceEvent, SourceWatchFn, SyncDone, SyncStart
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +78,8 @@ class SourceStreamDriver:
         raise RuntimeError("Source stream ended before the initial sync completed")
 
     def _apply(self, event: SourceEvent) -> bool:
-        update = self._store.handle_event(event)
-        self._on_affected(update.affected)
-        return update.synced
+        self._on_affected(self._store.handle_event(event))
+        return isinstance(event, SyncDone)
 
 
 async def _aclose(stream: AsyncGenerator[SourceEvent, None] | None) -> None:

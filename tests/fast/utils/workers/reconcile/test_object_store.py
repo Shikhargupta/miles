@@ -15,10 +15,9 @@ class TestIncrementalEvents:
     def test_an_upsert_stores_the_object_and_reports_its_parent(self):
         """A plain upsert lands in the store and wakes exactly its cell."""
         store = make_store()
-        update = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
+        affected = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
 
-        assert update.affected == {"cell-a"}
-        assert not update.synced
+        assert affected == {"cell-a"}
         assert "pod-0" in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-0"]
 
@@ -26,34 +25,34 @@ class TestIncrementalEvents:
         """Moving an object between cells affects the old and the new one."""
         store = make_store()
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        update = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-b")))
+        affected = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-b")))
 
-        assert update.affected == {"cell-a", "cell-b"}
+        assert affected == {"cell-a", "cell-b"}
         assert store.get_by_parent("cell-a") == []
 
     def test_a_delete_reports_the_stored_parent(self):
         """Deleting a known object affects the cell it belonged to."""
         store = make_store()
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        update = store.handle_event(Delete(key="pod-0", last_obj=None))
+        affected = store.handle_event(Delete(key="pod-0", last_obj=None))
 
-        assert update.affected == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-0" not in store
 
     def test_a_delete_of_an_unknown_object_uses_the_tombstone(self):
         """An unknown delete is attributed through last_obj."""
         store = make_store()
-        update = store.handle_event(Delete(key="pod-0", last_obj=make_pod("pod-0", cell="cell-a")))
+        affected = store.handle_event(Delete(key="pod-0", last_obj=make_pod("pod-0", cell="cell-a")))
 
-        assert update.affected == {"cell-a"}
+        assert affected == {"cell-a"}
 
     def test_an_unmappable_upsert_is_dropped_and_removes_any_stored_object(self):
         """A key_map failure turns the upsert into a departure, not a stale entry."""
         store = make_store()
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        update = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell=None)))
+        affected = store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell=None)))
 
-        assert update.affected == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-0" not in store
 
 
@@ -63,12 +62,11 @@ class TestSegments:
         store = make_store()
         store.handle_event(Upsert(key="pod-old", obj=make_pod("pod-old", cell="cell-a")))
 
-        assert store.handle_event(SyncStart()).affected == set()
-        assert store.handle_event(Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-b"))).affected == set()
-        update = store.handle_event(SyncDone())
+        assert store.handle_event(SyncStart()) == set()
+        assert store.handle_event(Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-b"))) == set()
+        affected = store.handle_event(SyncDone())
 
-        assert update.synced
-        assert update.affected == {"cell-a", "cell-b"}
+        assert affected == {"cell-a", "cell-b"}
         assert "pod-old" not in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-b")] == ["pod-new"]
 
@@ -78,10 +76,9 @@ class TestSegments:
         store.handle_event(SyncStart())
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
         store.handle_event(Delete(key="pod-0", last_obj=None))
-        update = store.handle_event(SyncDone())
+        store.handle_event(SyncDone())
 
         assert "pod-0" not in store
-        assert update.synced
 
     def test_reset_segment_discards_a_partial_listing(self):
         """A reopened stream must not leak the previous half-received segment."""
@@ -90,9 +87,8 @@ class TestSegments:
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
         store.reset_segment()
 
-        update = store.handle_event(SyncStart())
-        assert update.affected == set()
-        assert store.handle_event(SyncDone()).synced
+        assert store.handle_event(SyncStart()) == set()
+        store.handle_event(SyncDone())
         assert "pod-0" not in store
 
     def test_unpaired_markers_raise(self):
