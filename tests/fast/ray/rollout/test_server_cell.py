@@ -3,12 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import (
-    FakeWorkerHandle,
-    FakeWorkerProvider,
-    fake_worker_handle,
-    make_args,
-)
+from tests.fast.ray.rollout.conftest import FakeWorkerHandle, FakeWorkerProvider, fake_worker_handle, make_args
 
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids
