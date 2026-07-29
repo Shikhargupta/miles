@@ -7,7 +7,11 @@ import httpx
 from pydantic import BaseModel
 
 from miles.utils.http_utils import GeneralHttpClientProvider
-from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, BOOT_UUID_MISMATCH_STATUS
+from miles.utils.workers.rpc.common.protocol import (
+    BOOT_UUID_HEADER,
+    BOOT_UUID_MISMATCH_STATUS,
+    EXPECTED_BOOT_UUID_HEADER,
+)
 
 _ResponseT = TypeVar("_ResponseT", bound=BaseModel)
 
@@ -51,7 +55,7 @@ class RpcTransport:
     ) -> _ResponseT:
         headers = dict(kwargs.pop("headers", {}))
         if self._boot_uuid_pin.expected is not None:
-            headers[BOOT_UUID_HEADER] = self._boot_uuid_pin.expected
+            headers[EXPECTED_BOOT_UUID_HEADER] = self._boot_uuid_pin.expected
         response = await asyncio.wait_for(
             self._client.request(method, f"{self._server_url}{path}", timeout=seconds, headers=headers, **kwargs),
             timeout=seconds,

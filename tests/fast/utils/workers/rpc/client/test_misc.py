@@ -11,7 +11,7 @@ from miles.utils.workers.rpc.client.misc import (
     RpcTransport,
     ServerRestartedError,
 )
-from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, HealthResponse
+from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER, HealthResponse
 
 
 def _response(*, status_code: int = 200, boot_uuid: str | None = None) -> httpx.Response:
@@ -140,7 +140,7 @@ class TestRpcTransport:
         pin.pin(_response(boot_uuid="boot-a"))
 
         def handler(request: httpx.Request) -> httpx.Response:
-            seen_headers.append(request.headers.get(BOOT_UUID_HEADER))
+            seen_headers.append(request.headers.get(EXPECTED_BOOT_UUID_HEADER))
             return httpx.Response(
                 200,
                 headers={BOOT_UUID_HEADER: "boot-a"},

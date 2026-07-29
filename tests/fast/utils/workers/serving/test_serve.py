@@ -56,8 +56,11 @@ class TestOuterServeForwarding:
             lambda path: lambda worker_argv: {"MILES_TEST_ENV": ",".join(worker_argv)},
         )
 
-        serve_module.main(
+        monkeypatch.setattr(
+            sys,
+            "argv",
             [
+                "serve.py",
                 "--worker",
                 "package.worker",
                 "--host",
@@ -69,8 +72,10 @@ class TestOuterServeForwarding:
                 "--",
                 "--flag",
                 "value",
-            ]
+            ],
         )
+
+        serve_module.main()
 
         assert captured["argv"] == [
             sys.executable,

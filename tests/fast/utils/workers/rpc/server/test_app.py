@@ -9,7 +9,7 @@ import httpx
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.common.metadata import rpc
-from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER
+from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER
 from miles.utils.workers.rpc.server.app import create_rpc_app
 
 
@@ -203,7 +203,7 @@ class TestProtocolErrors:
         async with _client(worker) as client:
             response = await client.post(
                 "/v1/demo_sync",
-                headers={BOOT_UUID_HEADER: "stale"},
+                headers={EXPECTED_BOOT_UUID_HEADER: "stale"},
                 json={"call_id": "c1", "query": {"a": 1, "b": 2}},
             )
             assert response.status_code == 412

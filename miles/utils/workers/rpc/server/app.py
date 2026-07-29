@@ -14,6 +14,7 @@ from miles.utils.workers.rpc.common.protocol import (
     BOOT_UUID_MISMATCH_STATUS,
     CALL_STATUS_PATH,
     DEFAULT_POLL_TIMEOUT_SECONDS,
+    EXPECTED_BOOT_UUID_HEADER,
     HEALTH_PATH,
     SUBMIT_PATH,
     CallStatusResponse,
@@ -40,7 +41,7 @@ def create_rpc_app(worker: object, *, shutdown_drain_seconds: float | None = Non
 
     @app.middleware("http")
     async def boot_uuid_guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-        expected = request.headers.get(BOOT_UUID_HEADER)
+        expected = request.headers.get(EXPECTED_BOOT_UUID_HEADER)
         if expected is not None and expected != server.boot_uuid:
             log_structured(
                 logger.warning,
@@ -69,14 +70,14 @@ def create_rpc_app(worker: object, *, shutdown_drain_seconds: float | None = Non
     async def health() -> HealthResponse:
         return HealthResponse()
 
+    @app.post(SUBMIT_PATH)
+    async def submit_call(method_name: str, request: SubmitRequest) -> SubmitResponse:
+        return server.submit_call(method_name=method_name, request=request)
+
     @app.get(CALL_STATUS_PATH)
     async def query_call(
         call_id: str, timeout: float = Query(default=DEFAULT_POLL_TIMEOUT_SECONDS, ge=0.0)
     ) -> CallStatusResponse:
         return await server.query_call(call_id=call_id, timeout=timeout)
-
-    @app.post(SUBMIT_PATH)
-    async def submit_call(method_name: str, request: SubmitRequest) -> SubmitResponse:
-        return server.submit_call(method_name=method_name, request=request)
 
     return app

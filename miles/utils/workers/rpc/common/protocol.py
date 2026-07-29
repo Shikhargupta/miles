@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
 
+EXPECTED_BOOT_UUID_HEADER = "x-miles-expected-boot-uuid"
 BOOT_UUID_HEADER = "x-miles-boot-uuid"
 
 BOOT_UUID_MISMATCH_STATUS = 412

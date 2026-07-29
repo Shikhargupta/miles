@@ -1,5 +1,6 @@
 import pytest
 
+EXPECTED_BOOT_UUID_HEADER = "x-miles-expected-boot-uuid"
 BOOT_UUID_HEADER = "x-miles-boot-uuid"
 
 
@@ -118,7 +119,7 @@ class TestHeaders:
         else:
             response = await raw.post(
                 "/v1/demo_sync",
-                headers={BOOT_UUID_HEADER: "0" * 32},
+                headers={EXPECTED_BOOT_UUID_HEADER: "0" * 32},
                 json={"call_id": tag, "query": {"a": 1, "b": 1}},
             )
 
