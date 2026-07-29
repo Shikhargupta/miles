@@ -54,9 +54,7 @@ class CellLauncher:
             name = compute_worker_name(spec_name=cell.spec.name, cell_index=cell.cell_index, worker_index=worker_index)
             actor = self._launch_actor(cell=cell, worker_index=worker_index, name=name, env_vars=env_vars)
             workers.append(
-                ActorState(
-                    name=name, spec=cell.spec, cell_id=cell.cell_id, generation=cell.generation, actor=actor
-                )
+                ActorState(name=name, spec=cell.spec, cell_id=cell.cell_id, generation=cell.generation, actor=actor)
             )
         return workers
 
