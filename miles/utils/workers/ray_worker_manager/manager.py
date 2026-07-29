@@ -9,6 +9,7 @@ import ray
 from miles.utils.misc import NodeProbeMixin, load_function
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.ray_worker_manager.addressing import compute_worker_addressings
 from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
 from miles.utils.workers.ray_worker_manager.ports import NodePortCursors
 from miles.utils.workers.ray_worker_manager.resources import resolve_actor_options
@@ -210,25 +211,15 @@ class RayWorkerManager:
 
     async def _activate_cell(self, *, workers: list[WorkerState], env_vars: dict[str, str]) -> None:
         spec = workers[0].cell.spec
-        master = workers[0]
-
-        addr_port_kwargs_by_worker: dict[str, dict[str, str | int]] = {}
+        addressings = compute_worker_addressings(spec=spec, workers=workers)
         for worker in workers:
-            kwargs: dict[str, str | int] = {}
-            for port_info in spec.port_infos:
-                owner = master if port_info.mode == "master" else worker
-                port = owner.owned_ports[port_info.name]
-                kwargs[f"{port_info.name}_addr"] = owner.node_ip
-                kwargs[f"{port_info.name}_port"] = port
-                if port_info.url_scheme is not None:
-                    worker.url = f"{port_info.url_scheme}://{owner.node_ip}:{port}"
-            addr_port_kwargs_by_worker[worker.name] = kwargs
+            worker.url = addressings[worker.name].url
 
         if isinstance(spec, ServeWorkerSpec):
             if spec.port_infos:
                 await asyncio.gather(
                     *[
-                        worker.actor.configure_addrs_and_ports.remote(**addr_port_kwargs_by_worker[worker.name])
+                        worker.actor.configure_addrs_and_ports.remote(**addressings[worker.name].addr_port_kwargs)
                         for worker in workers
                     ]
                 )
@@ -236,7 +227,7 @@ class RayWorkerManager:
 
         assert isinstance(spec, CommandWorkerSpec), f"unsupported worker spec type: {type(spec)=}"
         for worker in workers:
-            command = spec.launch_command.format(**addr_port_kwargs_by_worker[worker.name])
+            command = spec.launch_command.format(**addressings[worker.name].addr_port_kwargs)
             worker.actor.run.remote(cmd=command, envs=env_vars)
 
 
