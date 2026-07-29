@@ -417,7 +417,9 @@ _UNSET_WEIGHT_VERSION = "default"
 
 
 def _update_weight_version_if_unset(rollout_engines: Sequence[SGLangApiClient], weight_version: str) -> None:
-    reported = async_utils.wait_futures([async_utils.submit(client.get_weight_version()) for client in rollout_engines])
+    reported = async_utils.wait_futures(
+        [async_utils.submit(client.get_weight_version()) for client in rollout_engines]
+    )
     unset = [
         client
         for client, version in zip(rollout_engines, reported, strict=True)
