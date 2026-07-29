@@ -42,27 +42,27 @@ class RpcSerializer:
 
 
 class _NonFiniteFloatCodec:
-    @staticmethod
-    def encode(value: Any) -> Any:
+    @classmethod
+    def encode(cls, value: Any) -> Any:
         if isinstance(value, float) and not math.isfinite(value):
             return {NON_FINITE_FLOAT_TAG: _TOKEN_BY_FLOAT.get(value, "nan")}
         if isinstance(value, dict):
             if NON_FINITE_FLOAT_TAG in value:
                 raise ValueError(f"rpc payloads must not contain the reserved key {NON_FINITE_FLOAT_TAG!r}")
-            return {key: _NonFiniteFloatCodec.encode(item) for key, item in value.items()}
+            return {key: cls.encode(item) for key, item in value.items()}
         if isinstance(value, list):
-            return [_NonFiniteFloatCodec.encode(item) for item in value]
+            return [cls.encode(item) for item in value]
         return value
 
-    @staticmethod
-    def decode(value: Any) -> Any:
+    @classmethod
+    def decode(cls, value: Any) -> Any:
         if isinstance(value, dict):
             token = value.get(NON_FINITE_FLOAT_TAG)
             if len(value) == 1 and token in _FLOAT_BY_TOKEN:
                 return _FLOAT_BY_TOKEN[token]
-            return {key: _NonFiniteFloatCodec.decode(item) for key, item in value.items()}
+            return {key: cls.decode(item) for key, item in value.items()}
         if isinstance(value, list):
-            return [_NonFiniteFloatCodec.decode(item) for item in value]
+            return [cls.decode(item) for item in value]
         return value
 
 
