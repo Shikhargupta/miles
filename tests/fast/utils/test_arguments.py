@@ -505,6 +505,11 @@ class TestApplyCustomConfigOverrides:
         _apply_custom_config_overrides(args)
         assert args.advantage_estimator == "grpo"
 
+    def test_missing_attribute_is_a_noop(self):
+        args = SimpleNamespace(advantage_estimator="grpo")
+        _apply_custom_config_overrides(args)
+        assert args.advantage_estimator == "grpo"
+
     def test_empty_config_is_a_noop(self, tmp_path):
         config = tmp_path / "overrides.yaml"
         config.write_text("")

@@ -2975,9 +2975,10 @@ def _apply_custom_config_overrides(args) -> None:
     Runs at the very start of `miles_validate_args`, so an overridden argument
     behaves as if it had been passed on the command line: it participates in
     every subsequent validation and derivation instead of silently bypassing
-    them.
+    them. Tests call `miles_validate_args` with partial namespaces, so a
+    missing attribute is treated as "no config file".
     """
-    if not args.custom_config_path:
+    if not getattr(args, "custom_config_path", None):
         return
     with open(args.custom_config_path) as f:
         data = yaml.safe_load(f) or {}
