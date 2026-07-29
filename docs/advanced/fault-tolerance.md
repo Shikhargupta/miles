@@ -47,23 +47,15 @@ Each loop iteration does:
 
 ## Engine recovery
 
-When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
-`inference_controller.recover_updatable_engines` before each weight
-update (`miles/backends/megatron_utils/actor.py`).
-
-`recover_updatable_engines` (`miles/ray/rollout/inference_controller.py`):
-
-1. Pauses health monitoring.
-2. Calls `srv.recover()` on the updatable server.
-
-`srv.recover()` (`miles/ray/rollout.py`):
-
-1. Finds engine slots set to `None` (killed by the health monitor).
-2. Calls `start_engines` for each affected group.
-3. Releases memory occupation on the new engines.
-
-After `recover_updatable_engines` returns, the weight updater connects to
-the new engines and the next weight transfer proceeds normally.
+Engine lifecycle commands never pass through the rollout consumers. A dead or
+suspended cell is restarted at the ops boundary: the api server's cell handles
+(or any operator) call `start_cell` / `restart_cell` on the `RayWorkerManager`
+directly. The `InferenceController` only observes — its reconcile watcher
+(`miles/ray/rollout/inference_controller.py`) notices the fresh workers through
+the worker provider, re-attaches the cell, and flags `has_new_engines` so the
+next weight update connects to the new engines. Re-attached cells of an
+updatable server stay out of the router until that update promotes them; a
+frozen server's cells serve again right away.
 
 ## P2P weight transfer timeouts
 

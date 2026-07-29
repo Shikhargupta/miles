@@ -113,19 +113,6 @@ class InferenceController:
             await srv.promote_weight_synced_cells()
             srv.clear_has_new_engines()
 
-    async def recover_updatable_engines(self) -> None:
-        """Restart any dead rollout engines and update has_new_engines for update_weights detection.
-
-        Recovers the updatable model (the one that receives weight
-        updates from training).
-        """
-        await self.health_monitoring_pause()
-        srv = self._get_updatable_server()
-        if self.rollout_id == -1 or srv is None:
-            return
-
-        await srv.recover()
-
     def _get_updatable_server(self) -> RolloutServer | None:
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
         match updatable:

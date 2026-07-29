@@ -79,11 +79,6 @@ class ServerCell:
         await self.start_engines()
         await self.promote_to_alive(router_api_client)
 
-    async def recover_unsynced(self) -> None:
-        assert self.worker_cell_control is not None, f"cell {self.cell_id} has no worker cell control"
-        await self.worker_cell_control.restart_cell(cell_id=self.cell_id)
-        await self.attach_unsynced()
-
     async def start_engines(self) -> None:
         assert not self.is_allocated, "the caller starts only stopped cells"
         assert self.provider is not None, f"cell {self.cell_id} was built without a worker provider"

@@ -147,15 +147,6 @@ class TestStartEngines:
         with pytest.raises(AssertionError, match="stopped cells"):
             await cell.start_engines()
 
-    async def test_recover_restarts_the_cell_and_stays_unsynced(self):
-        """Recovery relaunches the manager cell, re-attaches, and does not touch the router."""
-        cell, _handles, control = _provider_cell()
-
-        await cell.recover_unsynced()
-
-        assert control.events == [("restart_cell", {"cell_id": "sglang-default-group0-0"})]
-        assert cell.is_allocated and not cell.is_alive
-
     async def test_failed_init_rolls_the_attach_back_to_stopped(self):
         """A failed attach must not linger allocated, or a later promotion would register a broken engine."""
         cell, handles, control = _provider_cell()

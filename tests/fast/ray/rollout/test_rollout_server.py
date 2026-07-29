@@ -127,9 +127,9 @@ class TestRolloutServerCrossCellProperties:
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
 
-class TestRecoverRollback:
-    async def test_recover_failure_leaves_the_cell_stopped_so_promotion_skips_it(self):
-        """A cell whose re-attach died must stay stopped; promotion must not register it."""
+class TestFailedAttachPromotion:
+    async def test_failed_attach_leaves_the_cell_stopped_so_promotion_skips_it(self):
+        """A cell whose attach died must stay stopped; promotion must not register it."""
 
         async def _boom() -> None:
             raise RuntimeError("engine died during init")
@@ -137,7 +137,6 @@ class TestRecoverRollback:
         handle = fake_worker_handle(
             addr_and_ports={"server_addr": "10.0.0.1", "server_port": 30000}, init_effect=_boom
         )
-        control = FakeWorkerCellControl()
         cell = ServerCell(
             args=make_args(num_gpus_per_node=8),
             worker_type="regular",
@@ -146,18 +145,14 @@ class TestRecoverRollback:
             cell_index=0,
             update_weights=False,
             provider=FakeWorkerProvider({"sglang-default-group0-0-0": handle}),
-            worker_cell_control=control,
+            worker_cell_control=FakeWorkerCellControl(),
         )
         srv = RolloutServer(server_cells={cell.cell_id: cell}, args=cell.args, update_weights=False)
 
         with pytest.raises(RuntimeError, match="engine died during init"):
-            await srv.recover()
+            await cell.attach_unsynced()
 
         assert not cell.is_allocated
-        assert control.events == [
-            ("restart_cell", {"cell_id": "sglang-default-group0-0"}),
-            ("stop_cell", {"cell_id": "sglang-default-group0-0"}),
-        ]
         await srv.promote_weight_synced_cells()
         assert not cell.is_alive
 

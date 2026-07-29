@@ -4,7 +4,7 @@ Same two-model layout as test_sglang_config_mixed_offload.py but with
 fault tolerance enabled.  --ci-test triggers a simulated engine crash
 on the updatable (actor) server, testing:
   - Health monitor detects crash and marks engine as None
-  - RolloutServer.recover() restarts the dead engine
+  - The worker manager restarts the dead engine and the reconcile watcher re-attaches it
   - Updatable engines: offload -> resume_memory_occupation -> update_weights
   - Non-updatable engines: offload -> update_weights_from_disk
   - Training continues after recovery
