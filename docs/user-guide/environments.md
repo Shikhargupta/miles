@@ -20,8 +20,8 @@ where the environment itself comes from:
 |---|---|
 | [Harbor](/user-guide/harbor) | agent function |
 | [OpenEnv](/user-guide/openenv) | agent function |
-| [Strands Agents](https://github.com/radixark/miles/tree/main/examples/strands_sglang) | generate function |
-| [τ-bench](https://github.com/radixark/miles/tree/main/examples/tau-bench) | generate function |
+| [Strands Agents](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) | generate function |
+| [τ-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) | generate function |
 
 Sandbox providers are a different axis: they provision the task containers
 *inside* a connector rather than occupying a rollout layer.

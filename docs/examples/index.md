@@ -3,8 +3,7 @@ title: Examples
 description: Annotated end-to-end walkthroughs for the workflows people actually want to build.
 ---
 The model recipes show you how to train a model. The examples below show you how to
-*build something useful* with Miles — tools, search, multi-agent, distillation, and
-async rollout.
+*build something useful* with Miles — tools, search, multi-agent, and plain SFT.
 
 Each example follows the same template:
 
@@ -22,24 +21,10 @@ Each example follows the same template:
 
 <CardGroup cols={2}>
 
-  <Card title="Fully Async Rollout" icon="bolt" href="/examples/fully-async">
-
-    Continuous background generation with a queue between rollout and training.
-    Up to 2× end-to-end speedup.
-
-  </Card>
-
   <Card title="Search-R1 (Tool Use)" icon="magnifying-glass" href="/examples/search-r1">
 
     Multi-turn rollout where the model can issue `<search>...` actions, get
     observations from a retrieval server, and produce a final answer.
-
-  </Card>
-
-  <Card title="ReTool (Code Execution)" icon="screwdriver-wrench" href="/examples/retool">
-
-    SFT + RL pipeline for tool-augmented reasoning. Sandboxed Python code execution
-    interleaved with thinking.
 
   </Card>
 
@@ -67,7 +52,7 @@ Each example follows the same template:
 
 ## Where to start
 
-* **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](/examples/fully-async).
-* **Want tool use / RAG?** → [Search-R1](/examples/search-r1), then [ReTool](/examples/retool).
+* **Want tool use / RAG?** → [Search-R1](/examples/search-r1).
 * **VLM / multi-agent?** → [Multi-Agent Co-Evolution](/examples/multi-agent).
 * **Replay an old result?** → [Reproducibility Recipe](/examples/reproducibility).
+* **Decouple generation from training?** → [Fully Async Rollout](/user-guide/fully-async).
