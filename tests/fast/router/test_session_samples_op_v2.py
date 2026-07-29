@@ -33,7 +33,7 @@ from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
@@ -74,7 +74,7 @@ def _build_core() -> SessionCoreV2:
         tokenizer_type=_ARGS.tito_model,
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
-    registry = SessionRegistryV2(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
+    registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
     return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
 
 
@@ -552,7 +552,7 @@ def _build_core_with_hooks(**hook_args) -> SessionCoreV2:
         tokenizer_type=args.tito_model,
         chat_template_kwargs=args.apply_chat_template_kwargs,
     )
-    registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer)
+    registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
     return SessionCoreV2(_UnusedBackend(), registry, args, args.session_server_instance_id)
 
 
