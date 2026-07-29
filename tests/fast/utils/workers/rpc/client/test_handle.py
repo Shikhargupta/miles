@@ -244,7 +244,7 @@ class TestReadyHandshake:
 
             assert await handle.demo_default_arg(a=1, b=2) == 3
 
-        assert rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS == 30.0
+        assert rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS == 600.0
         assert observed_timeouts == [expected_timeout]
 
 

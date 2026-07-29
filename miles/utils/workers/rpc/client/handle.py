@@ -18,7 +18,7 @@ from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, HealthResponse
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 
 DEFAULT_CALL_TIMEOUT_SECONDS = 3600.0
-DEFAULT_READY_TIMEOUT_SECONDS = 30.0
+DEFAULT_READY_TIMEOUT_SECONDS = 600.0
 
 _HEALTH_TIMEOUT_SECONDS = 5.0
 
