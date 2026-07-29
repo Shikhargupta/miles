@@ -39,11 +39,11 @@ class SourceStreamDriver:
                 self._stream = stream
                 return stream
             except asyncio.CancelledError:
-                await _aclose(stream)
+                await _aclose_quietly(stream)
                 raise
             except Exception:
                 logger.error("SourceStreamDriver initial sync failed, retrying", exc_info=True)
-                await _aclose(stream)
+                await _aclose_quietly(stream)
                 await self._clock.sleep(self._retry_delay)
 
     async def run(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
@@ -52,20 +52,22 @@ class SourceStreamDriver:
                 async for event in stream:
                     self._apply(event)
             except asyncio.CancelledError:
-                await _aclose(stream)
+                await _aclose_quietly(stream)
                 raise
             except Exception:
                 logger.error("SourceStreamDriver source stream failed, reopening", exc_info=True)
             else:
                 logger.warning("SourceStreamDriver source stream ended, reopening")
-            await _aclose(stream)
+            await _aclose_quietly(stream)
             self._stream = None
             await self._clock.sleep(self._retry_delay)
             stream = await self.open_synced_stream()
 
     async def aclose(self) -> None:
-        await _aclose(self._stream)
+        stream = self._stream
         self._stream = None
+        if stream is not None:
+            await stream.aclose()
 
     async def _consume_until_synced(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
         first = True
@@ -83,7 +85,7 @@ class SourceStreamDriver:
         return isinstance(event, SyncDone)
 
 
-async def _aclose(stream: AsyncGenerator[SourceEvent, None] | None) -> None:
+async def _aclose_quietly(stream: AsyncGenerator[SourceEvent, None] | None) -> None:
     if stream is None:
         return
     try:
