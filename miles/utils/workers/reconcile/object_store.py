@@ -89,9 +89,9 @@ class ObjectStore:
         self._open_segment = None
         return update
 
-    def _replace(self, listed: dict[ObjectKey, Any]) -> StoreUpdate:
-        parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in listed.items()}
-        mapped = {key: obj for key, obj in listed.items() if parents[key] is not None}
+    def _replace(self, segment: dict[ObjectKey, Any]) -> StoreUpdate:
+        parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in segment.items()}
+        mapped = {key: obj for key, obj in segment.items() if parents[key] is not None}
 
         affected: set[ParentKey] = set()
         for key, obj in mapped.items():
