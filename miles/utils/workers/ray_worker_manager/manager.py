@@ -1,21 +1,18 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable
-from typing import Any
 
 import ray
 
-from miles.utils.misc import NodeProbeMixin, load_function
-from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager.addressing import compute_worker_addressings
+from miles.utils.workers.ray_worker_manager.kinds import WorkerKind, make_worker_kinds
 from miles.utils.workers.ray_worker_manager.placement import SpecPlacement
 from miles.utils.workers.ray_worker_manager.ports import PortAllocator
 from miles.utils.workers.ray_worker_manager.resources import resolve_actor_options
 from miles.utils.workers.ray_worker_manager.state import CellState, WorkerState
 from miles.utils.workers.worker_provider.ray import RayWorkerInfo
-from miles.utils.workers.worker_spec import BaseWorkerSpec, CommandWorkerSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +24,7 @@ class RayWorkerManager:
         self._placements: dict[str, SpecPlacement] = {}
         self._cells: dict[str, CellState] = {}
         self._workers: dict[str, WorkerState] = {}
-        self._serve_actor_classes: dict[str, Any] = {}
+        self._worker_kinds = make_worker_kinds()
         self._port_allocator = PortAllocator()
         self._cell_lifecycle_lock = asyncio.Lock()
 
@@ -150,45 +147,9 @@ class RayWorkerManager:
             placement=placement,
             flat_worker_index=cell.cell_index * spec.scheduling.num_workers_per_cell + worker_index,
         )
-
-        if isinstance(spec, ServeWorkerSpec):
-            return (
-                self._serve_actor_class(spec)
-                .options(
-                    name=name,
-                    num_cpus=options.num_cpus,
-                    num_gpus=options.num_gpus,
-                    max_restarts=0,
-                    scheduling_strategy=options.scheduling_strategy,
-                    runtime_env={"env_vars": env_vars},
-                )
-                .remote(ctor_kwargs_fn=spec.ctor_kwargs, cell_index=cell.cell_index, worker_index=worker_index)
-            )
-
-        assert isinstance(spec, CommandWorkerSpec), f"unsupported worker spec type: {type(spec)=}"
-        return (
-            ray.remote(CommandActor)
-            .options(
-                name=name,
-                num_cpus=options.num_cpus,
-                num_gpus=options.num_gpus,
-                max_restarts=0,
-                scheduling_strategy=options.scheduling_strategy,
-            )
-            .remote()
+        return self._kind_for(spec).create_actor(
+            cell=cell, worker_index=worker_index, name=name, env_vars=env_vars, options=options, placement=placement
         )
-
-    def _serve_actor_class(self, spec: ServeWorkerSpec) -> Any:
-        if spec.name not in self._serve_actor_classes:
-            wrapped_cls = _make_wrapped_worker_cls(load_function(spec.worker_class))
-            placement = self._placements.get(spec.name)
-            remote_kwargs: dict[str, Any] = {}
-            if placement is not None and placement.concurrency_groups is not None:
-                remote_kwargs["concurrency_groups"] = placement.concurrency_groups
-            self._serve_actor_classes[spec.name] = (
-                ray.remote(**remote_kwargs)(wrapped_cls) if remote_kwargs else ray.remote(wrapped_cls)
-            )
-        return self._serve_actor_classes[spec.name]
 
     async def _activate_cell(self, *, workers: list[WorkerState], env_vars: dict[str, str]) -> None:
         spec = workers[0].cell.spec
@@ -196,20 +157,12 @@ class RayWorkerManager:
         for worker in workers:
             worker.url = addressings[worker.name].url
 
-        if isinstance(spec, ServeWorkerSpec):
-            if spec.port_infos:
-                await asyncio.gather(
-                    *[
-                        worker.actor.configure_addrs_and_ports.remote(**addressings[worker.name].addr_port_kwargs)
-                        for worker in workers
-                    ]
-                )
-            return
+        await self._kind_for(spec).activate_workers(workers=workers, addressings=addressings, env_vars=env_vars)
 
-        assert isinstance(spec, CommandWorkerSpec), f"unsupported worker spec type: {type(spec)=}"
-        for worker in workers:
-            command = spec.launch_command.format(**addressings[worker.name].addr_port_kwargs)
-            worker.actor.run.remote(cmd=command, envs=env_vars)
+    def _kind_for(self, spec: BaseWorkerSpec) -> WorkerKind:
+        kind = self._worker_kinds.get(type(spec))
+        assert kind is not None, f"unsupported worker spec type: {type(spec)=}"
+        return kind
 
 
 def _validate_specs(*, worker_specs: list[BaseWorkerSpec], placements: dict[str, SpecPlacement]) -> None:
@@ -226,18 +179,6 @@ def _validate_specs(*, worker_specs: list[BaseWorkerSpec], placements: dict[str,
         assert (
             placement is None or len(placement.bundle_indices) == num_workers
         ), f"{spec.name=} needs one bundle per worker: {num_workers=} vs {len(placement.bundle_indices)=}"
-
-
-def _make_wrapped_worker_cls(worker_cls: type) -> type:
-    class _WrappedWorker(worker_cls, NodeProbeMixin):
-        def __init__(
-            self, *, ctor_kwargs_fn: Callable[[int, int], dict[str, Any]], cell_index: int, worker_index: int
-        ) -> None:
-            super().__init__(**ctor_kwargs_fn(cell_index, worker_index))
-
-    _WrappedWorker.__name__ = worker_cls.__name__
-    _WrappedWorker.__qualname__ = worker_cls.__qualname__
-    return _WrappedWorker
 
 
 async def _wait_actors_gone(names: list[str]) -> None:
