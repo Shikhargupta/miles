@@ -9,12 +9,14 @@ class PortInfo(FrozenStrictBaseModel):
     static_port: int
     mode: Literal["per_worker", "master"]
     allow_dynamic: bool
+    url_scheme: str | None = None
 
 
 class SchedulingSpec(FrozenStrictBaseModel):
     num_cells: int
     num_workers_per_cell: int
     num_gpus_per_worker: float
+    num_cpus_per_worker: float
 
 
 class BaseWorkerSpec(FrozenStrictBaseModel):

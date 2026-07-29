@@ -21,7 +21,7 @@ def _make_base_kwargs(**overrides) -> dict:
         name="demo-worker",
         port_infos=[_make_port_info()],
         env_var=lambda: {"DEMO": "1"},
-        scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=4, num_gpus_per_worker=0.4),
+        scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=4, num_gpus_per_worker=0.4, num_cpus_per_worker=1),
     )
     kwargs.update(overrides)
     return kwargs
@@ -32,6 +32,11 @@ class TestPortInfo:
         """Both per_worker and master are valid modes."""
         assert _make_port_info(mode="per_worker").mode == "per_worker"
         assert _make_port_info(mode="master").mode == "master"
+
+    def test_url_scheme_defaults_to_none_and_is_settable(self):
+        """A port is not a url port unless it declares a scheme."""
+        assert _make_port_info().url_scheme is None
+        assert _make_port_info(url_scheme="http").url_scheme == "http"
 
     def test_rejects_unknown_mode(self):
         """An unknown mode literal is rejected."""
