@@ -78,7 +78,12 @@ class TestCursorRejection:
 class TestExceptionRejection:
     @pytest.mark.parametrize(
         "exception",
-        [make_exception(status=410), make_exception(status="410"), make_exception(status=504), make_exception(code=410)],
+        [
+            make_exception(status=410),
+            make_exception(status="410"),
+            make_exception(status=504),
+            make_exception(code=410),
+        ],
     )
     def test_a_client_exception_reporting_a_dead_cursor_is_flagged(self, exception: BaseException) -> None:
         """The status arrives as an int or a string, and some failures carry only a code."""
