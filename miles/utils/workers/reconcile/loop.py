@@ -113,8 +113,6 @@ class ReconcileLoop:
             try:
                 await self._reconcile(parent_key)
                 self._retry.note_success(parent_key)
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.error(f"ReconcileLoop reconcile failed {parent_key=}", exc_info=True)
                 self._retry.note_failure(parent_key)

@@ -37,16 +37,12 @@ class SourceStreamDriver:
                 stream = self._source()
                 self._stream = stream
                 await self._pump(stream)
-            except asyncio.CancelledError:
-                self._stream = None
-                await _aclose_logging_failure(stream)
-                raise
+                logger.warning("SourceStreamDriver source stream ended, reopening")
             except Exception:
                 logger.error("SourceStreamDriver source stream failed, reopening", exc_info=True)
-            else:
-                logger.warning("SourceStreamDriver source stream ended, reopening")
-            self._stream = None
-            await _aclose_logging_failure(stream)
+            finally:
+                self._stream = None
+                await _aclose_logging_failure(stream)
             await self._clock.sleep(self._retry_delay)
 
     async def wait_for_sync(self) -> None:

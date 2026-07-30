@@ -1,7 +1,6 @@
 # doc-dev: docs/developer/reconcile-loop.md
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -49,11 +48,10 @@ class KubernetesReflector:
         cursor = _WatchCursor()
         while True:
             try:
-                async for event in self._watch_once(cursor):
-                    yield event
+                async with aclosing(self._watch_once(cursor)) as events:
+                    async for event in events:
+                        yield event
                 await self._clock.sleep(self._retry_delay)
-            except asyncio.CancelledError:
-                raise
             except Exception as exception:
                 if exception_rejects_cursor(exception):
                     logger.warning(f"KubernetesReflector cursor is no longer usable, relisting {cursor=}")

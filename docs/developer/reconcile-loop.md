@@ -105,7 +105,8 @@ Retry lives at two levels:
 Cleanup raises unless raising would hide a worse error:
 
 - `stop()` → `SourceStreamDriver.aclose()` has nothing in flight, so a stream that fails to close propagates.
-- `_aclose_logging_failure` never raises, for a different reason at each call site: on the cancellation path a close failure would replace the exception being unwound, and on the reopen path closing a stream that just failed re-raises that same failure and would kill a driver whose whole job is to reopen. Both log with a stacktrace.
+- `_aclose_logging_failure` never raises, and the single `finally` that calls it needs both reasons: while a cancellation is unwinding, a close failure would replace it and the task would look broken rather than cancelled; on the reopen path, closing a stream that just failed re-raises that same failure and would kill a driver whose whole job is to reopen. It logs with a stacktrace.
+- Nowhere does an `except asyncio.CancelledError: raise` guard a following `except Exception`. `CancelledError` is a `BaseException`, so the handlers that log and retry cannot swallow it; cancellation runs the `finally` blocks and propagates on its own. Adding such a guard back would be dead code that implies a special case which is not there.
 
 `kubernetes_asyncio` is imported lazily so the loop stays importable without a Kubernetes backend, and declared in `requirements.txt` for the test suites.
 
