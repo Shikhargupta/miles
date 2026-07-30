@@ -10,13 +10,13 @@ import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
-from miles.ray.ray_actor import RayActor
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.misc import get_current_node_ip, get_free_port
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
@@ -35,7 +35,7 @@ def get_local_gpu_id():
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
 
 
-class TrainRayActor(RayActor):
+class TrainRayActor:
     def __init__(
         self,
         args,
@@ -59,9 +59,8 @@ class TrainRayActor(RayActor):
         if master_addr:
             self.master_addr, self.master_port = master_addr, master_port
         else:
-            self.master_addr, self.master_port = self._get_current_node_ip_and_free_port(
-                start_port=random.randint(20000, 21000)
-            )
+            self.master_addr = get_current_node_ip()
+            self.master_port = get_free_port(start_port=random.randint(20000, 21000))
 
         os.environ["MASTER_ADDR"] = self.master_addr
         os.environ["MASTER_PORT"] = str(self.master_port)
@@ -71,6 +70,9 @@ class TrainRayActor(RayActor):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+
+    def get_master_addr_and_port(self):
+        return self.master_addr, self.master_port
 
     # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
