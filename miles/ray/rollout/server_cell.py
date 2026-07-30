@@ -13,7 +13,6 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_engine_launch_plan, format_v6_uri
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.cell_state import (
     AddrInfo,
     CellState,
@@ -31,6 +30,7 @@ from miles.ray.specs.inference import (
     InferenceCellSpec,
     InferenceWorkerSpec,
 )
+from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 
 logger = logging.getLogger(__name__)

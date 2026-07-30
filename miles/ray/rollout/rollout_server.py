@@ -5,10 +5,10 @@ from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.specs.inference import InferenceModelSpec, compute_inference_model_specs
+from miles.utils.workers.addr_allocator import PortAllocator
 
 logger = logging.getLogger(__name__)
 
