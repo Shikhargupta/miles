@@ -14,9 +14,9 @@ class TestIncrementalEvents:
     def test_an_upsert_stores_the_object_and_reports_its_parent(self):
         """A plain upsert lands in the store and wakes exactly its cell."""
         store = make_store()
-        update = store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
+        affected = store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-0" in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-0"]
 
@@ -24,43 +24,43 @@ class TestIncrementalEvents:
         """Moving an object between cells affects the old and the new one."""
         store = make_store()
         store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        update = store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-b")))
+        affected = store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-b")))
 
-        assert update.affected_parents == {"cell-a", "cell-b"}
+        assert affected == {"cell-a", "cell-b"}
         assert store.get_by_parent("cell-a") == []
 
     def test_a_delete_reports_the_stored_parent(self):
         """Deleting a known object affects the cell it belonged to."""
         store = make_store()
         store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        update = store.handle_event(DeleteEvent(key="pod-0", last_obj=None))
+        affected = store.handle_event(DeleteEvent(key="pod-0", last_obj=None))
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-0" not in store
 
     def test_a_delete_of_an_unknown_object_uses_the_tombstone(self):
         """An unknown delete is attributed through last_obj."""
         store = make_store()
-        update = store.handle_event(DeleteEvent(key="pod-0", last_obj=make_pod("pod-0", cell="cell-a")))
+        affected = store.handle_event(DeleteEvent(key="pod-0", last_obj=make_pod("pod-0", cell="cell-a")))
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
 
     def test_a_delete_whose_tombstone_disagrees_uses_the_stored_parent(self):
         """A relabel we never saw must not crash the delete nor wake the wrong cell."""
         store = make_store()
         store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        update = store.handle_event(DeleteEvent(key="pod-0", last_obj=make_pod("pod-0", cell="cell-b")))
+        affected = store.handle_event(DeleteEvent(key="pod-0", last_obj=make_pod("pod-0", cell="cell-b")))
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-0" not in store
 
     def test_an_unmappable_upsert_is_dropped_and_removes_any_stored_object(self):
         """A key_map failure turns the upsert into a departure, not a stale entry."""
         store = make_store()
         store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        update = store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell=None)))
+        affected = store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell=None)))
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-0" not in store
 
 
@@ -71,9 +71,9 @@ class TestReplace:
         store.handle_event(UpsertEvent(key="pod-old", obj=make_pod("pod-old", cell="cell-a")))
 
         pod_new = make_pod("pod-new", cell="cell-b")
-        update = store.handle_event(ReplaceEvent(objects={"pod-new": pod_new}))
+        affected = store.handle_event(ReplaceEvent(objects={"pod-new": pod_new}))
 
-        assert update.affected_parents == {"cell-a", "cell-b"}
+        assert affected == {"cell-a", "cell-b"}
         assert "pod-old" not in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-b")] == ["pod-new"]
 
@@ -84,9 +84,9 @@ class TestReplace:
         store.handle_event(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell="cell-a")))
 
         pod_0 = make_pod("pod-0", cell="cell-a")
-        update = store.handle_event(ReplaceEvent(objects={"pod-0": pod_0}))
+        affected = store.handle_event(ReplaceEvent(objects={"pod-0": pod_0}))
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-1" not in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-0"]
 
@@ -95,20 +95,20 @@ class TestReplace:
         store = make_store()
         store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
 
-        update = store.handle_event(ReplaceEvent(objects={}))
+        affected = store.handle_event(ReplaceEvent(objects={}))
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
         assert store.parent_keys() == set()
 
     def test_an_unmappable_object_in_a_replace_is_dropped(self):
         """One bad object must not stall the rest of the relist."""
         store = make_store()
 
-        update = store.handle_event(
+        affected = store.handle_event(
             ReplaceEvent(objects={"pod-0": make_pod("pod-0", cell=None), "pod-1": make_pod("pod-1", cell="cell-a")})
         )
 
-        assert update.affected_parents == {"cell-a"}
+        assert affected == {"cell-a"}
         assert "pod-0" not in store
         assert "pod-1" in store
 

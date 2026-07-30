@@ -60,8 +60,7 @@ class SourceStreamDriver:
             if first and not isinstance(event, ReplaceEvent):
                 raise RuntimeError(f"A source stream must open with ReplaceEvent, got {event=}")
             first = False
-            update = self._store.handle_event(event)
-            self._on_affected(update.affected_parents)
+            self._on_affected(self._store.handle_event(event))
             if isinstance(event, ReplaceEvent):
                 self._synced.set()
 
