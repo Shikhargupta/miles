@@ -28,7 +28,7 @@ from miles.backends.megatron_utils.lora_utils import _native_adapter_shard_name,
 from miles.utils.lora import lora_rollout_enabled
 
 
-def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, num_query_groups=8):
+def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, num_query_groups=8, q_lora_rank=1536):
     layers = []
     for i in range(num_layers):
         attn = SimpleNamespace(layer_number=i + 1)
@@ -39,6 +39,7 @@ def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, nu
         attention_output_gate=output_gate,
         multi_latent_attention=mla,
         num_query_groups=num_query_groups,
+        q_lora_rank=q_lora_rank,
     )
     return SimpleNamespace(config=cfg, decoder=SimpleNamespace(layers=layers))
 
@@ -230,6 +231,19 @@ class TestShippedRegistries:
         """
         model = _fake_model(output_gate=True, num_query_groups=2)
         _assert_supported_architecture(model.config, tp_size=2)
+
+    def test_mla_without_q_lora_rank_is_rejected(self):
+        """DeepSeek-V2-Lite / Moonlight: the query path is uncompressed, so the export is an
+        unfused q_proj plus kv_a_proj_with_mqa, which SGLang's fused qkv_a loader cannot ingest.
+
+        Every shipped MLA registry sets --q-lora-rank (glm4.7-flash 768, kimi-k25 1536,
+        glm5-744B-A40B 2048, deepseek-v4-flash 1024), so this rejects only the uncovered layout.
+        """
+        model = _fake_model(mla=True, q_lora_rank=None)
+        with pytest.raises(AssertionError) as excinfo:
+            _assert_supported_architecture(model.config, tp_size=1)
+        assert "q_lora_rank" in str(excinfo.value)
+        assert "--lora-provider-path" in str(excinfo.value)
 
     def test_qwen3_5_above_query_group_count_still_rejected(self):
         model = _fake_model(output_gate=True, num_query_groups=2)

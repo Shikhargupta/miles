@@ -61,6 +61,11 @@ torch.backends.cudnn.allow_tf32 = False
 FAILS = []
 
 
+def note(message):
+    if dist.get_rank() == 0:
+        print(f"[SKIP] {message}", flush=True)
+
+
 def check(name, ok, detail=""):
     tag = "PASS" if ok else "FAIL"
     if not ok:
@@ -448,6 +453,34 @@ def main():
     if a.tp > 1:
         changed = any(not torch.allclose(pre[n], q.main_grad) for n, q in tagged)
         check(f"{label} TP sum actually combined distinct partial grads", changed)
+
+    if a.tp > 1 and not a.sp:
+        captured: dict[str, torch.Tensor] = {}
+
+        def _capture(_module, _inputs, output):
+            output.register_hook(lambda g: captured.setdefault("grad", g.detach().clone()))
+
+        upstream, _ = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
+        apply_native_lora(upstream, Args())
+        for prm in upstream.parameters():
+            if prm.requires_grad and prm.dim() == 2:
+                torch.nn.init.normal_(prm, std=0.02)
+        probe = upstream.embedding.register_forward_hook(_capture)
+        upstream.train()
+        fwd(upstream, tokens, pos, mask).square().mean().backward()
+        probe.remove()
+
+        if "grad" in captured:
+            parts = [torch.empty_like(captured["grad"]) for _ in range(a.tp)]
+            dist.all_gather(parts, captured["grad"].contiguous(), group=tp_group)
+            spread = max((pg - parts[0]).abs().max().item() for pg in parts)
+            check(
+                f"{label} first-activation grad consistent across TP",
+                spread < 1e-5,
+                f"max spread={spread:.3e}",
+            )
+    elif a.tp > 1:
+        note(f"{label} first-activation grad: skipped (sequence-parallel shards it per rank)")
 
     ddp_model, ddp_cfg = build(a.tp, a.sp, mla=a.mla, output_gate=a.gate)
     apply_native_lora(ddp_model, Args())

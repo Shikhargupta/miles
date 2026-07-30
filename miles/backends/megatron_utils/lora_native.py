@@ -276,6 +276,13 @@ def _branch_input(x: torch.Tensor, module: nn.Module, spec: _Spec) -> torch.Tens
     case the branch has to recompute it to see the same input the base GEMM does.
     Under sequence parallelism the module's input is sequence-sharded, so gather
     it back to the full sequence the adapter's replicated ``A`` expects.
+
+    Without sequence parallelism the input is replicated across TP instead, and each
+    rank's branch produces only its own output slice, so each computes a partial
+    ``dL/dx``. ``copy_to_tensor_model_parallel_region`` is identity forward and
+    all-reduce backward, which sums those partials the way the base GEMM's own copy
+    does; leaving it out sends every upstream layer a fraction of the adapter's
+    gradient.
     """
     gamma = getattr(module, "layer_norm_weight", None)
     if gamma is not None:
@@ -284,6 +291,10 @@ def _branch_input(x: torch.Tensor, module: nn.Module, spec: _Spec) -> torch.Tens
         from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 
         x = gather_from_sequence_parallel_region(x)
+    elif spec.tp_size > 1:
+        from megatron.core.tensor_parallel.mappings import copy_to_tensor_model_parallel_region
+
+        x = copy_to_tensor_model_parallel_region(x)
     return _dropout(x, spec, module.training)
 
 
@@ -583,6 +594,13 @@ def _assert_supported_architecture(config, tp_size: int = 1) -> None:
     attention adapter, which ``apply_native_lora`` reports.
     """
     if bool(getattr(config, "multi_latent_attention", False)):
+        assert getattr(config, "q_lora_rank", None), (
+            "native LoRA does not support multi-latent attention without q_lora_rank "
+            "(DeepSeek-V2-Lite, Moonlight): the query path is uncompressed, so the adapter exports "
+            "an unfused q_proj alongside kv_a_proj_with_mqa, and SGLang's loader expects the fused "
+            "qkv_a layout. Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a "
+            "model-specific provider."
+        )
         return
     num_query_groups = getattr(config, "num_query_groups", None)
     assert num_query_groups is None or num_query_groups >= tp_size, (
@@ -619,6 +637,32 @@ def _require_grad_on_first_activation(model) -> nn.Module | None:
     return embedding
 
 
+def _assert_supported_run(args, config, spec: _Spec) -> None:
+    """Reject flag combinations this implementation is known to get wrong.
+
+    Each is a fail-fast rather than a fix: the interaction is understood but not
+    handled, and silently producing wrong weights is the worse outcome.
+    """
+    assert not getattr(args, "overlap_param_gather", False), (
+        "native LoRA does not support --overlap-param-gather: the adapter is never called as a "
+        "module (its params are read inside the wrapped module's closure), so no forward pre-hook "
+        "dispatches its bucket's all-gather and step 1 onward would run on stale shards. "
+        "Drop the flag, or use --megatron-to-hf-mode bridge."
+    )
+    assert not getattr(args, "moe_shared_expert_overlap", False), (
+        "native LoRA does not support --moe-shared-expert-overlap: the dispatcher owns the "
+        "shared-expert communication, so the adapter's gather/reduce derived from the global "
+        "sequence-parallel flag no longer matches the module's effective parallel mode. "
+        "Drop the flag, or use --megatron-to-hf-mode bridge."
+    )
+    if getattr(args, "colocate", False) and spec.targets:
+        assert getattr(args, "enable_weights_backuper", True), (
+            "native LoRA under --colocate needs the weights backuper: the adapter pages are "
+            "memory-saver-paused while the export runs, so the sync would read released memory. "
+            "Keep the backuper enabled, or drop --colocate."
+        )
+
+
 def apply_native_lora(model, args):
     """Attach LoRA to ONE built model chunk, before the Float16Module / DDP wrap.
 
@@ -628,6 +672,7 @@ def apply_native_lora(model, args):
     config = model.config
     spec = _Spec.from_args(args, config)
     _assert_supported_architecture(config, tp_size=spec.tp_size)
+    _assert_supported_run(args, config, spec)
 
     for param in model.parameters():
         param.requires_grad = False
