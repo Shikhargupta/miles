@@ -1,16 +1,7 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-from pydantic import model_validator
-
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-
-RPC_PORT_NAME = "rpc"
-DEFAULT_RPC_PORT = 8000
-
-
-def _port_info_name(port_info: "PortInfo | dict") -> str:
-    return port_info["name"] if isinstance(port_info, dict) else port_info.name
 
 
 class PortInfo(FrozenStrictBaseModel):
@@ -27,30 +18,50 @@ class SchedulingSpec(FrozenStrictBaseModel):
     num_gpus_per_worker: float
 
 
+class RayActorOptions(FrozenStrictBaseModel):
+    num_cpus: float
+    num_gpus: float
+
+
+class WorkerPlacement(FrozenStrictBaseModel):
+    local_index: int
+    global_rank: int
+    base_gpu_id: int
+
+
+class CellAddressing(FrozenStrictBaseModel):
+    node_ips: list[str]
+    master_ports: dict[str, int]
+    per_worker_ports: list[dict[str, int]]
+
+
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
     port_infos: list[PortInfo]
-    env_var: Callable[[], dict[str, str]]
+    env_var: Callable[[WorkerPlacement], dict[str, str]]
     scheduling: SchedulingSpec
+    ray_options: RayActorOptions
+
+
+class WorkerLaunchPlan(FrozenStrictBaseModel):
+    cmd: str
+    envs: dict[str, str] = {}
 
 
 class CommandWorkerSpec(BaseWorkerSpec):
-    launch_command: str
+    build_launch_plan: Callable[[WorkerPlacement, CellAddressing], WorkerLaunchPlan]
+    build_member_payloads: Callable[[CellAddressing], list[dict[str, Any]]]
+    wait_cell_ready: Callable[[CellAddressing, Callable[[], bool]], Awaitable[None]]
 
 
 class ServeWorkerSpec(BaseWorkerSpec):
     worker_class: str
-    ctor_kwargs: Callable[[], dict[str, Any]]
+    ctor_kwargs: Callable[[WorkerPlacement], dict[str, Any]]
+    build_init_payloads: Callable[[CellAddressing], list[dict[str, Any]]]
 
-    @model_validator(mode="before")
-    @classmethod
-    def _inject_rpc_port(cls, values: dict) -> dict:
-        if "port_infos" not in values:
-            return values
 
-        port_infos = list(values["port_infos"])
-        if all(_port_info_name(port_info) != RPC_PORT_NAME for port_info in port_infos):
-            port_infos.append(
-                PortInfo(name=RPC_PORT_NAME, static_port=DEFAULT_RPC_PORT, mode="per_worker", allow_dynamic=True)
-            )
-        return {**values, "port_infos": port_infos}
+class BaseCellSpec(FrozenStrictBaseModel):
+    worker: BaseWorkerSpec
+    cell_id: str
+    rank_offset: int
+    gpu_offset: int

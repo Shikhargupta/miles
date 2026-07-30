@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.ray.specs.inference import (
@@ -10,6 +11,8 @@ from miles.ray.specs.inference import (
     compute_nodes_per_engine,
     compute_rollout_offset,
 )
+from miles.utils.test_utils.mock_sglang_engine import parse_cmd_flags
+from miles.utils.workers.worker_spec import CellAddressing, CommandWorkerSpec, WorkerPlacement
 
 
 def _write_yaml(tmp_path, content: str):
@@ -178,21 +181,158 @@ class TestComputeInferenceModelSpecs:
         assert ref.cells[0].worker.model_path == "/ref/model"
 
 
+def _placement(global_rank: int = 0) -> WorkerPlacement:
+    return WorkerPlacement(local_index=0, global_rank=global_rank, base_gpu_id=0)
+
+
+class TestEngineLaunchIsDrivenByTheSpec:
+    """The worker manager launches from the spec alone, so the spec must carry all of it."""
+
+    def _worker(self, **kwargs):
+        (model,) = compute_inference_model_specs(
+            make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=1, **kwargs)
+        )
+        return model.cells[0].worker
+
+    def test_the_spec_is_a_command_worker_and_names_what_it_asks_ray_for(self):
+        """A manager that knew the worker kind or the gpu fraction itself could not serve other workers."""
+        worker = self._worker()
+        assert isinstance(worker, CommandWorkerSpec)
+        assert worker.ray_options.num_cpus == 0.2
+        assert worker.ray_options.num_gpus == 0.2
+
+    def test_the_launch_plan_renders_the_engine_command_from_placement_and_addressing(self):
+        """Rank and base gpu come from the placement; the addressing feeds the command flags."""
+        worker = self._worker()
+        addressing = CellAddressing(
+            node_ips=["10.0.0.1"],
+            master_ports={"dist_init": 31500},
+            per_worker_ports=[{"server": 30000, "nccl": 30500, "engine_info_bootstrap": 31000}],
+        )
+        plan = worker.build_launch_plan(WorkerPlacement(local_index=0, global_rank=0, base_gpu_id=0), addressing)
+        flags = parse_cmd_flags(plan.cmd)
+        assert flags["host"] == "10.0.0.1" and flags["port"] == 30000
+        assert flags["nccl_port"] == 30500
+        assert flags["dist_init_addr"] == "10.0.0.1:31500"
+
+    async def test_wait_cell_ready_fails_fast_when_the_worker_died(self):
+        """A dead worker must abort the readiness wait instead of polling forever."""
+        worker = self._worker()
+        addressing = CellAddressing(
+            node_ips=["127.0.0.1"],
+            master_ports={"dist_init": 31500},
+            per_worker_ports=[{"server": 1, "nccl": 30500, "engine_info_bootstrap": 31000}],
+        )
+        with pytest.raises(Exception, match="terminated"):
+            await worker.wait_cell_ready(addressing, lambda: False)
+
+    def test_member_payloads_map_the_allocated_ports_onto_the_engine_addressing(self):
+        """Only the spec knows which addressing key each declared port name feeds."""
+        worker = self._worker()
+        addressing = CellAddressing(
+            node_ips=["10.0.0.1", "10.0.0.2"],
+            master_ports={"dist_init": 31500},
+            per_worker_ports=[
+                {"server": 30000, "nccl": 30500, "engine_info_bootstrap": 31000},
+                {"server": 30001, "nccl": 30501, "engine_info_bootstrap": 31001},
+            ],
+        )
+
+        payloads = worker.build_member_payloads(addressing)
+
+        assert payloads == [
+            dict(
+                host="10.0.0.1",
+                port=30000,
+                nccl_port=30500,
+                engine_info_bootstrap_port=31000,
+                dist_init_addr="10.0.0.1:31500",
+            ),
+            dict(
+                host="10.0.0.2",
+                port=30001,
+                nccl_port=30501,
+                engine_info_bootstrap_port=31001,
+                dist_init_addr="10.0.0.1:31500",
+            ),
+        ]
+
+    def test_a_prefill_payload_carries_its_disaggregation_bootstrap_port(self, tmp_path):
+        """The decode side dials that port, so it must reach the engine's addressing."""
+        cfg = _write_yaml(
+            tmp_path,
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "prefill", "num_gpus": 1, "num_gpus_per_engine": 1},
+                    {"worker_type": "decode", "num_gpus": 1, "num_gpus_per_engine": 1},
+                ]
+            ),
+        )
+        (model,) = compute_inference_model_specs(make_args(sglang_config=cfg, rollout_num_gpus=2))
+        addressing = CellAddressing(
+            node_ips=["10.0.0.1"],
+            master_ports={"dist_init": 31500},
+            per_worker_ports=[
+                {
+                    "server": 30000,
+                    "nccl": 30500,
+                    "engine_info_bootstrap": 31000,
+                    "disaggregation_bootstrap": 32000,
+                }
+            ],
+        )
+
+        (payload,) = model.cells[0].worker.build_member_payloads(addressing)
+
+        assert payload["disaggregation_bootstrap_port"] == 32000
+
+    def test_an_unexpected_master_port_set_is_rejected(self):
+        """dist_init is the only master endpoint an engine cell has, so anything else is a bug."""
+        worker = self._worker()
+        addressing = CellAddressing(node_ips=["10.0.0.1"], master_ports={}, per_worker_ports=[{}])
+        with pytest.raises(AssertionError, match="master_ports"):
+            worker.build_member_payloads(addressing)
+
+
+class TestRejectedWorkerSpecs:
+    def test_external_rollout_has_no_launchable_spec(self):
+        """The external allocator was removed; spec computation must fail loudly until it returns."""
+        with pytest.raises(NotImplementedError, match="external rollout"):
+            compute_inference_model_specs(make_args(rollout_external=True))
+
+    @pytest.mark.parametrize("overrides", [{"port": 40000}, {"host": "10.9.9.9"}, {"host": "10.9.9.9", "port": 40000}])
+    def test_an_override_of_host_or_port_is_rejected(self, overrides):
+        """The engine's url is derived from the allocator, so an override would address the wrong endpoint."""
+        from tests.fast.ray.rollout.conftest import make_cell_spec
+
+        with pytest.raises(ValidationError, match="must not override host/port"):
+            make_cell_spec(sglang_overrides=overrides)
+
+
 class TestComputeEngineEnvVars:
     def test_custom_all_reduce_v2_disabled_only_for_colocated_multi_gpu_engines(self):
         """Colocated multi-gpu engines hit the v2 all-reduce bug, so only they turn it off."""
-        colocated = compute_engine_env_vars(make_args(colocate=True, rollout_num_gpus_per_engine=2))
+        colocated = compute_engine_env_vars(
+            make_args(colocate=True, rollout_num_gpus_per_engine=2), _placement(), worker_type="regular"
+        )
         assert colocated["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"] == "0"
-        plain = compute_engine_env_vars(make_args(colocate=False, rollout_num_gpus_per_engine=2))
+        plain = compute_engine_env_vars(
+            make_args(colocate=False, rollout_num_gpus_per_engine=2), _placement(), worker_type="regular"
+        )
         assert plain["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"] == "1"
 
     def test_visible_device_env_vars_are_passed_through(self):
         """Engines must see all gpus of their node, so the noset flags are always on."""
         from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
-        env_vars = compute_engine_env_vars(make_args())
+        env_vars = compute_engine_env_vars(make_args(), _placement(), worker_type="regular")
         for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST:
             assert env_vars[name] == "1"
+
+    def test_the_deep_gemm_cache_dir_is_per_worker_type_and_rank(self):
+        """Co-located engines must not share a JIT cache dir, so it carries their identity."""
+        env_vars = compute_engine_env_vars(make_args(), _placement(global_rank=3), worker_type="prefill")
+        assert env_vars["SGLANG_DG_CACHE_DIR"] == "/tmp/sglang_deep_gemm/prefill_rank_3"
 
 
 class TestComputeNodesPerEngine:

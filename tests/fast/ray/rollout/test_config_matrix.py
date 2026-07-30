@@ -175,19 +175,3 @@ class TestPdDisaggregation:
         m2 = ModelConfig(name="b", server_groups=[ServerGroupConfig(worker_type="prefill", num_gpus=4)])
         cfg = SglangConfig(models=[m1, m2])
         assert cfg.has_pd_disaggregation is True
-
-
-# ----------------------------- rollout_external path -----------------------------
-
-
-class TestRolloutExternalPath:
-    async def test_starting_engines_in_external_mode_is_not_implemented(self):
-        """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
-        from tests.fast.ray.rollout.conftest import make_cell_spec
-
-        from miles.ray.rollout.server_cell import ServerCell
-        from miles.utils.workers.addr_allocator import PortAllocator
-
-        cell = ServerCell(args=make_args(num_gpus_per_node=8, rollout_external=True), spec=make_cell_spec())
-        with pytest.raises(NotImplementedError):
-            await cell.start_engines(PortAllocator())

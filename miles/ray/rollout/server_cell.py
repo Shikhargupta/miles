@@ -2,15 +2,14 @@ import asyncio
 import dataclasses
 import functools
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
-from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_engine_launch_plan, format_v6_uri
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import (
     AddrInfo,
@@ -20,18 +19,14 @@ from miles.ray.rollout.cell_state import (
     StateAllocatedUninitialized,
     StateStopped,
 )
-from miles.ray.specs.inference import (
-    ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME,
-    ENGINE_DIST_INIT_PORT_NAME,
-    ENGINE_INFO_BOOTSTRAP_PORT_NAME,
-    ENGINE_NCCL_PORT_NAME,
-    ENGINE_SERVER_PORT_NAME,
-    InferenceCellSpec,
-    InferenceWorkerSpec,
-)
+from miles.ray.specs.inference import InferenceCellSpec
 from miles.utils.workers.addr_allocator import PortAllocator
-from miles.utils.workers.cell_launch import CellAddressing, allocate_cell_ports, create_pg_worker_actor, probe_node_ips
-from miles.utils.workers.command_actor import CommandActor
+from miles.utils.workers.cell_launch import (
+    allocate_cell_ports,
+    cell_worker_placements,
+    create_cell_worker_actors,
+    probe_node_ips,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,29 +125,9 @@ class ServerCell:
         return SGLangApiClient(server_url=self.addr_info.server_url)
 
     async def start_engines(self, port_allocator: PortAllocator) -> None:
-        assert not ({"host", "port"} & set(self.sglang_overrides)), (
-            f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
-            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
-        )
         assert not self.is_allocated, "the caller starts only stopped cells"
 
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
-
-        num_gpu_per_engine = int(self.spec.worker.scheduling.num_gpus_per_worker)
-
-        actor_handles = [
-            launch_sglang_ray_actor(
-                args=self.args,
-                pg=self.pg,
-                spec=self.spec.worker,
-                global_rank=self.rank_offset + local_index,
-                gpu_index=self.gpu_offset + local_index * num_gpu_per_engine,
-            )
-            for local_index in range(self.num_nodes)
-        ]
+        actor_handles = create_cell_worker_actors(spec=self.spec, pg=self.pg)
 
         self._mark_allocated_uninitialized(actor_handles)
 
@@ -162,7 +137,7 @@ class ServerCell:
             actors=actor_handles,
             node_ips=await probe_node_ips(actor_handles),
         )
-        addr_and_ports = build_engine_addr_and_ports(addressing=addressing)
+        member_payloads = self.spec.worker.build_member_payloads(addressing)
 
         self._mark_addressing(
             [
@@ -170,41 +145,30 @@ class ServerCell:
                     server_url=build_server_url(host=entry["host"], port=entry["port"]),
                     bootstrap_port=entry.get("disaggregation_bootstrap_port"),
                 )
-                for entry in addr_and_ports
+                for entry in member_payloads
             ]
         )
 
-        global_ranks = [self.rank_offset + local_index for local_index in range(self.num_nodes)]
+        placements = cell_worker_placements(spec=self.spec, pg=self.pg)
 
         if env_report := self.args.env_report:
             await asyncio.gather(
                 *[
-                    actor._collect_env_report.remote(role="rollout", rank=rank, partial_env_report=env_report)
-                    for rank, actor in zip(global_ranks, actor_handles, strict=True)
+                    actor._collect_env_report.remote(
+                        role="rollout", rank=placement.global_rank, partial_env_report=env_report
+                    )
+                    for placement, actor in zip(placements, actor_handles, strict=True)
                 ]
             )
 
-        plans = [
-            compute_engine_launch_plan(
-                self.args,
-                rank=rank,
-                worker_type=self.worker_type,
-                base_gpu_id=self.engine_gpu_ids[local_index][0],
-                sglang_overrides=self.sglang_overrides,
-                num_gpus_per_engine=self.num_gpus_per_engine,
-                addr_and_ports=entry,
-            )
-            for local_index, (rank, entry) in enumerate(zip(global_ranks, addr_and_ports, strict=True))
-        ]
+        plans = [self.spec.worker.build_launch_plan(placement, addressing) for placement in placements]
 
         await asyncio.gather(
-            *[actor.run.remote(cmd=plan.cmd, envs={}) for actor, plan in zip(actor_handles, plans, strict=True)]
+            *[actor.run.remote(cmd=plan.cmd, envs=plan.envs) for actor, plan in zip(actor_handles, plans, strict=True)]
         )
 
-        await wait_server_healthy(
-            server_url=self.addr_info.server_url,
-            api_key=plans[0].api_key,
-            is_process_alive=functools.partial(_engine_actor_is_alive, self.primary_actor_handle),
+        await self.spec.worker.wait_cell_ready(
+            addressing, functools.partial(_engine_actor_is_alive, self.primary_actor_handle)
         )
 
     async def start(
@@ -304,56 +268,6 @@ class ServerCell:
             worker_url=self.addr_info.server_url,
             use_legacy_api=use_legacy_router_api(self.args),
         )
-
-
-def build_engine_addr_and_ports(*, addressing: CellAddressing) -> list[dict[str, Any]]:
-    assert set(addressing.master_ports) == {ENGINE_DIST_INIT_PORT_NAME}, f"{addressing.master_ports=}"
-    dist_init_addr = f"{format_v6_uri(addressing.node_ips[0])}:{addressing.master_ports[ENGINE_DIST_INIT_PORT_NAME]}"
-
-    payloads: list[dict[str, Any]] = []
-    for node_ip, ports in zip(addressing.node_ips, addressing.per_worker_ports, strict=True):
-        payload = dict(
-            host=format_v6_uri(node_ip),
-            port=ports[ENGINE_SERVER_PORT_NAME],
-            nccl_port=ports[ENGINE_NCCL_PORT_NAME],
-            engine_info_bootstrap_port=ports[ENGINE_INFO_BOOTSTRAP_PORT_NAME],
-            dist_init_addr=dist_init_addr,
-        )
-        if ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME in ports:
-            payload["disaggregation_bootstrap_port"] = ports[ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME]
-        payloads.append(payload)
-    return payloads
-
-
-def launch_sglang_ray_actor(
-    *,
-    args: Any,
-    pg: Any,
-    spec: InferenceWorkerSpec,
-    global_rank: int,
-    gpu_index: int,
-) -> ray.actor.ActorHandle:
-    pg, reordered_bundle_indices, _ = pg
-
-    num_gpus = 0.2
-    num_cpus = num_gpus
-
-    env_vars = spec.env_var()
-    # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
-    # to enable this isolation.
-    env_vars["SGLANG_DG_CACHE_DIR"] = os.environ.get(
-        "SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{spec.worker_type}_rank_{global_rank}"
-    )
-
-    return create_pg_worker_actor(
-        worker_cls=CommandActor,
-        pg_handle=pg,
-        bundle_index=reordered_bundle_indices[gpu_index],
-        env_vars=env_vars,
-        num_cpus=num_cpus,
-        num_gpus=num_gpus,
-        ctor_kwargs={},
-    )
 
 
 def _engine_actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:

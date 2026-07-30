@@ -1,19 +1,82 @@
 import asyncio
 import functools
-from dataclasses import dataclass
+import importlib
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.workers.addr_allocator import PortAllocator
-from miles.utils.workers.worker_spec import PortInfo
+from miles.utils.workers.command_actor import CommandActor
+from miles.utils.workers.worker_spec import (
+    BaseCellSpec,
+    BaseWorkerSpec,
+    CellAddressing,
+    CommandWorkerSpec,
+    PortInfo,
+    ServeWorkerSpec,
+    WorkerPlacement,
+)
 
 
-@dataclass(frozen=True)
-class CellAddressing:
-    node_ips: list[str]
-    master_ports: dict[str, int]
-    per_worker_ports: list[dict[str, int]]
+def cell_worker_placements(*, spec: BaseCellSpec, pg) -> list[WorkerPlacement]:
+    """Where each worker of the cell goes; the pg index math lives only here."""
+    _, _, reordered_gpu_ids = pg
+    num_gpus_per_worker = int(spec.worker.scheduling.num_gpus_per_worker)
+    return [
+        WorkerPlacement(
+            local_index=local_index,
+            global_rank=spec.rank_offset + local_index,
+            base_gpu_id=int(reordered_gpu_ids[spec.gpu_offset + local_index * num_gpus_per_worker]),
+        )
+        for local_index in range(spec.worker.scheduling.num_workers_per_cell)
+    ]
+
+
+def create_cell_worker_actors(*, spec: BaseCellSpec, pg) -> list[ray.actor.ActorHandle]:
+    """Create every worker of one cell, from the spec alone."""
+    pg_handle, reordered_bundle_indices, _ = pg
+    num_gpus_per_worker = int(spec.worker.scheduling.num_gpus_per_worker)
+
+    return [
+        create_cell_worker_actor(
+            worker=spec.worker,
+            placement=placement,
+            pg_handle=pg_handle,
+            bundle_index=reordered_bundle_indices[spec.gpu_offset + placement.local_index * num_gpus_per_worker],
+        )
+        for placement in cell_worker_placements(spec=spec, pg=pg)
+    ]
+
+
+def create_cell_worker_actor(
+    *,
+    worker: BaseWorkerSpec,
+    placement: WorkerPlacement,
+    pg_handle: object,
+    bundle_index: int,
+) -> ray.actor.ActorHandle:
+    if isinstance(worker, CommandWorkerSpec):
+        worker_cls: type = CommandActor
+        ctor_kwargs: dict = {}
+    else:
+        assert isinstance(worker, ServeWorkerSpec), f"{worker=} does not say how to bring a worker up"
+        worker_cls = _resolve_worker_class(worker.worker_class)
+        ctor_kwargs = worker.ctor_kwargs(placement)
+
+    return create_pg_worker_actor(
+        worker_cls=worker_cls,
+        pg_handle=pg_handle,
+        bundle_index=bundle_index,
+        env_vars=worker.env_var(placement),
+        num_cpus=worker.ray_options.num_cpus,
+        num_gpus=worker.ray_options.num_gpus,
+        ctor_kwargs=ctor_kwargs,
+    )
+
+
+def _resolve_worker_class(worker_class: str) -> type:
+    module_path, _, class_name = worker_class.rpartition(".")
+    return getattr(importlib.import_module(module_path), class_name)
 
 
 def create_pg_worker_actor(

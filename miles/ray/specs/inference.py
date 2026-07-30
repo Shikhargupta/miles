@@ -2,18 +2,35 @@ import dataclasses
 import functools
 import logging
 import os
+from collections.abc import Callable
 from typing import Any, Literal
 
+from pydantic import model_validator
+
+from miles.backends.sglang_utils.sglang_api_client import wait_server_healthy
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
+from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_engine_launch_plan, format_v6_uri
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.worker_spec import BaseWorkerSpec, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import (
+    BaseCellSpec,
+    CellAddressing,
+    CommandWorkerSpec,
+    PortInfo,
+    RayActorOptions,
+    SchedulingSpec,
+    WorkerLaunchPlan,
+    WorkerPlacement,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def compute_engine_env_vars(args) -> dict[str, str]:
+ENGINE_RAY_OPTIONS = RayActorOptions(num_cpus=0.2, num_gpus=0.2)
+
+
+def compute_engine_env_vars(args, placement: WorkerPlacement, *, worker_type: str) -> dict[str, str]:
     env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
         key: os.environ.get(key, default_val)
         for key, default_val in {
@@ -31,6 +48,11 @@ def compute_engine_env_vars(args) -> dict[str, str]:
         }.items()
     }
     env_vars.update(dumper_utils.get_sglang_env(args))
+    # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
+    # to enable this isolation.
+    env_vars["SGLANG_DG_CACHE_DIR"] = os.environ.get(
+        "SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{worker_type}_rank_{placement.global_rank}"
+    )
     return env_vars
 
 
@@ -41,11 +63,19 @@ ENGINE_DIST_INIT_PORT_NAME = "dist_init"
 ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME = "disaggregation_bootstrap"
 
 
-class InferenceWorkerSpec(BaseWorkerSpec):
+class InferenceWorkerSpec(CommandWorkerSpec):
     worker_type: Literal["regular", "prefill", "decode"]
     sglang_overrides: dict[str, Any]
     needs_offload: bool
     model_path: str | None
+
+    @model_validator(mode="after")
+    def _reject_addressing_overrides(self) -> "InferenceWorkerSpec":
+        assert not ({"host", "port"} & set(self.sglang_overrides)), (
+            f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
+            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
+        )
+        return self
 
     @property
     def num_gpus_per_engine(self) -> int:
@@ -54,11 +84,8 @@ class InferenceWorkerSpec(BaseWorkerSpec):
         return int(num_gpus)
 
 
-class InferenceCellSpec(FrozenStrictBaseModel):
+class InferenceCellSpec(BaseCellSpec):
     worker: InferenceWorkerSpec
-    cell_id: str
-    rank_offset: int
-    gpu_offset: int
 
 
 class InferenceModelSpec(FrozenStrictBaseModel):
@@ -79,6 +106,9 @@ class _GroupSpecs:
 
 
 def compute_inference_model_specs(args) -> list[InferenceModelSpec]:
+    if args.rollout_external:
+        raise NotImplementedError("external rollout address allocation was removed and a new implementation is coming")
+
     config = resolve_sglang_config(args)
 
     rollout_pg_offset = compute_rollout_offset(args)
@@ -170,12 +200,22 @@ def _compute_specs_of_group(
         worker = InferenceWorkerSpec(
             name=f"sglang-{model_cfg.name}-group{group_index}",
             port_infos=compute_engine_port_infos(args, worker_type=group_cfg.worker_type),
-            env_var=functools.partial(compute_engine_env_vars, args),
+            env_var=functools.partial(compute_engine_env_vars, args, worker_type=group_cfg.worker_type),
             scheduling=SchedulingSpec(
                 num_cells=num_engines // nodes_per_engine,
                 num_workers_per_cell=nodes_per_engine,
                 num_gpus_per_worker=num_gpu_per_engine_local,
             ),
+            ray_options=ENGINE_RAY_OPTIONS,
+            build_launch_plan=functools.partial(
+                _build_engine_launch_plan,
+                args,
+                worker_type=group_cfg.worker_type,
+                sglang_overrides=overrides,
+                num_gpus_per_engine=gpus_per_engine,
+            ),
+            build_member_payloads=_build_engine_member_payloads,
+            wait_cell_ready=functools.partial(_wait_engine_ready, args, sglang_overrides=overrides),
             worker_type=group_cfg.worker_type,
             sglang_overrides=overrides,
             needs_offload=needs_offload,
@@ -197,6 +237,63 @@ def _compute_specs_of_group(
         engine_offset=engine_offset + num_engines,
         gpu_offset=gpu_offset + group_cfg.num_gpus,
     )
+
+
+def _build_engine_launch_plan(
+    args,
+    placement: WorkerPlacement,
+    addressing: CellAddressing,
+    *,
+    worker_type: str,
+    sglang_overrides: dict[str, Any],
+    num_gpus_per_engine: int,
+) -> WorkerLaunchPlan:
+    addr_and_ports = _build_engine_member_payloads(addressing)[placement.local_index]
+    plan = compute_engine_launch_plan(
+        args,
+        rank=placement.global_rank,
+        worker_type=worker_type,
+        base_gpu_id=placement.base_gpu_id,
+        sglang_overrides=sglang_overrides,
+        num_gpus_per_engine=num_gpus_per_engine,
+        addr_and_ports=addr_and_ports,
+    )
+    return WorkerLaunchPlan(cmd=plan.cmd, envs={})
+
+
+async def _wait_engine_ready(
+    args,
+    addressing: CellAddressing,
+    is_worker_alive: Callable[[], bool],
+    *,
+    sglang_overrides: dict[str, Any],
+) -> None:
+    primary = _build_engine_member_payloads(addressing)[0]
+    default_api_key = args.sglang_api_key if hasattr(args, "sglang_api_key") else None
+    await wait_server_healthy(
+        server_url=build_server_url(host=primary["host"], port=primary["port"]),
+        api_key=sglang_overrides.get("api_key", default_api_key),
+        is_process_alive=is_worker_alive,
+    )
+
+
+def _build_engine_member_payloads(addressing: CellAddressing) -> list[dict[str, Any]]:
+    assert set(addressing.master_ports) == {ENGINE_DIST_INIT_PORT_NAME}, f"{addressing.master_ports=}"
+    dist_init_addr = f"{format_v6_uri(addressing.node_ips[0])}:{addressing.master_ports[ENGINE_DIST_INIT_PORT_NAME]}"
+
+    payloads: list[dict[str, Any]] = []
+    for node_ip, ports in zip(addressing.node_ips, addressing.per_worker_ports, strict=True):
+        payload = dict(
+            host=format_v6_uri(node_ip),
+            port=ports[ENGINE_SERVER_PORT_NAME],
+            nccl_port=ports[ENGINE_NCCL_PORT_NAME],
+            engine_info_bootstrap_port=ports[ENGINE_INFO_BOOTSTRAP_PORT_NAME],
+            dist_init_addr=dist_init_addr,
+        )
+        if ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME in ports:
+            payload["disaggregation_bootstrap_port"] = ports[ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME]
+        payloads.append(payload)
+    return payloads
 
 
 def compute_engine_port_infos(args, *, worker_type: str) -> list[PortInfo]:

@@ -5,8 +5,6 @@ from __future__ import annotations
 import pytest
 import ray
 
-# Production launch_sglang_ray_actor hard-codes num_gpus=0.2, num_cpus=0.2 on
-# the actor's .options(...) call, so each PG bundle must satisfy that.
 _PER_ENGINE_NUM_CPUS = 0.2
 _PER_ENGINE_NUM_GPUS = 0.2
 
@@ -110,7 +108,7 @@ def mock_engine_class(ray_local_mode):
 
     Production wraps via ``ray.remote(CommandActor)``; substituting the
     already-wrapped class would double-wrap, so callers monkeypatch the
-    unwrapped class inside ``miles.ray.rollout.server_cell``."""
+    unwrapped class inside ``miles.utils.workers.cell_launch``."""
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     return MockSGLangEngine.__ray_actor_class__
@@ -121,6 +119,6 @@ def patched_sglang_engine(monkeypatch, mock_engine_class):
     """Replace the engine CommandActor with the mock; the real addr allocator runs, and
     each mock engine serves HTTP on the port it is allocated, so the urls
     the cell derives from the allocator actually serve requests."""
-    import miles.ray.rollout.server_cell as cell_mod
+    import miles.utils.workers.cell_launch as cell_launch_mod
 
-    monkeypatch.setattr(cell_mod, "CommandActor", mock_engine_class)
+    monkeypatch.setattr(cell_launch_mod, "CommandActor", mock_engine_class)

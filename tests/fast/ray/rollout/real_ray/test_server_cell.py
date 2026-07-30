@@ -9,7 +9,6 @@ from tests.fast.ray.rollout.real_ray.conftest import build_cells, start_cells
 
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.ray.rollout.rollout_server import RolloutServer
-from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.workers.addr_allocator import PortAllocator
 
 
@@ -242,15 +241,3 @@ class TestStartEnginesRealAllocator:
 
         for handle in _all_actor_handles(a) + _all_actor_handles(b):
             ray.kill(handle)
-
-
-class TestRejectedConfigurations:
-    @pytest.mark.parametrize("overrides", [{"port": 40000}, {"host": "10.9.9.9"}, {"host": "10.9.9.9", "port": 40000}])
-    async def test_host_or_port_override_is_rejected(self, overrides):
-        """An override of host or port would make the rollout process address the wrong endpoint."""
-        from tests.fast.ray.rollout.conftest import make_cell_spec
-
-        cell = ServerCell(args=make_args(num_gpus_per_node=8), spec=make_cell_spec(sglang_overrides=overrides))
-
-        with pytest.raises(AssertionError, match="must not override host/port"):
-            await cell.start_engines(PortAllocator())

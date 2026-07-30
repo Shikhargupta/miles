@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import ray
 from tests.fast.ray.rollout.conftest import fake_engine, make_args, make_cell_spec
 
-import miles.ray.rollout.server_cell as server_cell_module
+import miles.utils.workers.cell_launch as cell_launch_module
 from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.test_utils.mock_sglang_engine import parse_cmd_flags
 from miles.utils.workers.addr_allocator import PortAllocator
@@ -24,20 +24,23 @@ def _start_engines_and_collect_addressing(
     requested = dict(rollout_engines)
     cell = ServerCell(
         args=args,
-        spec=make_cell_spec(args=args, worker_type=worker_type, num_nodes=len(requested), rank_offset=min(requested)),
+        spec=make_cell_spec(
+            args=args,
+            worker_type=worker_type,
+            num_nodes=len(requested),
+            rank_offset=min(requested),
+            wait_cell_ready=AsyncMock(),
+        ),
         pg=(None, [], list(range(8))),
     )
     for engine in requested.values():
         engine.__class__ = ray.actor.ActorHandle
         engine.run.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
 
-    def _launch(*, global_rank, **kwargs):
-        return requested[global_rank]
+    def _launch(*, placement, **kwargs):
+        return requested[placement.global_rank]
 
-    with (
-        patch.object(server_cell_module, "launch_sglang_ray_actor", side_effect=_launch),
-        patch.object(server_cell_module, "wait_server_healthy", new=AsyncMock()),
-    ):
+    with patch.object(cell_launch_module, "create_cell_worker_actor", side_effect=_launch):
         asyncio.run(cell.start_engines(port_allocator))
 
     return {rank: parse_cmd_flags(engine.run.remote.call_args.kwargs["cmd"]) for rank, engine in requested.items()}
@@ -226,16 +229,13 @@ class TestConcurrentNodeProbes:
         actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
         cell = ServerCell(
             args=make_args(num_gpus_per_node=8, sglang_dp_size=1),
-            spec=make_cell_spec(num_nodes=num_nodes),
+            spec=make_cell_spec(num_nodes=num_nodes, wait_cell_ready=AsyncMock()),
             pg=(None, [], list(range(8))),
         )
-        with (
-            patch.object(
-                server_cell_module,
-                "launch_sglang_ray_actor",
-                side_effect=lambda *, global_rank, **kw: actors[global_rank],
-            ),
-            patch.object(server_cell_module, "wait_server_healthy", new=AsyncMock()),
+        with patch.object(
+            cell_launch_module,
+            "create_cell_worker_actor",
+            side_effect=lambda *, placement, **kw: actors[placement.global_rank],
         ):
             await cell.start_engines(PortAllocator())
 

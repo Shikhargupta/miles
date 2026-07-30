@@ -278,13 +278,18 @@ def make_cell_spec(
     sglang_overrides: dict | None = None,
     needs_offload: bool = False,
     model_path: str | None = None,
+    wait_cell_ready=None,
 ):
     """Build an InferenceCellSpec shaped like compute_inference_model_specs builds them."""
     import functools
 
     from miles.ray.specs.inference import (
+        ENGINE_RAY_OPTIONS,
         InferenceCellSpec,
         InferenceWorkerSpec,
+        _build_engine_launch_plan,
+        _build_engine_member_payloads,
+        _wait_engine_ready,
         compute_engine_env_vars,
         compute_engine_port_infos,
         compute_nodes_per_engine,
@@ -297,17 +302,32 @@ def make_cell_spec(
         num_nodes = compute_nodes_per_engine(
             num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=args.num_gpus_per_node
         )
+    overrides = sglang_overrides if sglang_overrides is not None else {}
     worker = InferenceWorkerSpec(
         name=f"sglang-test-{worker_type}",
         port_infos=compute_engine_port_infos(args, worker_type=worker_type),
-        env_var=functools.partial(compute_engine_env_vars, args),
+        env_var=functools.partial(compute_engine_env_vars, args, worker_type=worker_type),
         scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_nodes,
             num_gpus_per_worker=min(num_gpus_per_engine, args.num_gpus_per_node),
         ),
+        ray_options=ENGINE_RAY_OPTIONS,
+        build_launch_plan=functools.partial(
+            _build_engine_launch_plan,
+            args,
+            worker_type=worker_type,
+            sglang_overrides=overrides,
+            num_gpus_per_engine=num_gpus_per_engine,
+        ),
+        build_member_payloads=_build_engine_member_payloads,
+        wait_cell_ready=(
+            wait_cell_ready
+            if wait_cell_ready is not None
+            else functools.partial(_wait_engine_ready, args, sglang_overrides=overrides)
+        ),
         worker_type=worker_type,
-        sglang_overrides=sglang_overrides if sglang_overrides is not None else {},
+        sglang_overrides=overrides,
         needs_offload=needs_offload,
         model_path=model_path,
     )
