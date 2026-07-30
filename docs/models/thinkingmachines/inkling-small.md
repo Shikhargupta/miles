@@ -46,3 +46,4 @@ The model definition lives in `scripts/models/inkling-small.sh` (`MODEL_ARGS_NUM
 | H200 | 32 | 4 | on | 8 | 4 | 1 | `--decoder-last-pipeline-num-layers 7` (42 = 7×5 + 7) |
 
 Batch shape is configurable from the launcher (`--rollout-batch-size`, `--global-batch-size`; defaults 32/64). The validated Small runs used 64/128 with `--lr 6e-6`, producing a steadily rising dapo-math reward curve; LoRA uses the launcher's `lr 5e-6` default.
+
