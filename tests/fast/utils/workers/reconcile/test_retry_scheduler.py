@@ -93,8 +93,19 @@ class TestShutdown:
     async def test_a_failure_after_shutdown_installs_no_timer(self):
         """Once shut down, the scheduler must not create new tasks."""
         scheduler, _, clock = make_scheduler()
-        scheduler.shutdown()
+        await scheduler.shutdown()
         scheduler.note_failure("cell-a")
 
-        assert scheduler.take_timers() == []
         assert clock.pending_count == 0
+
+    async def test_shutdown_cancels_a_pending_timer(self):
+        """Shutdown owns its own tasks: a retry in flight must not outlive it or reach the queue."""
+        scheduler, queue, clock = make_scheduler(failure_base_delay=1.0, failure_max_delay=64.0)
+        scheduler.note_failure("cell-a")
+
+        await scheduler.shutdown()
+        await clock.elapse(1.0)
+        await settle()
+
+        assert clock.pending_count == 0
+        assert "cell-a" not in queue._keys

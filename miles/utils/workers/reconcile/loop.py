@@ -90,12 +90,11 @@ class ReconcileLoop:
         )
 
         self._queue.shutdown()
-        self._retry.shutdown()
+        await self._retry.shutdown()
 
-        tasks = [*self._tasks, *self._retry.take_timers()]
-        for task in tasks:
+        for task in self._tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, return_exceptions=True)
 
         await self._driver.aclose()
         self._tasks = []

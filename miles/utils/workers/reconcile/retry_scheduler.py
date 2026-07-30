@@ -41,13 +41,14 @@ class RetryScheduler:
         self._failures.pop(key, None)
         self._cancel_timer(key)
 
-    def take_timers(self) -> list[asyncio.Task[None]]:
+    async def shutdown(self) -> None:
+        self._shutdown = True
+
         timers = list(self._timers.values())
         self._timers = {}
-        return timers
-
-    def shutdown(self) -> None:
-        self._shutdown = True
+        for timer in timers:
+            timer.cancel()
+        await asyncio.gather(*timers, return_exceptions=True)
 
     def _cancel_timer(self, key: str) -> None:
         pending = self._timers.pop(key, None)
