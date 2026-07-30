@@ -10,7 +10,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 logger = logging.getLogger(__name__)
 
 _CURSOR_REJECTED_CODES = (410, 504)
-_CURSOR_REJECTED_REASONS = ("Expired", "ResourceVersionTooLarge")
+_CURSOR_REJECTED_REASONS = ("Expired", "Gone")
 
 EVENT_TYPE_ADDED = "ADDED"
 EVENT_TYPE_MODIFIED = "MODIFIED"
@@ -84,10 +84,7 @@ async def _close_quietly(closing: Any) -> None:
 
 
 def exception_rejects_cursor(exception: BaseException) -> bool:
-    status = getattr(exception, "status", None)
-    if status in _CURSOR_REJECTED_CODES or status in {str(code) for code in _CURSOR_REJECTED_CODES}:
-        return True
-    return getattr(exception, "code", None) in _CURSOR_REJECTED_CODES
+    return getattr(exception, "status", None) in _CURSOR_REJECTED_CODES
 
 
 def _read_resource_version(obj: Any) -> str | None:

@@ -50,10 +50,10 @@ class TestCursorRejection:
         "obj",
         [
             SimpleNamespace(code=410, reason="Expired"),
-            SimpleNamespace(code=504, reason="ResourceVersionTooLarge"),
+            SimpleNamespace(code=504, reason="Timeout"),
             SimpleNamespace(code=None, reason="Expired"),
             dict(code=410),
-            dict(reason="ResourceVersionTooLarge"),
+            dict(reason="Gone"),
         ],
     )
     def test_an_error_frame_reporting_a_dead_cursor_is_flagged(self, obj: Any) -> None:
@@ -78,21 +78,16 @@ class TestCursorRejection:
 class TestExceptionRejection:
     @pytest.mark.parametrize(
         "exception",
-        [
-            make_exception(status=410),
-            make_exception(status="410"),
-            make_exception(status=504),
-            make_exception(code=410),
-        ],
+        [make_exception(status=410), make_exception(status=504)],
     )
     def test_a_client_exception_reporting_a_dead_cursor_is_flagged(self, exception: BaseException) -> None:
-        """The status arrives as an int or a string, and some failures carry only a code."""
+        """ApiException.status carries the HTTP code, and 410 and 504 both mean the cursor is gone."""
         assert exception_rejects_cursor(exception)
 
     @pytest.mark.parametrize(
         "exception",
-        [make_exception(), make_exception(status=500), make_exception(status="500"), make_exception(code=500)],
+        [make_exception(), make_exception(status=500), make_exception(status="410")],
     )
     def test_any_other_exception_is_a_plain_stream_failure(self, exception: BaseException) -> None:
-        """A transient error must be retried on the same cursor instead of forcing a relist."""
+        """A transient error, or a code in a shape the client never produces, keeps the cursor."""
         assert not exception_rejects_cursor(exception)

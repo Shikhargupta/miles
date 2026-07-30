@@ -480,7 +480,7 @@ class TestExpiry:
         """The apiserver may report the same condition as an ERROR frame rather than a status exception."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="5000"))
-        api.stream_scripts.append([raw_event("ERROR", make_status(code=504, reason="ResourceVersionTooLarge"))])
+        api.stream_scripts.append([raw_event("ERROR", make_status(code=504, reason="Timeout"))])
         api.list_pages.append(make_pod_list([], resource_version="100"))
         api.stream_scripts.append(None)
         clock = FakeClock()
