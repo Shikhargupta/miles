@@ -4,7 +4,8 @@ import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models
+from miles.ray.wiring import launch_worker_manager
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -21,8 +22,7 @@ logger = logging.getLogger(__name__)
 async def train(args):
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    # allocate the GPUs
-    pgs = create_placement_groups(args)
+    _handle, pgs = launch_worker_manager(args)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
