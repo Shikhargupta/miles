@@ -1,14 +1,14 @@
 import dataclasses
+import functools
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import Any, Literal
 
-from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.server_cell import ServerCell
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.worker_spec import BaseWorkerSpec, PortInfo, SchedulingSpec
 
 logger = logging.getLogger(__name__)
 
@@ -34,31 +34,101 @@ def compute_engine_env_vars(args) -> dict[str, str]:
     return env_vars
 
 
+ENGINE_SERVER_PORT_NAME = "server"
+ENGINE_NCCL_PORT_NAME = "nccl"
+ENGINE_INFO_BOOTSTRAP_PORT_NAME = "engine_info_bootstrap"
+ENGINE_DIST_INIT_PORT_NAME = "dist_init"
+ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME = "disaggregation_bootstrap"
+
+
+class InferenceWorkerSpec(BaseWorkerSpec):
+    worker_type: Literal["regular", "prefill", "decode"]
+    sglang_overrides: dict[str, Any]
+    needs_offload: bool
+    model_path: str | None
+
+    @property
+    def num_gpus_per_engine(self) -> int:
+        num_gpus = self.scheduling.num_workers_per_cell * self.scheduling.num_gpus_per_worker
+        assert num_gpus == int(num_gpus), f"{self.scheduling=} does not give a whole number of gpus per engine"
+        return int(num_gpus)
+
+
+class InferenceCellSpec(FrozenStrictBaseModel):
+    worker: InferenceWorkerSpec
+    cell_id: str
+    rank_offset: int
+    gpu_offset: int
+
+
+class InferenceModelSpec(FrozenStrictBaseModel):
+    name: str
+    update_weights: bool
+    cells: list[InferenceCellSpec]
+
+    @property
+    def has_pd_disaggregation(self) -> bool:
+        return any(cell.worker.worker_type in ("prefill", "decode") for cell in self.cells)
+
+
 @dataclasses.dataclass(frozen=True)
-class EngineGroupSetup:
-    server_cells: dict[str, "ServerCell"]
+class _GroupSpecs:
+    cells: list[InferenceCellSpec]
     engine_offset: int
     gpu_offset: int
 
 
-def setup_engine_group(
+def compute_inference_model_specs(args) -> list[InferenceModelSpec]:
+    config = resolve_sglang_config(args)
+
+    rollout_pg_offset = compute_rollout_offset(args)
+    megatron_num_gpus = compute_megatron_num_gpus(args)
+
+    model_specs: list[InferenceModelSpec] = []
+    gpu_offset = 0
+    engine_offset = 0
+
+    for model_cfg in config.models:
+        model_cfg.resolve(args)
+
+        cells: list[InferenceCellSpec] = []
+
+        for group_index, group_cfg in enumerate(model_cfg.server_groups):
+            group = _compute_specs_of_group(
+                args,
+                model_cfg=model_cfg,
+                group_cfg=group_cfg,
+                group_index=group_index,
+                cell_index_offset=len(cells),
+                engine_offset=engine_offset,
+                gpu_offset=gpu_offset,
+                rollout_pg_offset=rollout_pg_offset,
+                megatron_num_gpus=megatron_num_gpus,
+            )
+            cells.extend(group.cells)
+            engine_offset = group.engine_offset
+            gpu_offset = group.gpu_offset
+
+        model_specs.append(
+            InferenceModelSpec(name=model_cfg.name, update_weights=model_cfg.update_weights, cells=cells)
+        )
+
+    return model_specs
+
+
+def _compute_specs_of_group(
     args,
     *,
     model_cfg: ModelConfig,
     group_cfg: ServerGroupConfig,
-    pg,
+    group_index: int,
     cell_index_offset: int,
     engine_offset: int,
     gpu_offset: int,
     rollout_pg_offset: int,
     megatron_num_gpus: int,
-) -> EngineGroupSetup:
-    # Imported here because server_cell reads this module's env vars, so importing it at
-    # module level would close a cycle.
-    from miles.ray.rollout.rollout_server import format_cell_id
-    from miles.ray.rollout.server_cell import ServerCell
-
-    server_cells: dict[str, ServerCell] = {}
+) -> _GroupSpecs:
+    cells: list[InferenceCellSpec] = []
 
     gpus_per_engine = group_cfg.num_gpus_per_engine
     num_gpu_per_engine_local = min(gpus_per_engine, args.num_gpus_per_node)
@@ -78,6 +148,15 @@ def setup_engine_group(
     )
 
     if group_cfg.worker_type != "placeholder":
+        assert nodes_per_engine * num_gpu_per_engine_local == gpus_per_engine, (
+            f"group '{group_cfg.worker_type}' asks for {gpus_per_engine=}, which is neither within one node of "
+            f"{args.num_gpus_per_node} gpus nor a whole number of nodes: its engines would be given "
+            f"{nodes_per_engine * num_gpu_per_engine_local} gpus instead"
+        )
+        assert num_engines > 0, (
+            f"group '{group_cfg.worker_type}' has {group_cfg.num_gpus=}, which is not enough for a single engine "
+            f"of {gpus_per_engine} gpus"
+        )
         assert num_engines % nodes_per_engine == 0, (
             f"group '{group_cfg.worker_type}' has {num_engines=} which is not a whole number of "
             f"{nodes_per_engine=} engines; the trailing engine would have no node to run its remaining ranks"
@@ -88,28 +167,65 @@ def setup_engine_group(
             f"misaligned start would make the cell's primary a worker node"
         )
 
+        worker = InferenceWorkerSpec(
+            name=f"sglang-{model_cfg.name}-group{group_index}",
+            port_infos=compute_engine_port_infos(args, worker_type=group_cfg.worker_type),
+            env_var=functools.partial(compute_engine_env_vars, args),
+            scheduling=SchedulingSpec(
+                num_cells=num_engines // nodes_per_engine,
+                num_workers_per_cell=nodes_per_engine,
+                num_gpus_per_worker=num_gpu_per_engine_local,
+            ),
+            worker_type=group_cfg.worker_type,
+            sglang_overrides=overrides,
+            needs_offload=needs_offload,
+            model_path=overrides.get("model_path", args.hf_checkpoint),
+        )
+
         for cell_start in range(0, num_engines, nodes_per_engine):
-            cell_id = format_cell_id(server_id=model_cfg.name, index=cell_index_offset + len(server_cells))
-            server_cells[cell_id] = ServerCell(
-                num_nodes=nodes_per_engine,
-                args=args,
-                worker_type=group_cfg.worker_type,
-                cell_id=cell_id,
-                pg=pg,
-                num_gpus_per_engine=gpus_per_engine,
-                rank_offset=engine_offset + cell_start,
-                gpu_offset=gpu_offset + cell_start * num_gpu_per_engine_local,
-                sglang_overrides=overrides,
-                needs_offload=needs_offload,
-                model_path=overrides.get("model_path", args.hf_checkpoint),
-                update_weights=model_cfg.update_weights,
+            cells.append(
+                InferenceCellSpec(
+                    worker=worker,
+                    cell_id=format_cell_id(server_id=model_cfg.name, index=cell_index_offset + len(cells)),
+                    rank_offset=engine_offset + cell_start,
+                    gpu_offset=gpu_offset + cell_start * num_gpu_per_engine_local,
+                )
             )
 
-    return EngineGroupSetup(
-        server_cells=server_cells,
+    return _GroupSpecs(
+        cells=cells,
         engine_offset=engine_offset + num_engines,
         gpu_offset=gpu_offset + group_cfg.num_gpus,
     )
+
+
+def compute_engine_port_infos(args, *, worker_type: str) -> list[PortInfo]:
+    port_infos = [
+        PortInfo(name=ENGINE_SERVER_PORT_NAME, static_port=30000, mode="per_worker", allow_dynamic=True),
+        PortInfo(name=ENGINE_NCCL_PORT_NAME, static_port=30500, mode="per_worker", allow_dynamic=True),
+        PortInfo(name=ENGINE_INFO_BOOTSTRAP_PORT_NAME, static_port=31000, mode="per_worker", allow_dynamic=True),
+        PortInfo(
+            name=ENGINE_DIST_INIT_PORT_NAME,
+            static_port=31500,
+            mode="master",
+            allow_dynamic=True,
+            num_consecutive=30 + args.sglang_dp_size,
+        ),
+    ]
+    if worker_type == "prefill":
+        port_infos.append(
+            PortInfo(
+                name=ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME,
+                static_port=32000,
+                mode="per_worker",
+                allow_dynamic=True,
+            )
+        )
+    return port_infos
+
+
+def format_cell_id(*, server_id: str, index: int) -> str:
+    return f"{server_id}-{index}"
 
 
 def compute_rollout_offset(args) -> int:

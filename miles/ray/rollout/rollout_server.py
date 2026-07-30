@@ -4,12 +4,11 @@ import logging
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell
-from miles.ray.specs.inference import compute_megatron_num_gpus, compute_rollout_offset, setup_engine_group
+from miles.ray.specs.inference import InferenceModelSpec, compute_inference_model_specs
 
 logger = logging.getLogger(__name__)
 
@@ -19,51 +18,27 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
     Returns a dict mapping model name -> ``RolloutServer``.
     """
-    config = resolve_sglang_config(args)
+    model_specs = compute_inference_model_specs(args)
 
     servers: dict[str, RolloutServer] = {}
-    gpu_offset = 0
-    engine_offset = 0
     port_allocator = PortAllocator()
 
-    rollout_pg_offset = compute_rollout_offset(args)
-    megatron_num_gpus = compute_megatron_num_gpus(args)
-
-    for model_idx, model_cfg in enumerate(config.models):
-        model_cfg.resolve(args)
-
-        has_pd = model_cfg.has_pd_disaggregation
-        router_ip, router_port = start_router(args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0))
+    for model_idx, model_spec in enumerate(model_specs):
+        router_ip, router_port = start_router(
+            args, has_pd_disaggregation=model_spec.has_pd_disaggregation, force_new=(model_idx > 0)
+        )
 
         if model_idx == 0:
             args.sglang_router_ip = router_ip
             args.sglang_router_port = router_port
 
-        server_cells: dict[str, ServerCell] = {}
-
-        for group_cfg in model_cfg.server_groups:
-            setup = setup_engine_group(
-                args,
-                model_cfg=model_cfg,
-                group_cfg=group_cfg,
-                pg=pg,
-                cell_index_offset=len(server_cells),
-                engine_offset=engine_offset,
-                gpu_offset=gpu_offset,
-                rollout_pg_offset=rollout_pg_offset,
-                megatron_num_gpus=megatron_num_gpus,
-            )
-            server_cells.update(setup.server_cells)
-            engine_offset = setup.engine_offset
-            gpu_offset = setup.gpu_offset
-
-        servers[model_cfg.name] = RolloutServer(
-            server_cells=server_cells,
+        servers[model_spec.name] = RolloutServer(
+            server_cells=_build_server_cells(args, model_spec=model_spec, pg=pg),
             args=args,
             router_ip=router_ip,
             router_port=router_port,
-            model_name=model_cfg.name,
-            update_weights=model_cfg.update_weights,
+            model_name=model_spec.name,
+            update_weights=model_spec.update_weights,
         )
 
     await asyncio.gather(*[srv.start_all_cells(port_allocator) for srv in servers.values()])
@@ -71,6 +46,13 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
     return servers
+
+
+def _build_server_cells(args, *, model_spec: InferenceModelSpec, pg) -> dict[str, ServerCell]:
+    return {
+        cell.cell_id: ServerCell(args=args, spec=cell, update_weights=model_spec.update_weights, pg=pg)
+        for cell in model_spec.cells
+    }
 
 
 @dataclasses.dataclass
@@ -185,10 +167,6 @@ class RolloutServer:
     @property
     def _router_api_client(self) -> SGLangRouterApiClient:
         return SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
-
-
-def format_cell_id(*, server_id: str, index: int) -> str:
-    return f"{server_id}-{index}"
 
 
 def list_cell_ids(servers: dict[str, "RolloutServer"]) -> list[str]:

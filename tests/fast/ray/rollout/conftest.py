@@ -264,6 +264,56 @@ def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
+def make_cell_spec(
+    *,
+    args: Namespace | None = None,
+    cell_id: str = "cell-0",
+    worker_type: str = "regular",
+    num_gpus_per_engine: int = 1,
+    num_gpus_per_node: int = 8,
+    num_cells: int = 1,
+    num_nodes: int | None = None,
+    rank_offset: int = 0,
+    gpu_offset: int = 0,
+    sglang_overrides: dict | None = None,
+    needs_offload: bool = False,
+    model_path: str | None = None,
+):
+    """Build an InferenceCellSpec shaped like compute_inference_model_specs builds them."""
+    import functools
+
+    from miles.ray.specs.inference import (
+        InferenceCellSpec,
+        InferenceWorkerSpec,
+        compute_engine_env_vars,
+        compute_engine_port_infos,
+        compute_nodes_per_engine,
+    )
+    from miles.utils.workers.worker_spec import SchedulingSpec
+
+    if args is None:
+        args = make_args(num_gpus_per_node=num_gpus_per_node)
+    if num_nodes is None:
+        num_nodes = compute_nodes_per_engine(
+            num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=args.num_gpus_per_node
+        )
+    worker = InferenceWorkerSpec(
+        name=f"sglang-test-{worker_type}",
+        port_infos=compute_engine_port_infos(args, worker_type=worker_type),
+        env_var=functools.partial(compute_engine_env_vars, args),
+        scheduling=SchedulingSpec(
+            num_cells=num_cells,
+            num_workers_per_cell=num_nodes,
+            num_gpus_per_worker=min(num_gpus_per_engine, args.num_gpus_per_node),
+        ),
+        worker_type=worker_type,
+        sglang_overrides=sglang_overrides if sglang_overrides is not None else {},
+        needs_offload=needs_offload,
+        model_path=model_path,
+    )
+    return InferenceCellSpec(worker=worker, cell_id=cell_id, rank_offset=rank_offset, gpu_offset=gpu_offset)
+
+
 def make_dataclass_cells(
     *,
     num_cells: int = 2,
@@ -280,13 +330,15 @@ def make_dataclass_cells(
     return [
         ServerCell(
             args=args,
-            worker_type="regular",
-            cell_id=f"cell-{cell_index}",
-            num_nodes=nodes_per_engine,
+            spec=make_cell_spec(
+                args=args,
+                cell_id=f"cell-{cell_index}",
+                num_gpus_per_engine=num_gpus_per_engine,
+                num_cells=num_cells,
+                rank_offset=cell_index * nodes_per_engine,
+                gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
+            ),
             pg=None,
-            num_gpus_per_engine=num_gpus_per_engine,
-            rank_offset=cell_index * nodes_per_engine,
-            gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
         )
         for cell_index in range(num_cells)
     ]

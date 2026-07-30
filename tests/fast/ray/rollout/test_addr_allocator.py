@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import ray
 
-from tests.fast.ray.rollout.conftest import fake_engine, make_args
+from tests.fast.ray.rollout.conftest import fake_engine, make_args, make_cell_spec
 
 import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.addr_allocator import PortAllocator
@@ -25,10 +25,7 @@ def _start_engines_and_collect_addressing(
     requested = dict(rollout_engines)
     cell = ServerCell(
         args=args,
-        num_nodes=len(requested),
-        worker_type=worker_type,
-        cell_id="cell-0",
-        rank_offset=min(requested),
+        spec=make_cell_spec(args=args, worker_type=worker_type, num_nodes=len(requested), rank_offset=min(requested)),
         pg=(None, [], list(range(8))),
     )
     for engine in requested.values():
@@ -268,9 +265,7 @@ class TestConcurrentNodeProbes:
         actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
         cell = ServerCell(
             args=make_args(num_gpus_per_node=8, sglang_dp_size=1),
-            num_nodes=num_nodes,
-            worker_type="regular",
-            cell_id="cell-0",
+            spec=make_cell_spec(num_nodes=num_nodes),
             pg=(None, [], list(range(8))),
         )
         with (

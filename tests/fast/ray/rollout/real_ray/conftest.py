@@ -45,6 +45,7 @@ def build_cells(
     needs_offload: bool = False,
     update_weights: bool = True,
     model_path: str | None = None,
+    sglang_overrides: dict | None = None,
 ):
     """Build configured cells for one placement group.
 
@@ -52,7 +53,7 @@ def build_cells(
     gpu indices are positions inside this placement group, so the two offsets
     are independent: a group with its own pg still starts at gpu index 0.
     """
-    from tests.fast.ray.rollout.conftest import make_args
+    from tests.fast.ray.rollout.conftest import make_args, make_cell_spec
 
     from miles.ray.rollout.server_cell import ServerCell
     from miles.ray.specs.inference import compute_nodes_per_engine
@@ -63,16 +64,20 @@ def build_cells(
     return [
         ServerCell(
             args=args,
-            cell_id=f"cell-{cell_index}",
-            num_nodes=nodes_per_engine,
-            pg=pg_tuple,
-            num_gpus_per_engine=num_gpus_per_engine,
-            worker_type=worker_type,
-            rank_offset=rank_offset + cell_index * nodes_per_engine,
-            gpu_offset=gpu_offset + cell_index * nodes_per_engine * num_gpu_per_engine,
-            needs_offload=needs_offload,
-            model_path=model_path,
+            spec=make_cell_spec(
+                args=args,
+                cell_id=f"cell-{cell_index}",
+                num_cells=num_cells,
+                num_gpus_per_engine=num_gpus_per_engine,
+                worker_type=worker_type,
+                rank_offset=rank_offset + cell_index * nodes_per_engine,
+                gpu_offset=gpu_offset + cell_index * nodes_per_engine * num_gpu_per_engine,
+                needs_offload=needs_offload,
+                model_path=model_path,
+                sglang_overrides=sglang_overrides,
+            ),
             update_weights=update_weights,
+            pg=pg_tuple,
         )
         for cell_index in range(num_cells)
     ]

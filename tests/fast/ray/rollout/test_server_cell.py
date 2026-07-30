@@ -3,17 +3,20 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_cell_spec
 
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, format_cell_id, list_cell_ids
+from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids
 from miles.ray.rollout.server_cell import ServerCell
-from miles.ray.specs.inference import compute_nodes_per_engine
+from miles.ray.specs.inference import compute_nodes_per_engine, format_cell_id
 
 
-def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool = True) -> ServerCell:
+def _allocated_cell(
+    num_nodes: int = 1, *, alive: bool = True, addressed: bool = True, num_gpus_per_engine: int = 1
+) -> ServerCell:
     cell = ServerCell(
-        num_nodes=num_nodes, args=make_args(num_gpus_per_node=8), worker_type="regular", cell_id="cell-0"
+        args=make_args(num_gpus_per_node=8),
+        spec=make_cell_spec(num_nodes=num_nodes, num_gpus_per_engine=num_gpus_per_engine),
     )
     cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(num_nodes)])
     if not addressed:
@@ -53,7 +56,7 @@ class TestEngineGpuIds:
 class TestServerCellState:
     def test_a_fresh_cell_is_stopped(self):
         """A cell owns one state machine for all of its node-ranks."""
-        cell = ServerCell(num_nodes=2, args=make_args(num_gpus_per_node=8), worker_type="regular", cell_id="cell-0")
+        cell = ServerCell(args=make_args(num_gpus_per_node=8), spec=make_cell_spec(num_nodes=2))
         assert not cell.is_allocated
         assert not cell.is_alive
 
@@ -142,9 +145,7 @@ def _addressed_cell(
 ) -> ServerCell:
     cell = ServerCell(
         args=make_args(num_gpus_per_node=8, **args_overrides),
-        worker_type=worker_type,
-        num_nodes=2,
-        cell_id="cell-0",
+        spec=make_cell_spec(worker_type=worker_type, num_nodes=2),
     )
     cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(2)])
     cell._mark_addressing(
@@ -205,9 +206,10 @@ def _build_servers(
     servers: dict[str, RolloutServer] = {}
     for s_idx in range(num_servers):
         model_name = f"model_{s_idx}"
-        cells = [_allocated_cell(num_nodes=nodes_per_engine) for _ in range(engines_per_server // nodes_per_engine)]
-        for cell in cells:
-            cell.num_gpus_per_engine = num_gpus_per_engine
+        cells = [
+            _allocated_cell(num_nodes=nodes_per_engine, num_gpus_per_engine=num_gpus_per_engine)
+            for _ in range(engines_per_server // nodes_per_engine)
+        ]
         servers[model_name] = RolloutServer(
             server_cells={format_cell_id(server_id=model_name, index=i): cell for i, cell in enumerate(cells)},
             args=args,

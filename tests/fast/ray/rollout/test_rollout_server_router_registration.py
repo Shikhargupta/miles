@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_cell_spec
 
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
@@ -45,11 +45,14 @@ def _build_server(
     for cell_start in range(0, num_engines, nodes_per_engine):
         cell = ServerCell(
             args=args,
-            cell_id=f"cell-{len(cells)}",
-            num_nodes=nodes_per_engine,
-            num_gpus_per_engine=num_gpus_per_engine,
-            worker_type=worker_type,
-            rank_offset=cell_start,
+            spec=make_cell_spec(
+                args=args,
+                cell_id=f"cell-{len(cells)}",
+                num_nodes=nodes_per_engine,
+                num_gpus_per_engine=num_gpus_per_engine,
+                worker_type=worker_type,
+                rank_offset=cell_start,
+            ),
         )
         cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(nodes_per_engine)])
         cell._mark_addressing(

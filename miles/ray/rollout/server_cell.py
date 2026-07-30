@@ -22,7 +22,15 @@ from miles.ray.rollout.cell_state import (
     StateAllocatedUninitialized,
     StateStopped,
 )
-from miles.ray.specs.inference import compute_engine_env_vars
+from miles.ray.specs.inference import (
+    ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME,
+    ENGINE_DIST_INIT_PORT_NAME,
+    ENGINE_INFO_BOOTSTRAP_PORT_NAME,
+    ENGINE_NCCL_PORT_NAME,
+    ENGINE_SERVER_PORT_NAME,
+    InferenceCellSpec,
+    InferenceWorkerSpec,
+)
 from miles.utils.workers.command_actor import CommandActor
 
 logger = logging.getLogger(__name__)
@@ -33,18 +41,52 @@ SHUTDOWN_TIMEOUT = 30
 @dataclass
 class ServerCell:
     args: Any
-    worker_type: Literal["regular", "prefill", "decode"]
-    cell_id: str
-    num_nodes: int = 1
-    pg: Any = None  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
-    num_gpus_per_engine: int = 1
-    rank_offset: int = 0
-    gpu_offset: int = 0
-    sglang_overrides: dict = dataclasses.field(default_factory=dict)
-    needs_offload: bool = False
-    model_path: str | None = None
+    spec: InferenceCellSpec
     update_weights: bool = True
+    pg: Any = None  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
     _state: CellState = dataclasses.field(default_factory=StateStopped)
+
+    # ============================= temporary spec pass-throughs =============================
+    # These keep the old attribute names alive while the callers still read them off the cell.
+    # They go away as the callers move to the spec.
+
+    @property
+    def cell_id(self) -> str:
+        return self.spec.cell_id
+
+    @property
+    def worker_type(self) -> Literal["regular", "prefill", "decode"]:
+        return self.spec.worker.worker_type
+
+    @property
+    def num_nodes(self) -> int:
+        return self.spec.worker.scheduling.num_workers_per_cell
+
+    @property
+    def num_gpus_per_engine(self) -> int:
+        return self.spec.worker.num_gpus_per_engine
+
+    @property
+    def rank_offset(self) -> int:
+        return self.spec.rank_offset
+
+    @property
+    def gpu_offset(self) -> int:
+        return self.spec.gpu_offset
+
+    @property
+    def sglang_overrides(self) -> dict:
+        return self.spec.worker.sglang_overrides
+
+    @property
+    def needs_offload(self) -> bool:
+        return self.spec.worker.needs_offload
+
+    @property
+    def model_path(self) -> str | None:
+        return self.spec.worker.model_path
+
+    # ======================= end of temporary spec pass-throughs ===========================
 
     @property
     def is_allocated(self) -> bool:
@@ -99,15 +141,15 @@ class ServerCell:
                 "external rollout address allocation was removed and a new implementation is coming"
             )
 
-        num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
+        num_gpu_per_engine = int(self.spec.worker.scheduling.num_gpus_per_worker)
 
         actor_handles = [
             launch_sglang_ray_actor(
                 args=self.args,
                 pg=self.pg,
+                spec=self.spec.worker,
                 global_rank=self.rank_offset + local_index,
                 gpu_index=self.gpu_offset + local_index * num_gpu_per_engine,
-                worker_type=self.worker_type,
             )
             for local_index in range(self.num_nodes)
         ]
@@ -118,6 +160,8 @@ class ServerCell:
 
         node_ips = list(await asyncio.gather(*[actor._get_node_ip.remote() for actor in actor_handles]))
 
+        port_infos = self.spec.worker.port_infos
+
         addr_and_ports: dict[int, dict[str, Any]] = {}
         dist_init_addr = None
         for local_index, (rank, actor) in enumerate(zip(global_ranks, actor_handles, strict=True)):
@@ -125,17 +169,24 @@ class ServerCell:
             alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
 
             if local_index == 0:
-                dist_init_addr = f"{format_v6_uri(node_ip)}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
+                (master_info,) = [info for info in port_infos if info.mode == "master"]
+                assert master_info.name == ENGINE_DIST_INIT_PORT_NAME, f"{master_info=}"
+                dist_init_addr = f"{format_v6_uri(node_ip)}:{alloc(consecutive=master_info.num_consecutive)}"
 
+            ports = {
+                info.name: alloc(consecutive=info.num_consecutive) for info in port_infos if info.mode == "per_worker"
+            }
             addr_and_ports[rank] = dict(
                 host=format_v6_uri(node_ip),
-                port=alloc(),
-                nccl_port=alloc(),
-                engine_info_bootstrap_port=alloc(),
+                port=ports[ENGINE_SERVER_PORT_NAME],
+                nccl_port=ports[ENGINE_NCCL_PORT_NAME],
+                engine_info_bootstrap_port=ports[ENGINE_INFO_BOOTSTRAP_PORT_NAME],
                 dist_init_addr=dist_init_addr,
             )
-            if self.worker_type == "prefill":
-                addr_and_ports[rank]["disaggregation_bootstrap_port"] = alloc()
+            if ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME in ports:
+                addr_and_ports[rank]["disaggregation_bootstrap_port"] = ports[
+                    ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME
+                ]
 
         self._mark_addressing(
             [
@@ -286,9 +337,9 @@ def launch_sglang_ray_actor(
     *,
     args: Any,
     pg: Any,
+    spec: InferenceWorkerSpec,
     global_rank: int,
     gpu_index: int,
-    worker_type: str,
 ) -> ray.actor.ActorHandle:
     pg, reordered_bundle_indices, _ = pg
 
@@ -301,11 +352,11 @@ def launch_sglang_ray_actor(
         placement_group_bundle_index=reordered_bundle_indices[gpu_index],
     )
 
-    env_vars = compute_engine_env_vars(args)
+    env_vars = spec.env_var()
     # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
     # to enable this isolation.
     env_vars["SGLANG_DG_CACHE_DIR"] = os.environ.get(
-        "SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{worker_type}_rank_{global_rank}"
+        "SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{spec.worker_type}_rank_{global_rank}"
     )
 
     RolloutRayActor = ray.remote(CommandActor)

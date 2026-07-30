@@ -44,6 +44,18 @@ class TestResolveSglangConfigPaths:
         assert len(cfg.models) == 1
         assert cfg.models[0].name == "actor"
 
+    def test_yaml_path_gpu_mismatch_asserts(self, tmp_path):
+        """A yaml whose total GPUs disagree with --rollout-num-gpus must fail fast."""
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 1}]
+            )
+        )
+        args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=8)
+        with pytest.raises(AssertionError, match="total GPUs"):
+            resolve_sglang_config(args)
+
     def test_yaml_path_multi_model_actor_plus_reference(self, tmp_path):
         cfg_path = tmp_path / "multi.yaml"
         # 8 gpu actor + 4 gpu ref = 12 → must match args.rollout_num_gpus
@@ -171,11 +183,11 @@ class TestPdDisaggregation:
 class TestRolloutExternalPath:
     async def test_starting_engines_in_external_mode_is_not_implemented(self):
         """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
+        from tests.fast.ray.rollout.conftest import make_cell_spec
+
         from miles.ray.rollout.addr_allocator import PortAllocator
         from miles.ray.rollout.server_cell import ServerCell
 
-        cell = ServerCell(
-            args=make_args(num_gpus_per_node=8, rollout_external=True), worker_type="regular", cell_id="cell-0"
-        )
+        cell = ServerCell(args=make_args(num_gpus_per_node=8, rollout_external=True), spec=make_cell_spec())
         with pytest.raises(NotImplementedError):
             await cell.start_engines(PortAllocator())

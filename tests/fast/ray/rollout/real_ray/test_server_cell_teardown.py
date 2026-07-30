@@ -5,7 +5,7 @@ import threading
 import time
 
 import ray
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import make_args, make_cell_spec
 
 import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.addr_allocator import PortAllocator
@@ -21,7 +21,7 @@ class _HangingEngine:
 
 def _build_server(*, pg_tuple: tuple) -> RolloutServer:
     args = make_args(num_gpus_per_node=8)
-    cell = ServerCell(args=args, worker_type="regular", cell_id="cell-0", pg=pg_tuple, num_gpus_per_engine=1)
+    cell = ServerCell(args=args, spec=make_cell_spec(args=args), pg=pg_tuple)
     return RolloutServer(server_cells={"cell-0": cell}, args=args)
 
 

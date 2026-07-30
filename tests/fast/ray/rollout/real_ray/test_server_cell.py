@@ -247,8 +247,7 @@ class TestRejectedConfigurations:
     @pytest.mark.parametrize("overrides", [{"port": 40000}, {"host": "10.9.9.9"}, {"host": "10.9.9.9", "port": 40000}])
     async def test_host_or_port_override_is_rejected(self, patched_sglang_engine, placement_group_factory, overrides):
         """An override of host or port would make the rollout process address the wrong endpoint."""
-        (cell,) = build_cells(pg_tuple=placement_group_factory(1), num_cells=1)
-        cell.sglang_overrides = overrides
+        (cell,) = build_cells(pg_tuple=placement_group_factory(1), num_cells=1, sglang_overrides=overrides)
 
         with pytest.raises(AssertionError, match="must not override host/port"):
             await cell.start_engines(PortAllocator())
