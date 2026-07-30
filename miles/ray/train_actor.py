@@ -38,6 +38,7 @@ def get_local_gpu_id():
 class TrainRayActor:
     def __init__(
         self,
+        *,
         args,
         world_size: int,
         rank: int,
