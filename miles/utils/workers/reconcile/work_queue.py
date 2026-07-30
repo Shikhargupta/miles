@@ -3,27 +3,29 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import Hashable
+from typing import Generic, TypeVar
 
-from miles.utils.workers.reconcile.source_event import ParentKey
+KeyT = TypeVar("KeyT", bound=Hashable)
 
 
-class WorkQueue:
+class WorkQueue(Generic[KeyT]):
     def __init__(self) -> None:
-        self._parent_keys: deque[ParentKey] = deque()
+        self._keys: deque[KeyT] = deque()
         self._wakeup = asyncio.Event()
         self._shutdown = False
 
-    def add(self, parent_key: ParentKey) -> None:
+    def add(self, key: KeyT) -> None:
         if self._shutdown:
             return
-        if parent_key not in self._parent_keys:
-            self._parent_keys.append(parent_key)
+        if key not in self._keys:
+            self._keys.append(key)
         self._wakeup.set()
 
-    async def get(self) -> ParentKey | None:
+    async def get(self) -> KeyT | None:
         while not self._shutdown:
-            if self._parent_keys:
-                return self._parent_keys.popleft()
+            if self._keys:
+                return self._keys.popleft()
             self._wakeup.clear()
             await self._wakeup.wait()
         return None

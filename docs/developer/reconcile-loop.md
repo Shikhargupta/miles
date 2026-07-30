@@ -19,8 +19,8 @@ All under `miles/utils/workers/reconcile/`.
 | `k8s_reflector.py` | Cursor bookkeeping, relist on cursor rejection | [`cache.Reflector`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go) |
 | `source_event.py` | Reflector-to-loop wire format: `UpsertEvent`, `DeleteEvent`, and a whole-world `ReplaceEvent` | [`watch.Event`](https://github.com/kubernetes/apimachinery/blob/master/pkg/watch/watch.go) + [`Store`'s write methods](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) |
 | `object_store.py` | Cache, parent index, replace with deletion synthesis | [`cache.Store`](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) + [`DeltaFIFO.Replace()`](https://github.com/kubernetes/client-go/blob/master/tools/cache/delta_fifo.go) |
-| `work_queue.py` | Insertion-ordered parent-key dedup with a wakeup | [`workqueue`](https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go) |
-| `retry_scheduler.py` | Per-parent-key exponential backoff, latest-wins timers | [rate limiter](https://github.com/kubernetes/client-go/blob/master/util/workqueue/default_rate_limiters.go) + [delaying queue](https://github.com/kubernetes/client-go/blob/master/util/workqueue/delaying_queue.go) |
+| `work_queue.py` | Insertion-ordered dedup with a wakeup, generic over the key type | [`workqueue`](https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go) |
+| `retry_scheduler.py` | Per-key exponential backoff, latest-wins timers, generic over the key type | [rate limiter](https://github.com/kubernetes/client-go/blob/master/util/workqueue/default_rate_limiters.go) + [delaying queue](https://github.com/kubernetes/client-go/blob/master/util/workqueue/delaying_queue.go) |
 | `source_stream_driver.py` | Open, sync, reopen the stream; pump events into the store | [informer `Run` / `processLoop`](https://github.com/kubernetes/client-go/blob/master/tools/cache/controller.go) |
 | `loop.py` | Lifecycle, the single worker, resync | [controller-runtime `Controller`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/internal/controller/controller.go) |
 
@@ -68,6 +68,7 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | --- | --- | --- | --- |
 | Delaying queue on earliest `readyAt` | Rate-limited retry | **Replaced** by latest-wins: a new failure cancels the pending timer | The delay always matches current state, with no deadline comparison |
 | Bucket rate limiter | Cap retry pressure | **Dropped** | In-memory accounting behind one worker: no backend to protect |
+| Delaying queue *is* a queue (`delayingType` embeds `Interface` and re-`Add`s to itself) | Retry without a second component | **Replaced** by an `on_retry` callback | Nothing here reads the queue, so a scheduler that only pushes needs no queue at all. `WorkQueue` and `RetryScheduler` then know no domain type, and `ReconcileLoop` names the key by instantiating them as `[ParentKey]` |
 | `Result{RequeueAfter}` | Timed re-check | **Dropped** | Backoff plus resync covers it |
 
 ### `source_stream_driver.py`

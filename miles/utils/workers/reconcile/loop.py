@@ -47,9 +47,9 @@ class ReconcileLoop:
         self._clock = clock or RealClock()
 
         self._store = ObjectStore(key_map=key_map)
-        self._queue = WorkQueue()
-        self._retry = RetryScheduler(
-            queue=self._queue,
+        self._queue: WorkQueue[ParentKey] = WorkQueue()
+        self._retry: RetryScheduler[ParentKey] = RetryScheduler(
+            on_retry=self._queue.add,
             failure_base_delay=failure_base_delay,
             failure_max_delay=failure_max_delay,
             clock=self._clock,
