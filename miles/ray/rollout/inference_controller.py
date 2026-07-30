@@ -131,8 +131,8 @@ class InferenceController:
         return list_cell_ids(self.servers)
 
     def compute_cell_status(self, cell_id: str) -> CellStatus:
-        cell = self._server_of(cell_id).server_cells[cell_id]
-        if not cell.is_allocated:
+        cell = self._server_of(cell_id).server_cells.get(cell_id)
+        if cell is None:
             return CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
         if not cell.is_alive:
             return CellStatus(
@@ -148,7 +148,7 @@ class InferenceController:
         )
 
     def _server_of(self, cell_id: str) -> RolloutServer:
-        owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]
+        owners = [srv for srv in self.servers.values() if cell_id in srv.cell_specs]
         assert len(owners) == 1, f"{cell_id=} must name exactly one cell, but {len(owners)} servers hold it"
         return owners[0]
 
@@ -170,19 +170,19 @@ class InferenceController:
     async def _reconcile(self, cell_id: str, cell_info: CellInfo | None) -> None:
         async with self._reconcile_gate.operate(), self._cell_ops_lock:
             srv = self._server_of(cell_id)
-            cell = srv.server_cells[cell_id]
+            attached = srv.server_cells.get(cell_id)
 
             if cell_info is None:
-                if cell.is_allocated:
+                if attached is not None:
                     logger.info(f"Reconcile removes cell {cell_id}")
                     await srv.reconcile_detach(cell_id)
                 return
 
-            if len(cell_info.members) < cell.num_nodes:
+            if len(cell_info.members) < srv.cell_specs[cell_id].worker.scheduling.num_workers_per_cell:
                 return
 
-            if cell.is_allocated:
-                if [member.payload for member in cell.attached_members] == [
+            if attached is not None:
+                if [member.payload for member in attached.attached_members] == [
                     member.payload for member in cell_info.members
                 ]:
                     return

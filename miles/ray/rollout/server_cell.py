@@ -112,6 +112,7 @@ class ServerCell:
     def attach(self, cell_info: CellInfo) -> None:
         """Adopt the workers the infrastructure layer reports for this cell."""
         assert not self.is_allocated, "a cell must be detached before it attaches to new workers"
+        assert cell_info.cell_id == self.cell_id, f"{cell_info.cell_id=} does not name {self.cell_id=}"
 
         self._mark_allocated_uninitialized([member.handle for member in cell_info.members])
         self._mark_addressing(
@@ -133,10 +134,6 @@ class ServerCell:
 
     def mark_alive(self) -> None:
         self._mark_alive()
-
-    def detach(self) -> None:
-        self._mark_stopped()
-        self.attached_members = None
 
     def _mark_allocated_uninitialized(self, actor_handles: list[ray.actor.ActorHandle]) -> None:
         self._change_state(

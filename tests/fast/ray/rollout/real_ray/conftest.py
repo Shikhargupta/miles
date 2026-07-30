@@ -102,6 +102,8 @@ async def attach_cells(cells, worker_manager, *, mark_alive: bool = False):
 
     observed = await RayWorkerProvider(worker_manager=worker_manager).list_cells()
     for cell in cells:
+        if cell.is_allocated:
+            cell._mark_stopped()
         cell.attach(observed[cell.cell_id])
         if mark_alive:
             cell.mark_alive()
@@ -152,4 +154,4 @@ class NoopRouterApiClient:
 async def detach_cell(cell, worker_manager) -> None:
     """Drop a cell's workers the way a stop would, without the router round-trip."""
     await worker_manager.stop_cell(cell.cell_id)
-    cell.detach()
+    cell._mark_stopped()

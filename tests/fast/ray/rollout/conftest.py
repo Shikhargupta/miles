@@ -342,8 +342,7 @@ def make_dataclass_cells(
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
 ):
-    """Build configured ``ServerCell``s with ``pg=None`` (no actor scheduling).
-    Each cell starts unallocated."""
+    """Build configured ``ServerCell``s. Each cell starts unallocated."""
     from miles.ray.rollout.server_cell import ServerCell
     from miles.ray.specs.inference import compute_nodes_per_engine
 
@@ -360,7 +359,6 @@ def make_dataclass_cells(
                 rank_offset=cell_index * nodes_per_engine,
                 gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
             ),
-            pg=None,
         )
         for cell_index in range(num_cells)
     ]

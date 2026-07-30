@@ -96,6 +96,7 @@ class TestKillAndRecover:
         pg = placement_group_factory(1)
         cells = build_cells(num_cells=1)
         srv = RolloutServer(
+            cell_specs={f"cell-{i}": cell.spec for i, cell in enumerate(cells)},
             server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
             args=make_args(num_gpus_per_node=8),
             router_ip="10.0.0.9",

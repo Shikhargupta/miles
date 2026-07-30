@@ -79,6 +79,7 @@ def _build_server(
         cells.append(cell)
 
     srv = RolloutServer(
+        cell_specs={cell.cell_id: cell.spec for cell in cells},
         server_cells={cell.cell_id: cell for cell in cells},
         args=args,
         router_ip=router_ip,

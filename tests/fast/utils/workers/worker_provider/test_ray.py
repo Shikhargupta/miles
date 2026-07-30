@@ -8,7 +8,7 @@ from miles.utils.workers.worker_spec import WorkerPlacement
 
 
 def _manager_with(cells: dict[str, list[dict]]) -> RayWorkerManager:
-    manager = RayWorkerManager()
+    manager = RayWorkerManager(pg=None)
     for cell_id, payloads in cells.items():
         manager._infos[cell_id] = _CellInfo(
             record=_CellRecord(

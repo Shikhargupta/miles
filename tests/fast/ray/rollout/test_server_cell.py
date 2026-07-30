@@ -211,6 +211,7 @@ def _build_servers(
             for _ in range(engines_per_server // nodes_per_engine)
         ]
         servers[model_name] = RolloutServer(
+            cell_specs={format_cell_id(server_id=model_name, index=i): cell.spec for i, cell in enumerate(cells)},
             server_cells={format_cell_id(server_id=model_name, index=i): cell for i, cell in enumerate(cells)},
             args=args,
             model_name=model_name,

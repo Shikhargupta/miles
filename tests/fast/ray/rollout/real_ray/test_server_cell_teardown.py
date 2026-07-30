@@ -5,12 +5,9 @@ import threading
 import time
 
 import ray
-from tests.fast.ray.rollout.conftest import make_args, make_cell_spec
-from tests.fast.ray.rollout.real_ray.conftest import detach_cell, start_cells
+from tests.fast.ray.rollout.real_ray.conftest import build_cells, detach_cell, start_cells
 
 import miles.utils.workers.ray_worker_manager as manager_module
-from miles.ray.rollout.rollout_server import RolloutServer
-from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.base import CellInfo, CellMember
 from miles.utils.workers.worker_spec import WorkerPlacement
@@ -20,12 +17,6 @@ from miles.utils.workers.worker_spec import WorkerPlacement
 class _HangingEngine:
     def shutdown(self):
         time.sleep(3600)
-
-
-def _build_server() -> RolloutServer:
-    args = make_args(num_gpus_per_node=8)
-    cell = ServerCell(args=args, spec=make_cell_spec(args=args))
-    return RolloutServer(server_cells={"cell-0": cell}, args=args)
 
 
 def _adopt_actor(worker_manager: RayWorkerManager, cell, actor_handle) -> None:
@@ -69,8 +60,7 @@ class TestTeardownIsTerminal:
     async def test_a_failing_shutdown_still_kills_the_actor(self, patched_sglang_engine, placement_group_factory):
         """A graceful shutdown that raises must not leave the actor and its server process behind."""
         worker_manager = RayWorkerManager(pg=placement_group_factory(1))
-        srv = _build_server()
-        cell = srv.server_cells["cell-0"]
+        (cell,) = build_cells(num_cells=1)
         await start_cells([cell], worker_manager)
         actor_handle = cell.primary_actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))
@@ -84,8 +74,7 @@ class TestTeardownIsTerminal:
         """A wedged engine must not stall teardown forever, since teardown is how a wedged engine is reclaimed."""
         monkeypatch.setattr(manager_module, "SHUTDOWN_TIMEOUT", 0.5)
         worker_manager = RayWorkerManager(pg=(None, [], []))
-        srv = _build_server()
-        cell = srv.server_cells["cell-0"]
+        (cell,) = build_cells(num_cells=1)
         actor_handle = _HangingEngine.remote()
         _adopt_actor(worker_manager, cell, actor_handle)
 

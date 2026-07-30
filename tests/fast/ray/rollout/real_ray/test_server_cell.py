@@ -25,7 +25,11 @@ class TestStartEnginesShortCircuits:
         """In debug_train_only the wiring schedules no actors at all."""
         pg = placement_group_factory(2)
         cells = build_cells(num_cells=2, debug_train_only=True)
-        srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=cells[0].args)
+        srv = RolloutServer(
+            cell_specs={f"cell-{i}": cell.spec for i, cell in enumerate(cells)},
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
+            args=cells[0].args,
+        )
 
         worker_manager = make_worker_manager(pg)
         await start_rollout_servers(cells[0].args, pg, worker_manager)
@@ -87,7 +91,7 @@ class TestStartEnginesRealActors:
         first_handles = _all_actor_handles(cells)
 
         for cell in cells:
-            cell.detach()
+            cell._mark_stopped()
         await attach_cells(cells, worker_manager)
         for first, handle in zip(first_handles, _all_actor_handles(cells), strict=True):
             assert handle is first  # still the same actor

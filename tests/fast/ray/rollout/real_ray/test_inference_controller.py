@@ -427,7 +427,7 @@ class TestCheckWeights:
 
 @pytest.mark.asyncio
 class TestReconcileAfterAnExternalRestart:
-    async def test_a_killed_engine_is_detached_then_reattached_by_reconcile(
+    async def test_a_killed_engine_is_removed_then_recreated_by_reconcile(
         self,
         ray_local_mode,
         placement_group_factory,
@@ -441,15 +441,15 @@ class TestReconcileAfterAnExternalRestart:
         controller = await InferenceController.create(args, pg)
         actor0_before = _cells(controller)[0].primary_actor_handle
 
-        controller.worker_manager.stop_cell("actor-0")
+        await controller.worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
-        assert not controller.servers["actor"].server_cells["actor-0"].is_allocated
+        assert "actor-0" not in controller.servers["actor"].server_cells
 
         await controller.worker_manager.start_cell("actor-0")
         await _sync_cells(controller)
 
         cell = controller.servers["actor"].server_cells["actor-0"]
-        assert cell.is_allocated
+        assert cell.is_alive
         assert cell.primary_actor_handle is not actor0_before
         assert isinstance(ray.get(cell.primary_actor_handle.get_calls.remote()), list)
 

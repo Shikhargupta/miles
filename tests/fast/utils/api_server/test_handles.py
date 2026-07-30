@@ -90,20 +90,24 @@ class TestActorCellHandle:
 class TestRolloutCellStatus:
     """compute_cell_status is what the api server reports for a rollout cell."""
 
-    def _controller(self, cell):
+    def _controller(self, *, spec, cell):
         from tests.fast.ray.rollout.conftest import make_args
 
         from miles.ray.rollout.inference_controller import InferenceController
         from miles.ray.rollout.rollout_server import RolloutServer
 
         args = make_args(num_gpus_per_node=8)
-        srv = RolloutServer(server_cells={cell.cell_id: cell}, args=args)
+        srv = RolloutServer(
+            cell_specs={spec.cell_id: spec},
+            args=args,
+            server_cells={} if cell is None else {spec.cell_id: cell},
+        )
         with patch("miles.ray.rollout.inference_controller.Lock", MagicMock()):
             controller = InferenceController(args, pg=None)
         controller.servers = {"default": srv}
         return controller
 
-    def _cell(self, *, attached: bool, alive: bool):
+    def _spec_and_cell(self, *, attached: bool, alive: bool):
         from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_cell_spec
 
         from miles.ray.rollout.server_cell import ServerCell
@@ -111,42 +115,45 @@ class TestRolloutCellStatus:
         from miles.utils.workers.worker_spec import WorkerPlacement
 
         args = make_args(num_gpus_per_node=8)
-        cell = ServerCell(args=args, spec=make_cell_spec(args=args))
-        if attached:
-            cell.attach(
-                CellInfo(
-                    cell_id=cell.cell_id,
-                    members=[
-                        CellMember(
-                            handle=fake_actor_handle(),
-                            payload={"host": "10.0.0.1", "port": 30000},
-                            placement=WorkerPlacement(local_index=0, global_rank=0, base_gpu_id=0),
-                        )
-                    ],
-                )
+        spec = make_cell_spec(args=args)
+        if not attached:
+            return spec, None
+
+        cell = ServerCell(args=args, spec=spec)
+        cell.attach(
+            CellInfo(
+                cell_id=spec.cell_id,
+                members=[
+                    CellMember(
+                        handle=fake_actor_handle(),
+                        payload={"host": "10.0.0.1", "port": 30000},
+                        placement=WorkerPlacement(local_index=0, global_rank=0, base_gpu_id=0),
+                    )
+                ],
             )
-            if alive:
-                cell.mark_alive()
-        return cell
+        )
+        if alive:
+            cell.mark_alive()
+        return spec, cell
 
     def test_a_detached_cell_reports_suspended(self) -> None:
         """Nothing is attached, so ops sees the cell as suspended rather than unhealthy."""
-        cell = self._cell(attached=False, alive=False)
-        status = self._controller(cell).compute_cell_status(cell.cell_id)
+        spec, cell = self._spec_and_cell(attached=False, alive=False)
+        status = self._controller(spec=spec, cell=cell).compute_cell_status(spec.cell_id)
         assert status.phase == "Suspended"
         assert [(c.type, c.status) for c in status.conditions] == [("Allocated", "False")]
 
     def test_an_attached_but_not_alive_cell_reports_pending_health(self) -> None:
         """The workers exist but the cell has not been taken into service yet."""
-        cell = self._cell(attached=True, alive=False)
-        status = self._controller(cell).compute_cell_status(cell.cell_id)
+        spec, cell = self._spec_and_cell(attached=True, alive=False)
+        status = self._controller(spec=spec, cell=cell).compute_cell_status(spec.cell_id)
         assert status.phase == "Running"
         assert [(c.type, c.status) for c in status.conditions] == [("Allocated", "True"), ("Healthy", "Unknown")]
         assert status.conditions[1].reason == "AttachPending"
 
     def test_an_alive_cell_reports_healthy(self) -> None:
-        cell = self._cell(attached=True, alive=True)
-        status = self._controller(cell).compute_cell_status(cell.cell_id)
+        spec, cell = self._spec_and_cell(attached=True, alive=True)
+        status = self._controller(spec=spec, cell=cell).compute_cell_status(spec.cell_id)
         assert status.phase == "Running"
         assert [(c.type, c.status) for c in status.conditions] == [("Allocated", "True"), ("Healthy", "True")]
 
