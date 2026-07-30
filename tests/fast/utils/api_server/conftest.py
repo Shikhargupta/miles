@@ -91,31 +91,45 @@ class MockInferenceController:
         self,
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
-        is_suspended: bool = False,
     ) -> None:
-        self._phase = phase
-        self._conditions = conditions or [
-            {"type": "Allocated", "status": "True"},
-            {"type": "Healthy", "status": "True"},
-        ]
-        self._is_suspended = is_suspended
+        from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus
+
+        self._status = CellStatus(
+            phase=phase,
+            conditions=[
+                CellCondition(**condition)
+                for condition in (
+                    conditions
+                    or [
+                        {"type": "Allocated", "status": "True"},
+                        {"type": "Healthy", "status": "True"},
+                    ]
+                )
+            ],
+        )
+
+    def compute_cell_status(self, cell_id: str):
+        return self._status
+
+
+class MockWorkerManager:
+    """Stands in for the ray worker manager the ops boundary commands."""
+
+    def __init__(self, *, has_workers: bool = True) -> None:
+        self._has_workers = has_workers
         self.stopped_cells: list[str] = []
         self.started_cells: list[str] = []
 
-    def get_cell_phase(self, cell_id: str) -> str:
-        return self._phase
-
-    def get_cell_conditions(self, cell_id: str) -> list[dict[str, str | None]]:
-        return self._conditions
-
-    def get_cell_is_suspended(self, cell_id: str) -> bool:
-        return self._is_suspended
+    def cell_ids(self) -> list[str]:
+        return ["actor-0"] if self._has_workers else []
 
     async def stop_cell(self, cell_id: str) -> None:
         self.stopped_cells.append(cell_id)
+        self._has_workers = False
 
     async def start_cell(self, cell_id: str) -> None:
         self.started_cells.append(cell_id)
+        self._has_workers = True
 
 
 class MockRayTrainCell:

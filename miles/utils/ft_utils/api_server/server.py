@@ -12,6 +12,7 @@ from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.workers.base import BaseWorkerManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ def start_api_server(
     *,
     actor_model: RayTrainGroup,
     inference_controller: object,
+    worker_manager: BaseWorkerManager,
     port: int,
     ft_components: list[str],
 ) -> None:
@@ -33,11 +35,11 @@ def start_api_server(
             registry.register(_ActorCellHandle(group=actor_model, cell_index=i))
 
     if "rollout" in ft_components:
-        # TODO the code will NOT work before implementing rollout ft
         for rollout_cell_id in inference_controller.list_cell_ids():
             registry.register(
                 _RolloutCellHandle(
                     inference_controller=inference_controller,
+                    worker_manager=worker_manager,
                     rollout_cell_id=rollout_cell_id,
                 )
             )

@@ -7,6 +7,7 @@ from typing import Any
 import ray
 
 from miles.utils.workers.addr_allocator import PortAllocator
+from miles.utils.workers.base import BaseWorkerManager
 from miles.utils.workers.cell_launch import (
     allocate_cell_ports,
     cell_worker_placements,
@@ -34,7 +35,13 @@ class _CellRecord:
 
 
 @dataclass
-class RayWorkerManager:
+class _CellInfo:
+    spec: BaseCellSpec | None = None
+    record: _CellRecord | None = None
+
+
+@dataclass
+class RayWorkerManager(BaseWorkerManager):
     """Owns the ray actors of every cell it started.
 
     It launches a cell from that cell's spec alone, so it stays free of any
@@ -44,15 +51,26 @@ class RayWorkerManager:
 
     pg: Any
     _port_allocator: PortAllocator = field(default_factory=PortAllocator)
-    _cells: dict[str, _CellRecord] = field(default_factory=dict)
+    _infos: dict[str, _CellInfo] = field(default_factory=dict)
 
-    async def start_cell(self, spec: BaseCellSpec) -> None:
+    def register_cells(self, specs: list[BaseCellSpec]) -> None:
+        """Record the cells this manager may start, so they can be started by id later."""
+        for spec in specs:
+            assert spec.cell_id not in self._infos, f"cell {spec.cell_id} is already registered"
+            self._infos[spec.cell_id] = _CellInfo(spec=spec)
+
+    def registered_cell_ids(self) -> list[str]:
+        return sorted(cell_id for cell_id, info in self._infos.items() if info.spec is not None)
+
+    async def start_cell(self, cell_id: str) -> None:
+        info = self._infos[cell_id]
+        assert info.record is None, f"cell {cell_id} already has live workers"
+        spec = info.spec
         worker = spec.worker
         assert isinstance(worker, CommandWorkerSpec), f"{worker=} does not say how to launch by command"
-        assert spec.cell_id not in self._cells, f"cell {spec.cell_id} already has live workers"
 
         record = _CellRecord()
-        self._cells[spec.cell_id] = record
+        info.record = record
 
         try:
             placements = cell_worker_placements(spec=spec, pg=self.pg)
@@ -87,16 +105,18 @@ class RayWorkerManager:
 
             await worker.wait_cell_ready(addressing, functools.partial(_worker_is_alive, actor_handles[0]))
         except BaseException:
-            logger.warning(f"Cell {spec.cell_id} failed to come up; tearing its workers down")
-            await self.stop_cell(spec.cell_id)
+            logger.warning(f"Cell {cell_id} failed to come up; tearing its workers down")
+            await self.stop_cell(cell_id)
             raise
 
         record.ready = True
 
     async def stop_cell(self, cell_id: str) -> None:
-        record = self._cells.pop(cell_id, None)
+        info = self._infos.get(cell_id)
+        record = info.record if info is not None else None
         if record is None:
             return
+        info.record = None
 
         try:
             await asyncio.gather(
@@ -115,11 +135,14 @@ class RayWorkerManager:
 
     def cell_ids(self) -> list[str]:
         """The cells a consumer may use: only those that finished coming up."""
-        return sorted(cell_id for cell_id, record in self._cells.items() if record.ready)
+        return sorted(
+            cell_id for cell_id, info in self._infos.items() if info.record is not None and info.record.ready
+        )
 
     def cell_workers(self, cell_id: str) -> list[ActorState]:
         """The workers a consumer may use: only those of a cell that finished coming up."""
-        record = self._cells.get(cell_id)
+        info = self._infos.get(cell_id)
+        record = info.record if info is not None else None
         return record.workers if record is not None and record.ready else []
 
 

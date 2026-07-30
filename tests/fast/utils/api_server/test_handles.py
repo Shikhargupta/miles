@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -8,7 +8,7 @@ from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
 from miles.utils.test_utils.fault_injector import FailureMode
 
-from .conftest import MockInferenceController, MockRayTrainCell, make_mock_group
+from .conftest import MockInferenceController, MockRayTrainCell, MockWorkerManager, make_mock_group
 
 
 class TestActorCellHandle:
@@ -87,34 +87,144 @@ class TestActorCellHandle:
         group.start_cell.assert_called_once_with(1)
 
 
+class TestRolloutCellStatus:
+    """compute_cell_status is what the api server reports for a rollout cell."""
+
+    def _controller(self, cell):
+        from tests.fast.ray.rollout.conftest import make_args
+
+        from miles.ray.rollout.inference_controller import InferenceController
+        from miles.ray.rollout.rollout_server import RolloutServer
+
+        args = make_args(num_gpus_per_node=8)
+        srv = RolloutServer(server_cells={cell.cell_id: cell}, args=args)
+        with patch("miles.ray.rollout.inference_controller.Lock", MagicMock()):
+            controller = InferenceController(args, pg=None)
+        controller.servers = {"default": srv}
+        return controller
+
+    def _cell(self, *, attached: bool, alive: bool):
+        from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_cell_spec
+
+        from miles.ray.rollout.server_cell import ServerCell
+        from miles.utils.workers.worker_provider.base import CellInfo, CellMember
+        from miles.utils.workers.worker_spec import WorkerPlacement
+
+        args = make_args(num_gpus_per_node=8)
+        cell = ServerCell(args=args, spec=make_cell_spec(args=args))
+        if attached:
+            cell.attach(
+                CellInfo(
+                    cell_id=cell.cell_id,
+                    members=[
+                        CellMember(
+                            handle=fake_actor_handle(),
+                            payload={"host": "10.0.0.1", "port": 30000},
+                            placement=WorkerPlacement(local_index=0, global_rank=0, base_gpu_id=0),
+                        )
+                    ],
+                )
+            )
+            if alive:
+                cell.mark_alive()
+        return cell
+
+    def test_a_detached_cell_reports_suspended(self) -> None:
+        """Nothing is attached, so ops sees the cell as suspended rather than unhealthy."""
+        cell = self._cell(attached=False, alive=False)
+        status = self._controller(cell).compute_cell_status(cell.cell_id)
+        assert status.phase == "Suspended"
+        assert [(c.type, c.status) for c in status.conditions] == [("Allocated", "False")]
+
+    def test_an_attached_but_not_alive_cell_reports_pending_health(self) -> None:
+        """The workers exist but the cell has not been taken into service yet."""
+        cell = self._cell(attached=True, alive=False)
+        status = self._controller(cell).compute_cell_status(cell.cell_id)
+        assert status.phase == "Running"
+        assert [(c.type, c.status) for c in status.conditions] == [("Allocated", "True"), ("Healthy", "Unknown")]
+        assert status.conditions[1].reason == "AttachPending"
+
+    def test_an_alive_cell_reports_healthy(self) -> None:
+        cell = self._cell(attached=True, alive=True)
+        status = self._controller(cell).compute_cell_status(cell.cell_id)
+        assert status.phase == "Running"
+        assert [(c.type, c.status) for c in status.conditions] == [("Allocated", "True"), ("Healthy", "True")]
+
+
 class TestRolloutCellHandle:
     @pytest.mark.asyncio
-    async def test_get_cell_delegates_to_controller(self) -> None:
-        controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
+    async def test_get_cell_reads_the_status_from_the_controller(self) -> None:
+        """Cell health is what the consumer observes, so it comes from the controller."""
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(),
+            worker_manager=MockWorkerManager(),
+            rollout_cell_id="actor-0",
+        )
         cell = await handle.get_cell()
 
         assert cell.metadata.name == "rollout-actor-0"
         assert cell.metadata.labels["miles.io/cell-type"] == "rollout"
         assert cell.status.phase == "Running"
-        assert cell.spec.suspend is False
 
     @pytest.mark.asyncio
-    async def test_suspend_delegates_to_controller(self) -> None:
-        controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
+    async def test_get_cell_reads_the_suspend_state_from_the_worker_manager(self) -> None:
+        """Suspension is desired state, which only the manager owns."""
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(),
+            worker_manager=MockWorkerManager(has_workers=False),
+            rollout_cell_id="actor-0",
+        )
+        assert (await handle.get_cell()).spec.suspend is True
+
+    @pytest.mark.asyncio
+    async def test_suspend_stops_the_cell_through_the_worker_manager(self) -> None:
+        """The ops boundary commands the infrastructure layer, never the consumer."""
+        worker_manager = MockWorkerManager()
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(),
+            worker_manager=worker_manager,
+            rollout_cell_id="actor-0",
+        )
         await handle.suspend()
-        assert controller.stopped_cells == ["actor-0"]
+        assert worker_manager.stopped_cells == ["actor-0"]
 
     @pytest.mark.asyncio
-    async def test_resume_delegates_to_controller(self) -> None:
-        controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
+    async def test_resume_starts_the_cell_through_the_worker_manager(self) -> None:
+        worker_manager = MockWorkerManager(has_workers=False)
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(),
+            worker_manager=worker_manager,
+            rollout_cell_id="actor-0",
+        )
         await handle.resume()
-        assert controller.started_cells == ["actor-0"]
+        assert worker_manager.started_cells == ["actor-0"]
+
+    @pytest.mark.asyncio
+    async def test_suspending_an_already_suspended_cell_does_nothing(self) -> None:
+        """The manager is strict about double stops, so the ops layer is idempotent."""
+        worker_manager = MockWorkerManager(has_workers=False)
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(),
+            worker_manager=worker_manager,
+            rollout_cell_id="actor-0",
+        )
+        await handle.suspend()
+        assert worker_manager.stopped_cells == []
+
+    @pytest.mark.asyncio
+    async def test_resuming_a_live_cell_does_nothing(self) -> None:
+        """Starting over live workers would leak them."""
+        worker_manager = MockWorkerManager()
+        handle = _RolloutCellHandle(
+            inference_controller=MockInferenceController(),
+            worker_manager=worker_manager,
+            rollout_cell_id="actor-0",
+        )
+        await handle.resume()
+        assert worker_manager.started_cells == []
 
     def test_cell_type_is_rollout(self) -> None:
-        handle = _RolloutCellHandle(inference_controller=object(), rollout_cell_id="actor-0")
+        handle = _RolloutCellHandle(inference_controller=object(), worker_manager=object(), rollout_cell_id="actor-0")
         assert handle.cell_type == "rollout"
         assert handle.cell_id == "rollout-actor-0"
 

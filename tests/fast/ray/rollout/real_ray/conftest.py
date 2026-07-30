@@ -88,7 +88,10 @@ async def start_cells(cells, worker_manager, *, mark_alive: bool = False):
     """Bring every cell's workers up through one shared manager, then attach the cells."""
     import asyncio
 
-    await asyncio.gather(*[worker_manager.start_cell(cell.spec) for cell in cells])
+    worker_manager.register_cells(
+        [cell.spec for cell in cells if cell.cell_id not in worker_manager.registered_cell_ids()]
+    )
+    await asyncio.gather(*[worker_manager.start_cell(cell.cell_id) for cell in cells])
     await attach_cells(cells, worker_manager, mark_alive=mark_alive)
     return worker_manager
 

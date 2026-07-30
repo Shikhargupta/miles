@@ -3,8 +3,9 @@ from __future__ import annotations
 import abc
 
 from miles.ray.train.group import RayTrainGroup
-from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.models import Cell, CellMetadata, CellSpec
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.base import BaseWorkerManager
 
 
 class _CellHandle(abc.ABC):
@@ -79,10 +80,12 @@ class _ActorCellHandle(_CellHandle):
         actors[sub_index].inject_fault.remote(mode.value)
 
 
-# TODO the code will NOT work before implementing rollout ft
 class _RolloutCellHandle(_CellHandle):
-    def __init__(self, *, inference_controller: object, rollout_cell_id: str) -> None:
+    def __init__(
+        self, *, inference_controller: object, worker_manager: BaseWorkerManager, rollout_cell_id: str
+    ) -> None:
         self._inference_controller = inference_controller
+        self._worker_manager = worker_manager
         self._rollout_cell_id = rollout_cell_id
 
     @property
@@ -94,9 +97,6 @@ class _RolloutCellHandle(_CellHandle):
         return self._rollout_cell_id
 
     async def get_cell(self) -> Cell:
-        phase = self._inference_controller.get_cell_phase(self._rollout_cell_id)
-        conditions_raw = self._inference_controller.get_cell_conditions(self._rollout_cell_id)
-        is_suspended = self._inference_controller.get_cell_is_suspended(self._rollout_cell_id)
         return Cell(
             metadata=CellMetadata(
                 name=self.cell_id,
@@ -105,15 +105,18 @@ class _RolloutCellHandle(_CellHandle):
                     "miles.io/cell-index": self.cell_key,
                 },
             ),
-            spec=CellSpec(suspend=is_suspended),
-            status=CellStatus(
-                phase=phase,
-                conditions=[CellCondition(**c) for c in conditions_raw],
-            ),
+            spec=CellSpec(suspend=not self._has_workers),
+            status=self._inference_controller.compute_cell_status(self._rollout_cell_id),
         )
 
     async def suspend(self) -> None:
-        await self._inference_controller.stop_cell(self._rollout_cell_id)
+        if self._has_workers:
+            await self._worker_manager.stop_cell(self._rollout_cell_id)
 
     async def resume(self) -> None:
-        await self._inference_controller.start_cell(self._rollout_cell_id)
+        if not self._has_workers:
+            await self._worker_manager.start_cell(self._rollout_cell_id)
+
+    @property
+    def _has_workers(self) -> bool:
+        return self._rollout_cell_id in self._worker_manager.cell_ids()

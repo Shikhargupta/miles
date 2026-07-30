@@ -11,6 +11,7 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.utils import Lock
+from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -124,18 +125,27 @@ class InferenceController:
                     f"Only one updatable server is supported."
                 )
 
-    # -------------------------- external start/stop -----------------------------
-
-    async def start_cell(self, cell_id: str):
-        srv = self._server_of(cell_id)
-        await self.worker_manager.start_cell(srv.server_cells[cell_id].spec)
-
-    async def stop_cell(self, cell_id: str):
-        self._server_of(cell_id)
-        await self.worker_manager.stop_cell(cell_id)
+    # -------------------------- external observation -----------------------------
 
     def list_cell_ids(self) -> list[str]:
         return list_cell_ids(self.servers)
+
+    def compute_cell_status(self, cell_id: str) -> CellStatus:
+        cell = self._server_of(cell_id).server_cells[cell_id]
+        if not cell.is_allocated:
+            return CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
+        if not cell.is_alive:
+            return CellStatus(
+                phase="Running",
+                conditions=[
+                    CellCondition.allocated(TriState.TRUE),
+                    CellCondition.healthy(TriState.UNKNOWN, reason="AttachPending"),
+                ],
+            )
+        return CellStatus(
+            phase="Running",
+            conditions=[CellCondition.allocated(TriState.TRUE), CellCondition.healthy(TriState.TRUE)],
+        )
 
     def _server_of(self, cell_id: str) -> RolloutServer:
         owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]

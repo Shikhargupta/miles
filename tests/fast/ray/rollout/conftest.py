@@ -403,11 +403,12 @@ def patch_ray_get(monkeypatch):
 
 def adopt_cell_workers(worker_manager, *, cell_id: str, payloads: list[dict], actors: list | None = None) -> None:
     """Register hand-made workers with the manager, as a finished bring-up would."""
-    from miles.utils.workers.ray_worker_manager import ActorState, _CellRecord
+    from miles.utils.workers.ray_worker_manager import ActorState, _CellInfo, _CellRecord
     from miles.utils.workers.worker_spec import WorkerPlacement
 
     actors = actors if actors is not None else [fake_actor_handle() for _ in payloads]
-    worker_manager._cells[cell_id] = _CellRecord(
+    info = worker_manager._infos.setdefault(cell_id, _CellInfo())
+    info.record = _CellRecord(
         workers=[
             ActorState(
                 actor=actor,

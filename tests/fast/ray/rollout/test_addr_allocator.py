@@ -42,8 +42,9 @@ def _start_engines_and_collect_addressing(
         return requested[placement.global_rank]
 
     manager = RayWorkerManager(pg=_fake_pg(), _port_allocator=port_allocator)
+    manager.register_cells([spec])
     with patch.object(cell_launch_module, "create_cell_worker_actor", side_effect=_launch):
-        asyncio.run(manager.start_cell(spec))
+        asyncio.run(manager.start_cell(spec.cell_id))
 
     return {rank: parse_cmd_flags(engine.run.remote.call_args.kwargs["cmd"]) for rank, engine in requested.items()}
 
@@ -231,11 +232,13 @@ class TestConcurrentNodeProbes:
         actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         spec = make_cell_spec(args=args, num_nodes=num_nodes, wait_cell_ready=AsyncMock())
+        manager = RayWorkerManager(pg=_fake_pg())
+        manager.register_cells([spec])
         with patch.object(
             cell_launch_module,
             "create_cell_worker_actor",
             side_effect=lambda *, placement, **kw: actors[placement.global_rank],
         ):
-            await RayWorkerManager(pg=_fake_pg()).start_cell(spec)
+            await manager.start_cell(spec.cell_id)
 
         assert [kind for kind, _ in events[:num_nodes]] == ["enter"] * num_nodes, events

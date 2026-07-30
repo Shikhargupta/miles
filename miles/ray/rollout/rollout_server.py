@@ -43,9 +43,9 @@ async def start_rollout_servers(args, worker_manager: RayWorkerManager) -> dict[
         )
 
     if not args.debug_train_only:
-        await asyncio.gather(
-            *[worker_manager.start_cell(cell.spec) for srv in servers.values() for cell in srv.server_cells.values()]
-        )
+        specs = [cell.spec for srv in servers.values() for cell in srv.server_cells.values()]
+        worker_manager.register_cells(specs)
+        await asyncio.gather(*[worker_manager.start_cell(spec.cell_id) for spec in specs])
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 

@@ -164,7 +164,7 @@ class TestStartStopCell:
         await controller.get_updatable_engines_and_lock()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
-        await controller.stop_cell("actor-0")
+        await controller.worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
 
         await _assert_engine_dies(actor0)
@@ -187,9 +187,9 @@ class TestStartStopCell:
         actor0_before = _cells(controller)[0].primary_actor_handle
         url_before = eal_before.rollout_engines[0].server_url
 
-        await controller.stop_cell("actor-0")
+        await controller.worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
-        await controller.start_cell("actor-0")
+        await controller.worker_manager.start_cell("actor-0")
         await _sync_cells(controller)
 
         eal_after = await controller.get_updatable_engines_and_lock()
@@ -216,7 +216,7 @@ class TestStartStopCell:
         await controller.get_updatable_engines_and_lock()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
-        await controller.stop_cell("actor-1")
+        await controller.worker_manager.stop_cell("actor-1")
 
         assert isinstance(ray.get(actor0.get_calls.remote()), list)
         await _assert_engine_dies(actor1)
@@ -228,7 +228,7 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """Calling ``stop_cell`` twice does not raise — production code logs
+        """Stopping an already stopped cell does not raise — production code logs
         and proceeds when the engine is already de-allocated."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
@@ -236,8 +236,8 @@ class TestStartStopCell:
         controller = await InferenceController.create(args, pg)
         await controller.get_updatable_engines_and_lock()  # ensure engines are alive
 
-        await controller.stop_cell("actor-0")
-        await controller.stop_cell("actor-0")  # must not raise
+        await controller.worker_manager.stop_cell("actor-0")
+        await controller.worker_manager.stop_cell("actor-0")  # must not raise
 
 
 @pytest.mark.asyncio
@@ -259,7 +259,7 @@ class TestCellDispatchAcrossModels:
         actor_handles = [cell.primary_actor_handle for cell in _cells(controller, "actor")]
         ref_handles = [cell.primary_actor_handle for cell in _cells(controller, "ref")]
 
-        await controller.stop_cell("ref-0")
+        await controller.worker_manager.stop_cell("ref-0")
 
         # actor untouched
         for h in actor_handles:
@@ -331,9 +331,9 @@ class TestGetUpdatableEnginesAndLock:
         eal_cleared = await controller.get_updatable_engines_and_lock()
         assert eal_cleared.has_new_engines is False
 
-        await controller.stop_cell("actor-0")
+        await controller.worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
-        await controller.start_cell("actor-0")
+        await controller.worker_manager.start_cell("actor-0")
         await _sync_cells(controller)
         eal_recovered = await controller.get_updatable_engines_and_lock()
         assert eal_recovered.has_new_engines is True
@@ -445,7 +445,7 @@ class TestReconcileAfterAnExternalRestart:
         await _sync_cells(controller)
         assert not controller.servers["actor"].server_cells["actor-0"].is_allocated
 
-        await controller.start_cell("actor-0")
+        await controller.worker_manager.start_cell("actor-0")
         await _sync_cells(controller)
 
         cell = controller.servers["actor"].server_cells["actor-0"]

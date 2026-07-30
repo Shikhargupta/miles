@@ -65,20 +65,27 @@ def _manager(**kwargs) -> RayWorkerManager:
     return RayWorkerManager(pg=(None, list(range(8)), list(range(8))), **kwargs)
 
 
+async def _start(manager: RayWorkerManager, spec: BaseCellSpec) -> None:
+    """Register the cell unless it already is, then start it, as its caller does."""
+    if spec.cell_id not in manager.registered_cell_ids():
+        manager.register_cells([spec])
+    await manager.start_cell(spec.cell_id)
+
+
 class TestStartCell:
     async def test_tracks_one_worker_per_spec_worker(self, patch_ray_get):
         """The manager is the only place that knows which actors a cell owns."""
         actors = [_engine() for _ in range(2)]
         manager = _manager()
         with _with_actors(actors):
-            await manager.start_cell(_spec(num_workers=2))
+            await _start(manager, _spec(num_workers=2))
         assert [worker.actor for worker in manager.cell_workers("cell-0")] == actors
 
     async def test_records_the_member_payload_each_worker_was_started_with(self, patch_ray_get):
         """Consumers derive their urls from the payload, so it must be kept verbatim."""
         manager = _manager()
         with _with_actors([_engine()]):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
         (worker,) = manager.cell_workers("cell-0")
         assert worker.payload["host"] == "10.0.0.1"
         assert "server" in worker.payload
@@ -88,7 +95,7 @@ class TestStartCell:
         actors = [_engine() for _ in range(2)]
         manager = _manager()
         with _with_actors(actors):
-            await manager.start_cell(_spec(num_workers=2))
+            await _start(manager, _spec(num_workers=2))
         for actor in actors:
             actor.run.remote.assert_called_once()
 
@@ -96,16 +103,16 @@ class TestStartCell:
         """Starting over live workers would leak them, so the manager refuses."""
         manager = _manager()
         with _with_actors([_engine()]):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
             with pytest.raises(AssertionError, match="already has live workers"):
-                await manager.start_cell(_spec())
+                await _start(manager, _spec())
 
     async def test_cells_share_one_allocator_so_their_ports_never_collide(self, patch_ray_get):
         """Two cells on one node must not be handed the same port."""
         manager = _manager()
         with _with_actors([_engine()]):
-            await manager.start_cell(_spec(cell_id="cell-0"))
-            await manager.start_cell(_spec(cell_id="cell-1"))
+            await _start(manager, _spec(cell_id="cell-0"))
+            await _start(manager, _spec(cell_id="cell-1"))
         ports = [manager.cell_workers(cell_id)[0].payload["server"] for cell_id in ("cell-0", "cell-1")]
         assert ports[0] != ports[1]
 
@@ -115,7 +122,7 @@ class TestStartCell:
         allocator.alloc(engine=fake_engine(host="10.0.0.1", port_seed=20000), node_ip="10.0.0.1")
         manager = _manager(_port_allocator=allocator)
         with _with_actors([_engine()]):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
         assert manager.cell_workers("cell-0")[0].payload["server"] >= 20000
 
 
@@ -135,7 +142,7 @@ class TestFailedBringUp:
             patch(f"{_MANAGER_MODULE}.ray") as ray_mock,
             pytest.raises(RuntimeError, match="run blew up"),
         ):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
 
         assert ray_mock.kill.call_count == 1
         assert manager.cell_workers("cell-0") == []
@@ -150,10 +157,10 @@ class TestFailedBringUp:
         failing[0].run.remote.side_effect = _blow_up
         manager = _manager()
         with _with_actors(failing), patch(f"{_MANAGER_MODULE}.ray"), pytest.raises(RuntimeError):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
 
         with _with_actors([_engine()]):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
         assert len(manager.cell_workers("cell-0")) == 1
 
     async def test_a_cell_still_coming_up_is_not_offered_to_consumers(self, patch_ray_get):
@@ -170,7 +177,7 @@ class TestFailedBringUp:
         manager = _manager()
 
         with _with_actors(actors):
-            task = asyncio.create_task(manager.start_cell(_spec()))
+            task = asyncio.create_task(_start(manager, _spec()))
             await asyncio.wait_for(started.wait(), timeout=5)
             assert manager.cell_workers("cell-0") == []
 
@@ -190,10 +197,10 @@ class TestFailedBringUp:
         manager = _manager()
 
         with _with_actors(actors):
-            task = asyncio.create_task(manager.start_cell(_spec()))
+            task = asyncio.create_task(_start(manager, _spec()))
             await asyncio.sleep(0.05)
             with pytest.raises(AssertionError, match="already has live workers"):
-                await manager.start_cell(_spec())
+                await _start(manager, _spec())
 
             release.set()
             await asyncio.wait_for(task, timeout=5)
@@ -204,8 +211,8 @@ class TestStopCell:
         """Teardown is whole-cell: a survivor would belong to a dead process group."""
         manager = _manager()
         with _with_actors([_engine() for _ in range(2)]):
-            await manager.start_cell(_spec(cell_id="cell-0", num_workers=2))
-            await manager.start_cell(_spec(cell_id="cell-1"))
+            await _start(manager, _spec(cell_id="cell-0", num_workers=2))
+            await _start(manager, _spec(cell_id="cell-1"))
 
         with patch(f"{_MANAGER_MODULE}.ray") as ray_mock:
             await manager.stop_cell("cell-0")
@@ -219,7 +226,7 @@ class TestStopCell:
         actors = [_engine()]
         manager = _manager()
         with _with_actors(actors):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
 
         events: list[str] = []
 
@@ -238,7 +245,7 @@ class TestStopCell:
         actors = [_engine()]
         manager = _manager()
         with _with_actors(actors):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
 
         async def _blow_up():
             raise RuntimeError("shutdown blew up")
@@ -254,7 +261,7 @@ class TestStopCell:
         actors = [_engine()]
         manager = _manager()
         with _with_actors(actors):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
 
         async def _hang():
             await asyncio.Event().wait()
@@ -280,10 +287,10 @@ class TestStopCell:
         """Restart is how a dead cell comes back, so the manager must forget the old workers."""
         manager = _manager()
         with _with_actors([_engine()]):
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
             with patch(f"{_MANAGER_MODULE}.ray"):
                 await manager.stop_cell("cell-0")
-            await manager.start_cell(_spec())
+            await _start(manager, _spec())
         assert len(manager.cell_workers("cell-0")) == 1
 
 
@@ -301,7 +308,7 @@ class TestLaunchIsDrivenByTheSpec:
         spec = BaseCellSpec(worker=_spec().worker, cell_id="cell-0", rank_offset=2, gpu_offset=1)
 
         with patch.object(cell_launch, "create_cell_worker_actor", side_effect=_create):
-            await manager.start_cell(spec)
+            await _start(manager, spec)
 
         assert captured[0]["worker"] is spec.worker
         assert captured[0]["placement"].global_rank == 2

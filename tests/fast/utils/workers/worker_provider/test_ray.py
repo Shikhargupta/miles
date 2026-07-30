@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from miles.utils.workers.ray_worker_manager import ActorState, RayWorkerManager, _CellRecord
+from miles.utils.workers.ray_worker_manager import ActorState, RayWorkerManager, _CellInfo, _CellRecord
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import WorkerPlacement
 
@@ -10,16 +10,18 @@ from miles.utils.workers.worker_spec import WorkerPlacement
 def _manager_with(cells: dict[str, list[dict]]) -> RayWorkerManager:
     manager = RayWorkerManager()
     for cell_id, payloads in cells.items():
-        manager._cells[cell_id] = _CellRecord(
-            workers=[
-                ActorState(
-                    actor=object(),
-                    payload=payload,
-                    placement=WorkerPlacement(local_index=index, global_rank=index, base_gpu_id=index),
-                )
-                for index, payload in enumerate(payloads)
-            ],
-            ready=True,
+        manager._infos[cell_id] = _CellInfo(
+            record=_CellRecord(
+                workers=[
+                    ActorState(
+                        actor=object(),
+                        payload=payload,
+                        placement=WorkerPlacement(local_index=index, global_rank=index, base_gpu_id=index),
+                    )
+                    for index, payload in enumerate(payloads)
+                ],
+                ready=True,
+            )
         )
     return manager
 
@@ -106,7 +108,7 @@ class TestWatchCells:
         async def _reconcile(cell_id, info):
             events.append((cell_id, info))
             if info is not None:
-                manager._cells.clear()
+                manager._infos.clear()
 
         stop = await provider.watch_cells(_reconcile)
         deadline = asyncio.get_running_loop().time() + 2.0
