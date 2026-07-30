@@ -271,7 +271,7 @@ def test_register_router_resolves_the_collector_itself(monkeypatch):
 
 def test_register_router_before_router_start_is_a_wiring_bug(monkeypatch):
     monkeypatch.setattr(backend, "_handle", FakeHandle())
-    with pytest.raises(AssertionError, match="after start_rollout_servers"):
+    with pytest.raises(AssertionError, match="after the routers start"):
         hooks.register_router(_router_args(ip=None))
 
 

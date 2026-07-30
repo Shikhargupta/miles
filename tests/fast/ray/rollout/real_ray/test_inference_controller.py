@@ -10,7 +10,8 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.rollout.rollout_server import start_rollout_servers
+from miles.ray.rollout.router_manager import start_model_routers
+from miles.ray.specs.inference import compute_inference_model_specs
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -77,9 +78,8 @@ def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
 
 
 def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
-    """Build args that drive ``InferenceController.create`` →
-    ``start_rollout_servers`` → N model servers each with 1 group of 2 mock
-    engines."""
+    """Build args that drive the wiring → N model specs each with 1 group of 2
+    mock engines."""
     cfg = _write_sglang_config(tmp_path, models=models)
     rollout_num_gpus = 2 * len(models)
     return make_args(
@@ -102,9 +102,11 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
 async def _create_controller(args, pg):
     """Wire the controller the way create_rollout_components does: the wiring owns the manager."""
     worker_manager = RayWorkerManager(pg=pg)
-    servers = await start_rollout_servers(args, worker_manager)
+    model_specs = compute_inference_model_specs(args)
+    await start_model_routers(args, worker_manager, model_specs)
+    await worker_manager.register_cells([cell for model_spec in model_specs for cell in model_spec.cells])
     provider = RayWorkerProvider(worker_manager=worker_manager)
-    controller = await InferenceController.create(args, servers=servers, provider=provider)
+    controller = await InferenceController.create(args, model_specs=model_specs, provider=provider)
     return controller, worker_manager
 
 
@@ -135,15 +137,14 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
 
 @pytest.mark.asyncio
 class TestInferenceControllerInit:
-    async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
+    async def test_init_creates_live_mock_engines_via_the_real_wiring(
         self,
         ray_local_mode,
         placement_group_factory,
         tmp_path,
         patch_low_level,
     ):
-        """End-to-end smoke: production ``create`` + ``start_rollout_servers``
-        runs against MockSGLangEngine; the resulting engines are addressable over
+        """End-to-end smoke: the production wiring runs against MockSGLangEngine; the resulting engines are addressable over
         http via the public ``get_updatable_engines_and_lock``, and their launcher
         actors are reachable through the engine slots."""
         args = _make_test_args(tmp_path, models=[("actor", True)])

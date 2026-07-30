@@ -3,9 +3,8 @@ from __future__ import annotations
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells, make_sglang_config_yaml
 
-from miles.ray.rollout import rollout_server
-from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.ray.rollout.rollout_server import RolloutServer
+from miles.ray.specs.inference import compute_inference_model_specs
 
 
 class TestRolloutServerCrossCellProperties:
@@ -46,16 +45,8 @@ class TestRolloutServerCrossCellProperties:
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
 
-class TestStartRolloutServersCellChunking:
-    @pytest.fixture
-    def stub_engine_startup(self, monkeypatch):
-        async def _no_workers(self, request):
-            return None
-
-        monkeypatch.setattr(rollout_server, "start_router", lambda *args, **kwargs: ("127.0.0.1", 30000))
-        monkeypatch.setattr(RayWorkerManager, "start_cell", _no_workers)
-
-    async def _cells_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
+class TestComputedCellChunking:
+    def _cells_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
         cfg_path = tmp_path / "cfg.yaml"
         cfg_path.write_text(
             make_sglang_config_yaml(
@@ -65,37 +56,37 @@ class TestStartRolloutServersCellChunking:
             )
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
-        servers = await start_rollout_servers(args, worker_manager=RayWorkerManager(pg=None))
-        return list(servers["default"].cell_specs.values())
+        (model_spec,) = compute_inference_model_specs(args)
+        return list(model_spec.cells)
 
-    async def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
+    def test_a_single_node_engine_becomes_its_own_cell(self, tmp_path):
         """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
-        specs = await self._cells_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
+        specs = self._cells_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
         assert [spec.worker.scheduling.num_workers_per_cell for spec in specs] == [1] * 8
 
-    async def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, stub_engine_startup, tmp_path):
+    def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, tmp_path):
         """With 16 gpus per engine on 8-gpu nodes, each cell holds both node-ranks."""
-        specs = await self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        specs = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         assert [spec.worker.scheduling.num_workers_per_cell for spec in specs] == [2, 2]
 
-    async def test_a_trailing_partial_multi_node_engine_is_rejected(self, stub_engine_startup, tmp_path):
-        """24 gpus do not divide into whole 2-node engines, so startup must fail fast."""
+    def test_a_trailing_partial_multi_node_engine_is_rejected(self, tmp_path):
+        """24 gpus do not divide into whole 2-node engines, so spec computation must fail fast."""
         with pytest.raises(AssertionError, match="whole number of"):
-            await self._cells_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
+            self._cells_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
 
-    async def test_cells_carry_contiguous_rank_and_gpu_offsets(self, stub_engine_startup, tmp_path):
+    def test_cells_carry_contiguous_rank_and_gpu_offsets(self, tmp_path):
         """Each multi-node cell starts where the previous one ended, so node-0 detection stays valid."""
-        specs = await self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        specs = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         assert [spec.rank_offset for spec in specs] == [0, 2]
         assert [spec.gpu_offset for spec in specs] == [0, 16]
 
-    async def test_every_multi_node_cell_starts_on_an_aligned_rank(self, stub_engine_startup, tmp_path):
+    def test_every_multi_node_cell_starts_on_an_aligned_rank(self, tmp_path):
         """sglang derives node_rank from the global rank, so a cell must not start mid-engine."""
-        specs = await self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        specs = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         for spec in specs:
             assert spec.rank_offset % spec.worker.scheduling.num_workers_per_cell == 0
 
-    async def test_a_group_starting_at_a_misaligned_rank_is_rejected(self, stub_engine_startup, tmp_path):
+    def test_a_group_starting_at_a_misaligned_rank_is_rejected(self, tmp_path):
         """One single-node engine ahead of a 2-node group leaves an odd engine_offset and must fail fast."""
         cfg_path = tmp_path / "cfg.yaml"
         cfg_path.write_text(
@@ -108,4 +99,4 @@ class TestStartRolloutServersCellChunking:
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=33, num_gpus_per_node=8)
         with pytest.raises(AssertionError, match="not aligned to"):
-            await start_rollout_servers(args, worker_manager=RayWorkerManager(pg=None))
+            compute_inference_model_specs(args)

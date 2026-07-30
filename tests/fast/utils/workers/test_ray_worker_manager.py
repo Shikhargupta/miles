@@ -66,13 +66,21 @@ def _manager(**kwargs) -> RayWorkerManager:
 
 
 async def _start(manager: RayWorkerManager, spec: BaseCellSpec) -> None:
-    """Register the cell unless it already is, then start it, as its caller does."""
+    """Register the cell (which brings it up) or restart it by id, as its callers do."""
     if spec.cell_id not in manager.registered_cell_ids():
-        manager.register_cells([spec])
-    await manager.start_cell(spec.cell_id)
+        await manager.register_cells([spec])
+    else:
+        await manager.start_cell(spec.cell_id)
 
 
 class TestStartCell:
+    async def test_register_brings_every_cell_up(self, patch_ray_get):
+        """A registered spec is a running cell; no separate start call is needed."""
+        manager = _manager()
+        with _with_actors([_engine()]):
+            await manager.register_cells([_spec()])
+        assert manager.cell_ids() == ["cell-0"]
+
     async def test_tracks_one_worker_per_spec_worker(self, patch_ray_get):
         """The manager is the only place that knows which actors a cell owns."""
         actors = [_engine() for _ in range(2)]

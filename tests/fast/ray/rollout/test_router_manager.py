@@ -20,10 +20,12 @@ class _FakeWorkerManager:
         self._payloads: dict[str, list[dict]] = {}
         self._next_port = 20000
 
-    def register_cells(self, specs) -> None:
+    async def register_cells(self, specs) -> None:
         for spec in specs:
             assert spec.cell_id not in self.specs
             self.specs[spec.cell_id] = spec
+        for spec in specs:
+            await self.start_cell(spec.cell_id)
 
     async def start_cell(self, cell_id: str) -> None:
         spec = self.specs[cell_id]

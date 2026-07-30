@@ -5,55 +5,11 @@ from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
-from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell
-from miles.ray.specs.inference import InferenceCellSpec, compute_inference_model_specs
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.ray.specs.inference import InferenceCellSpec
 from miles.utils.workers.worker_provider.base import CellInfo
 
 logger = logging.getLogger(__name__)
-
-
-async def start_rollout_servers(args, worker_manager: RayWorkerManager) -> dict[str, "RolloutServer"]:
-    """Start the routers and bring up every rollout worker.
-
-    No cell object exists yet: the reconcile loop creates one per cell the worker
-    manager reports. Returns a dict mapping model name -> ``RolloutServer``.
-    """
-    model_specs = compute_inference_model_specs(args)
-
-    servers: dict[str, RolloutServer] = {}
-
-    for model_idx, model_spec in enumerate(model_specs):
-        router_ip, router_port = await start_router(
-            args,
-            worker_manager,
-            model_name=model_spec.name,
-            has_pd_disaggregation=model_spec.has_pd_disaggregation,
-            force_new=(model_idx > 0),
-        )
-
-        if model_idx == 0:
-            args.sglang_router_ip = router_ip
-            args.sglang_router_port = router_port
-
-        servers[model_spec.name] = RolloutServer(
-            cell_specs={cell.cell_id: cell for cell in model_spec.cells},
-            args=args,
-            router_ip=router_ip,
-            router_port=router_port,
-            model_name=model_spec.name,
-            update_weights=model_spec.update_weights,
-        )
-
-    if not args.debug_train_only:
-        specs = [spec for srv in servers.values() for spec in srv.cell_specs.values()]
-        worker_manager.register_cells(specs)
-        await asyncio.gather(*[worker_manager.start_cell(spec.cell_id) for spec in specs])
-
-    args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
-
-    return servers
 
 
 @dataclasses.dataclass
@@ -185,10 +141,6 @@ class RolloutServer:
     @property
     def router_api_client(self) -> SGLangRouterApiClient:
         return SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
-
-
-def list_cell_ids(servers: dict[str, "RolloutServer"]) -> list[str]:
-    return [cell_id for model_id in sorted(servers) for cell_id in servers[model_id].cell_specs]
 
 
 _UNREGISTER_TIMEOUT_SECONDS = 30

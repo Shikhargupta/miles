@@ -8,7 +8,8 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids
+from miles.ray.rollout.rollout_server import RolloutServer
+from miles.ray.specs.inference import InferenceModelSpec
 from miles.ray.utils import Lock
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
@@ -19,9 +20,9 @@ logger = logging.getLogger(__name__)
 class InferenceController:
     @staticmethod
     async def create(
-        args, *, servers: dict[str, "RolloutServer"], provider: BaseWorkerProvider | None
+        args, *, model_specs: list["InferenceModelSpec"], provider: BaseWorkerProvider | None
     ) -> "InferenceController":
-        controller = InferenceController(args, servers=servers, provider=provider)
+        controller = InferenceController(args, model_specs=model_specs, provider=provider)
         if provider is not None:
             observed = await provider.list_cells()
             for cell_id in controller.list_cell_ids():
@@ -29,9 +30,10 @@ class InferenceController:
             controller._watcher_disposers.append(await provider.watch_cells(controller._reconcile, seen=observed))
         return controller
 
-    def __init__(self, args, *, servers: dict[str, "RolloutServer"], provider: BaseWorkerProvider | None):
+    def __init__(self, args, *, model_specs: list["InferenceModelSpec"], provider: BaseWorkerProvider | None):
         self.args = args
-        self.servers = servers
+        self.model_specs = model_specs
+        self.servers: dict[str, RolloutServer] = {}
         self.provider = provider
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
@@ -104,22 +106,22 @@ class InferenceController:
             srv.clear_has_new_engines()
 
     def _get_updatable_server(self) -> RolloutServer | None:
-        updatable = [srv for srv in self.servers.values() if srv.update_weights]
+        updatable = [model_spec for model_spec in self.model_specs if model_spec.update_weights]
         match updatable:
             case []:
                 return None
-            case [srv]:
-                return srv
+            case [model_spec]:
+                return self._server_for_model(model_spec)
             case _:
                 raise ValueError(
-                    f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
-                    f"Only one updatable server is supported."
+                    f"Multiple models have update_weights=True: {[spec.name for spec in updatable]}. "
+                    f"Only one updatable model is supported."
                 )
 
     # -------------------------- external observation -----------------------------
 
     def list_cell_ids(self) -> list[str]:
-        return list_cell_ids(self.servers)
+        return [cell.cell_id for model_spec in self.model_specs for cell in model_spec.cells]
 
     def compute_cell_status(self, cell_id: str) -> CellStatus:
         cell = self._server_of(cell_id).server_cells.get(cell_id)
@@ -146,7 +148,28 @@ class InferenceController:
     def _find_server_of(self, cell_id: str) -> RolloutServer | None:
         owners = [srv for srv in self.servers.values() if cell_id in srv.cell_specs]
         assert len(owners) <= 1, f"{cell_id=} must name at most one cell, but {len(owners)} servers hold it"
-        return owners[0] if owners else None
+        if owners:
+            return owners[0]
+        for model_spec in self.model_specs:
+            if any(cell.cell_id == cell_id for cell in model_spec.cells):
+                return self._server_for_model(model_spec)
+        return None
+
+    def _server_for_model(self, model_spec: "InferenceModelSpec") -> RolloutServer:
+        srv = self.servers.get(model_spec.name)
+        if srv is not None:
+            return srv
+        router_ip, router_port = self.args.sglang_model_routers[model_spec.name]
+        srv = RolloutServer(
+            cell_specs={cell.cell_id: cell for cell in model_spec.cells},
+            args=self.args,
+            router_ip=router_ip,
+            router_port=router_port,
+            model_name=model_spec.name,
+            update_weights=model_spec.update_weights,
+        )
+        self.servers[model_spec.name] = srv
+        return srv
 
     # -------------------------- misc APIs -----------------------------
 

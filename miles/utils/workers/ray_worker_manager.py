@@ -53,11 +53,12 @@ class RayWorkerManager(BaseWorkerManager):
     _port_allocator: PortAllocator = field(default_factory=PortAllocator)
     _infos: dict[str, _CellInfo] = field(default_factory=dict)
 
-    def register_cells(self, specs: list[BaseCellSpec]) -> None:
-        """Record the cells this manager may start, so they can be started by id later."""
+    async def register_cells(self, specs: list[BaseCellSpec]) -> None:
+        """Record the cells and bring them up: a registered spec is a running cell."""
         for spec in specs:
             assert spec.cell_id not in self._infos, f"cell {spec.cell_id} is already registered"
             self._infos[spec.cell_id] = _CellInfo(spec=spec)
+        await asyncio.gather(*[self.start_cell(spec.cell_id) for spec in specs])
 
     def registered_cell_ids(self) -> list[str]:
         return sorted(cell_id for cell_id, info in self._infos.items() if info.spec is not None)

@@ -11,31 +11,10 @@ from tests.fast.ray.rollout.real_ray.conftest import (
 )
 
 from miles.backends.sglang_utils.sglang_engine import build_server_url
-from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 
 
 def _all_actor_handles(cells) -> list:
     return [handle for cell in cells for handle in cell.actor_handles]
-
-
-class TestStartEnginesShortCircuits:
-    """Branches that bail before hitting the PG / actor creation path."""
-
-    async def test_debug_train_only_brings_up_no_workers(self, placement_group_factory):
-        """In debug_train_only the wiring schedules no actors at all."""
-        pg = placement_group_factory(2)
-        setups = build_cells(num_cells=2, debug_train_only=True)
-        srv = RolloutServer(
-            cell_specs={f"cell-{i}": setup.spec for i, setup in enumerate(setups)},
-            server_cells={},
-            args=setups[0].args,
-        )
-
-        worker_manager = make_worker_manager(pg)
-        await start_rollout_servers(setups[0].args, pg, worker_manager)
-
-        assert worker_manager.cell_ids() == []
-        assert srv.has_new_engines is False
 
 
 class TestStartEnginesRealActors:

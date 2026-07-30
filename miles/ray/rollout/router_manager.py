@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from miles.ray.specs.router import compute_router_cell_spec
@@ -7,6 +6,24 @@ from miles.utils.http_utils import is_port_available
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 logger = logging.getLogger(__name__)
+
+
+async def start_model_routers(args, worker_manager: RayWorkerManager, model_specs) -> None:
+    """Bring up one router per model and publish their addresses on args."""
+    routers: dict[str, tuple[str, int]] = {}
+    for model_idx, model_spec in enumerate(model_specs):
+        router_ip, router_port = await start_router(
+            args,
+            worker_manager,
+            model_name=model_spec.name,
+            has_pd_disaggregation=model_spec.has_pd_disaggregation,
+            force_new=(model_idx > 0),
+        )
+        if model_idx == 0:
+            args.sglang_router_ip = router_ip
+            args.sglang_router_port = router_port
+        routers[model_spec.name] = (router_ip, router_port)
+    args.sglang_model_routers = routers
 
 
 async def start_router(
@@ -38,8 +55,7 @@ async def start_router(
         has_pd_disaggregation=has_pd_disaggregation,
         static_port=static_port,
     )
-    worker_manager.register_cells([spec])
-    await worker_manager.start_cell(spec.cell_id)
+    await worker_manager.register_cells([spec])
 
     (worker,) = worker_manager.cell_workers(spec.cell_id)
     logger.info(f"Router launched at {worker.payload['host']}:{worker.payload['port']}")
@@ -70,8 +86,7 @@ async def start_session_server(args, worker_manager: RayWorkerManager) -> None:
             )
 
     specs = compute_session_server_cell_specs(args)
-    worker_manager.register_cells(specs)
-    await asyncio.gather(*[worker_manager.start_cell(spec.cell_id) for spec in specs])
+    await worker_manager.register_cells(specs)
 
     payloads = []
     for spec in specs:
