@@ -103,7 +103,7 @@ Retry lives at two levels:
 Cleanup raises unless raising would hide a worse error:
 
 - `stop()` → `SourceStreamDriver.aclose()` has nothing in flight, so a stream that fails to close propagates.
-- `_aclose_while_unwinding` and the watch's `finally` run while another exception is unwinding. There a close failure would replace the stream error being logged, or swallow the 410 that `watch()` needs in order to relist, so it is logged with a stacktrace instead.
+- `_aclose_logging_failure` never raises, for a different reason at each call site: on the cancellation path a close failure would replace the exception being unwound, and on the reopen path closing a stream that just failed re-raises that same failure and would kill a driver whose whole job is to reopen. Both log with a stacktrace.
 
 `kubernetes_asyncio` is imported lazily so the loop stays importable without a Kubernetes backend, and declared in `requirements.txt` for the test suites.
 
