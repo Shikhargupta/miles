@@ -8,40 +8,31 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
-from miles.ray.rollout.router_manager import start_session_server
+from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids
 from miles.ray.utils import Lock
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 logger = logging.getLogger(__name__)
 
 
 class InferenceController:
     @staticmethod
-    async def create(args, pg) -> "InferenceController":
-        controller = InferenceController(args, pg)
-        if not args.debug_train_only:
-            controller.servers = await start_rollout_servers(args, controller.worker_manager)
-            dashboard_hooks.register_router(args)
-            start_session_server(args)
-            controller.provider = RayWorkerProvider(worker_manager=controller.worker_manager)
-            observed = await controller.provider.list_cells()
+    async def create(
+        args, *, servers: dict[str, "RolloutServer"], provider: BaseWorkerProvider | None
+    ) -> "InferenceController":
+        controller = InferenceController(args, servers=servers, provider=provider)
+        if provider is not None:
+            observed = await provider.list_cells()
             for cell_id in controller.list_cell_ids():
                 await controller._reconcile(cell_id, observed.get(cell_id))
-            controller._watcher_disposers.append(
-                await controller.provider.watch_cells(controller._reconcile, seen=observed)
-            )
+            controller._watcher_disposers.append(await provider.watch_cells(controller._reconcile, seen=observed))
         return controller
 
-    def __init__(self, args, pg):
-        self.pg = pg
+    def __init__(self, args, *, servers: dict[str, "RolloutServer"], provider: BaseWorkerProvider | None):
         self.args = args
-        self.servers: dict[str, RolloutServer] = {}
-        self.worker_manager = RayWorkerManager(pg=pg)
-        self.provider: BaseWorkerProvider | None = None
+        self.servers = servers
+        self.provider = provider
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._reconcile_gate = _ReconcileGate()

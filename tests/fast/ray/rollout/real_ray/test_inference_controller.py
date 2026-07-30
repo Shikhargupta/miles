@@ -10,6 +10,9 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout.rollout_server import start_rollout_servers
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 
 class _NoopRouterApiClient:
@@ -96,6 +99,15 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
     )
 
 
+async def _create_controller(args, pg):
+    """Wire the controller the way create_rollout_components does: the wiring owns the manager."""
+    worker_manager = RayWorkerManager(pg=pg)
+    servers = await start_rollout_servers(args, worker_manager)
+    provider = RayWorkerProvider(worker_manager=worker_manager)
+    controller = await InferenceController.create(args, servers=servers, provider=provider)
+    return controller, worker_manager
+
+
 async def _sync_cells(controller):
     """Reconcile against the provider right now instead of waiting for its next poll."""
     observed = await controller.provider.list_cells()
@@ -137,7 +149,7 @@ class TestInferenceControllerInit:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2
         for api_client in eal.rollout_engines:
@@ -160,11 +172,11 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         await controller.get_updatable_engines_and_lock()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
-        await controller.worker_manager.stop_cell("actor-0")
+        await worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
 
         await _assert_engine_dies(actor0)
@@ -182,14 +194,14 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         eal_before = await controller.get_updatable_engines_and_lock()
         actor0_before = _cells(controller)[0].primary_actor_handle
         url_before = eal_before.rollout_engines[0].server_url
 
-        await controller.worker_manager.stop_cell("actor-0")
+        await worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
-        await controller.worker_manager.start_cell("actor-0")
+        await worker_manager.start_cell("actor-0")
         await _sync_cells(controller)
 
         eal_after = await controller.get_updatable_engines_and_lock()
@@ -212,11 +224,11 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         await controller.get_updatable_engines_and_lock()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
-        await controller.worker_manager.stop_cell("actor-1")
+        await worker_manager.stop_cell("actor-1")
 
         assert isinstance(ray.get(actor0.get_calls.remote()), list)
         await _assert_engine_dies(actor1)
@@ -233,11 +245,11 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         await controller.get_updatable_engines_and_lock()  # ensure engines are alive
 
-        await controller.worker_manager.stop_cell("actor-0")
-        await controller.worker_manager.stop_cell("actor-0")  # must not raise
+        await worker_manager.stop_cell("actor-0")
+        await worker_manager.stop_cell("actor-0")  # must not raise
 
 
 @pytest.mark.asyncio
@@ -255,11 +267,11 @@ class TestCellDispatchAcrossModels:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         actor_handles = [cell.primary_actor_handle for cell in _cells(controller, "actor")]
         ref_handles = [cell.primary_actor_handle for cell in _cells(controller, "ref")]
 
-        await controller.worker_manager.stop_cell("ref-0")
+        await worker_manager.stop_cell("ref-0")
 
         # actor untouched
         for h in actor_handles:
@@ -283,7 +295,7 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
         assert eal.engine_gpu_counts == [1, 1]
@@ -303,7 +315,7 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("ref", False)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         eal = await controller.get_updatable_engines_and_lock()
         assert eal.rollout_engines == []
         assert eal.engine_gpu_counts == []
@@ -323,7 +335,7 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         eal_init = await controller.get_updatable_engines_and_lock()
         assert eal_init.has_new_engines is True
 
@@ -331,9 +343,9 @@ class TestGetUpdatableEnginesAndLock:
         eal_cleared = await controller.get_updatable_engines_and_lock()
         assert eal_cleared.has_new_engines is False
 
-        await controller.worker_manager.stop_cell("actor-0")
+        await worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
-        await controller.worker_manager.start_cell("actor-0")
+        await worker_manager.start_cell("actor-0")
         await _sync_cells(controller)
         eal_recovered = await controller.get_updatable_engines_and_lock()
         assert eal_recovered.has_new_engines is True
@@ -350,7 +362,7 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         # Force ref's flag True so we can detect any erroneous clear.
         controller.servers["ref"].has_new_engines = True
 
@@ -371,7 +383,7 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor1", True), ("actor2", True)])
         pg = placement_group_factory(4)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         with pytest.raises(ValueError, match="Multiple servers"):
             await controller.get_updatable_engines_and_lock()
 
@@ -391,7 +403,7 @@ class TestCheckWeights:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         await controller.get_updatable_engines_and_lock()  # wait for engines to be alive
 
         results = await controller.check_weights(action="pre_update")
@@ -430,14 +442,14 @@ class TestReconcileAfterAnExternalRestart:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
         actor0_before = _cells(controller)[0].primary_actor_handle
 
-        await controller.worker_manager.stop_cell("actor-0")
+        await worker_manager.stop_cell("actor-0")
         await _sync_cells(controller)
         assert "actor-0" not in controller.servers["actor"].server_cells
 
-        await controller.worker_manager.start_cell("actor-0")
+        await worker_manager.start_cell("actor-0")
         await _sync_cells(controller)
 
         cell = controller.servers["actor"].server_cells["actor-0"]
@@ -459,7 +471,7 @@ class TestRolloutFaultToleranceIsUnsupported:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
 
         await controller.health_monitoring_pause()
         eal = await controller.get_updatable_engines_and_lock()
@@ -477,7 +489,7 @@ class TestRolloutFaultToleranceIsUnsupported:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        controller = await InferenceController.create(args, pg)
+        controller, worker_manager = await _create_controller(args, pg)
 
         with pytest.raises(NotImplementedError):
             await controller._try_ci_fault_injection()

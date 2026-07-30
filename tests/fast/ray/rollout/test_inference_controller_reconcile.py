@@ -58,8 +58,7 @@ def _make_controller(
         model_name="default",
         update_weights=update_weights,
     )
-    controller = InferenceController(args, pg=None)
-    controller.servers = {"default": srv}
+    controller = InferenceController(args, servers={"default": srv}, provider=None)
     return controller, srv, router
 
 

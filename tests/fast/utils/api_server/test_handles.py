@@ -103,8 +103,7 @@ class TestRolloutCellStatus:
             server_cells={} if cell is None else {spec.cell_id: cell},
         )
         with patch("miles.ray.rollout.inference_controller.Lock", MagicMock()):
-            controller = InferenceController(args, pg=None)
-        controller.servers = {"default": srv}
+            controller = InferenceController(args, servers={"default": srv}, provider=None)
         return controller
 
     def _spec_and_cell(self, *, attached: bool, alive: bool):
