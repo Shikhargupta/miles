@@ -7,7 +7,8 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
-from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell
+from miles.ray.specs.inference import compute_nodes_per_engine
 
 _CELL_MODULE = "miles.ray.rollout.server_cell"
 

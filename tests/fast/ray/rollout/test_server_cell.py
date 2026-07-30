@@ -7,7 +7,8 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, format_cell_id, list_cell_ids
-from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell
+from miles.ray.specs.inference import compute_nodes_per_engine
 
 
 def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool = True) -> ServerCell:

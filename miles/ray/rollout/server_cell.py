@@ -283,10 +283,6 @@ class ServerCell:
         )
 
 
-def compute_nodes_per_engine(*, num_gpus_per_engine: int, num_gpus_per_node: int) -> int:
-    return max(1, num_gpus_per_engine // num_gpus_per_node)
-
-
 def launch_sglang_ray_actor(
     *,
     args: Any,

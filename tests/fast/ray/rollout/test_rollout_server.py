@@ -3,15 +3,11 @@ from __future__ import annotations
 import pytest
 from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_dataclass_cells, make_sglang_config_yaml
 
+from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import (
-    RolloutServer,
-    _compute_megatron_num_gpus,
-    _compute_rollout_offset,
-    _resolve_sglang_config,
-    start_rollout_servers,
-)
+from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
+from miles.ray.specs.inference import compute_megatron_num_gpus, compute_rollout_offset
 
 
 class TestRolloutServerPureFunctions:
@@ -27,7 +23,7 @@ class TestRolloutServerPureFunctions:
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=8)
         with pytest.raises(AssertionError, match="total GPUs"):
-            _resolve_sglang_config(args)
+            resolve_sglang_config(args)
 
     def test_compute_rollout_offset_colocate_returns_zero(self):
         args = make_args(
@@ -38,7 +34,7 @@ class TestRolloutServerPureFunctions:
             actor_num_gpus_per_node=8,
             use_critic=False,
         )
-        assert _compute_rollout_offset(args) == 0
+        assert compute_rollout_offset(args) == 0
 
     def test_compute_rollout_offset_critic_train_only(self):
         args = make_args(
@@ -49,7 +45,7 @@ class TestRolloutServerPureFunctions:
             critic_num_nodes=1,
             critic_num_gpus_per_node=4,
         )
-        assert _compute_rollout_offset(args) == 4
+        assert compute_rollout_offset(args) == 4
 
     def test_compute_rollout_offset_actor_plus_critic(self):
         args = make_args(
@@ -63,7 +59,7 @@ class TestRolloutServerPureFunctions:
             critic_num_nodes=1,
             critic_num_gpus_per_node=4,
         )
-        assert _compute_rollout_offset(args) == 12
+        assert compute_rollout_offset(args) == 12
 
     def test_compute_megatron_num_gpus_for_actor_only(self):
         args = make_args(
@@ -73,7 +69,7 @@ class TestRolloutServerPureFunctions:
             debug_rollout_only=False,
             critic_train_only=False,
         )
-        assert _compute_megatron_num_gpus(args) == 16
+        assert compute_megatron_num_gpus(args) == 16
 
     def test_compute_megatron_num_gpus_with_critic(self):
         args = make_args(
@@ -85,11 +81,11 @@ class TestRolloutServerPureFunctions:
             debug_rollout_only=False,
             critic_train_only=False,
         )
-        assert _compute_megatron_num_gpus(args) == 12
+        assert compute_megatron_num_gpus(args) == 12
 
     def test_compute_megatron_num_gpus_zero_when_debug_rollout_only(self):
         args = make_args(debug_rollout_only=True)
-        assert _compute_megatron_num_gpus(args) == 0
+        assert compute_megatron_num_gpus(args) == 0
 
 
 class TestRolloutServerCrossCellProperties:

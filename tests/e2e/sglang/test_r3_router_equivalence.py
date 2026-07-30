@@ -32,7 +32,7 @@ tests) — sourcing ``scripts/models/{type}.sh`` populates
 reshape of ``routed_experts`` depends on.  We do *not* set
 ``--use-kl-loss`` or ``--kl-coef`` > 0, which is what gates the
 ``--ref-load`` existence check (``miles/utils/arguments.py``), and
-``--debug-rollout-only`` makes ``_compute_megatron_num_gpus`` return
+``--debug-rollout-only`` makes ``compute_megatron_num_gpus`` return
 ``0`` so no megatron actor is spawned and the checkpoint is never
 loaded.  This lets us get away with a single H200 and no
 ``convert_hf_to_torch_dist`` step.
