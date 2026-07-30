@@ -1469,7 +1469,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--lora-train-only",
+                "--debug-lora-train-only",
                 action="store_true",
                 default=False,
                 help=(

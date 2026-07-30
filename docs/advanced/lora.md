@@ -29,7 +29,7 @@ the miles repo:
 | `--lora-adapter-path` | Path to a pre-trained adapter to resume from. |
 | `--lora-sync-from-tensor` | Sync adapter weights to SGLang via in-memory tensors instead of a file round-trip. |
 | `--lora-provider-path` | Dotted module supplying a model-specific native-LoRA implementation. Defaults to the generic provider. |
-| `--lora-train-only` | Train adapters in Megatron while rollout stays on the frozen base policy. Useful when the engine cannot serve the adapter yet. |
+| `--debug-lora-train-only` | Train adapters in Megatron while rollout stays on the frozen base policy. Useful when the engine cannot serve the adapter yet. |
 | `--check-lora-weight-equal` | Verify the Megatron → SGLang adapter sync with a per-tensor sha256 manifest. |
 
 <Warning>

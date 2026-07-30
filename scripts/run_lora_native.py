@@ -127,7 +127,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_alpha: int = 32
     lora_dropout: float = 0.0
     target_modules: str = ""
-    lora_train_only: bool = False
+    debug_lora_train_only: bool = False
     check_lora_weight_equal: bool = True
 
     num_rollout: int = 8
@@ -228,8 +228,8 @@ def _train(args: ScriptArgs):
         f'--lora-dropout {args.lora_dropout} --target-modules "{args.target_modules}" '
         "--no-gradient-accumulation-fusion "
     )
-    if args.lora_train_only:
-        lora_args += "--lora-train-only "
+    if args.debug_lora_train_only:
+        lora_args += "--debug-lora-train-only "
     if args.check_lora_weight_equal:
         lora_args += "--check-lora-weight-equal "
 
