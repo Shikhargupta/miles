@@ -18,6 +18,7 @@ from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
+from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,38 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Specifies what to offload during rollout when offload-rollout is set. "
                     "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
                     "Example: --offload-rollout-level kv_cache weight"
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-target",
+                type=str,
+                choices=["cpu", "disk"],
+                default="cpu",
+                help=(
+                    "Where the training actor is backed up while offloaded during rollout "
+                    "(only used with --offload-train on the megatron backend). "
+                    "'cpu' (default) keeps a pinned host copy; 'disk' streams it to node-local "
+                    "NVMe (--offload-train-disk-dir) for the case where even CPU RAM cannot hold it."
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-disk-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Node-local directory for train disk-offload files when "
+                    "--offload-train-target=disk. Should be fast local NVMe (e.g. /scratch). "
+                    "Files are per-process and overwritten in place every step (bounded size); "
+                    "defaults to $SCRATCH/miles_train_offload_<uid>."
+                ),
+            )
+            parser.add_argument(
+                "--offload-train-disk-chunk-mb",
+                type=int,
+                default=256,
+                help=(
+                    "Chunk size (MiB) for streaming the training actor GPU<->disk in disk-offload "
+                    "mode. Bounds the pinned host staging buffer regardless of the total offloaded size."
                 ),
             )
 
@@ -433,6 +466,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The seed for the random number generator during rollout. "
                     "This is used to shuffle the prompts and also for the random sampling of the prompts."
                 ),
+            )
+            parser.add_argument(
+                "--object-store-backend",
+                type=str,
+                choices=tuple(backend.value for backend in ObjectStoreBackend),
+                default="ray",
+                help="Backend of the object store used to pass data (e.g. rollout data) between processes.",
+            )
+            parser.add_argument(
+                "--mooncake-store-init-kwargs",
+                type=json.loads,
+                default=None,
+                help="JSON kwargs used to initialize MooncakeDistributedStore for rollout transfer.",
+            )
+            parser.add_argument(
+                "--mooncake-replica-num",
+                type=int,
+                default=1,
+                help="Number of Mooncake memory replicas for each stored object.",
             )
 
             # sampling
@@ -818,8 +870,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Sets tokenizer.chat_template when loading via load_tokenizer, "
                 "and also sets --sglang-chat-template so the sglang server uses the same template. "
                 "For Miles-maintained fixed templates, leave this unset and pass "
-                "--tito-model plus --tito-allowed-append-roles so Miles can auto-resolve "
-                "the registered template. The literal value 'autofix' is kept only as a "
+                "--tito-model so Miles can auto-resolve the registered template. "
+                "The literal value 'autofix' is kept only as a "
                 "deprecated compatibility alias for that auto-resolve path. "
                 "The path must be accessible on all Ray worker nodes "
                 "(e.g. a path inside the miles repo, or a shared filesystem like NFS).",
@@ -1227,13 +1279,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--custom-tis-function-path",
                 type=str,
                 default=None,
-                help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
+                help="Path to the custom TIS/RS function (e.g., examples/infra_features/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
             )
             parser.add_argument(
                 "--custom-pg-loss-reducer-function-path",
                 type=str,
                 default=None,
-                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
+                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/experimental/DrGRPO/custom_reducer.py:get_pg_loss_reducer).",
             )
 
             parser.add_argument(
@@ -2171,14 +2223,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Controls how token IDs are computed for messages appended after "
                 "the pretokenized prefix in multi-turn agentic sessions.",
             )
-            parser.add_argument(
-                "--tito-allowed-append-roles",
-                nargs="+",
-                default=["tool"],
-                choices=["tool", "user", "system"],
-                help="Message roles allowed to be appended after the pretokenized "
-                "assistant prefix in TITO sessions (default: tool).",
-            )
             return parser
 
         def add_user_provided_function_arguments(parser):
@@ -2290,13 +2334,6 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
-
-        if not args.ci_test:
-            raise ValueError(
-                "The FSDP backend has known issues with SGLang v0.5.10 and is not actively maintained in the current version. "
-                "It has been moved to miles.backends.experimental. "
-                "Contributions are welcome if you are interested in improving it."
-            )
 
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
     # locates the per-test record). No CLI flag: non-CI runs always stay False.
@@ -2430,25 +2467,18 @@ def miles_validate_args(args):
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
-    # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
-    raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
-    args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
+    if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
+        raise ValueError(
+            f"--tito-model={args.tito_model} requires --use-session-server; "
+            "this flag only configures the session-server TITO middleware."
+        )
 
-    if not args.use_session_server:
-        misconfigured = []
-        if args.tito_model != TITOTokenizerType.DEFAULT.value:
-            misconfigured.append(f"--tito-model={args.tito_model}")
-        if args.tito_allowed_append_roles != ["tool"]:
-            misconfigured.append(f"--tito-allowed-append-roles={args.tito_allowed_append_roles}")
-        if misconfigured:
-            raise ValueError(
-                f"{', '.join(misconfigured)} require --use-session-server; "
-                "these flags only configure the session-server TITO middleware."
-            )
-
-    if "user" in args.tito_allowed_append_roles:
+    # DEFAULT uses the checkpoint's native or caller-provided template.  Its
+    # maximal four-role surface is best-effort rather than a Miles-verified
+    # FixedTemplate contract.
+    if args.use_session_server and args.tito_model == TITOTokenizerType.DEFAULT.value:
         logger.warning(
-            "--tito-allowed-append-roles includes 'user'. "
+            "--tito-model=default uses a best-effort four-role append surface. "
             "Incremental tokenization assumes appended messages do not change how "
             "earlier turns render, which may not hold for user messages on "
             "context-sensitive chat templates (e.g. last_query_index logic, "
@@ -2465,46 +2495,36 @@ def miles_validate_args(args):
     if args.chat_template_path == "autofix":
         logger.warning(
             "--chat-template-path=autofix is deprecated; remove the flag and rely "
-            "on --tito-model + --tito-allowed-append-roles to auto-resolve. The "
+            "on --tito-model to auto-resolve. The "
             "alias will be removed in a future release."
         )
         args.chat_template_path = None
 
-    # Auto-resolve a bundled fixed chat-template only when:
-    #   1. the caller did NOT pass --chat-template-path (an explicit path always
-    #      wins and is never overridden)
-    #   2. the caller chose a non-default --tito-model family (DEFAULT means
-    #      "use the model's native HF chat template", which is loaded by
-    #      load_tokenizer — no override needed here)
-    should_auto_resolve = args.chat_template_path is None and args.tito_model != TITOTokenizerType.DEFAULT.value
-
-    if should_auto_resolve:
+    # A named family is one fixed renderer contract.  Letting a custom path or
+    # conflicting required kwarg through would detach its declared role
+    # capability from the renderer that actually runs.
+    if args.tito_model != TITOTokenizerType.DEFAULT.value:
         tito_model = TITOTokenizerType(args.tito_model)
         from miles.utils.chat_template_utils import resolve_fixed_chat_template
 
-        resolved_path, resolved_kwargs = resolve_fixed_chat_template(
-            tito_model,
-            allowed_append_roles=args.tito_allowed_append_roles,
-        )
+        if args.chat_template_path is not None:
+            raise ValueError(
+                f"--chat-template-path cannot override the template registered for "
+                f"--tito-model={tito_model.value}; use --tito-model=default for a custom template"
+            )
+
+        resolved_path, resolved_kwargs = resolve_fixed_chat_template(tito_model)
         if resolved_path is not None:
             args.chat_template_path = resolved_path
-        # Merge inferred kwargs.  User-explicit values win on conflict; only
-        # keys the user did not set are auto-filled.
-        if resolved_kwargs:
-            user_kwargs = args.apply_chat_template_kwargs or {}
-            for key, value in resolved_kwargs.items():
-                if key in user_kwargs:
-                    continue
-                user_kwargs[key] = value
-                logger.warning(
-                    "Auto-set --apply-chat-template-kwargs %s=%r for tito_model=%s "
-                    "(allowed_append_roles=%s); pass an explicit value to override.",
-                    key,
-                    value,
-                    tito_model.value,
-                    sorted(args.tito_allowed_append_roles),
+        user_kwargs = dict(args.apply_chat_template_kwargs or {})
+        for key, value in resolved_kwargs.items():
+            if key in user_kwargs and user_kwargs[key] != value:
+                raise ValueError(
+                    f"--apply-chat-template-kwargs {key}={user_kwargs[key]!r} conflicts "
+                    f"with the value registered for --tito-model={tito_model.value}: {value!r}"
                 )
-            args.apply_chat_template_kwargs = user_kwargs
+            user_kwargs[key] = value
+        args.apply_chat_template_kwargs = user_kwargs
 
     if args.chat_template_path is not None:
         if not os.path.isfile(args.chat_template_path):
@@ -2805,6 +2825,27 @@ def miles_validate_args(args):
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
+    if args.offload_train_target == "disk":
+        assert args.offload_train, "--offload-train-target=disk requires --offload-train"
+        assert (
+            args.train_backend == "megatron"
+        ), "--offload-train-target=disk is only supported on the megatron backend"
+        assert args.enable_weights_backuper, (
+            "--offload-train-target=disk requires the weights backuper (do not pass "
+            "--disable-weights-backuper): disk-offloaded weights are read from GPU after resume, "
+            "not from a CPU backup."
+        )
+        assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
+        if args.offload_train_disk_dir is None:
+            uid = os.getuid() if hasattr(os, "getuid") else 0
+            args.offload_train_disk_dir = os.path.join(
+                os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}"
+            )
+        logger.info(
+            f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
+            f"chunk={args.offload_train_disk_chunk_mb}MB"
+        )
+
     if args.async_max_concurrent_samples is not None:
         assert args.async_max_concurrent_samples >= args.n_samples_per_prompt, (
             f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must be at least "
@@ -2906,6 +2947,27 @@ def miles_validate_args(args):
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
     _maybe_apply_dumper_overrides(args)
+
+
+def validate_async_off_policy_correction(args) -> None:
+    """Require an explicit behavior-policy choice for async PPO training.
+
+    In the async train loop the next rollout is generated before the current
+    weight update is published, so samples can come from a stale policy. With
+    the default flags the PPO ratio denominator (``log_probs``) is recomputed
+    by the *current* actor, silently anchoring clipping (and KL-shaped
+    advantages) to a policy that never generated the trajectory; the recorded
+    ``weight_versions`` are a metric, not an enforcement mechanism.
+    """
+    if not args.use_critic:
+        return
+    assert args.use_rollout_logprobs or args.use_tis or args.keep_old_actor, (
+        "Async PPO training requires an explicit behavior-policy correction, because rollouts are "
+        "generated before the current weight update while log probs are recomputed by the current "
+        "actor by default. Pass one of: --use-rollout-logprobs (use the rollout engine's log probs "
+        "as the ratio denominator), --use-tis (truncated importance sampling correction), or "
+        "--keep-old-actor (recompute the denominator with the weights the rollout engines used)."
+    )
 
 
 def _maybe_apply_dumper_overrides(args) -> None:
