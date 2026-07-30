@@ -19,7 +19,7 @@ from miles.utils.workers.reconcile.k8s_api import (
     PodWatchEvent,
     exception_rejects_cursor,
 )
-from miles.utils.workers.reconcile.source_event import Delete, Replace, SourceEvent, Upsert
+from miles.utils.workers.reconcile.source_event import DeleteEvent, ReplaceEvent, SourceEvent, UpsertEvent
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class KubernetesReflector:
     async def _watch_once(self, cursor: _WatchCursor) -> AsyncGenerator[SourceEvent, None]:
         if cursor.resource_version is None:
             page = await self._kube_client.list_pods(namespace=self._namespace, label_selector=self._label_selector)
-            yield Replace(objects={_pod_key(pod): pod for pod in page.pods})
+            yield ReplaceEvent(objects={_pod_key(pod): pod for pod in page.pods})
             cursor.resource_version = page.resource_version
 
         async with aclosing(
@@ -101,8 +101,8 @@ def _to_source_event(raw_event: PodWatchEvent) -> SourceEvent | None:
         if key is None:
             return None
         if raw_event.type == EVENT_TYPE_DELETED:
-            return Delete(key=key, last_obj=raw_event.obj)
-        return Upsert(key=key, obj=raw_event.obj)
+            return DeleteEvent(key=key, last_obj=raw_event.obj)
+        return UpsertEvent(key=key, obj=raw_event.obj)
     if raw_event.type != EVENT_TYPE_BOOKMARK:
         logger.warning(f"KubernetesReflector ignoring unknown event {raw_event.type=}")
     return None

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from miles.utils.workers.reconcile.k8s_api import PodListPage, PodWatchEvent
-from miles.utils.workers.reconcile.source_event import ParentKey, Replace, SourceEvent
+from miles.utils.workers.reconcile.source_event import ParentKey, ReplaceEvent, SourceEvent
 
 
 async def settle(iterations: int = 200) -> None:
@@ -96,8 +96,8 @@ def make_pod(name: str, *, cell: str = "cell-a", resource_version: str = "1") ->
     )
 
 
-def replace_of(*pods: Any) -> Replace:
-    return Replace(objects={pod.metadata.name: pod for pod in pods})
+def replace_of(*pods: Any) -> ReplaceEvent:
+    return ReplaceEvent(objects={pod.metadata.name: pod for pod in pods})
 
 
 def make_pod_list(pods: list[Any], *, resource_version: str) -> PodListPage:

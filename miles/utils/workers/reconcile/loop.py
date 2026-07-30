@@ -22,8 +22,8 @@ class ReconcileLoop:
     """A source stream feeds a store; every changed parent key is reconciled once, level-triggered.
 
     - `source` returns an async iterator of `SourceEvent`.
-    - A stream opens with `Replace`, a whole-store replace that synthesizes deletions.
-    - Later `Upsert` and `Delete` events apply immediately; a relist sends another `Replace`.
+    - A stream opens with `ReplaceEvent`, a whole-store replace that synthesizes deletions.
+    - Later `UpsertEvent` and `DeleteEvent` apply immediately; a relist sends another `ReplaceEvent`.
     - Reconcile receives a key only and re-derives everything from `get_by_parent()`.
     """
 

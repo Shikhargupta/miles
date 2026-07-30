@@ -17,7 +17,7 @@ All under `miles/utils/workers/reconcile/`.
 | --- | --- | --- |
 | `k8s_api.py` | LIST/WATCH calls; the only module importing `kubernetes_asyncio` | [typed client `List` / `Watch`](https://github.com/kubernetes/client-go/blob/master/kubernetes/typed/core/v1/pod.go) |
 | `k8s_reflector.py` | Cursor bookkeeping, relist on cursor rejection | [`cache.Reflector`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go) |
-| `source_event.py` | Reflector-to-loop wire format: `Upsert`, `Delete`, and a whole-world `Replace` | [`watch.Event`](https://github.com/kubernetes/apimachinery/blob/master/pkg/watch/watch.go) + [`Store`'s write methods](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) |
+| `source_event.py` | Reflector-to-loop wire format: `UpsertEvent`, `DeleteEvent`, and a whole-world `ReplaceEvent` | [`watch.Event`](https://github.com/kubernetes/apimachinery/blob/master/pkg/watch/watch.go) + [`Store`'s write methods](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) |
 | `object_store.py` | Cache, parent index, replace with deletion synthesis | [`cache.Store`](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) + [`DeltaFIFO.Replace()`](https://github.com/kubernetes/client-go/blob/master/tools/cache/delta_fifo.go) |
 | `work_queue.py` | Insertion-ordered parent-key dedup with a wakeup | [`workqueue`](https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go) |
 | `retry_scheduler.py` | Per-parent-key exponential backoff, latest-wins timers | [rate limiter](https://github.com/kubernetes/client-go/blob/master/util/workqueue/default_rate_limiters.go) + [delaying queue](https://github.com/kubernetes/client-go/blob/master/util/workqueue/delaying_queue.go) |
@@ -29,7 +29,7 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 - **`ObjectStore` absorbed `DeltaFIFO.Replace()`** — Go's split needs `KnownObjects: indexer`, a pointer back to the store, because deletion synthesis must know what is cached. Splitting recreates that back-pointer to buy a name.
 - **No `DeltaFIFO`** — without delta coalescing it has no FIFO, no `Pop`, no delta chain.
 - **`RetryScheduler` absorbed both retry pieces** — ours is latest-wins, not a `readyAt` heap, so splitting yields Go names over non-Go semantics.
-- **`SourceEvent` is Go's `Store` write API as values** — Go pushes into a `Store` by method call: `Add` / `Update` / `Delete`, and `Replace(list, rv)` for a whole listing. We send the same operations as events instead, so a source is an ordinary generator, which gives teardown and cancellation for free. `Replace` carries the entire listing in one event, matching `Store.Replace`'s signature; a listing is never spread over several events.
+- **`SourceEvent` is Go's `Store` write API as values** — Go pushes into a `Store` by method call: `Add` / `Update` / `Delete`, and `Replace(list, rv)` for a whole listing. We send the same operations as events instead, so a source is an ordinary generator, which gives teardown and cancellation for free. `ReplaceEvent` carries the entire listing in one event, matching `Store.Replace`'s signature; a listing is never spread over several events.
 
 ## Decisions per module
 
@@ -50,7 +50,7 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | Upstream | Solves | Decision | Reason |
 | --- | --- | --- | --- |
 | Store | Read without hitting the apiserver | **Kept**, a plain `dict` | Single-threaded asyncio: no locks |
-| `Replace()` on relist | Deletions missed while disconnected | **Kept**, store-side | Ghost cells are forever. Store-side also survives a whole stream reopening, which a reflector-side diff cannot remember across. Costs one event type (`Replace`) |
+| `Replace()` on relist | Deletions missed while disconnected | **Kept**, store-side | Ghost cells are forever. Store-side also survives a whole stream reopening, which a reflector-side diff cannot remember across. Costs one event type (`ReplaceEvent`) |
 | Indexer | Large-scale reverse lookup | **Dropped**; `dict[ObjectKey, ParentKey]` scanned | The parent map is already the index |
 | `EnqueueRequestForOwner` | Child event to parent key | **Kept** as `key_map`; unmappable objects dropped with an error | Cells are not Kubernetes objects, so the parent comes from labels. One bad pod must not stall the fleet |
 | DeltaFIFO | Delta coalescing | **Dropped** | Reconcile reads a snapshot, so the queue needs parent-key dedup, never a delta chain |
@@ -77,7 +77,7 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | Cache-before-notify ordering | Handlers never read a stale state | **Kept** | Correctness, not volume |
 | WaitForCacheSync | Do not decide on a half-filled cache | **Kept**: `run()` + `wait_for_sync()`, the [`SyncingSource`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/source/source.go) shape; `start()` awaits it | A partial engine list at step 0 would silently shrink the fleet |
 | `source.Channel` | External event injection | **Dropped** | Miles-internal events are method calls |
-| Streaming a listing into the store | Sync a huge collection without holding it in memory | **Dropped**; a listing is one `Replace` event, and a stream that does not open with one is reopened | client-go buffers too: its watch-list path fills a `temporaryStore` until the `k8s.io/initial-events-end` bookmark, then calls `Replace` once. Ours materializes the page before yielding anyway, so bracketing it would only add a segment FSM and a half-applied state to police |
+| Streaming a listing into the store | Sync a huge collection without holding it in memory | **Dropped**; a listing is one `ReplaceEvent`, and a stream that does not open with one is reopened | client-go buffers too: its watch-list path fills a `temporaryStore` until the `k8s.io/initial-events-end` bookmark, then calls `Replace` once. Ours materializes the page before yielding anyway, so bracketing it would only add a segment FSM and a half-applied state to police |
 
 ### `loop.py`
 

@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Callable
 
 from miles.utils.test_utils.clock import Clock
 from miles.utils.workers.reconcile.object_store import ObjectStore
-from miles.utils.workers.reconcile.source_event import ParentKey, Replace, SourceEvent, SourceWatchFn
+from miles.utils.workers.reconcile.source_event import ParentKey, ReplaceEvent, SourceEvent, SourceWatchFn
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +61,12 @@ class SourceStreamDriver:
     async def _pump(self, stream: AsyncGenerator[SourceEvent, None]) -> None:
         first = True
         async for event in stream:
-            if first and not isinstance(event, Replace):
-                raise RuntimeError(f"A source stream must open with Replace, got {event=}")
+            if first and not isinstance(event, ReplaceEvent):
+                raise RuntimeError(f"A source stream must open with ReplaceEvent, got {event=}")
             first = False
             update = self._store.handle_event(event)
             self._on_affected(update.affected_parents)
-            if isinstance(event, Replace):
+            if isinstance(event, ReplaceEvent):
                 self._synced.set()
 
 

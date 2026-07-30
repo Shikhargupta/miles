@@ -11,22 +11,22 @@ ParentKey = str
 
 
 @dataclass(frozen=True)
-class Upsert:
+class UpsertEvent:
     key: ObjectKey
     obj: Any
 
 
 @dataclass(frozen=True)
-class Delete:
+class DeleteEvent:
     key: ObjectKey
     last_obj: Any
 
 
 @dataclass(frozen=True)
-class Replace:
+class ReplaceEvent:
     objects: dict[ObjectKey, Any]
 
 
-SourceEvent = Upsert | Delete | Replace
+SourceEvent = UpsertEvent | DeleteEvent | ReplaceEvent
 
 SourceWatchFn = Callable[[], AsyncGenerator[SourceEvent, None]]

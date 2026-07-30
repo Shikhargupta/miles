@@ -6,7 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from miles.utils.workers.reconcile.source_event import Delete, ObjectKey, ParentKey, Replace, SourceEvent, Upsert
+from miles.utils.workers.reconcile.source_event import (
+    DeleteEvent,
+    ObjectKey,
+    ParentKey,
+    ReplaceEvent,
+    SourceEvent,
+    UpsertEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +36,9 @@ class ObjectStore:
         self._key_map = key_map
         self._cache: dict[ObjectKey, _CachedObject] = {}
         self._handler_of_event: dict[type[SourceEvent], Callable[[Any], StoreUpdate]] = {
-            Replace: self._handle_replace,
-            Upsert: self._handle_upsert,
-            Delete: self._handle_delete,
+            ReplaceEvent: self._handle_replace,
+            UpsertEvent: self._handle_upsert,
+            DeleteEvent: self._handle_delete,
         }
 
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
@@ -48,7 +55,7 @@ class ObjectStore:
         assert handler is not None, f"Unknown source event {event=}"
         return handler(event)
 
-    def _handle_replace(self, event: Replace) -> StoreUpdate:
+    def _handle_replace(self, event: ReplaceEvent) -> StoreUpdate:
         parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in event.objects.items()}
         mapped = {key: obj for key, obj in event.objects.items() if parents[key] is not None}
 
@@ -59,13 +66,13 @@ class ObjectStore:
             affected_parents |= self._apply_delete(key=key, last_obj=None).affected_parents
         return StoreUpdate(affected_parents=affected_parents)
 
-    def _handle_upsert(self, event: Upsert) -> StoreUpdate:
+    def _handle_upsert(self, event: UpsertEvent) -> StoreUpdate:
         parent = self._parent_key_or_none(key=event.key, obj=event.obj)
         if parent is None:
             return self._apply_delete(key=event.key, last_obj=None)
         return self._apply_upsert(key=event.key, obj=event.obj, parent=parent)
 
-    def _handle_delete(self, event: Delete) -> StoreUpdate:
+    def _handle_delete(self, event: DeleteEvent) -> StoreUpdate:
         return self._apply_delete(key=event.key, last_obj=event.last_obj)
 
     def _apply_upsert(self, *, key: ObjectKey, obj: Any, parent: ParentKey) -> StoreUpdate:
