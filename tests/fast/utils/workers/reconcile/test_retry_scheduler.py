@@ -36,11 +36,11 @@ class TestBackoff:
         for expected_delay in (1.0, 2.0, 4.0, 4.0):
             scheduler.note_failure("cell-a")
             await clock.elapse(expected_delay - 0.5)
-            assert "cell-a" not in queue._keys
+            assert "cell-a" not in queue._parent_keys
             await clock.elapse(0.5)
             await settle()
-            assert "cell-a" in queue._keys
-            queue._keys.remove("cell-a")
+            assert "cell-a" in queue._parent_keys
+            queue._parent_keys.remove("cell-a")
 
     async def test_a_new_failure_replaces_the_pending_timer(self):
         """Latest-wins: the old timer is cancelled, only the new delay fires."""
@@ -51,12 +51,12 @@ class TestBackoff:
 
         await clock.elapse(1.5)
         await settle()
-        assert "cell-a" not in queue._keys
+        assert "cell-a" not in queue._parent_keys
         assert clock.pending_count == 1
 
         await clock.elapse(6.5)
         await settle()
-        assert "cell-a" in queue._keys
+        assert "cell-a" in queue._parent_keys
 
     async def test_success_clears_the_count_and_cancels_the_timer(self):
         """A recovered key starts over at the base delay with no stale wakeup."""
@@ -69,12 +69,12 @@ class TestBackoff:
         assert scheduler._failures == {}
         await clock.elapse(100.0)
         await settle()
-        assert "cell-a" not in queue._keys
+        assert "cell-a" not in queue._parent_keys
 
         scheduler.note_failure("cell-a")
         await clock.elapse(1.0)
         await settle()
-        assert "cell-a" in queue._keys
+        assert "cell-a" in queue._parent_keys
 
     async def test_failure_counts_are_per_key(self):
         """One key's failures never inflate another key's delay."""
@@ -85,8 +85,8 @@ class TestBackoff:
 
         await clock.elapse(1.0)
         await settle()
-        assert "cell-b" in queue._keys
-        assert "cell-a" not in queue._keys
+        assert "cell-b" in queue._parent_keys
+        assert "cell-a" not in queue._parent_keys
 
 
 class TestShutdown:
@@ -108,4 +108,4 @@ class TestShutdown:
         await settle()
 
         assert clock.pending_count == 0
-        assert "cell-a" not in queue._keys
+        assert "cell-a" not in queue._parent_keys

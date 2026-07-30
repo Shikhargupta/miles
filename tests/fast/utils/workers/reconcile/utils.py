@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from miles.utils.workers.reconcile.k8s_api import PodListPage, PodWatchEvent
-from miles.utils.workers.reconcile.source_event import SourceEvent
+from miles.utils.workers.reconcile.source_event import ParentKey, SourceEvent
 
 
 async def settle(iterations: int = 200) -> None:
@@ -59,12 +59,12 @@ class FakeSource:
             self._queues[-1].put_nowait(event)
 
 
-class KeyRecorder:
+class ParentKeyRecorder:
     def __init__(self) -> None:
-        self.keys: list[str] = []
+        self.parent_keys: list[ParentKey] = []
 
-    async def __call__(self, key: str) -> None:
-        self.keys.append(key)
+    async def __call__(self, parent_key: ParentKey) -> None:
+        self.parent_keys.append(parent_key)
 
 
 class EventCollector:

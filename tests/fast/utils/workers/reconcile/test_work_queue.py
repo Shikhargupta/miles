@@ -32,7 +32,7 @@ class TestWorkQueue:
         queue.add("cell-a")
 
         assert await queue.get() is None
-        assert queue._keys == deque()
+        assert queue._parent_keys == deque()
 
     async def test_a_requeued_key_keeps_its_original_position(self):
         """Re-adding a queued key must not push it behind keys that arrived later."""
@@ -51,4 +51,4 @@ class TestWorkQueue:
         queue.add("cell-b")
 
         assert [await queue.get(), await queue.get()] == ["cell-a", "cell-b"]
-        assert queue._keys == deque()
+        assert queue._parent_keys == deque()

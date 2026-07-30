@@ -19,8 +19,8 @@ All under `miles/utils/workers/reconcile/`.
 | `k8s_reflector.py` | Cursor bookkeeping, relist on cursor rejection | [`cache.Reflector`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go) |
 | `source_event.py` | Reflector-to-loop wire format | [`watch.Event`](https://github.com/kubernetes/apimachinery/blob/master/pkg/watch/watch.go) + [`DeltaFIFO`'s `Replace` boundary](https://github.com/kubernetes/client-go/blob/master/tools/cache/delta_fifo.go) |
 | `object_store.py` | Cache, parent index, segment buffering, replace with deletion synthesis | [`cache.Store`](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) + [`DeltaFIFO.Replace()`](https://github.com/kubernetes/client-go/blob/master/tools/cache/delta_fifo.go) |
-| `work_queue.py` | Insertion-ordered key dedup with a wakeup | [`workqueue`](https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go) |
-| `retry_scheduler.py` | Per-key exponential backoff, latest-wins timers | [rate limiter](https://github.com/kubernetes/client-go/blob/master/util/workqueue/default_rate_limiters.go) + [delaying queue](https://github.com/kubernetes/client-go/blob/master/util/workqueue/delaying_queue.go) |
+| `work_queue.py` | Insertion-ordered parent-key dedup with a wakeup | [`workqueue`](https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go) |
+| `retry_scheduler.py` | Per-parent-key exponential backoff, latest-wins timers | [rate limiter](https://github.com/kubernetes/client-go/blob/master/util/workqueue/default_rate_limiters.go) + [delaying queue](https://github.com/kubernetes/client-go/blob/master/util/workqueue/delaying_queue.go) |
 | `source_stream_driver.py` | Open, sync, reopen the stream; pump events into the store | [informer `Run` / `processLoop`](https://github.com/kubernetes/client-go/blob/master/tools/cache/controller.go) |
 | `loop.py` | Lifecycle, the single worker, resync | [controller-runtime `Controller`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/internal/controller/controller.go) |
 
@@ -51,16 +51,16 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | --- | --- | --- | --- |
 | Store | Read without hitting the apiserver | **Kept**, a plain `dict` | Single-threaded asyncio: no locks |
 | `Replace()` on relist | Deletions missed while disconnected | **Kept**, store-side | Ghost cells are forever. Store-side also survives a whole stream reopening, which a reflector-side diff cannot remember across. Costs one event type (`SyncStart`) |
-| Indexer | Large-scale reverse lookup | **Dropped**; `dict[key, parent]` scanned | The parent map is already the index |
+| Indexer | Large-scale reverse lookup | **Dropped**; `dict[ObjectKey, ParentKey]` scanned | The parent map is already the index |
 | `EnqueueRequestForOwner` | Child event to parent key | **Kept** as `key_map`; unmappable objects dropped with an error | Cells are not Kubernetes objects, so the parent comes from labels. One bad pod must not stall the fleet |
-| DeltaFIFO | Delta coalescing | **Dropped** | Reconcile reads a snapshot, so the queue needs key dedup, never a delta chain |
+| DeltaFIFO | Delta coalescing | **Dropped** | Reconcile reads a snapshot, so the queue needs parent-key dedup, never a delta chain |
 
 ### `work_queue.py`
 
 | Upstream | Solves | Decision | Reason |
 | --- | --- | --- | --- |
 | workqueue | The scheduling core | **Kept** as a dedup set; delayed retry lives in `retry_scheduler.py` | With one worker, the dirty/processing protocol collapses into the set |
-| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` runs once, after `start()` has returned: cancel everything, then wait. Awaiting it inside reconcile asserts — use `asyncio.create_task(loop.stop())` — and a hung `start()` is aborted by cancelling its task, not by `stop()` | Drain exists for many Go workers. One worker means one in-flight key, and reconcile is idempotent, so abandoning it costs a re-derivation |
+| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` runs once, after `start()` has returned: cancel everything, then wait. Awaiting it inside reconcile asserts — use `asyncio.create_task(loop.stop())` — and a hung `start()` is aborted by cancelling its task, not by `stop()` | Drain exists for many Go workers. One worker means one in-flight parent key, and reconcile is idempotent, so abandoning it costs a re-derivation |
 
 ### `retry_scheduler.py`
 
@@ -109,11 +109,11 @@ Cleanup raises unless raising would hide a worse error:
 
 ## Invariants
 
-1. Reconcile gets a key only and re-derives from the store via `get_by_parent(key)`. It must not block on I/O: one worker serves the fleet.
-2. The store is updated before the key is enqueued, and hands out the source's own objects — read-only, as with a client-go cache.
+1. Reconcile gets a parent key only and re-derives from the store via `get_by_parent(parent_key)`. It must not block on I/O: one worker serves the fleet.
+2. The store is updated before the parent key is enqueued, and hands out the source's own objects — read-only, as with a client-go cache.
 3. No reconcile before the initial list is consumed; `start()` is that barrier.
-4. A key is never reconciled concurrently with itself; delivery is at-least-once, so reconcile must be idempotent.
-5. Per-key exponential backoff; a later failure replaces the pending timer, a success cancels it.
+4. A parent key is never reconciled concurrently with itself; delivery is at-least-once, so reconcile must be idempotent.
+5. Per-parent-key exponential backoff; a later failure replaces the pending timer, a success cancels it.
 6. A relist must synthesize deletions, or removed objects drift forever.
 
 ## Test layers

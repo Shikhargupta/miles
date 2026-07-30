@@ -12,7 +12,7 @@ from tests.fast.utils.workers.reconcile.utils import (
     EventCollector,
     FakeApiException,
     FakePodApi,
-    KeyRecorder,
+    ParentKeyRecorder,
     make_pod,
     make_pod_list,
     pod_cell,
@@ -746,14 +746,14 @@ class TestReflectorFeedsReconcileLoop:
 
         clock = FakeClock()
         reflector = make_reflector(api, clock=clock)
-        recorder = KeyRecorder()
+        recorder = ParentKeyRecorder()
         loop = ReconcileLoop(source=reflector.watch, reconcile=recorder, key_map=pod_cell, clock=clock)
         await loop.start()
         await settle()
         await clock.elapse(1.0)
         await settle()
 
-        assert sorted(set(recorder.keys)) == ["cell-a", "cell-b"]
+        assert sorted(set(recorder.parent_keys)) == ["cell-a", "cell-b"]
         assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-0"]
         assert loop.get_by_parent("cell-b") == []
         await loop.stop()
@@ -767,15 +767,15 @@ class TestReflectorFeedsReconcileLoop:
 
         clock = FakeClock()
         reflector = make_reflector(api, clock=clock, retry_delay=5.0)
-        recorder = KeyRecorder()
+        recorder = ParentKeyRecorder()
         loop = ReconcileLoop(source=reflector.watch, reconcile=recorder, key_map=pod_cell, clock=clock)
         start_task = asyncio.create_task(loop.start())
         await settle()
         assert not start_task.done()
-        assert recorder.keys == []
+        assert recorder.parent_keys == []
 
         await clock.elapse(5.0)
         await settle()
         await start_task
-        assert recorder.keys == ["cell-a"]
+        assert recorder.parent_keys == ["cell-a"]
         await loop.stop()

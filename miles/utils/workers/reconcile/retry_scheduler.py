@@ -6,6 +6,7 @@ import logging
 import math
 
 from miles.utils.test_utils.clock import Clock
+from miles.utils.workers.reconcile.source_event import ParentKey
 from miles.utils.workers.reconcile.work_queue import WorkQueue
 
 logger = logging.getLogger(__name__)
@@ -22,24 +23,24 @@ class RetryScheduler:
         self._max_backoff_exponent = max(0, math.ceil(math.log2(failure_max_delay / failure_base_delay)))
         self._clock = clock
 
-        self._failures: dict[str, int] = {}
-        self._timers: dict[str, asyncio.Task[None]] = {}
+        self._failures: dict[ParentKey, int] = {}
+        self._timers: dict[ParentKey, asyncio.Task[None]] = {}
         self._shutdown = False
 
-    def note_failure(self, key: str) -> None:
+    def note_failure(self, parent_key: ParentKey) -> None:
         if self._shutdown:
             return
-        failures = self._failures.get(key, 0) + 1
-        self._failures[key] = failures
+        failures = self._failures.get(parent_key, 0) + 1
+        self._failures[parent_key] = failures
         exponent = min(failures - 1, self._max_backoff_exponent)
         delay = min(self._failure_base_delay * 2**exponent, self._failure_max_delay)
 
-        self._cancel_timer(key)
-        self._timers[key] = asyncio.create_task(self._fire_after(key=key, delay=delay))
+        self._cancel_timer(parent_key)
+        self._timers[parent_key] = asyncio.create_task(self._fire_after(parent_key=parent_key, delay=delay))
 
-    def note_success(self, key: str) -> None:
-        self._failures.pop(key, None)
-        self._cancel_timer(key)
+    def note_success(self, parent_key: ParentKey) -> None:
+        self._failures.pop(parent_key, None)
+        self._cancel_timer(parent_key)
 
     async def shutdown(self) -> None:
         self._shutdown = True
@@ -50,13 +51,13 @@ class RetryScheduler:
             timer.cancel()
         await asyncio.gather(*timers, return_exceptions=True)
 
-    def _cancel_timer(self, key: str) -> None:
-        pending = self._timers.pop(key, None)
+    def _cancel_timer(self, parent_key: ParentKey) -> None:
+        pending = self._timers.pop(parent_key, None)
         if pending is not None:
             pending.cancel()
 
-    async def _fire_after(self, *, key: str, delay: float) -> None:
+    async def _fire_after(self, *, parent_key: ParentKey, delay: float) -> None:
         await self._clock.sleep(delay)
-        if self._timers.get(key) is asyncio.current_task():
-            del self._timers[key]
-        self._queue.add(key)
+        if self._timers.get(parent_key) is asyncio.current_task():
+            del self._timers[parent_key]
+        self._queue.add(parent_key)

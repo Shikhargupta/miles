@@ -102,23 +102,23 @@ class ReconcileLoop:
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)
 
-    def _enqueue_all(self, keys: set[ParentKey]) -> None:
-        for key in sorted(keys):
-            self._queue.add(key)
+    def _enqueue_all(self, parent_keys: set[ParentKey]) -> None:
+        for parent_key in sorted(parent_keys):
+            self._queue.add(parent_key)
 
     async def _worker_loop(self) -> None:
         while True:
-            key = await self._queue.get()
-            if key is None:
+            parent_key = await self._queue.get()
+            if parent_key is None:
                 return
             try:
-                await self._reconcile(key)
-                self._retry.note_success(key)
+                await self._reconcile(parent_key)
+                self._retry.note_success(parent_key)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.error(f"ReconcileLoop reconcile failed {key=}", exc_info=True)
-                self._retry.note_failure(key)
+                logger.error(f"ReconcileLoop reconcile failed {parent_key=}", exc_info=True)
+                self._retry.note_failure(parent_key)
 
     async def _resync_loop(self) -> None:
         assert self._resync_period is not None
