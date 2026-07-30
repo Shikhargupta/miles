@@ -4,11 +4,19 @@ import asyncio
 from typing import Any
 
 import pytest
-from tests.fast.utils.workers.reconcile.utils import FakeSource, StreamEnd, StreamError, make_pod, pod_cell, settle
+from tests.fast.utils.workers.reconcile.utils import (
+    FakeSource,
+    StreamEnd,
+    StreamError,
+    make_pod,
+    pod_cell,
+    replace_of,
+    settle,
+)
 
 from miles.utils.test_utils.clock import FakeClock
 from miles.utils.workers.reconcile.loop import ReconcileLoop
-from miles.utils.workers.reconcile.source_event import Delete, SyncDone, SyncStart, Upsert
+from miles.utils.workers.reconcile.source_event import Delete, Upsert
 
 
 class Recorder:
@@ -62,10 +70,7 @@ async def make_loop(
     if start:
         start_task = asyncio.create_task(loop.start())
         await settle()
-        source.emit(SyncStart())
-        for pod in initial or []:
-            source.emit(Upsert(key=pod.metadata.name, obj=pod))
-        source.emit(SyncDone())
+        source.emit(replace_of(*(initial or [])))
         await settle()
         assert start_task.done()
         await start_task
@@ -87,35 +92,29 @@ class TestCadenceValidation:
 
 
 class TestInitialSync:
-    async def test_start_blocks_until_sync_done(self):
-        """start() returns only after the initial LIST is fully consumed."""
+    async def test_start_blocks_until_the_initial_replace(self):
+        """start() returns only once the initial LIST has landed in the store."""
         source = FakeSource()
         loop = ReconcileLoop(source=source, reconcile=Recorder(), clock=FakeClock())
         start_task = asyncio.create_task(loop.start())
         await settle()
         assert not start_task.done()
 
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")))
-        await settle()
-        assert not start_task.done()
-
-        source.emit(SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         assert start_task.done()
         await loop.stop()
 
-    async def test_no_reconcile_before_sync_done(self):
-        """No reconcile is dispatched while the initial LIST is still streaming."""
+    async def test_no_reconcile_before_the_initial_replace(self):
+        """No reconcile is dispatched while the initial LIST is still outstanding."""
         source = FakeSource()
         recorder = Recorder()
         loop = ReconcileLoop(source=source, reconcile=recorder, key_map=pod_cell, clock=FakeClock())
         start_task = asyncio.create_task(loop.start())
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")))
-        await settle()
         assert recorder.parent_keys == []
 
-        source.emit(SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         await start_task
         assert recorder.parent_keys == ["cell-a"]
@@ -149,7 +148,7 @@ class TestInitialSync:
         await loop.stop()
 
     async def test_start_retries_when_the_first_stream_fails(self):
-        """A source that fails before SyncDone is reopened after the retry delay."""
+        """A source that fails before delivering its initial LIST is reopened after the retry delay."""
         source = FakeSource(fail_opens=1)
         recorder = Recorder()
         clock = FakeClock()
@@ -163,7 +162,7 @@ class TestInitialSync:
         await settle()
         assert source.open_count == 2
 
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         await start_task
         assert recorder.parent_keys == ["cell-a"]
@@ -176,8 +175,8 @@ class TestInitialSync:
             await loop.start()
         await loop.stop()
 
-    async def test_stream_ending_before_sync_done_discards_the_partial_list(self):
-        """A stream that dies mid-LIST is retried and its partial contents are dropped."""
+    async def test_a_stream_ending_before_its_replace_is_retried(self):
+        """A stream that dies before delivering the initial LIST leaves the barrier closed and nothing cached."""
         source = FakeSource()
         recorder = Recorder()
         clock = FakeClock()
@@ -185,19 +184,20 @@ class TestInitialSync:
         recorder.loop = loop
         start_task = asyncio.create_task(loop.start())
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-stale", obj=make_pod("pod-stale", cell="cell-stale")), StreamEnd())
+        source.emit(StreamEnd())
         await settle()
         assert not start_task.done()
         assert recorder.parent_keys == []
 
         await clock.elapse(2.0)
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-fresh", obj=make_pod("pod-fresh")), SyncDone())
+        source.emit(replace_of(make_pod("pod-fresh")))
         await settle()
         await start_task
 
         assert recorder.parent_keys == ["cell-a"]
-        assert loop.get_by_parent("cell-stale") == []
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-fresh"]
+        assert source.open_count == 2
         await loop.stop()
 
     async def test_source_factory_raising_is_retried(self):
@@ -217,7 +217,7 @@ class TestInitialSync:
         await clock.elapse(0.1)
         await settle()
         assert source.open_count == 2
-        source.emit(SyncStart(), SyncDone())
+        source.emit(replace_of())
         await settle()
         await start_task
         await loop.stop()
@@ -276,7 +276,7 @@ class TestIncrementalEvents:
         await settle()
         assert recorder.parent_keys == ["cell-a"]
 
-        source.emit(SyncStart(), SyncDone())
+        source.emit(replace_of())
         await settle()
         assert recorder.parent_keys == ["cell-a"]
         await loop.stop()
@@ -370,25 +370,15 @@ class TestIncrementalEvents:
         assert "pod-0" not in loop._store
         await loop.stop()
 
-    async def test_sync_done_without_sync_start_restarts_the_stream(self):
-        """An unpaired SyncDone violates the source contract and forces a reopen."""
-        loop, source, _, clock = await make_loop(initial=[make_pod("pod-0")], source_retry_delay=1.0)
-        source.emit(SyncDone())
-        await settle()
-        await clock.elapse(1.0)
-        await settle()
-        assert source.open_count == 2
-        await loop.stop()
-
 
 class TestInStreamRelist:
-    async def test_relist_segment_replaces_the_store(self):
-        """A SyncStart/SyncDone segment mid-stream is applied as a full replace."""
+    async def test_relist_replaces_the_store(self):
+        """A Replace mid-stream swaps the whole world, not just the keys it mentions."""
         pods = [make_pod("pod-0", cell="cell-a"), make_pod("pod-1", cell="cell-b")]
         loop, source, recorder, _ = await make_loop(initial=pods)
         recorder.parent_keys.clear()
 
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=pods[0]), SyncDone())
+        source.emit(replace_of(pods[0]))
         await settle()
         assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-0"]
         assert loop.get_by_parent("cell-b") == []
@@ -401,7 +391,7 @@ class TestInStreamRelist:
         loop, source, recorder, _ = await make_loop(initial=pods)
         recorder.parent_keys.clear()
 
-        source.emit(SyncStart(), SyncDone())
+        source.emit(replace_of())
         await settle()
         assert sorted(recorder.parent_keys) == ["cell-a", "cell-b"]
         assert loop.get_by_parent("cell-a") == []
@@ -413,32 +403,17 @@ class TestInStreamRelist:
         loop, source, recorder, _ = await make_loop(initial=[make_pod("pod-0", cell="cell-a", resource_version="1")])
         recorder.parent_keys.clear()
 
-        source.emit(
-            SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-b", resource_version="2")), SyncDone()
-        )
+        source.emit(replace_of(make_pod("pod-0", cell="cell-b", resource_version="2")))
         await settle()
         assert sorted(recorder.parent_keys) == ["cell-a", "cell-b"]
         assert loop.get_by_parent("cell-a") == []
         assert [pod.metadata.resource_version for pod in loop.get_by_parent("cell-b")] == ["2"]
         await loop.stop()
 
-    async def test_events_inside_a_relist_segment_are_buffered(self):
-        """Nothing is dispatched until the relist segment is closed by SyncDone."""
+    async def test_incremental_events_resume_after_a_relist(self):
+        """The stream returns to incremental mode once the relist has been applied."""
         loop, source, recorder, _ = await make_loop(initial=[])
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")))
-        await settle()
-        assert recorder.parent_keys == []
-        assert loop.get_by_parent("cell-a") == []
-
-        source.emit(SyncDone())
-        await settle()
-        assert recorder.parent_keys == ["cell-a"]
-        await loop.stop()
-
-    async def test_incremental_events_resume_after_a_relist_segment(self):
-        """The stream returns to incremental mode once the segment closes."""
-        loop, source, recorder, _ = await make_loop(initial=[])
-        source.emit(SyncStart(), SyncDone())
+        source.emit(replace_of())
         await settle()
         recorder.parent_keys.clear()
 
@@ -453,12 +428,7 @@ class TestInStreamRelist:
         loop, source, recorder, _ = await make_loop(initial=pods)
         recorder.parent_keys.clear()
 
-        source.emit(
-            SyncStart(),
-            Upsert(key="pod-a", obj=make_pod("pod-a", cell="cell-c")),
-            Upsert(key="pod-bad", obj=make_pod("pod-bad", cell=None)),
-            SyncDone(),
-        )
+        source.emit(replace_of(make_pod("pod-a", cell="cell-c"), make_pod("pod-bad", cell=None)))
         await settle()
 
         assert source.open_count == 1
@@ -474,12 +444,7 @@ class TestInStreamRelist:
         loop, source, recorder, _ = await make_loop(initial=[make_pod("pod-0"), make_pod("pod-1")])
         recorder.parent_keys.clear()
 
-        source.emit(
-            SyncStart(),
-            Upsert(key="pod-0", obj=make_pod("pod-0", cell=None)),
-            Upsert(key="pod-1", obj=make_pod("pod-1")),
-            SyncDone(),
-        )
+        source.emit(replace_of(make_pod("pod-0", cell=None), make_pod("pod-1")))
         await settle()
 
         assert "pod-0" not in loop._store
@@ -491,20 +456,11 @@ class TestInStreamRelist:
         loop, source, recorder, _ = await make_loop(initial=[make_pod("pod-0"), make_pod("pod-1")])
         recorder.parent_keys.clear()
 
-        source.emit(
-            SyncStart(),
-            Upsert(key="pod-1", obj=make_pod("pod-1")),
-            Upsert(key="pod-2", obj=make_pod("pod-2")),
-            SyncDone(),
-        )
+        source.emit(replace_of(make_pod("pod-1"), make_pod("pod-2")))
         await settle()
         assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-1", "pod-2"]
 
-        source.emit(
-            SyncStart(),
-            Upsert(key="pod-3", obj=make_pod("pod-3", cell="cell-b")),
-            SyncDone(),
-        )
+        source.emit(replace_of(make_pod("pod-3", cell="cell-b")))
         await settle()
 
         assert loop.get_by_parent("cell-a") == []
@@ -512,22 +468,8 @@ class TestInStreamRelist:
         assert recorder.parent_keys == ["cell-a", "cell-a", "cell-b"]
         await loop.stop()
 
-    async def test_nested_sync_start_restarts_the_stream(self):
-        """A SyncStart inside an open segment violates the contract and forces a reopen."""
-        loop, source, _, clock = await make_loop(initial=[], source_retry_delay=1.0)
-        source.emit(SyncStart(), SyncStart())
-        await settle()
-        await clock.elapse(1.0)
-        await settle()
-        assert source.open_count == 2
-
-        source.emit(SyncStart(), Upsert(key="pod-1", obj=make_pod("pod-1")), SyncDone())
-        await settle()
-        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-1"]
-        await loop.stop()
-
-    async def test_stream_not_opening_with_sync_start_is_retried(self):
-        """A stream whose first event is not SyncStart is rejected and reopened."""
+    async def test_stream_not_opening_with_replace_is_retried(self):
+        """A stream whose first event is not Replace cannot be trusted to hold the whole world."""
         source = FakeSource()
         recorder = Recorder()
         clock = FakeClock()
@@ -541,19 +483,9 @@ class TestInStreamRelist:
         await clock.elapse(1.0)
         await settle()
         assert source.open_count == 2
-        source.emit(SyncStart(), SyncDone())
+        source.emit(replace_of())
         await settle()
         await start_task
-        await loop.stop()
-
-    async def test_delete_inside_a_relist_segment_removes_the_candidate(self):
-        """A delete observed inside the segment is folded into the replaced set."""
-        loop, source, recorder, _ = await make_loop(initial=[])
-        pod = make_pod("pod-0")
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=pod), Delete(key="pod-0", last_obj=pod), SyncDone())
-        await settle()
-        assert loop.get_by_parent("cell-a") == []
-        assert recorder.parent_keys == []
         await loop.stop()
 
 
@@ -662,7 +594,7 @@ class TestFailureBackoff:
         recorder.fail_parent_keys = {"cell-a"}
         start_task = asyncio.create_task(loop.start())
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         await start_task
         assert recorder.counts() == {"cell-a": 1}
@@ -709,7 +641,7 @@ class TestFailureBackoff:
         recorder.fail_parent_keys = {"cell-a"}
         start_task = asyncio.create_task(loop.start())
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         await start_task
 
@@ -938,7 +870,7 @@ class TestRelistReplace:
         await settle()
         assert source.open_count == 2
 
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=pods[0]), SyncDone())
+        source.emit(replace_of(pods[0]))
         await settle()
         assert loop.get_by_parent("cell-b") == []
         assert sorted(set(recorder.parent_keys)) == ["cell-a", "cell-b"]
@@ -954,7 +886,7 @@ class TestRelistReplace:
         await settle()
         await clock.elapse(1.0)
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=pod), SyncDone())
+        source.emit(replace_of(pod))
         await settle()
         assert recorder.parent_keys == ["cell-a"]
         assert [p.metadata.name for p in loop.get_by_parent("cell-a")] == ["pod-0"]
@@ -971,23 +903,6 @@ class TestRelistReplace:
         assert source.open_count == 2
         await loop.stop()
 
-    async def test_a_stream_dying_mid_relist_discards_the_partial_segment(self):
-        """A half-delivered relist must never be committed as if it were the whole world."""
-        loop, source, recorder, clock = await make_loop(initial=[make_pod("pod-0")], source_retry_delay=1.0)
-        recorder.parent_keys.clear()
-
-        source.emit(SyncStart(), Upsert(key="pod-1", obj=make_pod("pod-1")), StreamError(RuntimeError("boom")))
-        await settle()
-        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-0"]
-
-        await clock.elapse(1.0)
-        await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
-        await settle()
-
-        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-0"]
-        await loop.stop()
-
     async def test_relist_carries_objects_added_while_disconnected(self):
         """Objects created during the outage appear after the relist."""
         loop, source, recorder, clock = await make_loop(initial=[], source_retry_delay=1.0)
@@ -995,7 +910,7 @@ class TestRelistReplace:
         await settle()
         await clock.elapse(1.0)
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-new")), SyncDone())
+        source.emit(replace_of(make_pod("pod-new", cell="cell-new")))
         await settle()
         assert recorder.parent_keys == ["cell-new"]
         await loop.stop()
@@ -1052,7 +967,7 @@ class TestStop:
         loop = ReconcileLoop(source=source, reconcile=reconcile, key_map=pod_cell, clock=FakeClock())
         start_task = asyncio.create_task(loop.start())
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         await start_task
 
@@ -1075,7 +990,7 @@ class TestStop:
         loop = ReconcileLoop(source=source, reconcile=reconcile, key_map=pod_cell, clock=clock)
         start_task = asyncio.create_task(loop.start())
         await settle()
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         await start_task
 
@@ -1131,6 +1046,6 @@ class TestStop:
 
         assert start_task.cancelled()
         assert source.closed_count == 1
-        source.emit(SyncStart(), Upsert(key="pod-0", obj=make_pod("pod-0")), SyncDone())
+        source.emit(replace_of(make_pod("pod-0")))
         await settle()
         assert recorder.parent_keys == []

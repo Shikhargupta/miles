@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import pytest
 from tests.fast.utils.workers.reconcile.utils import make_pod, pod_cell
 
 from miles.utils.workers.reconcile.object_store import ObjectStore
-from miles.utils.workers.reconcile.source_event import Delete, SyncDone, SyncStart, Upsert
+from miles.utils.workers.reconcile.source_event import Delete, Replace, Upsert
 
 
 def make_store() -> ObjectStore:
@@ -65,51 +64,53 @@ class TestIncrementalEvents:
         assert "pod-0" not in store
 
 
-class TestSegments:
-    def test_a_segment_buffers_events_and_replaces_on_sync_done(self):
-        """Upserts inside SyncStart/SyncDone apply atomically as a store replace."""
+class TestReplace:
+    def test_replace_swaps_the_whole_store_and_reports_both_sides(self):
+        """A replace applies atomically and names the parents it added to and removed from."""
         store = make_store()
         store.handle_event(Upsert(key="pod-old", obj=make_pod("pod-old", cell="cell-a")))
 
-        assert store.handle_event(SyncStart()).affected_parents == set()
-        assert (
-            store.handle_event(Upsert(key="pod-new", obj=make_pod("pod-new", cell="cell-b"))).affected_parents == set()
-        )
-        update = store.handle_event(SyncDone())
+        pod_new = make_pod("pod-new", cell="cell-b")
+        update = store.handle_event(Replace(objects={"pod-new": pod_new}))
 
         assert update.affected_parents == {"cell-a", "cell-b"}
         assert "pod-old" not in store
         assert [pod.metadata.name for pod in store.get_by_parent("cell-b")] == ["pod-new"]
 
-    def test_a_delete_inside_a_segment_removes_the_buffered_upsert(self):
-        """A delete arriving mid-segment must not survive into the replace."""
+    def test_replace_synthesizes_deletions_for_objects_that_vanished(self):
+        """Objects missing from a relist must be removed, or ghost members persist forever."""
         store = make_store()
-        store.handle_event(SyncStart())
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        store.handle_event(Delete(key="pod-0", last_obj=None))
-        store.handle_event(SyncDone())
+        store.handle_event(Upsert(key="pod-1", obj=make_pod("pod-1", cell="cell-a")))
 
-        assert "pod-0" not in store
+        pod_0 = make_pod("pod-0", cell="cell-a")
+        update = store.handle_event(Replace(objects={"pod-0": pod_0}))
 
-    def test_reset_segment_discards_a_partial_listing(self):
-        """A reopened stream must not leak the previous half-received segment."""
+        assert update.affected_parents == {"cell-a"}
+        assert "pod-1" not in store
+        assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-0"]
+
+    def test_an_empty_replace_clears_the_store(self):
+        """A relist that returns nothing means the fleet is gone, not that nothing changed."""
         store = make_store()
-        store.handle_event(SyncStart())
         store.handle_event(Upsert(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
-        store.reset_segment()
 
-        assert store.handle_event(SyncStart()).affected_parents == set()
-        store.handle_event(SyncDone())
-        assert "pod-0" not in store
+        update = store.handle_event(Replace(objects={}))
 
-    def test_unpaired_markers_raise(self):
-        """SyncStart inside a segment and SyncDone outside one violate the contract."""
+        assert update.affected_parents == {"cell-a"}
+        assert store.parent_keys() == set()
+
+    def test_an_unmappable_object_in_a_replace_is_dropped(self):
+        """One bad object must not stall the rest of the relist."""
         store = make_store()
-        with pytest.raises(RuntimeError):
-            store.handle_event(SyncDone())
-        store.handle_event(SyncStart())
-        with pytest.raises(RuntimeError):
-            store.handle_event(SyncStart())
+
+        update = store.handle_event(
+            Replace(objects={"pod-0": make_pod("pod-0", cell=None), "pod-1": make_pod("pod-1", cell="cell-a")})
+        )
+
+        assert update.affected_parents == {"cell-a"}
+        assert "pod-0" not in store
+        assert "pod-1" in store
 
 
 class TestQueries:

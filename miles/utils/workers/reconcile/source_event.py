@@ -23,15 +23,10 @@ class Delete:
 
 
 @dataclass(frozen=True)
-class SyncStart:
-    pass
+class Replace:
+    objects: dict[ObjectKey, Any]
 
 
-@dataclass(frozen=True)
-class SyncDone:
-    pass
-
-
-SourceEvent = Upsert | Delete | SyncStart | SyncDone
+SourceEvent = Upsert | Delete | Replace
 
 SourceWatchFn = Callable[[], AsyncGenerator[SourceEvent, None]]

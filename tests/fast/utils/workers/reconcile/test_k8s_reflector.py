@@ -23,7 +23,7 @@ from miles.utils.test_utils.clock import FakeClock
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi, PodListPage, PodWatchEvent
 from miles.utils.workers.reconcile.k8s_reflector import KubernetesReflector
 from miles.utils.workers.reconcile.loop import ReconcileLoop
-from miles.utils.workers.reconcile.source_event import Delete, SyncDone, SyncStart, Upsert
+from miles.utils.workers.reconcile.source_event import Delete, Replace, Upsert
 
 
 def raw_event(event_type: str, obj: Any) -> PodWatchEvent:
@@ -80,15 +80,15 @@ class TestCadenceValidation:
 
 
 class TestInitialList:
-    async def test_list_emits_upserts_then_sync_done(self):
-        """The initial LIST is replayed as Upserts terminated by SyncDone."""
+    async def test_list_emits_one_replace_carrying_every_pod(self):
+        """The initial LIST arrives as a single whole-world Replace, keyed by pod name."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([make_pod("pod-0"), make_pod("pod-1")], resource_version="100"))
         collector = EventCollector(make_reflector(api).watch())
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, Upsert, Upsert, SyncDone]
-        assert [event.key for event in collector.events[1:3]] == ["pod-0", "pod-1"]
+        assert [type(event) for event in collector.events] == [Replace]
+        assert sorted(collector.events[0].objects) == ["pod-0", "pod-1"]
         await collector.close()
 
     async def test_list_uses_namespace_and_label_selector(self):
@@ -123,14 +123,14 @@ class TestInitialList:
         assert api.stream_calls[0]["timeout_seconds"] == 300
         await collector.close()
 
-    async def test_empty_list_still_emits_sync_done(self):
+    async def test_empty_list_still_emits_a_replace(self):
         """An empty cluster must still lift the initial-sync barrier."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="1"))
         collector = EventCollector(make_reflector(api).watch())
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace]
         await collector.close()
 
     async def test_list_failure_is_retried_after_the_delay(self):
@@ -145,7 +145,7 @@ class TestInitialList:
 
         await clock.elapse(3.0)
         await settle()
-        assert [type(event) for event in collector.events] == [SyncStart, Upsert, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace]
         await collector.close()
 
 
@@ -163,11 +163,11 @@ class TestWatchEvents:
         collector = EventCollector(make_reflector(api).watch())
         await settle()
 
-        assert collector.events[2:] == [
+        assert collector.events[1:] == [
+            Upsert(key="pod-0", obj=collector.events[1].obj),
             Upsert(key="pod-0", obj=collector.events[2].obj),
-            Upsert(key="pod-0", obj=collector.events[3].obj),
         ]
-        assert collector.events[3].obj.metadata.resource_version == "3"
+        assert collector.events[2].obj.metadata.resource_version == "3"
         await collector.close()
 
     async def test_deleted_maps_to_delete_with_tombstone(self):
@@ -179,7 +179,7 @@ class TestWatchEvents:
         collector = EventCollector(make_reflector(api).watch())
         await settle()
 
-        assert collector.events[2] == Delete(key="pod-0", last_obj=pod)
+        assert collector.events[1] == Delete(key="pod-0", last_obj=pod)
         await collector.close()
 
     async def test_bookmark_emits_nothing_but_advances_the_cursor(self):
@@ -194,7 +194,7 @@ class TestWatchEvents:
         await clock.elapse(1.0)
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace]
         assert api.stream_calls[-1]["resource_version"] == "50"
         assert len(api.list_calls) == 1
         await collector.close()
@@ -226,8 +226,8 @@ class TestWatchEvents:
         collector = EventCollector(make_reflector(api).watch())
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone, Upsert]
-        assert collector.events[2].key == "pod-1"
+        assert [type(event) for event in collector.events] == [Replace, Upsert]
+        assert collector.events[1].key == "pod-1"
         await collector.close()
 
     @pytest.mark.parametrize("event_type", ["ADDED", "MODIFIED", "DELETED"])
@@ -245,8 +245,8 @@ class TestWatchEvents:
         collector = EventCollector(make_reflector(api).watch())
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone, Upsert]
-        assert collector.events[2].key == "pod-0"
+        assert [type(event) for event in collector.events] == [Replace, Upsert]
+        assert collector.events[1].key == "pod-0"
         assert len(api.list_calls) == 1
         assert len(api.stream_calls) == 1
         await collector.close()
@@ -270,7 +270,7 @@ class TestWatchEvents:
         await collector.close()
 
     async def test_watch_end_resumes_without_relisting(self):
-        """A watch that ends cleanly is reopened from the latest cursor, with no second SyncDone."""
+        """A watch that ends cleanly is reopened from the latest cursor, with no second Replace."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="1"))
         api.stream_scripts.append([raw_event("ADDED", make_pod("pod-0", resource_version="9"))])
@@ -282,7 +282,7 @@ class TestWatchEvents:
 
         await clock.elapse(1.0)
         await settle()
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone, Upsert]
+        assert [type(event) for event in collector.events] == [Replace, Upsert]
         assert len(api.list_calls) == 1
         assert [call["resource_version"] for call in api.stream_calls] == ["1", "9"]
         await collector.close()
@@ -300,7 +300,7 @@ class TestWatchEvents:
 
         await clock.elapse(1.0)
         await settle()
-        assert [type(event) for event in collector.events] == [SyncStart, Upsert, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace]
         assert len(api.list_calls) == 2
         assert api.stream_calls[-1]["resource_version"] == "2"
         await collector.close()
@@ -361,7 +361,7 @@ class TestWatchEvents:
 
         assert api.closed_streams == 1
         assert len(api.list_calls) == 1
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace]
 
         await clock.elapse(2.0)
         await settle()
@@ -383,7 +383,7 @@ class TestWatchEvents:
 
 class TestExpiry:
     async def test_expired_error_event_triggers_a_relist(self):
-        """A 410 ERROR event forces a fresh LIST and a new SyncDone."""
+        """A 410 ERROR event forces a fresh LIST and a new whole-world Replace."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([make_pod("pod-0")], resource_version="1"))
         api.stream_scripts.append([raw_event("ERROR", make_status(code=410))])
@@ -395,15 +395,8 @@ class TestExpiry:
         await clock.elapse(1.0)
         await settle()
 
-        assert [type(event) for event in collector.events] == [
-            SyncStart,
-            Upsert,
-            SyncDone,
-            SyncStart,
-            Upsert,
-            SyncDone,
-        ]
-        assert [event.key for event in collector.events if isinstance(event, Upsert)] == ["pod-0", "pod-1"]
+        assert [type(event) for event in collector.events] == [Replace, Replace]
+        assert [sorted(event.objects) for event in collector.events] == [["pod-0"], ["pod-1"]]
         assert len(api.list_calls) == 2
         assert api.stream_calls[-1]["resource_version"] == "200"
         await collector.close()
@@ -442,7 +435,7 @@ class TestExpiry:
         await clock.elapse(1.0)
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone, SyncStart, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace, Replace]
         assert len(api.list_calls) == 2
         await collector.close()
 
@@ -462,7 +455,7 @@ class TestExpiry:
         await clock.elapse(5.0)
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone, SyncStart, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace, Replace]
         assert api.stream_calls[-1]["resource_version"] == "300"
         await collector.close()
 
@@ -479,7 +472,7 @@ class TestExpiry:
         await clock.elapse(1.0)
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone, SyncStart, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace, Replace]
         assert [call["resource_version"] for call in api.stream_calls] == ["5000", "100"]
         await collector.close()
 
@@ -530,8 +523,7 @@ class TestExpiry:
         await clock.elapse(1.0)
         await settle()
 
-        keys_after_relist = [event.key for event in collector.events[4:] if isinstance(event, Upsert)]
-        assert keys_after_relist == ["pod-1", "pod-2"]
+        assert sorted(collector.events[1].objects) == ["pod-1", "pod-2"]
         await collector.close()
 
 
@@ -583,7 +575,7 @@ class TestCursor:
         await clock.elapse(1.0)
         await settle()
 
-        assert [type(event) for event in collector.events] == [SyncStart, SyncDone, SyncStart, SyncDone]
+        assert [type(event) for event in collector.events] == [Replace, Replace]
         await collector.close()
 
     async def test_watch_after_a_relist_reconnects_without_listing_again(self):
@@ -662,7 +654,7 @@ class TestLifecycle:
         second = EventCollector(reflector.watch())
         await settle()
 
-        assert [type(event) for event in second.events] == [SyncStart, Upsert, SyncDone]
+        assert [type(event) for event in second.events] == [Replace]
         assert [call["resource_version"] for call in api.stream_calls] == ["1", "2"]
         await second.close()
 

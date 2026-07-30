@@ -19,7 +19,7 @@ from miles.utils.workers.reconcile.k8s_api import (
     PodWatchEvent,
     exception_rejects_cursor,
 )
-from miles.utils.workers.reconcile.source_event import Delete, SourceEvent, SyncDone, SyncStart, Upsert
+from miles.utils.workers.reconcile.source_event import Delete, Replace, SourceEvent, Upsert
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +65,7 @@ class KubernetesReflector:
     async def _watch_once(self, cursor: _WatchCursor) -> AsyncGenerator[SourceEvent, None]:
         if cursor.resource_version is None:
             page = await self._kube_client.list_pods(namespace=self._namespace, label_selector=self._label_selector)
-            upserts = [Upsert(key=_pod_key(pod), obj=pod) for pod in page.pods]
-            yield SyncStart()
-            for upsert in upserts:
-                yield upsert
-            yield SyncDone()
+            yield Replace(objects={_pod_key(pod): pod for pod in page.pods})
             cursor.resource_version = page.resource_version
 
         async with aclosing(
