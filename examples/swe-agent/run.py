@@ -48,6 +48,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     global_batch_size: int = 32
     save_interval: int = 100
     save_traces_dir: str = ""
+    rollout_top_p: float = 1.0
 
     # Agent settings
     agent_server_url: str = os.environ.get(
@@ -115,6 +116,7 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
+        f"--rollout-top-p {args.rollout_top_p} "
         "--rollout-max-response-len 8192 "
         f"--max-seq-len {args.max_seq_len} "
         f"--global-batch-size {args.global_batch_size} "
