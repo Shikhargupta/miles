@@ -9,14 +9,16 @@ from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.specs.inference import InferenceModelSpec, compute_inference_model_specs
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_provider.base import CellInfo
 
 logger = logging.getLogger(__name__)
 
 
 async def start_rollout_servers(args, worker_manager: RayWorkerManager) -> dict[str, "RolloutServer"]:
-    """Start rollout servers: one per model, each with its own router.
+    """Start the routers and bring up every rollout worker.
 
-    Returns a dict mapping model name -> ``RolloutServer``.
+    The cells stay detached: the reconcile loop attaches them to whatever the
+    worker manager reports. Returns a dict mapping model name -> ``RolloutServer``.
     """
     model_specs = compute_inference_model_specs(args)
 
@@ -40,7 +42,10 @@ async def start_rollout_servers(args, worker_manager: RayWorkerManager) -> dict[
             update_weights=model_spec.update_weights,
         )
 
-    await asyncio.gather(*[srv.start_all_cells(worker_manager) for srv in servers.values()])
+    if not args.debug_train_only:
+        await asyncio.gather(
+            *[worker_manager.start_cell(cell.spec) for srv in servers.values() for cell in srv.server_cells.values()]
+        )
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
@@ -70,6 +75,37 @@ class RolloutServer:
     model_name: str = "default"
     update_weights: bool = True
 
+    async def reconcile_attach(self, cell_info: CellInfo, *, release_memory: bool) -> None:
+        """Attach the observed workers to their cell and register it with the router."""
+        cell = self.server_cells[cell_info.cell_id]
+        cell.attach(cell_info)
+
+        try:
+            if release_memory and cell.needs_offload:
+                await asyncio.wait_for(cell.release_offloaded_memory(), timeout=_ATTACH_STEP_TIMEOUT_SECONDS)
+
+            cell.mark_alive()
+            await asyncio.wait_for(cell.register(self.router_api_client), timeout=_ATTACH_STEP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.warning(f"Attaching cell {cell.cell_id} failed; detaching it so the next poll retries")
+            cell.detach()
+            raise
+
+        if self.update_weights:
+            self.has_new_engines = True
+
+    async def reconcile_detach(self, cell_id: str) -> None:
+        """Detach the cell whose workers vanished, unregistering it from the router first."""
+        cell = self.server_cells[cell_id]
+        if cell.is_alive:
+            try:
+                await asyncio.wait_for(cell.unregister(self.router_api_client), timeout=_UNREGISTER_TIMEOUT_SECONDS)
+            except Exception:
+                logger.warning(f"Unregistering cell {cell_id} from the router failed; detaching anyway")
+        cell.detach()
+        if self.update_weights:
+            self.has_new_engines = True
+
     @property
     def api_clients(self) -> list[SGLangApiClient]:
         """One client per cell, talking to its primary (node-0) engine."""
@@ -86,41 +122,6 @@ class RolloutServer:
     @property
     def engine_gpu_offsets(self) -> list[int]:
         return [cell.gpu_offset for cell in self.server_cells.values()]
-
-    async def start_all_cells(self, worker_manager: RayWorkerManager):
-        if self.args.debug_train_only:
-            return
-
-        cell_ids = [cell_id for cell_id, cell in self.server_cells.items() if not cell.is_allocated]
-        await asyncio.gather(
-            *[self.server_cells[cell_id].start(worker_manager, self.router_api_client) for cell_id in cell_ids]
-        )
-        self.has_new_engines |= bool(cell_ids)
-
-    async def recover(self, worker_manager: RayWorkerManager, cell_ids: list[str] | None = None):
-        """Recover dead cells, overlapping init across cells.
-
-        The manager's allocator cursors still sit past the ports the live engines
-        hold, so recovery does not rescan from the base port.
-        """
-        if cell_ids is None:
-            cell_ids = list(self.server_cells)
-        cell_ids = [cell_id for cell_id in cell_ids if not self.server_cells[cell_id].is_allocated]
-
-        await asyncio.gather(
-            *[
-                self.server_cells[cell_id].start(worker_manager, self.router_api_client, recover=True)
-                for cell_id in cell_ids
-            ]
-        )
-        self.has_new_engines |= bool(cell_ids)
-
-        logger.info(f"Recovered {len(cell_ids)} dead rollout cells")
-
-    async def stop_cells(self, worker_manager: RayWorkerManager, cell_ids: list[str]):
-        logger.info(f"Killing server {cell_ids=}...")
-        for cell_id in sorted(set(cell_ids)):
-            await self.server_cells[cell_id].stop(worker_manager, self.router_api_client)
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
@@ -167,3 +168,8 @@ class RolloutServer:
 
 def list_cell_ids(servers: dict[str, "RolloutServer"]) -> list[str]:
     return [cell_id for model_id in sorted(servers) for cell_id in servers[model_id].server_cells]
+
+
+_UNREGISTER_TIMEOUT_SECONDS = 30
+
+_ATTACH_STEP_TIMEOUT_SECONDS = 60

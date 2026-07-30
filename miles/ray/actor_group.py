@@ -95,9 +95,6 @@ class RayTrainGroup:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if self.args.use_fault_tolerance:
-            await self._inference_controller.recover_updatable_engines()
-
         await self._inference_controller.health_monitoring_pause()
         info = await self._inference_controller.get_updatable_engines_and_lock()
 

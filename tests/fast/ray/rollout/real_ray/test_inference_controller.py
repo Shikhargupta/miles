@@ -96,6 +96,13 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
     )
 
 
+async def _sync_cells(controller):
+    """Reconcile against the provider right now instead of waiting for its next poll."""
+    observed = await controller.provider.list_cells()
+    for cell_id in controller.list_cell_ids():
+        await controller._reconcile(cell_id, observed.get(cell_id))
+
+
 def _cells(controller, model: str = "actor"):
     return list(controller.servers[model].server_cells.values())
 
@@ -158,6 +165,7 @@ class TestStartStopCell:
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
         await controller.stop_cell("actor-0")
+        await _sync_cells(controller)
 
         await _assert_engine_dies(actor0)
         assert isinstance(ray.get(actor1.get_calls.remote()), list)
@@ -169,8 +177,8 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """stop_cell → start_cell drives a real ``recover()`` that spawns
-        a fresh mock actor in place of the killed one."""
+        """stop_cell → start_cell brings up a fresh mock actor, and the reconcile
+        pass re-attaches the cell to it."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -180,7 +188,9 @@ class TestStartStopCell:
         url_before = eal_before.rollout_engines[0].server_url
 
         await controller.stop_cell("actor-0")
+        await _sync_cells(controller)
         await controller.start_cell("actor-0")
+        await _sync_cells(controller)
 
         eal_after = await controller.get_updatable_engines_and_lock()
         actor0_after = _cells(controller)[0].primary_actor_handle
@@ -322,7 +332,9 @@ class TestGetUpdatableEnginesAndLock:
         assert eal_cleared.has_new_engines is False
 
         await controller.stop_cell("actor-0")
+        await _sync_cells(controller)
         await controller.start_cell("actor-0")
+        await _sync_cells(controller)
         eal_recovered = await controller.get_updatable_engines_and_lock()
         assert eal_recovered.has_new_engines is True
 
@@ -414,98 +426,53 @@ class TestCheckWeights:
 
 
 @pytest.mark.asyncio
-class TestRecoverUpdatableEngines:
-    async def test_skips_recovery_when_no_rollout_started(
+class TestReconcileAfterAnExternalRestart:
+    async def test_a_killed_engine_is_detached_then_reattached_by_reconcile(
         self,
         ray_local_mode,
         placement_group_factory,
         tmp_path,
         patch_low_level,
     ):
-        """``recover_updatable_engines`` is a no-op while ``rollout_id == -1``
-        (initial state) — the trainer hasn't issued a rollout yet, so even if
-        a slot looks dead the controller must not pre-emptively recover."""
+        """The controller never restarts an engine itself; it follows the manager."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         controller = await InferenceController.create(args, pg)
-        await controller.get_updatable_engines_and_lock()
         actor0_before = _cells(controller)[0].primary_actor_handle
 
-        # Kill engine 0 directly + mark stopped (simulates a fault before any
-        # rollout). recover_updatable_engines must not bring it back yet.
-        ray.kill(actor0_before)
-        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
-
-        await controller.recover_updatable_engines()
-
-        # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
+        controller.worker_manager.stop_cell("actor-0")
+        await _sync_cells(controller)
         assert not controller.servers["actor"].server_cells["actor-0"].is_allocated
 
-    async def test_recovers_dead_engine_after_rollout_started(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """Once ``rollout_id`` advances past -1 (mid-training), a dead slot on
-        the updatable server is brought back by ``recover_updatable_engines``."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
+        await controller.start_cell("actor-0")
+        await _sync_cells(controller)
 
-        controller = await InferenceController.create(args, pg)
-        await controller.get_updatable_engines_and_lock()
-        actor0_before = _cells(controller)[0].primary_actor_handle
-
-        ray.kill(actor0_before)
-        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
-
-        await controller.prepare_rollout(0)
-        await controller.recover_updatable_engines()
-
-        slot0 = controller.servers["actor"].server_cells["actor-0"]
-        assert slot0.is_allocated
-        assert slot0.primary_actor_handle is not actor0_before
-        assert isinstance(ray.get(slot0.primary_actor_handle.get_calls.remote()), list)
+        cell = controller.servers["actor"].server_cells["actor-0"]
+        assert cell.is_allocated
+        assert cell.primary_actor_handle is not actor0_before
+        assert isinstance(ray.get(cell.primary_actor_handle.get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
 class TestRolloutFaultToleranceIsUnsupported:
-    async def test_health_monitoring_hooks_are_noops_without_fault_tolerance(
+    async def test_pausing_the_reconcile_loop_leaves_the_engines_attached(
         self,
         ray_local_mode,
         placement_group_factory,
         tmp_path,
         patch_low_level,
     ):
-        """A plain run never asked for fault tolerance, so the hooks stay out of its way."""
+        """A paused controller must still serve the engine snapshot the trainer holds."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         controller = await InferenceController.create(args, pg)
 
         await controller.health_monitoring_pause()
+        eal = await controller.get_updatable_engines_and_lock()
+        assert len(eal.rollout_engines) == 2
         await controller.health_monitoring_resume()
-
-    async def test_health_monitoring_hooks_refuse_to_run_under_fault_tolerance(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """Asking for fault tolerance must fail loudly, not run unmonitored."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
-        controller.args.use_fault_tolerance = True
-
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_pause()
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_resume()
 
     async def test_fault_injection_refuses_to_run(
         self,

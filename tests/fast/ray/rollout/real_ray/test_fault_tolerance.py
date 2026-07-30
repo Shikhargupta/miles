@@ -10,7 +10,6 @@ import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.ray.rollout.real_ray.conftest import (
-    NoopRouterApiClient,
     build_cells,
     detach_cell,
     kill_cells,
@@ -34,8 +33,7 @@ class TestKillAndRecover:
         it and the surviving cell is untouched."""
         pg = placement_group_factory(2)
         cells = build_cells(num_cells=2)
-        worker_manager = make_worker_manager(pg)
-        await start_cells(cells, worker_manager, mark_alive=True)
+        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
 
         original_handles = [cell.primary_actor_handle for cell in cells]
         # Real fault: kill engine 0 + mark its slot stopped (production code's
@@ -44,7 +42,7 @@ class TestKillAndRecover:
         await detach_cell(cells[0], worker_manager)
 
         try:
-            await cells[0].start(worker_manager, NoopRouterApiClient(), recover=True)
+            await start_cells([cells[0]], worker_manager, mark_alive=True)
             # New actor for cell 0
             assert cells[0].is_allocated
             assert cells[0].primary_actor_handle is not original_handles[0]
@@ -56,23 +54,15 @@ class TestKillAndRecover:
         finally:
             kill_cells(cells)
 
-    async def test_recover_default_filter_picks_all_dead_cells(
+    async def test_restarting_dead_cells_leaves_the_live_one_untouched(
         self,
         patched_sglang_engine,
         placement_group_factory,
     ):
-        """When ``cell_ids=None``, the server recovers every cell with a
-        dead engine. We kill 0 and 2, leave 1 alive, expect only 0 and 2 to
-        be re-created."""
+        """We kill 0 and 2, leave 1 alive, expect only 0 and 2 to be re-created."""
         pg = placement_group_factory(3)
         cells = build_cells(num_cells=3)
-        worker_manager = make_worker_manager(pg)
-        await start_cells(cells, worker_manager, mark_alive=True)
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=make_args(num_gpus_per_node=8),
-            _worker_manager=worker_manager,
-        )
+        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
 
         old = [cell.primary_actor_handle for cell in cells]
         for i in (0, 2):
@@ -80,8 +70,7 @@ class TestKillAndRecover:
             await detach_cell(cells[i], worker_manager)
 
         try:
-            with patch.object(RolloutServer, "_router_api_client", property(lambda self: NoopRouterApiClient())):
-                await srv.recover()
+            await start_cells([cells[0], cells[2]], worker_manager, mark_alive=True)
             for i in (0, 2):
                 assert cells[i].is_allocated
                 assert cells[i].primary_actor_handle is not old[i]
@@ -106,21 +95,20 @@ class TestKillAndRecover:
 
         pg = placement_group_factory(1)
         cells = build_cells(num_cells=1)
-        worker_manager = make_worker_manager(pg)
         srv = RolloutServer(
             server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
             args=make_args(num_gpus_per_node=8),
             router_ip="10.0.0.9",
             router_port=9000,
-            _worker_manager=worker_manager,
         )
-        await start_cells(cells, worker_manager, mark_alive=True)
+        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
         ray.kill(cells[0].primary_actor_handle)
         await detach_cell(cells[0], worker_manager)
 
         try:
-            with patch.object(RolloutServer, "_router_api_client", property(lambda self: _Recorder())):
-                await srv.recover(cell_ids=["cell-0"])
+            with patch.object(RolloutServer, "router_api_client", property(lambda self: _Recorder())):
+                await start_cells([cells[0]], worker_manager, mark_alive=True)
+                await cells[0].register(srv.router_api_client)
 
             assert [event["worker_url"] for event in events] == [cells[0].addr_info.server_url]
             assert cells[0].is_alive
@@ -132,20 +120,20 @@ class TestKillAndRecover:
         patched_sglang_engine,
         placement_group_factory,
     ):
-        """``needs_offload=True`` + ``update_weights=True`` means recover()
+        """``needs_offload=True`` + ``update_weights=True`` means a mid-run attach
         must release_memory_occupation, then resume with WEIGHTS tag.
         Verify by reading the recovered engine's mock HTTP server log."""
         pg = placement_group_factory(2)
         cells = build_cells(num_cells=2, needs_offload=True, update_weights=True)
-        worker_manager = make_worker_manager(pg)
-        await start_cells(cells, worker_manager, mark_alive=True)
+        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
         old = [cell.primary_actor_handle for cell in cells]
 
         ray.kill(old[0])
         await detach_cell(cells[0], worker_manager)
 
         try:
-            await cells[0].start(worker_manager, NoopRouterApiClient(), recover=True)
+            await start_cells([cells[0]], worker_manager, mark_alive=True)
+            await cells[0].release_offloaded_memory()
             recovered_actor = cells[0].primary_actor_handle
             calls = ray.get(recovered_actor.get_calls.remote())
             assert "run" in [c[0] for c in calls]
@@ -199,8 +187,7 @@ class TestConcurrentRecover:
         pg = placement_group_factory(4)
         a = build_cells(num_cells=2)
         b = build_cells(num_cells=2, rank_offset=2, gpu_offset=2)
-        worker_manager = make_worker_manager(pg)
-        await start_cells(a, worker_manager, mark_alive=True)
+        worker_manager = await start_cells(a, make_worker_manager(pg), mark_alive=True)
         await start_cells(b, worker_manager, mark_alive=True)
 
         # Kill one engine in each batch
@@ -212,8 +199,8 @@ class TestConcurrentRecover:
         try:
             # Real concurrent recover via asyncio.gather
             await asyncio.gather(
-                a[0].start(worker_manager, NoopRouterApiClient(), recover=True),
-                b[0].start(worker_manager, NoopRouterApiClient(), recover=True),
+                start_cells([a[0]], worker_manager, mark_alive=True),
+                start_cells([b[0]], worker_manager, mark_alive=True),
             )
             assert a[0].is_allocated
             assert b[0].is_allocated
@@ -251,7 +238,7 @@ class TestKillSubprocessKeepsMockActorReachable:
 
 @pytest.mark.asyncio
 class TestRecoverMultiNodeEngine:
-    async def test_recover_releases_and_resumes_only_on_node0(
+    async def test_release_and_resume_only_reach_node0(
         self,
         patched_sglang_engine,
         placement_group_factory,
@@ -262,7 +249,8 @@ class TestRecoverMultiNodeEngine:
         assert cell.num_nodes == 2
 
         try:
-            await cell.start(make_worker_manager(pg), NoopRouterApiClient(), recover=True)
+            await start_cells([cell], make_worker_manager(pg), mark_alive=True)
+            await cell.release_offloaded_memory()
 
             node0_actor, node1_actor = cell.actor_handles
             node0_paths = ray.get(node0_actor.get_http_paths.remote())

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import patch
 
-from tests.fast.ray.rollout.conftest import adopt_cell_workers, fake_actor_handle, make_args, make_cell_spec
+from tests.fast.ray.rollout.conftest import adopt_cell_workers, make_args, make_cell_spec
 
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.specs.inference import compute_nodes_per_engine
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
-
-_CELL_MODULE = "miles.ray.rollout.server_cell"
-_MANAGER_MODULE = "miles.utils.workers.ray_worker_manager"
+from miles.utils.workers.worker_provider.base import CellInfo, CellMember
 
 
 class _RecordingRouterApiClient:
@@ -26,17 +23,6 @@ class _RecordingRouterApiClient:
         self._events.append(("remove_worker", kwargs))
         if self._remove_worker_effect is not None:
             await self._remove_worker_effect()
-
-
-def _shutdown_recording_actor(events: list[tuple[str, dict]]) -> object:
-    """An actor whose graceful shutdown is awaitable and shows up in the recorded order."""
-    actor = fake_actor_handle()
-
-    async def _shutdown():
-        events.append(("shutdown", {}))
-
-    actor.shutdown.remote.side_effect = _shutdown
-    return actor
 
 
 def _build_server(
@@ -70,7 +56,6 @@ def _build_server(
         adopt_cell_workers(
             worker_manager,
             cell_id=cell.cell_id,
-            actors=[_shutdown_recording_actor(events) for _ in range(nodes_per_engine)],
             payloads=[
                 {
                     "host": f"10.0.0.{cell_start + local_index + 1}",
@@ -80,8 +65,17 @@ def _build_server(
                 for local_index in range(nodes_per_engine)
             ],
         )
-        cell._attach(worker_manager)
-        cell._mark_alive()
+        workers = worker_manager.cell_workers(cell.cell_id)
+        cell.attach(
+            CellInfo(
+                cell_id=cell.cell_id,
+                members=[
+                    CellMember(handle=worker.actor, payload=worker.payload, placement=worker.placement)
+                    for worker in workers
+                ],
+            )
+        )
+        cell.mark_alive()
         cells.append(cell)
 
     srv = RolloutServer(
@@ -132,21 +126,6 @@ async def test_registration_passes_the_bootstrap_port_of_a_prefill_worker():
     assert events[0][1]["bootstrap_port"] == 8998
 
 
-async def test_stopping_a_cell_that_never_started_publishes_nothing():
-    """An unallocated cell has no url, so teardown must not try to unregister it."""
-    events: list[tuple[str, dict]] = []
-    srv = _build_server(events=events, num_engines=2)
-    srv.server_cells["cell-0"]._mark_stopped()
-
-    with (
-        _with_recording_client(srv),
-        patch(f"{_MANAGER_MODULE}.ray"),
-    ):
-        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
-
-    assert events == []
-
-
 async def test_registration_addresses_only_the_primary_engine_of_a_multi_node_cell():
     """Only the primary (node-0) engine serves the router-visible endpoint."""
     events: list[tuple[str, dict]] = []
@@ -158,73 +137,13 @@ async def test_registration_addresses_only_the_primary_engine_of_a_multi_node_ce
     assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.1:30000"]
 
 
-async def test_stop_cells_unregisters_before_killing_the_actor():
-    """Killing first would leave the router routing to a dead worker."""
-    events: list[tuple[str, dict]] = []
-    srv = _build_server(events=events)
-
-    with (
-        _with_recording_client(srv),
-        patch(f"{_MANAGER_MODULE}.ray") as ray_mock,
-    ):
-        ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
-
-    assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
-    assert events[0][1] == {"worker_url": "http://10.0.0.1:30000", "use_legacy_api": False}
-
-
-async def test_a_router_that_rejects_the_unregister_still_kills_the_actor():
-    """Teardown is how a wedged engine is reclaimed, so a router error must not abort it."""
-
-    async def _reject():
-        raise RuntimeError("router rejected the removal")
-
-    events: list[tuple[str, dict]] = []
-    srv = _build_server(events=events, remove_worker_effect=_reject)
-
-    with (
-        _with_recording_client(srv),
-        patch(f"{_MANAGER_MODULE}.ray") as ray_mock,
-    ):
-        ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
-
-    assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
-    assert not srv.server_cells["cell-0"].is_allocated
-
-
-async def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
-    """The shared http client has no read timeout, so an unanswered removal would wedge teardown forever."""
-
-    async def _hang():
-        await asyncio.sleep(3600)
-
-    events: list[tuple[str, dict]] = []
-    srv = _build_server(events=events, remove_worker_effect=_hang)
-
-    with (
-        _with_recording_client(srv),
-        patch(f"{_CELL_MODULE}.SHUTDOWN_TIMEOUT", 0.1),
-        patch(f"{_MANAGER_MODULE}.ray") as ray_mock,
-    ):
-        ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
-
-    assert [name for name, _kwargs in events] == ["remove_worker", "kill"]
-    assert not srv.server_cells["cell-0"].is_allocated
-
-
 async def test_use_miles_router_reaches_both_router_calls():
     """--use-miles-router pins the legacy query-string API on register and unregister alike."""
     events: list[tuple[str, dict]] = []
     srv = _build_server(events=events, use_miles_router=True)
 
-    with (
-        _with_recording_client(srv),
-        patch(f"{_MANAGER_MODULE}.ray"),
-    ):
+    with _with_recording_client(srv):
         await srv.server_cells["cell-0"].register(srv.router_api_client)
-        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
+        await srv.server_cells["cell-0"].unregister(srv.router_api_client)
 
     assert [kwargs["use_legacy_api"] for _name, kwargs in events] == [True, True]

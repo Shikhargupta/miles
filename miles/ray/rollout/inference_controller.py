@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 
@@ -10,7 +12,8 @@ from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.utils import Lock
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
-
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,13 @@ class InferenceController:
             controller.servers = await start_rollout_servers(args, controller.worker_manager)
             dashboard_hooks.register_router(args)
             start_session_server(args)
+            controller.provider = RayWorkerProvider(worker_manager=controller.worker_manager)
+            observed = await controller.provider.list_cells()
+            for cell_id in controller.list_cell_ids():
+                await controller._reconcile(cell_id, observed.get(cell_id))
+            controller._watcher_disposers.append(
+                await controller.provider.watch_cells(controller._reconcile, seen=observed)
+            )
         return controller
 
     def __init__(self, args, pg):
@@ -30,8 +40,12 @@ class InferenceController:
         self.args = args
         self.servers: dict[str, RolloutServer] = {}
         self.worker_manager = RayWorkerManager(pg=pg)
+        self.provider: BaseWorkerProvider | None = None
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self._reconcile_gate = _ReconcileGate()
+        self._cell_ops_lock = asyncio.Lock()
+        self._watcher_disposers: list[StopWatchFn] = []
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
@@ -46,7 +60,9 @@ class InferenceController:
         await self.health_monitoring_resume()
 
     async def dispose(self):
-        pass
+        for disposer in self._watcher_disposers:
+            await disposer()
+        self._watcher_disposers = []
 
     # -------------------------- offload/onload -----------------------------
 
@@ -95,19 +111,6 @@ class InferenceController:
         if srv:
             srv.clear_has_new_engines()
 
-    async def recover_updatable_engines(self) -> None:
-        """Restart any dead rollout engines and update has_new_engines for update_weights detection.
-
-        Recovers the updatable model (the one that receives weight
-        updates from training).
-        """
-        await self.health_monitoring_pause()
-        srv = self._get_updatable_server()
-        if self.rollout_id == -1 or srv is None:
-            return
-
-        await srv.recover(self.worker_manager)
-
     def _get_updatable_server(self) -> RolloutServer | None:
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
         match updatable:
@@ -124,10 +127,12 @@ class InferenceController:
     # -------------------------- external start/stop -----------------------------
 
     async def start_cell(self, cell_id: str):
-        await self._server_of(cell_id).recover(self.worker_manager, cell_ids=[cell_id])
+        srv = self._server_of(cell_id)
+        await self.worker_manager.start_cell(srv.server_cells[cell_id].spec)
 
     async def stop_cell(self, cell_id: str):
-        await self._server_of(cell_id).stop_cells(self.worker_manager, [cell_id])
+        self._server_of(cell_id)
+        await self.worker_manager.stop_cell(cell_id)
 
     def list_cell_ids(self) -> list[str]:
         return list_cell_ids(self.servers)
@@ -150,20 +155,40 @@ class InferenceController:
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
 
+    # -------------------------- reconcile -----------------------------
+
+    async def _reconcile(self, cell_id: str, cell_info: CellInfo | None) -> None:
+        async with self._reconcile_gate.operate(), self._cell_ops_lock:
+            srv = self._server_of(cell_id)
+            cell = srv.server_cells[cell_id]
+
+            if cell_info is None:
+                if cell.is_allocated:
+                    logger.info(f"Reconcile removes cell {cell_id}")
+                    await srv.reconcile_detach(cell_id)
+                return
+
+            if len(cell_info.members) < cell.num_nodes:
+                return
+
+            if cell.is_allocated:
+                if [member.payload for member in cell.attached_members] == [
+                    member.payload for member in cell_info.members
+                ]:
+                    return
+                logger.info(f"Cell {cell_id} changed members; replacing it")
+                await srv.reconcile_detach(cell_id)
+
+            logger.info(f"Reconcile adds cell {cell_id}")
+            await srv.reconcile_attach(cell_info, release_memory=self.rollout_id >= 0)
+
     # -------------------------- utils -----------------------------
 
     async def health_monitoring_pause(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
+        await self._reconcile_gate.pause()
 
     async def health_monitoring_resume(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
-
-    def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
-            raise NotImplementedError(
-                "rollout fault tolerance is being rebuilt; health monitoring must pause before "
-                "get_updatable_engines_and_lock snapshots the engines"
-            )
+        await self._reconcile_gate.resume()
 
     @property
     def _server(self) -> RolloutServer | None:
@@ -174,6 +199,40 @@ class InferenceController:
 
     async def _try_ci_fault_injection(self):
         raise NotImplementedError("rollout fault injection is being rebuilt with rollout fault tolerance")
+
+
+class _ReconcileGate:
+    """Blocks reconcile add/remove while weight updates or offload snapshots run.
+
+    ``pause`` waits for in-flight reconcile operations to drain, so the set of
+    attached cells is stable from pause until resume."""
+
+    def __init__(self) -> None:
+        self._paused = False
+        self._num_active = 0
+        self._condition = asyncio.Condition()
+
+    async def pause(self) -> None:
+        async with self._condition:
+            self._paused = True
+            await self._condition.wait_for(lambda: self._num_active == 0)
+
+    async def resume(self) -> None:
+        async with self._condition:
+            self._paused = False
+            self._condition.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def operate(self):
+        async with self._condition:
+            await self._condition.wait_for(lambda: not self._paused)
+            self._num_active += 1
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._num_active -= 1
+                self._condition.notify_all()
 
 
 @dataclass(frozen=True)

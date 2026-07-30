@@ -113,6 +113,10 @@ class RayWorkerManager:
                 except Exception as e:
                     logger.warning(f"Cell {cell_id}: fail to kill worker at cell-local index {local_index} ({e})")
 
+    def cell_ids(self) -> list[str]:
+        """The cells a consumer may use: only those that finished coming up."""
+        return sorted(cell_id for cell_id, record in self._cells.items() if record.ready)
+
     def cell_workers(self, cell_id: str) -> list[ActorState]:
         """The workers a consumer may use: only those of a cell that finished coming up."""
         record = self._cells.get(cell_id)

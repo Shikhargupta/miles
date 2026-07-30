@@ -7,7 +7,6 @@ import ray
 from tests.fast.ray.rollout.conftest import fake_engine, make_args, make_cell_spec
 
 import miles.utils.workers.cell_launch as cell_launch_module
-from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.test_utils.mock_sglang_engine import parse_cmd_flags
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
@@ -25,19 +24,15 @@ def _start_engines_and_collect_addressing(
     rollout_engines,
     worker_type: str = "regular",
 ) -> dict[int, dict]:
-    """Run ``ServerCell.start_engines`` against the given actor mocks and return,
-    per global rank, the addressing flags of the launch command its ``run`` got."""
+    """Bring one cell up through the manager against the given actor mocks and
+    return, per global rank, the addressing flags of the launch command its ``run`` got."""
     requested = dict(rollout_engines)
-    cell = ServerCell(
+    spec = make_cell_spec(
         args=args,
-        spec=make_cell_spec(
-            args=args,
-            worker_type=worker_type,
-            num_nodes=len(requested),
-            rank_offset=min(requested),
-            wait_cell_ready=AsyncMock(),
-        ),
-        pg=(None, [], list(range(8))),
+        worker_type=worker_type,
+        num_nodes=len(requested),
+        rank_offset=min(requested),
+        wait_cell_ready=AsyncMock(),
     )
     for engine in requested.values():
         engine.__class__ = ray.actor.ActorHandle
@@ -46,8 +41,9 @@ def _start_engines_and_collect_addressing(
     def _launch(*, placement, **kwargs):
         return requested[placement.global_rank]
 
+    manager = RayWorkerManager(pg=_fake_pg(), _port_allocator=port_allocator)
     with patch.object(cell_launch_module, "create_cell_worker_actor", side_effect=_launch):
-        asyncio.run(cell.start_engines(RayWorkerManager(pg=_fake_pg(), _port_allocator=port_allocator)))
+        asyncio.run(manager.start_cell(spec))
 
     return {rank: parse_cmd_flags(engine.run.remote.call_args.kwargs["cmd"]) for rank, engine in requested.items()}
 
@@ -233,16 +229,13 @@ class TestConcurrentNodeProbes:
             return engine
 
         actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
-        cell = ServerCell(
-            args=make_args(num_gpus_per_node=8, sglang_dp_size=1),
-            spec=make_cell_spec(num_nodes=num_nodes, wait_cell_ready=AsyncMock()),
-            pg=(None, [], list(range(8))),
-        )
+        args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
+        spec = make_cell_spec(args=args, num_nodes=num_nodes, wait_cell_ready=AsyncMock())
         with patch.object(
             cell_launch_module,
             "create_cell_worker_actor",
             side_effect=lambda *, placement, **kw: actors[placement.global_rank],
         ):
-            await cell.start_engines(RayWorkerManager(pg=_fake_pg()))
+            await RayWorkerManager(pg=_fake_pg()).start_cell(spec)
 
         assert [kind for kind, _ in events[:num_nodes]] == ["enter"] * num_nodes, events

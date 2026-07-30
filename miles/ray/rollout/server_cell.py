@@ -1,4 +1,3 @@
-import asyncio
 import dataclasses
 import logging
 from dataclasses import dataclass
@@ -19,12 +18,9 @@ from miles.ray.rollout.cell_state import (
     StateStopped,
 )
 from miles.ray.specs.inference import InferenceCellSpec
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
-from miles.utils.workers.worker_spec import WorkerPlacement
+from miles.utils.workers.worker_provider.base import CellInfo, CellMember
 
 logger = logging.getLogger(__name__)
-
-SHUTDOWN_TIMEOUT = 30
 
 
 @dataclass
@@ -32,7 +28,7 @@ class ServerCell:
     args: Any
     spec: InferenceCellSpec
     update_weights: bool = True
-    attached_placements: list[WorkerPlacement] | None = None
+    attached_members: list[CellMember] | None = None
     _state: CellState = dataclasses.field(default_factory=StateStopped)
 
     # ============================= temporary spec pass-throughs =============================
@@ -64,10 +60,6 @@ class ServerCell:
         return self.spec.gpu_offset
 
     @property
-    def sglang_overrides(self) -> dict:
-        return self.spec.worker.sglang_overrides
-
-    @property
     def needs_offload(self) -> bool:
         return self.spec.worker.needs_offload
 
@@ -96,11 +88,11 @@ class ServerCell:
 
     @property
     def engine_gpu_ids(self) -> list[list[int]]:
-        assert self.attached_placements is not None, f"cell {self.cell_id} has no workers to report gpus for"
+        assert self.attached_members is not None, f"cell {self.cell_id} has no workers to report gpus for"
         gpus_on_node = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
         return [
-            list(range(placement.base_gpu_id, placement.base_gpu_id + gpus_on_node))
-            for placement in self.attached_placements
+            list(range(member.placement.base_gpu_id, member.placement.base_gpu_id + gpus_on_node))
+            for member in self.attached_members
         ]
 
     @property
@@ -117,52 +109,34 @@ class ServerCell:
     def api_client(self) -> SGLangApiClient:
         return SGLangApiClient(server_url=self.addr_info.server_url)
 
-    async def start_engines(self, worker_manager: RayWorkerManager) -> None:
-        assert not self.is_allocated, "the caller starts only stopped cells"
+    def attach(self, cell_info: CellInfo) -> None:
+        """Adopt the workers the infrastructure layer reports for this cell."""
+        assert not self.is_allocated, "a cell must be detached before it attaches to new workers"
 
-        await worker_manager.start_cell(self.spec)
-        self._attach(worker_manager)
-
-    def _attach(self, worker_manager: RayWorkerManager) -> None:
-        """Adopt the workers the manager brought up for this cell."""
-        workers = worker_manager.cell_workers(self.cell_id)
-        self._mark_allocated_uninitialized([worker.actor for worker in workers])
-        self.attached_placements = [worker.placement for worker in workers]
+        self._mark_allocated_uninitialized([member.handle for member in cell_info.members])
         self._mark_addressing(
             [
                 AddrInfo(
-                    server_url=build_server_url(host=worker.payload["host"], port=worker.payload["port"]),
-                    bootstrap_port=worker.payload.get("disaggregation_bootstrap_port"),
+                    server_url=build_server_url(host=member.payload["host"], port=member.payload["port"]),
+                    bootstrap_port=member.payload.get("disaggregation_bootstrap_port"),
                 )
-                for worker in workers
+                for member in cell_info.members
             ]
         )
+        self.attached_members = list(cell_info.members)
 
-    async def start(
-        self, worker_manager: RayWorkerManager, router_api_client: SGLangRouterApiClient, recover: bool = False
-    ) -> None:
-        await self.start_engines(worker_manager)
+    async def release_offloaded_memory(self) -> None:
+        """Give back the GPU memory a freshly attached engine holds."""
+        await self.api_client.release_memory_occupation()
+        if self.update_weights or self.model_path:
+            await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
-        if recover and self.needs_offload:
-            await self.api_client.release_memory_occupation()
-            if self.update_weights or self.model_path:
-                await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
-
+    def mark_alive(self) -> None:
         self._mark_alive()
 
-        await self.register(router_api_client)
-
-    async def stop(self, worker_manager: RayWorkerManager, router_api_client: SGLangRouterApiClient) -> None:
-        if self.is_allocated:
-            try:
-                await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"Unregistering cell {self.cell_id} from the router failed, tearing down anyway ({e})")
-
-            await worker_manager.stop_cell(self.cell_id)
-        else:
-            logger.info(f"Cell {self.cell_id} is already stopped")
+    def detach(self) -> None:
         self._mark_stopped()
+        self.attached_members = None
 
     def _mark_allocated_uninitialized(self, actor_handles: list[ray.actor.ActorHandle]) -> None:
         self._change_state(

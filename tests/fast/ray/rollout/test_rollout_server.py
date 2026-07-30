@@ -39,11 +39,11 @@ class TestRolloutServerCrossCellProperties:
 class TestStartRolloutServersCellChunking:
     @pytest.fixture
     def stub_engine_startup(self, monkeypatch):
-        async def _no_cells(self, *args, **kwargs):
+        async def _no_workers(self, request):
             return None
 
         monkeypatch.setattr(rollout_server, "start_router", lambda *args, **kwargs: ("127.0.0.1", 30000))
-        monkeypatch.setattr(RolloutServer, "start_all_cells", _no_cells)
+        monkeypatch.setattr(RayWorkerManager, "start_cell", _no_workers)
 
     async def _cells_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
         cfg_path = tmp_path / "cfg.yaml"

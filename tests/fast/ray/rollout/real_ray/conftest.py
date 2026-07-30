@@ -85,13 +85,23 @@ def make_worker_manager(pg_tuple: tuple):
 
 
 async def start_cells(cells, worker_manager, *, mark_alive: bool = False):
-    """Start every cell's engines through one shared worker manager."""
+    """Bring every cell's workers up through one shared manager, then attach the cells."""
     import asyncio
 
-    await asyncio.gather(*[cell.start_engines(worker_manager) for cell in cells])
-    if mark_alive:
-        for cell in cells:
-            cell._mark_alive()
+    await asyncio.gather(*[worker_manager.start_cell(cell.spec) for cell in cells])
+    await attach_cells(cells, worker_manager, mark_alive=mark_alive)
+    return worker_manager
+
+
+async def attach_cells(cells, worker_manager, *, mark_alive: bool = False):
+    """Attach cells to whatever the manager currently reports, like reconcile does."""
+    from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+    observed = await RayWorkerProvider(worker_manager=worker_manager).list_cells()
+    for cell in cells:
+        cell.attach(observed[cell.cell_id])
+        if mark_alive:
+            cell.mark_alive()
 
 
 def kill_cells(cells) -> None:
@@ -139,4 +149,4 @@ class NoopRouterApiClient:
 async def detach_cell(cell, worker_manager) -> None:
     """Drop a cell's workers the way a stop would, without the router round-trip."""
     await worker_manager.stop_cell(cell.cell_id)
-    cell._mark_stopped()
+    cell.detach()
