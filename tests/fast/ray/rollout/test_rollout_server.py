@@ -6,6 +6,7 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_d
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 
 class TestRolloutServerCrossCellProperties:
@@ -54,7 +55,7 @@ class TestStartRolloutServersCellChunking:
             )
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
-        servers = await start_rollout_servers(args, pg=None)
+        servers = await start_rollout_servers(args, worker_manager=RayWorkerManager(pg=None))
         return list(servers["default"].server_cells.values())
 
     async def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
@@ -97,4 +98,4 @@ class TestStartRolloutServersCellChunking:
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=33, num_gpus_per_node=8)
         with pytest.raises(AssertionError, match="not aligned to"):
-            await start_rollout_servers(args, pg=None)
+            await start_rollout_servers(args, worker_manager=RayWorkerManager(pg=None))

@@ -289,6 +289,7 @@ def make_cell_spec(
         InferenceWorkerSpec,
         _build_engine_launch_plan,
         _build_engine_member_payloads,
+        _prepare_engine_workers,
         _wait_engine_ready,
         compute_engine_env_vars,
         compute_engine_port_infos,
@@ -326,6 +327,7 @@ def make_cell_spec(
             if wait_cell_ready is not None
             else functools.partial(_wait_engine_ready, args, sglang_overrides=overrides)
         ),
+        prepare_workers=functools.partial(_prepare_engine_workers, args),
         worker_type=worker_type,
         sglang_overrides=overrides,
         needs_offload=needs_offload,
@@ -397,3 +399,22 @@ def patch_ray_get(monkeypatch):
     import miles.utils.workers.addr_allocator as mod
 
     monkeypatch.setattr(mod.ray, "get", lambda x: x)
+
+
+def adopt_cell_workers(worker_manager, *, cell_id: str, payloads: list[dict], actors: list | None = None) -> None:
+    """Register hand-made workers with the manager, as a finished bring-up would."""
+    from miles.utils.workers.ray_worker_manager import ActorState, _CellRecord
+    from miles.utils.workers.worker_spec import WorkerPlacement
+
+    actors = actors if actors is not None else [fake_actor_handle() for _ in payloads]
+    worker_manager._cells[cell_id] = _CellRecord(
+        workers=[
+            ActorState(
+                actor=actor,
+                payload=payload,
+                placement=WorkerPlacement(local_index=index, global_rank=index, base_gpu_id=index),
+            )
+            for index, (actor, payload) in enumerate(zip(actors, payloads, strict=True))
+        ],
+        ready=True,
+    )

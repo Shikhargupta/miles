@@ -41,6 +41,7 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     env_var: Callable[[WorkerPlacement], dict[str, str]]
     scheduling: SchedulingSpec
     ray_options: RayActorOptions
+    prepare_workers: Callable[[list[WorkerPlacement], list[Any]], Awaitable[None]] | None = None
 
 
 class WorkerLaunchPlan(FrozenStrictBaseModel):

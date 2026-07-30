@@ -10,6 +10,12 @@ import miles.utils.workers.cell_launch as cell_launch_module
 from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.test_utils.mock_sglang_engine import parse_cmd_flags
 from miles.utils.workers.addr_allocator import PortAllocator
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+
+
+def _fake_pg() -> tuple:
+    """A placement group whose bundles and gpu ids are the identity mapping."""
+    return (None, list(range(64)), list(range(64)))
 
 
 def _start_engines_and_collect_addressing(
@@ -41,7 +47,7 @@ def _start_engines_and_collect_addressing(
         return requested[placement.global_rank]
 
     with patch.object(cell_launch_module, "create_cell_worker_actor", side_effect=_launch):
-        asyncio.run(cell.start_engines(port_allocator))
+        asyncio.run(cell.start_engines(RayWorkerManager(pg=_fake_pg(), _port_allocator=port_allocator)))
 
     return {rank: parse_cmd_flags(engine.run.remote.call_args.kwargs["cmd"]) for rank, engine in requested.items()}
 
@@ -237,6 +243,6 @@ class TestConcurrentNodeProbes:
             "create_cell_worker_actor",
             side_effect=lambda *, placement, **kw: actors[placement.global_rank],
         ):
-            await cell.start_engines(PortAllocator())
+            await cell.start_engines(RayWorkerManager(pg=_fake_pg()))
 
         assert [kind for kind, _ in events[:num_nodes]] == ["enter"] * num_nodes, events

@@ -8,12 +8,12 @@ from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApi
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.specs.inference import InferenceModelSpec, compute_inference_model_specs
-from miles.utils.workers.addr_allocator import PortAllocator
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 logger = logging.getLogger(__name__)
 
 
-async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
+async def start_rollout_servers(args, worker_manager: RayWorkerManager) -> dict[str, "RolloutServer"]:
     """Start rollout servers: one per model, each with its own router.
 
     Returns a dict mapping model name -> ``RolloutServer``.
@@ -21,7 +21,6 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     model_specs = compute_inference_model_specs(args)
 
     servers: dict[str, RolloutServer] = {}
-    port_allocator = PortAllocator()
 
     for model_idx, model_spec in enumerate(model_specs):
         router_ip, router_port = start_router(
@@ -33,7 +32,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             args.sglang_router_port = router_port
 
         servers[model_spec.name] = RolloutServer(
-            server_cells=_build_server_cells(args, model_spec=model_spec, pg=pg),
+            server_cells=_build_server_cells(args, model_spec=model_spec),
             args=args,
             router_ip=router_ip,
             router_port=router_port,
@@ -41,16 +40,16 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             update_weights=model_spec.update_weights,
         )
 
-    await asyncio.gather(*[srv.start_all_cells(port_allocator) for srv in servers.values()])
+    await asyncio.gather(*[srv.start_all_cells(worker_manager) for srv in servers.values()])
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
     return servers
 
 
-def _build_server_cells(args, *, model_spec: InferenceModelSpec, pg) -> dict[str, ServerCell]:
+def _build_server_cells(args, *, model_spec: InferenceModelSpec) -> dict[str, ServerCell]:
     return {
-        cell.cell_id: ServerCell(args=args, spec=cell, update_weights=model_spec.update_weights, pg=pg)
+        cell.cell_id: ServerCell(args=args, spec=cell, update_weights=model_spec.update_weights)
         for cell in model_spec.cells
     }
 
@@ -70,7 +69,6 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
-    _port_allocator: PortAllocator = dataclasses.field(default_factory=PortAllocator)
 
     @property
     def api_clients(self) -> list[SGLangApiClient]:
@@ -89,31 +87,29 @@ class RolloutServer:
     def engine_gpu_offsets(self) -> list[int]:
         return [cell.gpu_offset for cell in self.server_cells.values()]
 
-    async def start_all_cells(self, port_allocator: PortAllocator):
+    async def start_all_cells(self, worker_manager: RayWorkerManager):
         if self.args.debug_train_only:
             return
 
-        self._port_allocator = port_allocator
         cell_ids = [cell_id for cell_id, cell in self.server_cells.items() if not cell.is_allocated]
         await asyncio.gather(
-            *[self.server_cells[cell_id].start(port_allocator, self._router_api_client) for cell_id in cell_ids]
+            *[self.server_cells[cell_id].start(worker_manager, self.router_api_client) for cell_id in cell_ids]
         )
         self.has_new_engines |= bool(cell_ids)
 
-    async def recover(self, cell_ids: list[str] | None = None):
+    async def recover(self, worker_manager: RayWorkerManager, cell_ids: list[str] | None = None):
         """Recover dead cells, overlapping init across cells.
 
-        Reuses the startup allocator so its per-node cursors still sit past the
-        ports the live engines hold, instead of rescanning from the base port.
+        The manager's allocator cursors still sit past the ports the live engines
+        hold, so recovery does not rescan from the base port.
         """
-        port_allocator = self._port_allocator
         if cell_ids is None:
             cell_ids = list(self.server_cells)
         cell_ids = [cell_id for cell_id in cell_ids if not self.server_cells[cell_id].is_allocated]
 
         await asyncio.gather(
             *[
-                self.server_cells[cell_id].start(port_allocator, self._router_api_client, recover=True)
+                self.server_cells[cell_id].start(worker_manager, self.router_api_client, recover=True)
                 for cell_id in cell_ids
             ]
         )
@@ -121,10 +117,10 @@ class RolloutServer:
 
         logger.info(f"Recovered {len(cell_ids)} dead rollout cells")
 
-    async def stop_cells(self, cell_ids: list[str]):
+    async def stop_cells(self, worker_manager: RayWorkerManager, cell_ids: list[str]):
         logger.info(f"Killing server {cell_ids=}...")
         for cell_id in sorted(set(cell_ids)):
-            await self.server_cells[cell_id].stop(self._router_api_client)
+            await self.server_cells[cell_id].stop(worker_manager, self.router_api_client)
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
@@ -165,7 +161,7 @@ class RolloutServer:
         return [self.server_cells[cell_id] for cell_id in cell_ids if self.server_cells[cell_id].is_allocated]
 
     @property
-    def _router_api_client(self) -> SGLangRouterApiClient:
+    def router_api_client(self) -> SGLangRouterApiClient:
         return SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
 
 

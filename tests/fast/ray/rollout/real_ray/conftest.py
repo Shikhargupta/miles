@@ -33,7 +33,6 @@ def placement_group_factory(ray_local_mode):
 
 def build_cells(
     *,
-    pg_tuple: tuple,
     num_cells: int = 2,
     num_gpus_per_engine: int = 1,
     rank_offset: int = 0,
@@ -44,11 +43,11 @@ def build_cells(
     update_weights: bool = True,
     model_path: str | None = None,
 ):
-    """Build configured cells for one placement group.
+    """Build configured cells; the placement group belongs to the manager that starts them.
 
     ``rank_offset`` is a global rank (engines of several groups share it), while
-    gpu indices are positions inside this placement group, so the two offsets
-    are independent: a group with its own pg still starts at gpu index 0.
+    gpu indices are positions inside the placement group, so the two offsets are
+    independent.
     """
     from tests.fast.ray.rollout.conftest import make_args, make_cell_spec
 
@@ -73,20 +72,23 @@ def build_cells(
                 model_path=model_path,
             ),
             update_weights=update_weights,
-            pg=pg_tuple,
         )
         for cell_index in range(num_cells)
     ]
 
 
-async def start_cells(cells, allocator=None, *, mark_alive: bool = False):
-    """Start every cell's engines through one shared allocator."""
+def make_worker_manager(pg_tuple: tuple):
+    """The manager owns the placement group its workers are scheduled into."""
+    from miles.utils.workers.ray_worker_manager import RayWorkerManager
+
+    return RayWorkerManager(pg=pg_tuple)
+
+
+async def start_cells(cells, worker_manager, *, mark_alive: bool = False):
+    """Start every cell's engines through one shared worker manager."""
     import asyncio
 
-    from miles.utils.workers.addr_allocator import PortAllocator
-
-    allocator = allocator if allocator is not None else PortAllocator()
-    await asyncio.gather(*[cell.start_engines(allocator) for cell in cells])
+    await asyncio.gather(*[cell.start_engines(worker_manager) for cell in cells])
     if mark_alive:
         for cell in cells:
             cell._mark_alive()
@@ -122,3 +124,19 @@ def patched_sglang_engine(monkeypatch, mock_engine_class):
     import miles.utils.workers.cell_launch as cell_launch_mod
 
     monkeypatch.setattr(cell_launch_mod, "CommandActor", mock_engine_class)
+
+
+class NoopRouterApiClient:
+    """Router stub for cell-level tests that do not assert on registration."""
+
+    async def add_worker(self, **kwargs):
+        pass
+
+    async def remove_worker(self, **kwargs):
+        pass
+
+
+async def detach_cell(cell, worker_manager) -> None:
+    """Drop a cell's workers the way a stop would, without the router round-trip."""
+    await worker_manager.stop_cell(cell.cell_id)
+    cell._mark_stopped()

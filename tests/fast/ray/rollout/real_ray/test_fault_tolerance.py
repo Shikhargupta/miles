@@ -4,14 +4,21 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args
-from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, start_cells
+from tests.fast.ray.rollout.real_ray.conftest import (
+    NoopRouterApiClient,
+    build_cells,
+    detach_cell,
+    kill_cells,
+    make_worker_manager,
+    start_cells,
+)
 
 from miles.ray.rollout.rollout_server import RolloutServer
-from miles.utils.workers.addr_allocator import PortAllocator
 
 # ----------------------------- single-engine kill + recover -----------------------------
 
@@ -26,17 +33,18 @@ class TestKillAndRecover:
         """Kill cell 0's engine for real, recover, verify a fresh actor replaces
         it and the surviving cell is untouched."""
         pg = placement_group_factory(2)
-        cells = build_cells(pg_tuple=pg, num_cells=2)
-        await start_cells(cells, mark_alive=True)
+        cells = build_cells(num_cells=2)
+        worker_manager = make_worker_manager(pg)
+        await start_cells(cells, worker_manager, mark_alive=True)
 
         original_handles = [cell.primary_actor_handle for cell in cells]
         # Real fault: kill engine 0 + mark its slot stopped (production code's
         # health monitor would do this; here we simulate it directly).
         ray.kill(original_handles[0])
-        cells[0].stop()
+        await detach_cell(cells[0], worker_manager)
 
         try:
-            await cells[0].recover(PortAllocator())
+            await cells[0].start(worker_manager, NoopRouterApiClient(), recover=True)
             # New actor for cell 0
             assert cells[0].is_allocated
             assert cells[0].primary_actor_handle is not original_handles[0]
@@ -57,19 +65,23 @@ class TestKillAndRecover:
         dead engine. We kill 0 and 2, leave 1 alive, expect only 0 and 2 to
         be re-created."""
         pg = placement_group_factory(3)
-        cells = build_cells(pg_tuple=pg, num_cells=3)
-        await start_cells(cells, mark_alive=True)
+        cells = build_cells(num_cells=3)
+        worker_manager = make_worker_manager(pg)
+        await start_cells(cells, worker_manager, mark_alive=True)
         srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=make_args(num_gpus_per_node=8)
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
+            args=make_args(num_gpus_per_node=8),
+            _worker_manager=worker_manager,
         )
 
         old = [cell.primary_actor_handle for cell in cells]
         for i in (0, 2):
             ray.kill(old[i])
-            cells[i].stop()
+            await detach_cell(cells[i], worker_manager)
 
         try:
-            await srv.recover()
+            with patch.object(RolloutServer, "_router_api_client", property(lambda self: NoopRouterApiClient())):
+                await srv.recover()
             for i in (0, 2):
                 assert cells[i].is_allocated
                 assert cells[i].primary_actor_handle is not old[i]
@@ -83,8 +95,6 @@ class TestKillAndRecover:
         placement_group_factory,
     ):
         """A recovered engine gets a fresh port, so the router must be told the new url."""
-        from unittest.mock import patch
-
         events: list[dict] = []
 
         class _Recorder:
@@ -95,16 +105,18 @@ class TestKillAndRecover:
                 events.append(kwargs)
 
         pg = placement_group_factory(1)
-        cells = build_cells(pg_tuple=pg, num_cells=1)
+        cells = build_cells(num_cells=1)
+        worker_manager = make_worker_manager(pg)
         srv = RolloutServer(
             server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
             args=make_args(num_gpus_per_node=8),
             router_ip="10.0.0.9",
             router_port=9000,
+            _worker_manager=worker_manager,
         )
-        await start_cells(cells, mark_alive=True)
+        await start_cells(cells, worker_manager, mark_alive=True)
         ray.kill(cells[0].primary_actor_handle)
-        cells[0].stop()
+        await detach_cell(cells[0], worker_manager)
 
         try:
             with patch.object(RolloutServer, "_router_api_client", property(lambda self: _Recorder())):
@@ -124,15 +136,16 @@ class TestKillAndRecover:
         must release_memory_occupation, then resume with WEIGHTS tag.
         Verify by reading the recovered engine's mock HTTP server log."""
         pg = placement_group_factory(2)
-        cells = build_cells(pg_tuple=pg, num_cells=2, needs_offload=True, update_weights=True)
-        await start_cells(cells, mark_alive=True)
+        cells = build_cells(num_cells=2, needs_offload=True, update_weights=True)
+        worker_manager = make_worker_manager(pg)
+        await start_cells(cells, worker_manager, mark_alive=True)
         old = [cell.primary_actor_handle for cell in cells]
 
         ray.kill(old[0])
-        cells[0].stop()
+        await detach_cell(cells[0], worker_manager)
 
         try:
-            await cells[0].recover(PortAllocator())
+            await cells[0].start(worker_manager, NoopRouterApiClient(), recover=True)
             recovered_actor = cells[0].primary_actor_handle
             calls = ray.get(recovered_actor.get_calls.remote())
             assert "run" in [c[0] for c in calls]
@@ -178,30 +191,29 @@ class TestConcurrentRecover:
         ``asyncio.gather`` must both complete — no deadlock, no exception
         leaking out of the gather chain.
 
-        The batches share one PortAllocator, as they do in production: each
+        The batches share one worker manager, as they do in production: each
         batch's ports are only bound once its engine inits, so concurrent
         recovers with independent allocators could probe the same free port
         twice. The real-ray claim being verified is end-to-end gather
         completion across two batches."""
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        a = build_cells(pg_tuple=pg_a, num_cells=2)
-        b = build_cells(pg_tuple=pg_b, num_cells=2)
-        await start_cells(a, mark_alive=True)
-        await start_cells(b, mark_alive=True)
+        pg = placement_group_factory(4)
+        a = build_cells(num_cells=2)
+        b = build_cells(num_cells=2, rank_offset=2, gpu_offset=2)
+        worker_manager = make_worker_manager(pg)
+        await start_cells(a, worker_manager, mark_alive=True)
+        await start_cells(b, worker_manager, mark_alive=True)
 
         # Kill one engine in each batch
         for cells in (a, b):
             old = cells[0].primary_actor_handle
             ray.kill(old)
-            cells[0].stop()
+            await detach_cell(cells[0], worker_manager)
 
         try:
             # Real concurrent recover via asyncio.gather
-            shared_allocator = PortAllocator()
             await asyncio.gather(
-                a[0].recover(shared_allocator),
-                b[0].recover(shared_allocator),
+                a[0].start(worker_manager, NoopRouterApiClient(), recover=True),
+                b[0].start(worker_manager, NoopRouterApiClient(), recover=True),
             )
             assert a[0].is_allocated
             assert b[0].is_allocated
@@ -225,8 +237,8 @@ class TestKillSubprocessKeepsMockActorReachable:
         placement_group_factory,
     ):
         pg = placement_group_factory(1)
-        cells = build_cells(pg_tuple=pg, num_cells=1)
-        await start_cells(cells, mark_alive=True)
+        cells = build_cells(num_cells=1)
+        await start_cells(cells, make_worker_manager(pg), mark_alive=True)
         actor = cells[0].primary_actor_handle
 
         try:
@@ -246,11 +258,11 @@ class TestRecoverMultiNodeEngine:
     ):
         """Recovering a 2-node engine must not send release/resume to node 1."""
         pg = placement_group_factory(16)
-        (cell,) = build_cells(pg_tuple=pg, num_cells=1, num_gpus_per_engine=16, needs_offload=True)
+        (cell,) = build_cells(num_cells=1, num_gpus_per_engine=16, needs_offload=True)
         assert cell.num_nodes == 2
 
         try:
-            await cell.recover(PortAllocator())
+            await cell.start(make_worker_manager(pg), NoopRouterApiClient(), recover=True)
 
             node0_actor, node1_actor = cell.actor_handles
             node0_paths = ray.get(node0_actor.get_http_paths.remote())

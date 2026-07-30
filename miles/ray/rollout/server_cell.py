@@ -1,6 +1,5 @@
 import asyncio
 import dataclasses
-import functools
 import logging
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -20,13 +19,8 @@ from miles.ray.rollout.cell_state import (
     StateStopped,
 )
 from miles.ray.specs.inference import InferenceCellSpec
-from miles.utils.workers.addr_allocator import PortAllocator
-from miles.utils.workers.cell_launch import (
-    allocate_cell_ports,
-    cell_worker_placements,
-    create_cell_worker_actors,
-    probe_node_ips,
-)
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_spec import WorkerPlacement
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +32,7 @@ class ServerCell:
     args: Any
     spec: InferenceCellSpec
     update_weights: bool = True
-    pg: Any = None  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
+    attached_placements: list[WorkerPlacement] | None = None
     _state: CellState = dataclasses.field(default_factory=StateStopped)
 
     # ============================= temporary spec pass-throughs =============================
@@ -102,13 +96,12 @@ class ServerCell:
 
     @property
     def engine_gpu_ids(self) -> list[list[int]]:
-        _, _, reordered_gpu_ids = self.pg
+        assert self.attached_placements is not None, f"cell {self.cell_id} has no workers to report gpus for"
         gpus_on_node = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
-        bases = [
-            int(reordered_gpu_ids[self.gpu_offset + local_index * gpus_on_node])
-            for local_index in range(self.num_nodes)
+        return [
+            list(range(placement.base_gpu_id, placement.base_gpu_id + gpus_on_node))
+            for placement in self.attached_placements
         ]
-        return [list(range(base, base + gpus_on_node)) for base in bases]
 
     @property
     def addr_infos(self) -> list[AddrInfo]:
@@ -124,57 +117,31 @@ class ServerCell:
     def api_client(self) -> SGLangApiClient:
         return SGLangApiClient(server_url=self.addr_info.server_url)
 
-    async def start_engines(self, port_allocator: PortAllocator) -> None:
+    async def start_engines(self, worker_manager: RayWorkerManager) -> None:
         assert not self.is_allocated, "the caller starts only stopped cells"
 
-        actor_handles = create_cell_worker_actors(spec=self.spec, pg=self.pg)
+        await worker_manager.start_cell(self.spec)
+        self._attach(worker_manager)
 
-        self._mark_allocated_uninitialized(actor_handles)
-
-        addressing = allocate_cell_ports(
-            port_allocator=port_allocator,
-            port_infos=self.spec.worker.port_infos,
-            actors=actor_handles,
-            node_ips=await probe_node_ips(actor_handles),
-        )
-        member_payloads = self.spec.worker.build_member_payloads(addressing)
-
+    def _attach(self, worker_manager: RayWorkerManager) -> None:
+        """Adopt the workers the manager brought up for this cell."""
+        workers = worker_manager.cell_workers(self.cell_id)
+        self._mark_allocated_uninitialized([worker.actor for worker in workers])
+        self.attached_placements = [worker.placement for worker in workers]
         self._mark_addressing(
             [
                 AddrInfo(
-                    server_url=build_server_url(host=entry["host"], port=entry["port"]),
-                    bootstrap_port=entry.get("disaggregation_bootstrap_port"),
+                    server_url=build_server_url(host=worker.payload["host"], port=worker.payload["port"]),
+                    bootstrap_port=worker.payload.get("disaggregation_bootstrap_port"),
                 )
-                for entry in member_payloads
+                for worker in workers
             ]
         )
 
-        placements = cell_worker_placements(spec=self.spec, pg=self.pg)
-
-        if env_report := self.args.env_report:
-            await asyncio.gather(
-                *[
-                    actor._collect_env_report.remote(
-                        role="rollout", rank=placement.global_rank, partial_env_report=env_report
-                    )
-                    for placement, actor in zip(placements, actor_handles, strict=True)
-                ]
-            )
-
-        plans = [self.spec.worker.build_launch_plan(placement, addressing) for placement in placements]
-
-        await asyncio.gather(
-            *[actor.run.remote(cmd=plan.cmd, envs=plan.envs) for actor, plan in zip(actor_handles, plans, strict=True)]
-        )
-
-        await self.spec.worker.wait_cell_ready(
-            addressing, functools.partial(_engine_actor_is_alive, self.primary_actor_handle)
-        )
-
     async def start(
-        self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient, recover: bool = False
+        self, worker_manager: RayWorkerManager, router_api_client: SGLangRouterApiClient, recover: bool = False
     ) -> None:
-        await self.start_engines(port_allocator)
+        await self.start_engines(worker_manager)
 
         if recover and self.needs_offload:
             await self.api_client.release_memory_occupation()
@@ -185,27 +152,14 @@ class ServerCell:
 
         await self.register(router_api_client)
 
-    async def stop(self, router_api_client: SGLangRouterApiClient) -> None:
+    async def stop(self, worker_manager: RayWorkerManager, router_api_client: SGLangRouterApiClient) -> None:
         if self.is_allocated:
             try:
                 await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
             except Exception as e:
                 logger.warning(f"Unregistering cell {self.cell_id} from the router failed, tearing down anyway ({e})")
 
-            for local_index, actor_handle in enumerate(self.actor_handles):
-                logger.info(f"Cell {self.cell_id}: shutting down and killing engine at cell-local index {local_index}")
-                try:
-                    ray.get(actor_handle.shutdown.remote(), timeout=SHUTDOWN_TIMEOUT)
-                except Exception as e:
-                    logger.warning(
-                        f"Cell {self.cell_id}: graceful shutdown of engine at cell-local index {local_index} "
-                        f"failed, killing anyway ({e})"
-                    )
-                try:
-                    ray.kill(actor_handle)
-                    logger.info(f"Cell {self.cell_id}: killed engine at cell-local index {local_index}")
-                except Exception as e:
-                    logger.warning(f"Cell {self.cell_id}: fail to kill engine at cell-local index {local_index} ({e})")
+            await worker_manager.stop_cell(self.cell_id)
         else:
             logger.info(f"Cell {self.cell_id} is already stopped")
         self._mark_stopped()
@@ -268,11 +222,3 @@ class ServerCell:
             worker_url=self.addr_info.server_url,
             use_legacy_api=use_legacy_router_api(self.args),
         )
-
-
-def _engine_actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:
-    try:
-        ray.get(actor_handle._get_node_ip.remote(), timeout=30)
-        return True
-    except Exception:
-        return False

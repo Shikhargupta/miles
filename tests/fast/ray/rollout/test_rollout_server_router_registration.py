@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_cell_spec
+from tests.fast.ray.rollout.conftest import adopt_cell_workers, fake_actor_handle, make_args, make_cell_spec
 
-from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.specs.inference import compute_nodes_per_engine
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 _CELL_MODULE = "miles.ray.rollout.server_cell"
+_MANAGER_MODULE = "miles.utils.workers.ray_worker_manager"
 
 
 class _RecordingRouterApiClient:
@@ -27,6 +28,17 @@ class _RecordingRouterApiClient:
             await self._remove_worker_effect()
 
 
+def _shutdown_recording_actor(events: list[tuple[str, dict]]) -> object:
+    """An actor whose graceful shutdown is awaitable and shows up in the recorded order."""
+    actor = fake_actor_handle()
+
+    async def _shutdown():
+        events.append(("shutdown", {}))
+
+    actor.shutdown.remote.side_effect = _shutdown
+    return actor
+
+
 def _build_server(
     *,
     events: list[tuple[str, dict]],
@@ -41,6 +53,7 @@ def _build_server(
 ) -> RolloutServer:
     args = make_args(num_gpus_per_node=8, use_miles_router=use_miles_router)
     nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
+    worker_manager = RayWorkerManager(pg=None)
     cells = []
     for cell_start in range(0, num_engines, nodes_per_engine):
         cell = ServerCell(
@@ -54,16 +67,20 @@ def _build_server(
                 rank_offset=cell_start,
             ),
         )
-        cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(nodes_per_engine)])
-        cell._mark_addressing(
-            [
-                AddrInfo(
-                    server_url=f"http://10.0.0.{cell_start + i + 1}:3000{cell_start + i}",
-                    bootstrap_port=bootstrap_port,
-                )
-                for i in range(nodes_per_engine)
-            ]
+        adopt_cell_workers(
+            worker_manager,
+            cell_id=cell.cell_id,
+            actors=[_shutdown_recording_actor(events) for _ in range(nodes_per_engine)],
+            payloads=[
+                {
+                    "host": f"10.0.0.{cell_start + local_index + 1}",
+                    "port": int(f"3000{cell_start + local_index}"),
+                    "disaggregation_bootstrap_port": bootstrap_port,
+                }
+                for local_index in range(nodes_per_engine)
+            ],
         )
+        cell._attach(worker_manager)
         cell._mark_alive()
         cells.append(cell)
 
@@ -74,11 +91,12 @@ def _build_server(
         router_port=router_port,
     )
     srv._recording_router_client = _RecordingRouterApiClient(events, remove_worker_effect=remove_worker_effect)
+    srv._test_worker_manager = worker_manager
     return srv
 
 
 def _with_recording_client(srv: RolloutServer):
-    return patch.object(RolloutServer, "_router_api_client", property(lambda self: self._recording_router_client))
+    return patch.object(RolloutServer, "router_api_client", property(lambda self: self._recording_router_client))
 
 
 async def test_registration_publishes_the_url_the_engine_actually_serves():
@@ -87,7 +105,7 @@ async def test_registration_publishes_the_url_the_engine_actually_serves():
     srv = _build_server(events=events)
 
     with _with_recording_client(srv):
-        await srv.server_cells["cell-0"].register(srv._router_api_client)
+        await srv.server_cells["cell-0"].register(srv.router_api_client)
 
     assert events == [
         (
@@ -108,7 +126,7 @@ async def test_registration_passes_the_bootstrap_port_of_a_prefill_worker():
     srv = _build_server(events=events, worker_type="prefill", bootstrap_port=8998)
 
     with _with_recording_client(srv):
-        await srv.server_cells["cell-0"].register(srv._router_api_client)
+        await srv.server_cells["cell-0"].register(srv.router_api_client)
 
     assert events[0][1]["worker_type"] == "prefill"
     assert events[0][1]["bootstrap_port"] == 8998
@@ -122,9 +140,9 @@ async def test_stopping_a_cell_that_never_started_publishes_nothing():
 
     with (
         _with_recording_client(srv),
-        patch(f"{_CELL_MODULE}.ray"),
+        patch(f"{_MANAGER_MODULE}.ray"),
     ):
-        await srv.stop_cells(["cell-0"])
+        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
 
     assert events == []
 
@@ -135,7 +153,7 @@ async def test_registration_addresses_only_the_primary_engine_of_a_multi_node_ce
     srv = _build_server(events=events, num_engines=2, num_gpus_per_engine=16)
 
     with _with_recording_client(srv):
-        await srv.server_cells["cell-0"].register(srv._router_api_client)
+        await srv.server_cells["cell-0"].register(srv.router_api_client)
 
     assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.1:30000"]
 
@@ -147,11 +165,10 @@ async def test_stop_cells_unregisters_before_killing_the_actor():
 
     with (
         _with_recording_client(srv),
-        patch(f"{_CELL_MODULE}.ray") as ray_mock,
+        patch(f"{_MANAGER_MODULE}.ray") as ray_mock,
     ):
-        ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        await srv.stop_cells(["cell-0"])
+        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
     assert events[0][1] == {"worker_url": "http://10.0.0.1:30000", "use_legacy_api": False}
@@ -168,11 +185,10 @@ async def test_a_router_that_rejects_the_unregister_still_kills_the_actor():
 
     with (
         _with_recording_client(srv),
-        patch(f"{_CELL_MODULE}.ray") as ray_mock,
+        patch(f"{_MANAGER_MODULE}.ray") as ray_mock,
     ):
-        ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        await srv.stop_cells(["cell-0"])
+        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
     assert not srv.server_cells["cell-0"].is_allocated
@@ -190,10 +206,10 @@ async def test_a_router_that_never_answers_the_unregister_does_not_block_teardow
     with (
         _with_recording_client(srv),
         patch(f"{_CELL_MODULE}.SHUTDOWN_TIMEOUT", 0.1),
-        patch(f"{_CELL_MODULE}.ray") as ray_mock,
+        patch(f"{_MANAGER_MODULE}.ray") as ray_mock,
     ):
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        await srv.stop_cells(["cell-0"])
+        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "kill"]
     assert not srv.server_cells["cell-0"].is_allocated
@@ -206,9 +222,9 @@ async def test_use_miles_router_reaches_both_router_calls():
 
     with (
         _with_recording_client(srv),
-        patch(f"{_CELL_MODULE}.ray"),
+        patch(f"{_MANAGER_MODULE}.ray"),
     ):
-        await srv.server_cells["cell-0"].register(srv._router_api_client)
-        await srv.stop_cells(["cell-0"])
+        await srv.server_cells["cell-0"].register(srv.router_api_client)
+        await srv.stop_cells(srv._test_worker_manager, ["cell-0"])
 
     assert [kwargs["use_legacy_api"] for _name, kwargs in events] == [True, True]

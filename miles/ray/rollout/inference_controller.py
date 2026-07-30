@@ -9,6 +9,7 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.utils import Lock
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ class InferenceController:
     async def create(args, pg) -> "InferenceController":
         controller = InferenceController(args, pg)
         if not args.debug_train_only:
-            controller.servers = await start_rollout_servers(args, pg)
+            controller.servers = await start_rollout_servers(args, controller.worker_manager)
             dashboard_hooks.register_router(args)
             start_session_server(args)
         return controller
@@ -28,6 +29,7 @@ class InferenceController:
         self.pg = pg
         self.args = args
         self.servers: dict[str, RolloutServer] = {}
+        self.worker_manager = RayWorkerManager(pg=pg)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -104,7 +106,7 @@ class InferenceController:
         if self.rollout_id == -1 or srv is None:
             return
 
-        await srv.recover()
+        await srv.recover(self.worker_manager)
 
     def _get_updatable_server(self) -> RolloutServer | None:
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
@@ -122,10 +124,10 @@ class InferenceController:
     # -------------------------- external start/stop -----------------------------
 
     async def start_cell(self, cell_id: str):
-        await self._server_of(cell_id).recover(cell_ids=[cell_id])
+        await self._server_of(cell_id).recover(self.worker_manager, cell_ids=[cell_id])
 
     async def stop_cell(self, cell_id: str):
-        await self._server_of(cell_id).stop_cells([cell_id])
+        await self._server_of(cell_id).stop_cells(self.worker_manager, [cell_id])
 
     def list_cell_ids(self) -> list[str]:
         return list_cell_ids(self.servers)

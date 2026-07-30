@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args
-from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, start_cells
+from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, make_worker_manager, start_cells
 
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell
@@ -28,12 +28,12 @@ class TestCheckWeightsAggregation:
         """Drives RolloutServer.check_weights through real ``asyncio.gather``
         over real HTTP requests. Verifies every engine of every cell was
         actually invoked (read from each mock server's request log)."""
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(3)
-        a = build_cells(pg_tuple=pg_a, num_cells=2)
-        b = build_cells(pg_tuple=pg_b, num_cells=3, rank_offset=2)
-        await start_cells(a, mark_alive=True)
-        await start_cells(b, mark_alive=True)
+        pg = placement_group_factory(5)
+        worker_manager = make_worker_manager(pg)
+        a = build_cells(num_cells=2)
+        b = build_cells(num_cells=3, rank_offset=2, gpu_offset=2)
+        await start_cells(a, worker_manager, mark_alive=True)
+        await start_cells(b, worker_manager, mark_alive=True)
 
         srv = _make_server(a + b)
         try:
@@ -61,12 +61,12 @@ class TestOffloadOnloadAggregation:
         placement_group_factory,
     ):
         """Both fan out across cells and return one flat result per engine."""
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(3)
-        a = build_cells(pg_tuple=pg_a, num_cells=2, needs_offload=True)
-        b = build_cells(pg_tuple=pg_b, num_cells=3, rank_offset=2, needs_offload=True)
-        await start_cells(a, mark_alive=True)
-        await start_cells(b, mark_alive=True)
+        pg = placement_group_factory(5)
+        worker_manager = make_worker_manager(pg)
+        a = build_cells(num_cells=2, needs_offload=True)
+        b = build_cells(num_cells=3, rank_offset=2, gpu_offset=2, needs_offload=True)
+        await start_cells(a, worker_manager, mark_alive=True)
+        await start_cells(b, worker_manager, mark_alive=True)
 
         srv = _make_server(a + b)
         try:
@@ -102,12 +102,12 @@ class TestOffloadOnloadAggregation:
         placement_group_factory,
     ):
         """Only the cells colocated with megatron give their memory back."""
-        pg_a = placement_group_factory(2)
-        pg_b = placement_group_factory(2)
-        offloading = build_cells(pg_tuple=pg_a, num_cells=2, needs_offload=True)
-        resident = build_cells(pg_tuple=pg_b, num_cells=2, rank_offset=2, needs_offload=False)
-        await start_cells(offloading, mark_alive=True)
-        await start_cells(resident, mark_alive=True)
+        pg = placement_group_factory(4)
+        worker_manager = make_worker_manager(pg)
+        offloading = build_cells(num_cells=2, needs_offload=True)
+        resident = build_cells(num_cells=2, rank_offset=2, gpu_offset=2, needs_offload=False)
+        await start_cells(offloading, worker_manager, mark_alive=True)
+        await start_cells(resident, worker_manager, mark_alive=True)
 
         srv = _make_server(offloading + resident)
         try:
@@ -126,8 +126,8 @@ class TestOffloadOnloadAggregation:
     ):
         """Offload must not block forever on an engine the server already gave up on."""
         pg = placement_group_factory(2)
-        cells = build_cells(pg_tuple=pg, num_cells=2, needs_offload=True)
-        await start_cells(cells, mark_alive=True)
+        cells = build_cells(num_cells=2, needs_offload=True)
+        await start_cells(cells, make_worker_manager(pg), mark_alive=True)
         cells[1].stop()
 
         srv = _make_server(cells)

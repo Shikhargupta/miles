@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import functools
 import logging
@@ -216,6 +217,7 @@ def _compute_specs_of_group(
             ),
             build_member_payloads=_build_engine_member_payloads,
             wait_cell_ready=functools.partial(_wait_engine_ready, args, sglang_overrides=overrides),
+            prepare_workers=functools.partial(_prepare_engine_workers, args),
             worker_type=group_cfg.worker_type,
             sglang_overrides=overrides,
             needs_offload=needs_offload,
@@ -259,6 +261,18 @@ def _build_engine_launch_plan(
         addr_and_ports=addr_and_ports,
     )
     return WorkerLaunchPlan(cmd=plan.cmd, envs={})
+
+
+async def _prepare_engine_workers(args, placements: list[WorkerPlacement], actor_handles: list[Any]) -> None:
+    if not (env_report := args.env_report):
+        return
+
+    await asyncio.gather(
+        *[
+            actor._collect_env_report.remote(role="rollout", rank=placement.global_rank, partial_env_report=env_report)
+            for placement, actor in zip(placements, actor_handles, strict=True)
+        ]
+    )
 
 
 async def _wait_engine_ready(
