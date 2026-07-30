@@ -74,6 +74,8 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
+from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
+
 logger = logging.getLogger(__name__)
 
 _QKV, _O, _FC1, _FC2 = "qkv", "o", "fc1", "fc2"
@@ -126,6 +128,8 @@ _ADAPTER_LAYOUT: dict[str, tuple[_Proj, ...]] = {
     _MLA_KV_B: (_Proj("kv_b_proj", "b", COLUMN, lambda m: m["out_local"]),),
     _MLA_Q: (_Proj("q_proj", "b", COLUMN, lambda m: m["out_local"]),),
 }
+
+SUPPORTED_TARGETS = frozenset(proj.hf for projs in _ADAPTER_LAYOUT.values() for proj in projs)
 
 
 _DEFAULT_LAYER_PREFIX = "model.layers."
@@ -201,6 +205,14 @@ class _Spec:
 
         rank = int(args.lora_rank)
         assert rank > 0, "native LoRA requires --lora-rank > 0"
+        targets = frozenset(convert_target_modules_to_hf(list(args.target_modules or ())))
+        unsupported = sorted(targets - SUPPORTED_TARGETS)
+        assert not unsupported, (
+            f"native LoRA (--megatron-to-hf-mode raw) does not implement {unsupported}. "
+            f"Supported targets are {sorted(SUPPORTED_TARGETS)}; Megatron-style names are accepted "
+            "and normalised. Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a "
+            "model-specific provider."
+        )
         layer_prefix, shared_expert = _hf_naming(getattr(args, "hf_checkpoint", None))
         return cls(
             rank=rank,
@@ -212,7 +224,7 @@ class _Spec:
             sequence_parallel=bool(config.sequence_parallel),
             zero_centered_gamma=bool(getattr(config, "layernorm_zero_centered_gamma", False)),
             tp_size=ps.get_tensor_model_parallel_world_size(),
-            targets=frozenset(args.target_modules or ()),
+            targets=targets,
             output_gate=bool(getattr(config, "attention_output_gate", False)),
             layer_prefix=layer_prefix,
             shared_expert=shared_expert,

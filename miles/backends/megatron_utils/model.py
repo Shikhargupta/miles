@@ -986,6 +986,8 @@ def initialize_model_and_optimizer(
         from .lora_native import resolve_lora_provider
 
         resolve_lora_provider(args).load_lora_adapter_hf(model, args.lora_adapter_path)
+        if (args.fp16 or args.bf16) and optimizer is not None:
+            optimizer.reload_model_params()
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()

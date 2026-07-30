@@ -11,11 +11,14 @@ import pytest
 import torch
 
 from miles.backends.megatron_utils.lora_native import (
+    _ADAPTER_LAYOUT,
+    SUPPORTED_TARGETS,
     _assert_supported_architecture,
     _build_qkv_perm,
     _hf_naming,
     _require_grad_on_first_activation,
     _rmsnorm,
+    convert_target_modules_to_hf,
     export_lora_hf_named,
     load_lora_adapter_hf,
     resolve_lora_provider,
@@ -310,3 +313,31 @@ class TestLoraRolloutEnabled:
 
     def test_missing_train_only_attr_defaults_to_enabled(self):
         assert lora_rollout_enabled(Namespace(lora_rank=8))
+
+
+class TestSupportedTargets:
+    """`--target-modules` reaches the raw path in whichever spelling the user typed.
+
+    Megatron-style names are what the bridge path accepts, so a run switched from
+    bridge to raw keeps them. They used to fall through `_Spec.targets` unmatched,
+    attaching nothing while SGLang still set up LoRA for the full list.
+    """
+
+    def test_table_and_supported_set_agree(self):
+        assert SUPPORTED_TARGETS == {proj.hf for projs in _ADAPTER_LAYOUT.values() for proj in projs}
+
+    def test_megatron_names_normalise_into_the_supported_set(self):
+        for megatron_name in ("linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"):
+            converted = set(convert_target_modules_to_hf([megatron_name]))
+            assert converted
+            assert converted <= SUPPORTED_TARGETS, (megatron_name, converted - SUPPORTED_TARGETS)
+
+    def test_mla_megatron_names_normalise_too(self):
+        assert set(convert_target_modules_to_hf(["linear_q_down_proj"])) <= SUPPORTED_TARGETS
+
+    def test_hf_names_pass_through_unchanged(self):
+        names = ["q_proj", "v_proj", "down_proj"]
+        assert set(convert_target_modules_to_hf(names)) == set(names)
+
+    def test_unimplemented_target_is_not_silently_accepted(self):
+        assert "in_proj_qkvz" not in SUPPORTED_TARGETS

@@ -45,3 +45,32 @@ def test_lora_wrapped_names_still_group_atomically():
     """
     wrapped = [name.replace(".weight", ".to_wrap.weight") for name in (Q_DOWN, KV_DOWN)]
     assert len(_units(wrapped)) == 1
+
+
+def _units_from(entries):
+    """entries: list of (hf_name, megatron_name) in emission order."""
+    items = [(hf, torch.zeros(1), megatron) for hf, megatron in entries]
+    groups = get_atomic_update_groups(Namespace(q_lora_rank=1536), "kimi_k25")
+    return [[hf for hf, _ in unit] for unit in _stream_atomic_units(iter(items), groups)]
+
+
+def test_quantized_param_keeps_its_tensors_in_one_unit():
+    """A quantized param leaves the exporter as several tensors sharing one megatron name.
+
+    Per-tensor slot assignment let the later ones overwrite the earlier, so the group
+    both dropped tensors and tripped the end-of-stream assert once `.to_wrap.` stripping
+    made the suffixes match at all.
+    """
+    entries = [
+        (f"{proj}.{suffix}", name)
+        for name, proj in ((Q_DOWN, "q_a"), (KV_DOWN, "kv_a"))
+        for suffix in ("weight_packed", "weight_scale", "weight_shape")
+    ]
+    units = _units_from(entries)
+    assert len(units) == 1
+    assert len(units[0]) == 6
+
+
+def test_params_outside_any_group_pass_through():
+    units = _units_from([("fc2", "decoder.layers.0.mlp.linear_fc2.weight")])
+    assert units == [["fc2"]]

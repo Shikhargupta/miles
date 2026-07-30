@@ -109,12 +109,32 @@ def _load_quantized_param_basenames(hf_checkpoint):
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
+def _group_by_megatron_name(items):
+    """Collapse the consecutive tensors of one megatron param into a single entry.
+
+    A quantized param leaves ``_postprocess_and_quantize`` as several tensors that
+    share its megatron name (``weight_packed``, ``weight_scale``, and so on), emitted
+    consecutively. Treating them as one entry keeps them in the same atomic unit,
+    where a per-tensor view would let the later ones overwrite the earlier in a slot.
+    """
+    name = None
+    batch: list = []
+    for hf_name, weight, megatron_name in items:
+        if megatron_name != name and batch:
+            yield name, batch
+            batch = []
+        name = megatron_name
+        batch.append((hf_name, weight))
+    if batch:
+        yield name, batch
+
+
 def _stream_atomic_units(items, atomic_update_groups):
-    """Streaming counterpart of get_named_value_update_units: buffer items
+    """Streaming counterpart of get_named_value_update_units: buffer params
     whose megatron name matches an AtomicUpdateGroup suffix until every
     suffix in the same (prefix, group.key) arrives, then yield together."""
     pending: dict[tuple[str, str], list] = {}
-    for hf_name, weight, megatron_name in items:
+    for megatron_name, tensors in _group_by_megatron_name(items):
         match = next(
             (
                 (group, idx, suffix)
@@ -125,14 +145,15 @@ def _stream_atomic_units(items, atomic_update_groups):
             None,
         )
         if match is None:
-            yield [(hf_name, weight)]
+            yield tensors
             continue
         group, idx, suffix = match
         prefix = megatron_name[: -len(suffix)]
         slots = pending.setdefault((prefix, group.key), [None] * len(group.suffixes))
-        slots[idx] = (hf_name, weight)
+        assert slots[idx] is None, f"duplicate {suffix} for {prefix} in atomic group {group.key}"
+        slots[idx] = tensors
         if None not in slots:
-            yield list(slots)
+            yield [pair for slot in slots for pair in slot]
             del pending[(prefix, group.key)]
     assert not pending, f"Incomplete atomic update groups at end of stream: {sorted(pending)}"
 
