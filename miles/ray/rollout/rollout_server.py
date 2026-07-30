@@ -9,7 +9,7 @@ from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApi
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell
-from miles.ray.specs.inference import compute_megatron_num_gpus, compute_nodes_per_engine, compute_rollout_offset
+from miles.ray.specs.inference import compute_megatron_num_gpus, compute_rollout_offset, setup_engine_group
 
 logger = logging.getLogger(__name__)
 
@@ -42,53 +42,20 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
         server_cells: dict[str, ServerCell] = {}
 
         for group_cfg in model_cfg.server_groups:
-            gpus_per_engine = group_cfg.num_gpus_per_engine
-            num_gpu_per_engine_local = min(gpus_per_engine, args.num_gpus_per_node)
-            num_engines = group_cfg.num_gpus // num_gpu_per_engine_local
-            nodes_per_engine = compute_nodes_per_engine(
-                num_gpus_per_engine=gpus_per_engine, num_gpus_per_node=args.num_gpus_per_node
+            setup = setup_engine_group(
+                args,
+                model_cfg=model_cfg,
+                group_cfg=group_cfg,
+                pg=pg,
+                cell_index_offset=len(server_cells),
+                engine_offset=engine_offset,
+                gpu_offset=gpu_offset,
+                rollout_pg_offset=rollout_pg_offset,
+                megatron_num_gpus=megatron_num_gpus,
             )
-
-            group_abs_start = rollout_pg_offset + gpu_offset
-            needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
-            overrides = dict(group_cfg.overrides)
-            if args.offload_rollout and not needs_offload:
-                overrides.setdefault("enable_memory_saver", False)
-            logger.info(
-                f"Engine group '{group_cfg.worker_type}' gpu_offset={gpu_offset} "
-                f"(abs={group_abs_start}): needs_offload={needs_offload}"
-            )
-
-            if group_cfg.worker_type != "placeholder":
-                assert num_engines % nodes_per_engine == 0, (
-                    f"group '{group_cfg.worker_type}' has {num_engines=} which is not a whole number of "
-                    f"{nodes_per_engine=} engines; the trailing engine would have no node to run its remaining ranks"
-                )
-                assert engine_offset % nodes_per_engine == 0, (
-                    f"group '{group_cfg.worker_type}' starts at {engine_offset=}, which is not aligned to "
-                    f"{nodes_per_engine=}: sglang derives each engine's node_rank from its global rank, so a "
-                    f"misaligned start would make the cell's primary a worker node"
-                )
-
-                for cell_start in range(0, num_engines, nodes_per_engine):
-                    cell_id = format_cell_id(server_id=model_cfg.name, index=len(server_cells))
-                    server_cells[cell_id] = ServerCell(
-                        num_nodes=nodes_per_engine,
-                        args=args,
-                        worker_type=group_cfg.worker_type,
-                        cell_id=cell_id,
-                        pg=pg,
-                        num_gpus_per_engine=gpus_per_engine,
-                        rank_offset=engine_offset + cell_start,
-                        gpu_offset=gpu_offset + cell_start * num_gpu_per_engine_local,
-                        sglang_overrides=overrides,
-                        needs_offload=needs_offload,
-                        model_path=overrides.get("model_path", args.hf_checkpoint),
-                        update_weights=model_cfg.update_weights,
-                    )
-
-            engine_offset += num_engines
-            gpu_offset += group_cfg.num_gpus
+            server_cells.update(setup.server_cells)
+            engine_offset = setup.engine_offset
+            gpu_offset = setup.gpu_offset
 
         servers[model_cfg.name] = RolloutServer(
             server_cells=server_cells,
