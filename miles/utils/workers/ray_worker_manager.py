@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 SHUTDOWN_TIMEOUT = 30
 
+WORKER_MANAGER_ACTOR_NAME = "miles_worker_manager"
+
 
 @dataclass
 class ActorState:
@@ -169,3 +171,38 @@ async def _shutdown_worker(*, cell_id: str, local_index: int, worker: ActorState
 async def _resolve(object_ref: ray.ObjectRef) -> object:
     """Wrap a ray object ref in a coroutine, which is what asyncio timeouts expect."""
     return await object_ref
+
+
+class WorkerManagerClient(BaseWorkerManager):
+    """The same call surface as RayWorkerManager, forwarded to the named manager actor."""
+
+    def __init__(self, actor_handle: ray.actor.ActorHandle) -> None:
+        self._actor_handle = actor_handle
+
+    async def register_cells(self, specs: list[BaseCellSpec]) -> None:
+        await self._actor_handle.register_cells.remote(specs)
+
+    def registered_cell_ids(self) -> list[str]:
+        return ray.get(self._actor_handle.registered_cell_ids.remote())
+
+    async def start_cell(self, cell_id: str) -> None:
+        await self._actor_handle.start_cell.remote(cell_id)
+
+    async def stop_cell(self, cell_id: str) -> None:
+        await self._actor_handle.stop_cell.remote(cell_id)
+
+    def cell_ids(self) -> list[str]:
+        return ray.get(self._actor_handle.cell_ids.remote())
+
+    def cell_workers(self, cell_id: str) -> list[ActorState]:
+        return ray.get(self._actor_handle.cell_workers.remote(cell_id))
+
+
+def launch_worker_manager_actor(pg: Any) -> WorkerManagerClient:
+    """Start the one named manager actor; everyone else connects to it by name."""
+    actor_handle = ray.remote(RayWorkerManager).options(name=WORKER_MANAGER_ACTOR_NAME, num_cpus=0).remote(pg=pg)
+    return WorkerManagerClient(actor_handle=actor_handle)
+
+
+def connect_worker_manager() -> WorkerManagerClient:
+    return WorkerManagerClient(actor_handle=ray.get_actor(WORKER_MANAGER_ACTOR_NAME))

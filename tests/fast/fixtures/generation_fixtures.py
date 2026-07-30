@@ -230,7 +230,7 @@ def with_session_server(
     *,
     port: int,
 ):
-    # Mirror start_session_server (router_manager.py): the id is minted into the
+    # Mirror start_session_server (wiring.py): the id is minted into the
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = uuid.uuid4().hex
     args.session_server_instance_ids = {port: instance_id}

@@ -10,8 +10,8 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.rollout.router_manager import start_model_routers
 from miles.ray.specs.inference import compute_inference_model_specs
+from miles.ray.wiring import start_model_routers
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 

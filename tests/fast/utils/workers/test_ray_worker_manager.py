@@ -4,11 +4,12 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+import ray
 from tests.fast.ray.rollout.conftest import fake_engine
 
 import miles.utils.workers.cell_launch as cell_launch
 from miles.utils.workers.addr_allocator import PortAllocator
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager, WorkerManagerClient
 from miles.utils.workers.worker_spec import (
     BaseCellSpec,
     CellAddressing,
@@ -322,3 +323,39 @@ class TestLaunchIsDrivenByTheSpec:
         assert captured[0]["placement"].global_rank == 2
         assert captured[0]["placement"].base_gpu_id == 11
         assert captured[0]["bundle_index"] == 5
+
+
+class TestWorkerManagerClient:
+    async def test_forwards_lifecycle_and_reads_to_the_named_actor(self, monkeypatch):
+        """The client keeps the manager call surface while the work happens in the actor."""
+        calls: list[tuple] = []
+
+        class _Method:
+            def __init__(self, name: str) -> None:
+                self._name = name
+
+            def remote(self, *args, **kwargs):
+                calls.append((self._name, args, kwargs))
+                future = asyncio.get_event_loop().create_future()
+                future.set_result(f"{self._name}-result")
+                return future
+
+        class _Handle:
+            def __getattr__(self, name: str) -> _Method:
+                return _Method(name)
+
+        monkeypatch.setattr(ray, "get", lambda ref: ref.result())
+        client = WorkerManagerClient(actor_handle=_Handle())
+
+        await client.register_cells(["spec"])
+        await client.start_cell("cell-0")
+        await client.stop_cell("cell-0")
+        assert client.cell_ids() == "cell_ids-result"
+        assert client.cell_workers("cell-0") == "cell_workers-result"
+        assert [name for name, _, _ in calls] == [
+            "register_cells",
+            "start_cell",
+            "stop_cell",
+            "cell_ids",
+            "cell_workers",
+        ]

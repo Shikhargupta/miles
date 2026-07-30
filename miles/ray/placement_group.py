@@ -8,12 +8,11 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.async_utils import eager_create_task
 from miles.utils.environ import enable_experimental_ft_trainer
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.inference_controller import InferenceController
 from .rollout.rollout_executor import RolloutExecutor
-from .wiring import create_inference_controller
+from .wiring import create_inference_controller, launch_worker_manager
 
 logger = logging.getLogger(__name__)
 
@@ -207,12 +206,11 @@ class RolloutComponents(NamedTuple):
     inference_controller: InferenceController
     rollout_executor: ray.actor.ActorHandle
     num_rollout_per_epoch: int | None
-    worker_manager: RayWorkerManager | None
 
 
 async def create_rollout_components(args, pg) -> RolloutComponents:
-    wiring = await create_inference_controller(args, pg)
-    inference_controller = wiring.inference_controller
+    launched = await launch_worker_manager(args, pg)
+    inference_controller = await create_inference_controller(args, launched)
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
@@ -236,5 +234,4 @@ async def create_rollout_components(args, pg) -> RolloutComponents:
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
         num_rollout_per_epoch=num_rollout_per_epoch,
-        worker_manager=wiring.worker_manager,
     )

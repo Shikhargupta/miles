@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import start_router, start_session_server
+from miles.ray.wiring import start_router, start_session_server
 from miles.utils.workers.worker_spec import CellAddressing
 
 
@@ -60,7 +60,7 @@ class TestStartRouter:
     def test_static_port_conflict_raises_runtime_error(self):
         """A stale process on the configured port must fail loud, not launch behind it."""
         args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=3123)
-        with patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
+        with patch("miles.ray.wiring.is_port_available", return_value=False):
             with pytest.raises(RuntimeError, match="already in use"):
                 asyncio.run(start_router(args, _FakeWorkerManager(), model_name="actor"))
 
@@ -110,7 +110,7 @@ class TestStartSessionServer:
             session_server_ip="127.0.0.1",
             session_server_port=[20001],
         )
-        with patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
+        with patch("miles.ray.wiring.is_port_available", return_value=False):
             with pytest.raises(RuntimeError, match="already in use"):
                 asyncio.run(start_session_server(args, _FakeWorkerManager()))
 
@@ -132,7 +132,7 @@ class TestStartSessionServer:
         )
         manager = _FakeWorkerManager()
 
-        with patch("miles.ray.rollout.router_manager.is_port_available", return_value=True):
+        with patch("miles.ray.wiring.is_port_available", return_value=True):
             asyncio.run(start_session_server(args, manager))
 
         assert manager.started == ["session-server-0", "session-server-1"]
