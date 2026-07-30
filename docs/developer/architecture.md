@@ -39,6 +39,25 @@ flowchart TB
 * **Data Source** — Python object owned by the trainer; reads prompt JSONL and acts as
   a buffer between rollout and training.
 
+## Multi-node rollout engines
+
+When `--rollout-num-gpus-per-engine` exceeds `--num-gpus-per-node`, one SGLang engine spans several
+nodes. `miles/ray/rollout/server_cell.py` models that engine as a single `ServerCell` holding one
+actor per node, and the whole cell is allocated, started, restarted and torn down together.
+
+Two indices are easy to confuse:
+
+* **Global rank** — the engine slot's position across the whole rollout pool. `ServerCell.rank_offset`
+  is the global rank of the cell's first node, and `addr_and_ports` is keyed by global rank.
+* **Cell-local index** — the node's position *inside its own engine*, always `0..num_nodes-1`.
+
+The `--node-rank` handed to `sglang.launch_server` is the **cell-local** index, never the global rank.
+It is paired with `--nnodes`, which is the node count of that one engine, so a node-rank outside
+`0..nnodes-1` would be out of range and the engine's torch rendezvous would never complete. The second
+cell of a two-node engine group therefore launches with `--node-rank 0` and `--node-rank 1`, not `2`
+and `3`. `ServerCell.start_engines` enforces this by passing `node_rank=local_index` to
+`compute_engine_launch_plan`.
+
 ## The package layout
 
 ```text
