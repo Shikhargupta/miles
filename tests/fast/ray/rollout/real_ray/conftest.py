@@ -45,7 +45,6 @@ def build_cells(
     needs_offload: bool = False,
     update_weights: bool = True,
     model_path: str | None = None,
-    sglang_overrides: dict | None = None,
 ):
     """Build configured cells for one placement group.
 
@@ -74,7 +73,6 @@ def build_cells(
                 gpu_offset=gpu_offset + cell_index * nodes_per_engine * num_gpu_per_engine,
                 needs_offload=needs_offload,
                 model_path=model_path,
-                sglang_overrides=sglang_overrides,
             ),
             update_weights=update_weights,
             pg=pg_tuple,

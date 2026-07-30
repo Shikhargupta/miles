@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import ray
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
@@ -31,6 +30,7 @@ from miles.ray.specs.inference import (
     InferenceWorkerSpec,
 )
 from miles.utils.workers.addr_allocator import PortAllocator
+from miles.utils.workers.cell_launch import CellAddressing, allocate_cell_ports, create_pg_worker_actor, probe_node_ips
 from miles.utils.workers.command_actor import CommandActor
 
 logger = logging.getLogger(__name__)
@@ -156,49 +156,25 @@ class ServerCell:
 
         self._mark_allocated_uninitialized(actor_handles)
 
-        global_ranks = [self.rank_offset + local_index for local_index in range(self.num_nodes)]
-
-        node_ips = list(await asyncio.gather(*[actor._get_node_ip.remote() for actor in actor_handles]))
-
-        port_infos = self.spec.worker.port_infos
-
-        addr_and_ports: dict[int, dict[str, Any]] = {}
-        dist_init_addr = None
-        for local_index, (rank, actor) in enumerate(zip(global_ranks, actor_handles, strict=True)):
-            node_ip = node_ips[local_index]
-            alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
-
-            if local_index == 0:
-                (master_info,) = [info for info in port_infos if info.mode == "master"]
-                assert master_info.name == ENGINE_DIST_INIT_PORT_NAME, f"{master_info=}"
-                dist_init_addr = f"{format_v6_uri(node_ip)}:{alloc(consecutive=master_info.num_consecutive)}"
-
-            ports = {
-                info.name: alloc(consecutive=info.num_consecutive) for info in port_infos if info.mode == "per_worker"
-            }
-            addr_and_ports[rank] = dict(
-                host=format_v6_uri(node_ip),
-                port=ports[ENGINE_SERVER_PORT_NAME],
-                nccl_port=ports[ENGINE_NCCL_PORT_NAME],
-                engine_info_bootstrap_port=ports[ENGINE_INFO_BOOTSTRAP_PORT_NAME],
-                dist_init_addr=dist_init_addr,
-            )
-            if ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME in ports:
-                addr_and_ports[rank]["disaggregation_bootstrap_port"] = ports[
-                    ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME
-                ]
+        addressing = allocate_cell_ports(
+            port_allocator=port_allocator,
+            port_infos=self.spec.worker.port_infos,
+            actors=actor_handles,
+            node_ips=await probe_node_ips(actor_handles),
+        )
+        addr_and_ports = build_engine_addr_and_ports(addressing=addressing)
 
         self._mark_addressing(
             [
                 AddrInfo(
-                    server_url=build_server_url(
-                        host=addr_and_ports[global_rank]["host"], port=addr_and_ports[global_rank]["port"]
-                    ),
-                    bootstrap_port=addr_and_ports[global_rank].get("disaggregation_bootstrap_port"),
+                    server_url=build_server_url(host=entry["host"], port=entry["port"]),
+                    bootstrap_port=entry.get("disaggregation_bootstrap_port"),
                 )
-                for global_rank in global_ranks
+                for entry in addr_and_ports
             ]
         )
+
+        global_ranks = [self.rank_offset + local_index for local_index in range(self.num_nodes)]
 
         if env_report := self.args.env_report:
             await asyncio.gather(
@@ -208,29 +184,26 @@ class ServerCell:
                 ]
             )
 
-        plans = {
-            rank: compute_engine_launch_plan(
+        plans = [
+            compute_engine_launch_plan(
                 self.args,
                 rank=rank,
                 worker_type=self.worker_type,
                 base_gpu_id=self.engine_gpu_ids[local_index][0],
                 sglang_overrides=self.sglang_overrides,
                 num_gpus_per_engine=self.num_gpus_per_engine,
-                addr_and_ports=addr_and_ports[rank],
+                addr_and_ports=entry,
             )
-            for local_index, rank in enumerate(global_ranks)
-        }
+            for local_index, (rank, entry) in enumerate(zip(global_ranks, addr_and_ports, strict=True))
+        ]
 
         await asyncio.gather(
-            *[
-                actor.run.remote(cmd=plans[global_rank].cmd, envs={})
-                for global_rank, actor in zip(global_ranks, actor_handles, strict=True)
-            ]
+            *[actor.run.remote(cmd=plan.cmd, envs={}) for actor, plan in zip(actor_handles, plans, strict=True)]
         )
 
         await wait_server_healthy(
             server_url=self.addr_info.server_url,
-            api_key=plans[global_ranks[0]].api_key,
+            api_key=plans[0].api_key,
             is_process_alive=functools.partial(_engine_actor_is_alive, self.primary_actor_handle),
         )
 
@@ -333,6 +306,25 @@ class ServerCell:
         )
 
 
+def build_engine_addr_and_ports(*, addressing: CellAddressing) -> list[dict[str, Any]]:
+    assert set(addressing.master_ports) == {ENGINE_DIST_INIT_PORT_NAME}, f"{addressing.master_ports=}"
+    dist_init_addr = f"{format_v6_uri(addressing.node_ips[0])}:{addressing.master_ports[ENGINE_DIST_INIT_PORT_NAME]}"
+
+    payloads: list[dict[str, Any]] = []
+    for node_ip, ports in zip(addressing.node_ips, addressing.per_worker_ports, strict=True):
+        payload = dict(
+            host=format_v6_uri(node_ip),
+            port=ports[ENGINE_SERVER_PORT_NAME],
+            nccl_port=ports[ENGINE_NCCL_PORT_NAME],
+            engine_info_bootstrap_port=ports[ENGINE_INFO_BOOTSTRAP_PORT_NAME],
+            dist_init_addr=dist_init_addr,
+        )
+        if ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME in ports:
+            payload["disaggregation_bootstrap_port"] = ports[ENGINE_DISAGGREGATION_BOOTSTRAP_PORT_NAME]
+        payloads.append(payload)
+    return payloads
+
+
 def launch_sglang_ray_actor(
     *,
     args: Any,
@@ -346,12 +338,6 @@ def launch_sglang_ray_actor(
     num_gpus = 0.2
     num_cpus = num_gpus
 
-    scheduling_strategy = PlacementGroupSchedulingStrategy(
-        placement_group=pg,
-        placement_group_capture_child_tasks=True,
-        placement_group_bundle_index=reordered_bundle_indices[gpu_index],
-    )
-
     env_vars = spec.env_var()
     # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
     # to enable this isolation.
@@ -359,15 +345,15 @@ def launch_sglang_ray_actor(
         "SGLANG_DG_CACHE_DIR", f"/tmp/sglang_deep_gemm/{spec.worker_type}_rank_{global_rank}"
     )
 
-    RolloutRayActor = ray.remote(CommandActor)
-    return RolloutRayActor.options(
+    return create_pg_worker_actor(
+        worker_cls=CommandActor,
+        pg_handle=pg,
+        bundle_index=reordered_bundle_indices[gpu_index],
+        env_vars=env_vars,
         num_cpus=num_cpus,
         num_gpus=num_gpus,
-        scheduling_strategy=scheduling_strategy,
-        runtime_env={
-            "env_vars": env_vars,
-        },
-    ).remote()
+        ctor_kwargs={},
+    )
 
 
 def _engine_actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:
