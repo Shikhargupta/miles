@@ -253,7 +253,7 @@ class TestRecoverMultiNodeEngine:
 
         try:
             (cell,) = await start_cells([setup], make_worker_manager(pg), mark_alive=True)
-            assert cell.num_nodes == 2
+            assert len(cell.actor_handles) == 2
             await cell.release_offloaded_memory()
 
             node0_actor, node1_actor = cell.actor_handles

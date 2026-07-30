@@ -155,7 +155,7 @@ class FakeCell:
         self.actor_handles = [FakeEngineHandle(node_ip) for _, node_ip, _ in members]
         self.addr_infos = [type("FakeAddrInfo", (), {"server_url": url})() for url, _, _ in members]
         self.engine_gpu_ids = [gpu_ids for _, _, gpu_ids in members]
-        self.worker_type = "regular"
+        self.spec = type("FakeSpec", (), {"worker": type("FakeWorker", (), {"worker_type": "regular"})()})()
         self.is_alive = alive
 
 

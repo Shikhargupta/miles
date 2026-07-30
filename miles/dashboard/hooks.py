@@ -376,7 +376,7 @@ def _collect_topology_infos(cells) -> list[dict]:
                     node_ip=node_ip,
                     gpu_ids=gpu_ids,
                     gpu_uuids=gpu_uuids,
-                    worker_type=cell.worker_type,
+                    worker_type=cell.spec.worker.worker_type,
                 )
             )
     return infos

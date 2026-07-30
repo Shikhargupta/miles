@@ -1,7 +1,7 @@
 import dataclasses
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
@@ -30,43 +30,13 @@ class ServerCell:
     attached_members: list[CellMember] = dataclasses.field(default_factory=list)
     _state: CellState | None = None
 
-    # ============================= temporary spec pass-throughs =============================
-    # These keep the old attribute names alive while the callers still read them off the cell.
-    # They go away as the callers move to the spec.
-
     @property
     def cell_id(self) -> str:
         return self.spec.cell_id
 
     @property
-    def worker_type(self) -> Literal["regular", "prefill", "decode"]:
-        return self.spec.worker.worker_type
-
-    @property
-    def num_nodes(self) -> int:
-        return self.spec.worker.scheduling.num_workers_per_cell
-
-    @property
-    def num_gpus_per_engine(self) -> int:
-        return self.spec.worker.num_gpus_per_engine
-
-    @property
-    def rank_offset(self) -> int:
-        return self.spec.rank_offset
-
-    @property
-    def gpu_offset(self) -> int:
-        return self.spec.gpu_offset
-
-    @property
     def needs_offload(self) -> bool:
         return self.spec.worker.needs_offload
-
-    @property
-    def model_path(self) -> str | None:
-        return self.spec.worker.model_path
-
-    # ======================= end of temporary spec pass-throughs ===========================
 
     @property
     def is_alive(self) -> bool:
@@ -83,7 +53,7 @@ class ServerCell:
 
     @property
     def engine_gpu_ids(self) -> list[list[int]]:
-        gpus_on_node = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
+        gpus_on_node = min(self.spec.worker.num_gpus_per_engine, self.args.num_gpus_per_node)
         return [
             list(range(member.placement.base_gpu_id, member.placement.base_gpu_id + gpus_on_node))
             for member in self.attached_members
@@ -127,7 +97,7 @@ class ServerCell:
     async def release_offloaded_memory(self) -> None:
         """Give back the GPU memory a freshly attached engine holds."""
         await self.api_client.release_memory_occupation()
-        if self.update_weights or self.model_path:
+        if self.update_weights or self.spec.worker.model_path:
             await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     def mark_alive(self) -> None:
@@ -163,7 +133,7 @@ class ServerCell:
     async def register(self, router_api_client: SGLangRouterApiClient) -> None:
         await router_api_client.add_worker(
             worker_url=self.addr_info.server_url,
-            worker_type=self.worker_type,
+            worker_type=self.spec.worker.worker_type,
             use_legacy_api=use_legacy_router_api(self.args),
             bootstrap_port=self.addr_info.bootstrap_port,
         )
