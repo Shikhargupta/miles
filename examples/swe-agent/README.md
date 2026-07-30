@@ -101,11 +101,14 @@ this shape; because synchronous rollout waits for the slowest trajectory in the
 batch, a step that draws an unusually slow task can take several times that.
 
 `--router-external-host` is the address Harbor sandboxes use to call the Miles
-session server and SGLang router. It must resolve and route from the agent-server
-machine. `--miles-host-ip 0.0.0.0` is useful when those services must accept
-connections forwarded from another host. Ensure ports 30000 and 31000 are
-reachable end to end; Tailscale is one option when the machines are on different
-networks.
+session server. It must resolve and route from the agent-server machine.
+`--miles-host-ip 0.0.0.0` is useful when those services must accept connections
+forwarded from another host. The only port that has to be reachable end to end is
+the session server port, which the launcher pins with `--session-server-port
+30000`. The SGLang router is no longer reachable on a fixed port: Miles always
+starts its own router and picks a free port at random, and only the session
+server talks to it, from inside the trainer host. Tailscale is one option when
+the machines are on different networks.
 
 ## 4. Verify progress
 
