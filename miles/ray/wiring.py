@@ -17,6 +17,6 @@ async def create_inference_controller(args, pg) -> InferenceController:
     worker_manager = RayWorkerManager(pg=pg)
     servers = await start_rollout_servers(args, worker_manager)
     dashboard_hooks.register_router(args)
-    start_session_server(args)
+    await start_session_server(args, worker_manager)
     provider = RayWorkerProvider(worker_manager=worker_manager)
     return await InferenceController.create(args, servers=servers, provider=provider)

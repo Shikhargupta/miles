@@ -25,8 +25,12 @@ async def start_rollout_servers(args, worker_manager: RayWorkerManager) -> dict[
     servers: dict[str, RolloutServer] = {}
 
     for model_idx, model_spec in enumerate(model_specs):
-        router_ip, router_port = start_router(
-            args, has_pd_disaggregation=model_spec.has_pd_disaggregation, force_new=(model_idx > 0)
+        router_ip, router_port = await start_router(
+            args,
+            worker_manager,
+            model_name=model_spec.name,
+            has_pd_disaggregation=model_spec.has_pd_disaggregation,
+            force_new=(model_idx > 0),
         )
 
         if model_idx == 0:

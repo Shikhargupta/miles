@@ -1,156 +1,105 @@
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock, patch
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import _resolve_session_server_ports, start_router, start_session_server
-from miles.rollout.session.config import SessionServerConfig
-from miles.router.config import MilesRouterConfig
-from miles.utils.workers.argv_utils import parse_config_argv
+from miles.ray.rollout.router_manager import start_router, start_session_server
+from miles.utils.workers.worker_spec import CellAddressing
+
+
+class _FakeWorkerManager:
+    """Runs the spec's own payload builder against synthetic addressing, like start_cell would."""
+
+    def __init__(self) -> None:
+        self.specs: dict[str, object] = {}
+        self.started: list[str] = []
+        self._payloads: dict[str, list[dict]] = {}
+        self._next_port = 20000
+
+    def register_cells(self, specs) -> None:
+        for spec in specs:
+            assert spec.cell_id not in self.specs
+            self.specs[spec.cell_id] = spec
+
+    async def start_cell(self, cell_id: str) -> None:
+        spec = self.specs[cell_id]
+        ports = {}
+        for info in spec.worker.port_infos:
+            if info.allow_dynamic:
+                ports[info.name] = self._next_port
+                self._next_port += 1
+            else:
+                ports[info.name] = info.static_port
+        addressing = CellAddressing(node_ips=["127.0.0.1"], master_ports={}, per_worker_ports=[ports])
+        self._payloads[cell_id] = spec.worker.build_member_payloads(addressing)
+        self.started.append(cell_id)
+
+    def cell_workers(self, cell_id: str):
+        return [SimpleNamespace(payload=payload) for payload in self._payloads[cell_id]]
 
 
 class TestStartRouter:
     def test_returns_existing_when_already_configured(self):
-        """Happy path: ``sglang_router_ip`` and ``sglang_router_port`` are
-        already set and ``force_new=False`` → skip subprocess launch entirely
-        and return the existing tuple."""
-        args = make_args(
-            use_miles_router=False,
-            sglang_router_ip="10.1.2.3",
-            sglang_router_port=4567,
-        )
-        # No mocks needed — the function returns before touching anything.
-        ip, port = start_router(args, force_new=False)
+        """Preconfigured router addressing skips the manager entirely."""
+        args = make_args(use_miles_router=False, sglang_router_ip="10.1.2.3", sglang_router_port=4567)
+        ip, port = asyncio.run(start_router(args, None, model_name="actor", force_new=False))
         assert (ip, port) == ("10.1.2.3", 4567)
 
     def test_pd_disagg_with_miles_router_asserts(self):
+        """The miles router cannot serve a PD-disaggregated model."""
         args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
-        ):
-            with pytest.raises(AssertionError, match="miles router does not support PD"):
-                start_router(args, has_pd_disaggregation=True, force_new=False)
+        with pytest.raises(AssertionError, match="miles router does not support PD"):
+            asyncio.run(start_router(args, _FakeWorkerManager(), model_name="actor", has_pd_disaggregation=True))
 
-    def test_port_conflict_raises_runtime_error(self):
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
-        ), patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
+    def test_static_port_conflict_raises_runtime_error(self):
+        """A stale process on the configured port must fail loud, not launch behind it."""
+        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=3123)
+        with patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
             with pytest.raises(RuntimeError, match="already in use"):
-                start_router(args)
+                asyncio.run(start_router(args, _FakeWorkerManager(), model_name="actor"))
 
-
-class TestStartRouterLaunchCommand:
-    @pytest.fixture
-    def captured_launches(self, monkeypatch):
-        launches: list[list[str]] = []
-
-        def fake_launch(argv, *, envs):
-            launches.append(argv)
-            return MagicMock()
-
-        monkeypatch.setattr("miles.ray.rollout.router_manager.get_host_info", lambda: ("h", "127.0.0.1"))
-        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
-        monkeypatch.setattr("miles.utils.workers.process_utils.launch_bound_subprocess", fake_launch)
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_for_server_ready", lambda *fn_args, **fn_kwargs: None
-        )
-        return launches
-
-    def test_sgl_router_launches_the_native_cli(self, captured_launches, monkeypatch):
-        """The sgl router runs as the upstream CLI with the allocated ports."""
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.find_available_port", lambda start: 20000 if start < 4000 else 4001
-        )
+    def test_starts_one_managed_cell_and_returns_its_addressing(self):
+        """The router runs as a manager cell; the returned address is the cell's payload."""
         args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        ip, port = start_router(args)
+        manager = _FakeWorkerManager()
 
-        (argv,) = captured_launches
-        assert argv[0] == sys.executable
-        assert argv[1:3] == ["-m", "sglang_router.launch_router"]
-        assert argv[argv.index("--port") + 1] == str(port) == "20000"
-        assert argv[argv.index("--prometheus-port") + 1] == "4001"
+        ip, port = asyncio.run(start_router(args, manager, model_name="actor"))
 
-    def test_miles_router_launches_with_a_parseable_config(self, captured_launches, monkeypatch):
-        """The miles router command's config payload parses back losslessly."""
-        monkeypatch.setattr("miles.ray.rollout.router_manager.find_available_port", lambda start: 20000)
-        args = make_args(
-            use_miles_router=True,
-            sglang_router_ip=None,
-            sglang_router_port=None,
-            miles_router_max_connections=100,
-            miles_router_timeout=None,
-            miles_router_health_check_failure_threshold=3,
-            rollout_health_check_interval=10.0,
-        )
-        ip, port = start_router(args)
+        assert manager.started == ["router-actor"]
+        assert ip == "127.0.0.1"
+        assert port == 20000
 
-        (argv,) = captured_launches
-        assert argv[:3] == [sys.executable, "-m", "miles.router.router"]
-        config = parse_config_argv(MilesRouterConfig, argv[3:])
-        assert config.host == ip
-        assert config.port == port == 20000
-        assert config.max_connections == 100
+    def test_force_new_ignores_the_configured_port(self):
+        """A second model's router must not collide with the first model's static port."""
+        args = make_args(use_miles_router=False, sglang_router_ip="10.0.0.1", sglang_router_port=3123)
+        manager = _FakeWorkerManager()
 
+        ip, port = asyncio.run(start_router(args, manager, model_name="critic", force_new=True))
 
-class TestStartSessionServerLaunchCommand:
-    def test_one_launch_per_port_with_parseable_configs(self, monkeypatch):
-        """Each resolved port gets its own subprocess with a lossless config."""
-        launches: list[list[str]] = []
-        monkeypatch.setattr(
-            "miles.utils.workers.process_utils.launch_bound_subprocess",
-            lambda argv, *, envs: launches.append(argv) or MagicMock(),
-        )
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_for_server_ready", lambda *fn_args, **fn_kwargs: None
-        )
-        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
-
-        args = make_args(
-            use_session_server=True,
-            hf_checkpoint="/fake/model",
-            sglang_router_ip="127.0.0.1",
-            sglang_router_port=3000,
-            session_server_port=[5005, 5007],
-            miles_router_timeout=None,
-            chat_template_path=None,
-            tito_model="default",
-            apply_chat_template_kwargs=None,
-            tito_allowed_append_roles=["tool"],
-            use_rollout_indexer_replay=False,
-        )
-        start_session_server(args)
-
-        assert len(launches) == 2
-        configs = []
-        for argv in launches:
-            assert argv[:3] == [sys.executable, "-m", "miles.rollout.session.server"]
-            configs.append(parse_config_argv(SessionServerConfig, argv[3:]))
-
-        assert {config.backend_url for config in configs} == {"http://127.0.0.1:3000"}
-        assert {config.port for config in configs} == {5005, 5006}
-        assert {config.host for config in configs} == {"127.0.0.1"}
-        assert {config.instance_id for config in configs} == set(args.session_server_instance_ids.values())
+        spec = manager.specs["router-critic"]
+        port_info = next(info for info in spec.worker.port_infos if info.name == "port")
+        assert port_info.allow_dynamic
+        assert port != 3123
 
 
 class TestStartSessionServer:
     def test_disabled_returns_silently(self):
-        """Happy no-op: ``use_session_server=False`` → return without raising,
-        without touching any other config."""
+        """use_session_server=False must not touch the manager at all."""
         args = make_args(use_session_server=False)
-        start_session_server(args)
+        asyncio.run(start_session_server(args, None))
 
     def test_enabled_without_hf_checkpoint_raises(self):
+        """The session server needs the tokenizer, so a missing checkpoint is a config error."""
         args = make_args(use_session_server=True, hf_checkpoint=None)
         with pytest.raises(ValueError, match="hf-checkpoint"):
-            start_session_server(args)
+            asyncio.run(start_session_server(args, _FakeWorkerManager()))
 
     def test_enabled_port_conflict_raises_runtime_error(self):
-        """When a configured ``session_server_port`` is already bound, fail
-        loud rather than silently re-using the stale process."""
+        """A stale session server on a configured port must fail loud."""
         args = make_args(
             use_session_server=True,
             hf_checkpoint="/fake/model",
@@ -161,24 +110,30 @@ class TestStartSessionServer:
         )
         with patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
             with pytest.raises(RuntimeError, match="already in use"):
-                start_session_server(args)
+                asyncio.run(start_session_server(args, _FakeWorkerManager()))
 
+    def test_one_cell_per_static_port_and_args_carry_the_addressing(self):
+        """Each resolved port gets its own managed cell; args carry ip, ports and instance ids."""
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            sglang_router_ip="127.0.0.1",
+            sglang_router_port=3000,
+            session_server_ip=None,
+            session_server_port=[5005, 5007],
+            miles_router_timeout=None,
+            chat_template_path=None,
+            tito_model="default",
+            apply_chat_template_kwargs=None,
+            tito_allowed_append_roles=["tool"],
+            use_rollout_indexer_replay=False,
+        )
+        manager = _FakeWorkerManager()
 
-class TestResolveSessionServerPorts:
-    def test_none_auto_allocates_one_port(self):
-        with patch("miles.ray.rollout.router_manager.find_available_port", return_value=20002):
-            assert _resolve_session_server_ports(None) == [20002]
+        with patch("miles.ray.rollout.router_manager.is_port_available", return_value=True):
+            asyncio.run(start_session_server(args, manager))
 
-    def test_single_value_is_a_single_server(self):
-        assert _resolve_session_server_ports([30000]) == [30000]
-
-    def test_two_values_expand_to_half_open_range(self):
-        assert _resolve_session_server_ports([30000, 30004]) == [30000, 30001, 30002, 30003]
-
-    def test_empty_range_raises(self):
-        with pytest.raises(ValueError, match="empty"):
-            _resolve_session_server_ports([30004, 30000])
-
-    def test_more_than_two_values_raises(self):
-        with pytest.raises(ValueError, match="one port or a start/end range"):
-            _resolve_session_server_ports([30000, 30001, 30002])
+        assert manager.started == ["session-server-0", "session-server-1"]
+        assert args.session_server_ip == "127.0.0.1"
+        assert args.session_server_ports == [5005, 5006]
+        assert set(args.session_server_instance_ids) == {5005, 5006}

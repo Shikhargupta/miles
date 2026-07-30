@@ -186,6 +186,52 @@ class TestCellWorkerPlacements:
         assert [(p.local_index, p.global_rank, p.base_gpu_id) for p in placements] == [(0, 3, 4), (1, 4, 6)]
 
 
+class TestGpulessCells:
+    def test_static_ports_bypass_the_allocator(self, patch_ray_get):
+        """A worker that declares a static port must be handed exactly that port."""
+        actors = [fake_engine(host="10.0.0.1", port_seed=15000)]
+        infos = [
+            PortInfo(name="alpha", static_port=30000, mode="per_worker", allow_dynamic=True),
+            PortInfo(name="pinned", static_port=7788, mode="per_worker", allow_dynamic=False),
+        ]
+        addressing = allocate_cell_ports(
+            port_allocator=PortAllocator(), port_infos=infos, actors=actors, node_ips=["10.0.0.1"]
+        )
+        assert addressing.per_worker_ports[0]["pinned"] == 7788
+        assert addressing.per_worker_ports[0]["alpha"] != 7788
+
+    def test_gpuless_placements_never_touch_the_pg(self):
+        """A gpu-less cell has no bundle to index, so pg=None must be fine."""
+        worker = _command_worker(
+            scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=2, num_gpus_per_worker=0),
+            ray_options=RayActorOptions(num_cpus=0.2, num_gpus=0),
+        )
+        spec = BaseCellSpec(worker=worker, cell_id="cell-0", rank_offset=5, gpu_offset=0)
+        placements = cell_worker_placements(spec=spec, pg=None)
+        assert [(p.local_index, p.global_rank, p.base_gpu_id) for p in placements] == [(0, 5, 0), (1, 6, 0)]
+
+    def test_gpuless_workers_are_created_as_head_actors(self, monkeypatch):
+        """A gpu-less worker is pinned to the head node instead of a pg bundle."""
+        captured: list[dict] = []
+
+        def _create_head(**kwargs):
+            captured.append(kwargs)
+            return "actor"
+
+        monkeypatch.setattr(cell_launch, "create_head_worker_actor", _create_head)
+        worker = _command_worker(
+            scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
+            ray_options=RayActorOptions(num_cpus=0.2, num_gpus=0),
+        )
+        spec = BaseCellSpec(worker=worker, cell_id="cell-0", rank_offset=0, gpu_offset=0)
+
+        actors = cell_launch.create_cell_worker_actors(spec=spec, pg=None)
+
+        assert actors == ["actor"]
+        assert captured[0]["worker_cls"] is CommandActor
+        assert captured[0]["env_vars"] == {"RANK": "0"}
+
+
 class TestCreateCellWorkerActorKinds:
     def test_a_command_worker_becomes_a_command_actor_with_empty_ctor_kwargs(self, monkeypatch):
         """A command spec launches the generic CommandActor; the command comes later."""

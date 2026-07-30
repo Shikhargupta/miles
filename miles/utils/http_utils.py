@@ -8,6 +8,7 @@ import random
 import socket
 import subprocess
 import time
+from collections.abc import Callable
 
 import httpx
 
@@ -62,6 +63,20 @@ def wait_for_server_ready(
                 return
         except OSError:
             time.sleep(0.5)
+    raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+async def wait_tcp_ready(host: str, port: int, *, is_alive: Callable[[], bool], timeout: float = 30) -> None:
+    """Poll until a TCP port accepts connections, treating worker death as failure."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not is_alive():
+            raise RuntimeError(f"Server process died before port {port} became ready")
+        try:
+            with socket.create_connection((host.strip("[]"), port), timeout=1):
+                return
+        except OSError:
+            await asyncio.sleep(0.5)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 

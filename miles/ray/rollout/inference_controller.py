@@ -139,9 +139,14 @@ class InferenceController:
         )
 
     def _server_of(self, cell_id: str) -> RolloutServer:
+        srv = self._find_server_of(cell_id)
+        assert srv is not None, f"{cell_id=} does not name a cell of any rollout server"
+        return srv
+
+    def _find_server_of(self, cell_id: str) -> RolloutServer | None:
         owners = [srv for srv in self.servers.values() if cell_id in srv.cell_specs]
-        assert len(owners) == 1, f"{cell_id=} must name exactly one cell, but {len(owners)} servers hold it"
-        return owners[0]
+        assert len(owners) <= 1, f"{cell_id=} must name at most one cell, but {len(owners)} servers hold it"
+        return owners[0] if owners else None
 
     # -------------------------- misc APIs -----------------------------
 
@@ -160,7 +165,9 @@ class InferenceController:
 
     async def _reconcile(self, cell_id: str, cell_info: CellInfo | None) -> None:
         async with self._reconcile_gate.operate(), self._cell_ops_lock:
-            srv = self._server_of(cell_id)
+            srv = self._find_server_of(cell_id)
+            if srv is None:
+                return
             attached = srv.server_cells.get(cell_id)
 
             if cell_info is None:
