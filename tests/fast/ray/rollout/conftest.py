@@ -341,15 +341,18 @@ def make_dataclass_cells(
     num_cells: int = 2,
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
+    host_offset: int = 0,
 ):
-    """Build configured ``ServerCell``s. Each cell starts unallocated."""
+    """Build attached ``ServerCell``s, one fake worker set per cell."""
     from miles.ray.rollout.server_cell import ServerCell
     from miles.ray.specs.inference import compute_nodes_per_engine
+    from miles.utils.workers.worker_provider.base import CellInfo, CellMember
+    from miles.utils.workers.worker_spec import WorkerPlacement
 
     args = make_args(num_gpus_per_node=8)
     nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     return [
-        ServerCell(
+        ServerCell.attach(
             args=args,
             spec=make_cell_spec(
                 args=args,
@@ -358,6 +361,18 @@ def make_dataclass_cells(
                 num_cells=num_cells,
                 rank_offset=cell_index * nodes_per_engine,
                 gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
+            ),
+            update_weights=True,
+            cell_info=CellInfo(
+                cell_id=f"cell-{cell_index}",
+                members=[
+                    CellMember(
+                        handle=fake_actor_handle(),
+                        payload={"host": f"10.0.0.{host_offset + cell_index + 1}", "port": 30000},
+                        placement=WorkerPlacement(local_index=index, global_rank=index, base_gpu_id=index),
+                    )
+                    for index in range(nodes_per_engine)
+                ],
             ),
         )
         for cell_index in range(num_cells)

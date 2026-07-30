@@ -119,9 +119,11 @@ class TestRolloutCellStatus:
         if not attached:
             return spec, None
 
-        cell = ServerCell(args=args, spec=spec)
-        cell.attach(
-            CellInfo(
+        cell = ServerCell.attach(
+            args=args,
+            spec=spec,
+            update_weights=True,
+            cell_info=CellInfo(
                 cell_id=spec.cell_id,
                 members=[
                     CellMember(
@@ -130,7 +132,7 @@ class TestRolloutCellStatus:
                         placement=WorkerPlacement(local_index=0, global_rank=0, base_gpu_id=0),
                     )
                 ],
-            )
+            ),
         )
         if alive:
             cell.mark_alive()

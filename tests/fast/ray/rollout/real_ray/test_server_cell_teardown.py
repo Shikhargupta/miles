@@ -19,19 +19,24 @@ class _HangingEngine:
         time.sleep(3600)
 
 
-def _adopt_actor(worker_manager: RayWorkerManager, cell, actor_handle) -> None:
-    """Register a hand-made actor with the manager and attach the cell to it."""
+def _adopt_actor(worker_manager: RayWorkerManager, setup, actor_handle):
+    """Register a hand-made actor with the manager and attach a cell to it."""
     from tests.fast.ray.rollout.conftest import adopt_cell_workers
+
+    from miles.ray.rollout.server_cell import ServerCell
 
     adopt_cell_workers(
         worker_manager,
-        cell_id=cell.cell_id,
+        cell_id=setup.spec.cell_id,
         payloads=[{"host": "127.0.0.1", "port": 30000}],
         actors=[actor_handle],
     )
-    cell.attach(
-        CellInfo(
-            cell_id=cell.cell_id,
+    return ServerCell.attach(
+        args=setup.args,
+        spec=setup.spec,
+        update_weights=setup.update_weights,
+        cell_info=CellInfo(
+            cell_id=setup.spec.cell_id,
             members=[
                 CellMember(
                     handle=actor_handle,
@@ -39,7 +44,7 @@ def _adopt_actor(worker_manager: RayWorkerManager, cell, actor_handle) -> None:
                     placement=WorkerPlacement(local_index=0, global_rank=0, base_gpu_id=0),
                 )
             ],
-        )
+        ),
     )
 
 
@@ -60,23 +65,23 @@ class TestTeardownIsTerminal:
     async def test_a_failing_shutdown_still_kills_the_actor(self, patched_sglang_engine, placement_group_factory):
         """A graceful shutdown that raises must not leave the actor and its server process behind."""
         worker_manager = RayWorkerManager(pg=placement_group_factory(1))
-        (cell,) = build_cells(num_cells=1)
-        await start_cells([cell], worker_manager)
+        (setup,) = build_cells(num_cells=1)
+        (cell,) = await start_cells([setup], worker_manager)
         actor_handle = cell.primary_actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))
 
         await detach_cell(cell, worker_manager)
 
         assert _is_dead(actor_handle)
-        assert not cell.is_allocated
+        assert worker_manager.cell_workers(cell.cell_id) == []
 
     def test_a_hanging_shutdown_does_not_block_teardown(self, monkeypatch, ray_local_mode):
         """A wedged engine must not stall teardown forever, since teardown is how a wedged engine is reclaimed."""
         monkeypatch.setattr(manager_module, "SHUTDOWN_TIMEOUT", 0.5)
         worker_manager = RayWorkerManager(pg=(None, [], []))
-        (cell,) = build_cells(num_cells=1)
+        (setup,) = build_cells(num_cells=1)
         actor_handle = _HangingEngine.remote()
-        _adopt_actor(worker_manager, cell, actor_handle)
+        cell = _adopt_actor(worker_manager, setup, actor_handle)
 
         finished = threading.Event()
 
@@ -90,4 +95,4 @@ class TestTeardownIsTerminal:
 
         assert finished.is_set(), "the teardown waited on a shutdown that never returns"
         assert _is_dead(actor_handle)
-        assert not cell.is_allocated
+        assert worker_manager.cell_workers(cell.cell_id) == []

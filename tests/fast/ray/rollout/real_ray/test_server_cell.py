@@ -24,20 +24,18 @@ class TestStartEnginesShortCircuits:
     async def test_debug_train_only_brings_up_no_workers(self, placement_group_factory):
         """In debug_train_only the wiring schedules no actors at all."""
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2, debug_train_only=True)
+        setups = build_cells(num_cells=2, debug_train_only=True)
         srv = RolloutServer(
-            cell_specs={f"cell-{i}": cell.spec for i, cell in enumerate(cells)},
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=cells[0].args,
+            cell_specs={f"cell-{i}": setup.spec for i, setup in enumerate(setups)},
+            server_cells={},
+            args=setups[0].args,
         )
 
         worker_manager = make_worker_manager(pg)
-        await start_rollout_servers(cells[0].args, pg, worker_manager)
+        await start_rollout_servers(setups[0].args, pg, worker_manager)
 
         assert worker_manager.cell_ids() == []
         assert srv.has_new_engines is False
-        for cell in cells:
-            assert not cell.is_allocated
 
 
 class TestStartEnginesRealActors:
@@ -47,12 +45,11 @@ class TestStartEnginesRealActors:
 
     async def test_creates_real_actors_and_run_launches(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2)
+        setups = build_cells(num_cells=2)
 
-        await start_cells(cells, make_worker_manager(pg))
+        cells = await start_cells(setups, make_worker_manager(pg))
 
         for cell in cells:
-            assert cell.is_allocated
             calls = ray.get(cell.primary_actor_handle.get_calls.remote())
             method_names = [name for name, _, _ in calls]
             assert "run" in method_names
@@ -68,31 +65,28 @@ class TestStartEnginesRealActors:
         self, patched_sglang_engine, placement_group_factory
     ):
         pg = placement_group_factory(4)
-        cells = build_cells(num_cells=4)
+        setups = build_cells(num_cells=4)
 
-        await start_cells([cells[1], cells[3]], make_worker_manager(pg))
+        worker_manager = make_worker_manager(pg)
+        started = await start_cells([setups[1], setups[3]], worker_manager)
 
-        assert not cells[0].is_allocated
-        assert cells[1].is_allocated
-        assert not cells[2].is_allocated
-        assert cells[3].is_allocated
+        assert worker_manager.cell_ids() == ["cell-1", "cell-3"]
 
-        for i in (1, 3):
-            ray.kill(cells[i].primary_actor_handle)
+        for cell in started:
+            ray.kill(cell.primary_actor_handle)
 
     async def test_reattaching_an_unchanged_cell_keeps_its_actors(
         self, patched_sglang_engine, placement_group_factory
     ):
         """A reconcile pass over a healthy cell must not swap the actors underneath it."""
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2)
+        setups = build_cells(num_cells=2)
 
-        worker_manager = await start_cells(cells, make_worker_manager(pg))
+        worker_manager = make_worker_manager(pg)
+        cells = await start_cells(setups, worker_manager)
         first_handles = _all_actor_handles(cells)
 
-        for cell in cells:
-            cell._mark_stopped()
-        await attach_cells(cells, worker_manager)
+        cells = await attach_cells(setups, worker_manager)
         for first, handle in zip(first_handles, _all_actor_handles(cells), strict=True):
             assert handle is first  # still the same actor
 
@@ -105,23 +99,23 @@ class TestStartEnginesRealActors:
         """A cell is one distributed engine: a restart must bring back every
         node-rank, since a survivor would belong to a process group that is gone."""
         pg = placement_group_factory(16)
-        (cell,) = build_cells(num_cells=1, num_gpus_per_engine=16)
-        worker_manager = await start_cells([cell], make_worker_manager(pg))
+        (setup,) = build_cells(num_cells=1, num_gpus_per_engine=16)
+        worker_manager = make_worker_manager(pg)
+        (cell,) = await start_cells([setup], worker_manager)
         assert len(cell.actor_handles) == 2
         original_handles = list(cell.actor_handles)
 
         await detach_cell(cell, worker_manager)
-        assert not cell.is_allocated
+        assert worker_manager.cell_workers(cell.cell_id) == []
 
+        (cell,) = await start_cells([setup], worker_manager)
         try:
-            await start_cells([cell], worker_manager)
             assert len(cell.actor_handles) == 2
             for original, handle in zip(original_handles, cell.actor_handles, strict=True):
                 assert handle is not original
         finally:
-            if cell.is_allocated:
-                for handle in cell.actor_handles:
-                    ray.kill(handle)
+            for handle in cell.actor_handles:
+                ray.kill(handle)
 
 
 # FIXME(@fzyzcjy): TestStopCellsRealKill is a timing-sensitive Ray actor
@@ -134,15 +128,15 @@ class TestStopCellsRealKill:
 
     async def test_stop_marks_cells_stopped_and_actors_truly_die(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2)
-        worker_manager = await start_cells(cells, make_worker_manager(pg))
+        setups = build_cells(num_cells=2)
+        worker_manager = make_worker_manager(pg)
+        cells = await start_cells(setups, worker_manager)
 
         actors = _all_actor_handles(cells)
         for cell in cells:
-            detach_cell(cell, worker_manager)
+            await detach_cell(cell, worker_manager)
 
-        for cell in cells:
-            assert not cell.is_allocated, "cell should be stopped"
+        assert worker_manager.cell_ids() == []
 
         # Real-Ray claim: a follow-up call on a killed actor must surface as
         # RayActorError, not silently return.
@@ -156,16 +150,16 @@ class TestStopCellsRealKill:
 
         We use ``set_fault`` to make shutdown raise on its next invocation."""
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2)
-        worker_manager = await start_cells(cells, make_worker_manager(pg))
+        setups = build_cells(num_cells=2)
+        worker_manager = make_worker_manager(pg)
+        cells = await start_cells(setups, worker_manager)
 
         # Plant a one-shot shutdown failure on cell 1.
         ray.get(cells[1].primary_actor_handle.set_fault.remote("shutdown", RuntimeError("boom")))
 
         for cell in cells:
-            detach_cell(cell, worker_manager)
-        for cell in cells:
-            assert not cell.is_allocated, "all cells must be stopped despite shutdown raise"
+            await detach_cell(cell, worker_manager)
+        assert worker_manager.cell_ids() == [], "all cells must be stopped despite shutdown raise"
 
 
 class TestStartEnginesRealAllocator:
@@ -179,9 +173,9 @@ class TestStartEnginesRealAllocator:
         placement_group_factory,
     ):
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2)
+        setups = build_cells(num_cells=2)
 
-        await start_cells(cells, make_worker_manager(pg))
+        cells = await start_cells(setups, make_worker_manager(pg))
 
         # the launch command == the addr_and_ports map produced by the real allocator
         kwargs0, kwargs1 = ray.get(
@@ -226,12 +220,13 @@ class TestStartEnginesRealAllocator:
         manager's allocator in place; reusing it for B must shift B's ports
         past A's — that's the cursor's job."""
         pg = placement_group_factory(4)
-        a = build_cells(num_cells=2)
-        b = build_cells(num_cells=2, rank_offset=2, gpu_offset=2)
+        setups_a = build_cells(num_cells=2)
+        setups_b = build_cells(num_cells=2, rank_offset=2, gpu_offset=2, cell_id_offset=2)
 
-        worker_manager = await start_cells(a, make_worker_manager(pg))
+        worker_manager = make_worker_manager(pg)
+        a = await start_cells(setups_a, worker_manager)
 
-        await start_cells(b, worker_manager)
+        b = await start_cells(setups_b, worker_manager)
 
         kwargs_a = ray.get([handle.get_server_args.remote() for handle in _all_actor_handles(a)])
         kwargs_b = ray.get([handle.get_server_args.remote() for handle in _all_actor_handles(b)])

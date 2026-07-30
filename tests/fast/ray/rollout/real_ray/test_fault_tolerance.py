@@ -32,19 +32,17 @@ class TestKillAndRecover:
         """Kill cell 0's engine for real, recover, verify a fresh actor replaces
         it and the surviving cell is untouched."""
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2)
-        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
+        setups = build_cells(num_cells=2)
+        worker_manager = make_worker_manager(pg)
+        cells = await start_cells(setups, worker_manager, mark_alive=True)
 
         original_handles = [cell.primary_actor_handle for cell in cells]
-        # Real fault: kill engine 0 + mark its slot stopped (production code's
-        # health monitor would do this; here we simulate it directly).
         ray.kill(original_handles[0])
         await detach_cell(cells[0], worker_manager)
 
         try:
-            await start_cells([cells[0]], worker_manager, mark_alive=True)
+            (cells[0],) = await start_cells([setups[0]], worker_manager, mark_alive=True)
             # New actor for cell 0
-            assert cells[0].is_allocated
             assert cells[0].primary_actor_handle is not original_handles[0]
             calls = ray.get(cells[0].primary_actor_handle.get_calls.remote())
             assert "run" in [c[0] for c in calls]
@@ -61,8 +59,9 @@ class TestKillAndRecover:
     ):
         """We kill 0 and 2, leave 1 alive, expect only 0 and 2 to be re-created."""
         pg = placement_group_factory(3)
-        cells = build_cells(num_cells=3)
-        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
+        setups = build_cells(num_cells=3)
+        worker_manager = make_worker_manager(pg)
+        cells = await start_cells(setups, worker_manager, mark_alive=True)
 
         old = [cell.primary_actor_handle for cell in cells]
         for i in (0, 2):
@@ -70,9 +69,8 @@ class TestKillAndRecover:
             await detach_cell(cells[i], worker_manager)
 
         try:
-            await start_cells([cells[0], cells[2]], worker_manager, mark_alive=True)
+            cells[0], cells[2] = await start_cells([setups[0], setups[2]], worker_manager, mark_alive=True)
             for i in (0, 2):
-                assert cells[i].is_allocated
                 assert cells[i].primary_actor_handle is not old[i]
             assert cells[1].primary_actor_handle is old[1]
         finally:
@@ -94,21 +92,22 @@ class TestKillAndRecover:
                 events.append(kwargs)
 
         pg = placement_group_factory(1)
-        cells = build_cells(num_cells=1)
+        setups = build_cells(num_cells=1)
+        worker_manager = make_worker_manager(pg)
+        cells = await start_cells(setups, worker_manager, mark_alive=True)
         srv = RolloutServer(
-            cell_specs={f"cell-{i}": cell.spec for i, cell in enumerate(cells)},
+            cell_specs={f"cell-{i}": setup.spec for i, setup in enumerate(setups)},
             server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
             args=make_args(num_gpus_per_node=8),
             router_ip="10.0.0.9",
             router_port=9000,
         )
-        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
         ray.kill(cells[0].primary_actor_handle)
         await detach_cell(cells[0], worker_manager)
 
         try:
             with patch.object(RolloutServer, "router_api_client", property(lambda self: _Recorder())):
-                await start_cells([cells[0]], worker_manager, mark_alive=True)
+                (cells[0],) = await start_cells([setups[0]], worker_manager, mark_alive=True)
                 await cells[0].register(srv.router_api_client)
 
             assert [event["worker_url"] for event in events] == [cells[0].addr_info.server_url]
@@ -125,15 +124,16 @@ class TestKillAndRecover:
         must release_memory_occupation, then resume with WEIGHTS tag.
         Verify by reading the recovered engine's mock HTTP server log."""
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2, needs_offload=True, update_weights=True)
-        worker_manager = await start_cells(cells, make_worker_manager(pg), mark_alive=True)
+        setups = build_cells(num_cells=2, needs_offload=True, update_weights=True)
+        worker_manager = make_worker_manager(pg)
+        cells = await start_cells(setups, worker_manager, mark_alive=True)
         old = [cell.primary_actor_handle for cell in cells]
 
         ray.kill(old[0])
         await detach_cell(cells[0], worker_manager)
 
         try:
-            await start_cells([cells[0]], worker_manager, mark_alive=True)
+            (cells[0],) = await start_cells([setups[0]], worker_manager, mark_alive=True)
             await cells[0].release_offloaded_memory()
             recovered_actor = cells[0].primary_actor_handle
             calls = ray.get(recovered_actor.get_calls.remote())
@@ -186,10 +186,11 @@ class TestConcurrentRecover:
         twice. The real-ray claim being verified is end-to-end gather
         completion across two batches."""
         pg = placement_group_factory(4)
-        a = build_cells(num_cells=2)
-        b = build_cells(num_cells=2, rank_offset=2, gpu_offset=2)
-        worker_manager = await start_cells(a, make_worker_manager(pg), mark_alive=True)
-        await start_cells(b, worker_manager, mark_alive=True)
+        setups_a = build_cells(num_cells=2)
+        setups_b = build_cells(num_cells=2, rank_offset=2, gpu_offset=2, cell_id_offset=2)
+        worker_manager = make_worker_manager(pg)
+        a = await start_cells(setups_a, worker_manager, mark_alive=True)
+        b = await start_cells(setups_b, worker_manager, mark_alive=True)
 
         # Kill one engine in each batch
         for cells in (a, b):
@@ -199,12 +200,14 @@ class TestConcurrentRecover:
 
         try:
             # Real concurrent recover via asyncio.gather
-            await asyncio.gather(
-                start_cells([a[0]], worker_manager, mark_alive=True),
-                start_cells([b[0]], worker_manager, mark_alive=True),
+            recovered_a, recovered_b = await asyncio.gather(
+                start_cells([setups_a[0]], worker_manager, mark_alive=True),
+                start_cells([setups_b[0]], worker_manager, mark_alive=True),
             )
-            assert a[0].is_allocated
-            assert b[0].is_allocated
+            (a[0],) = recovered_a
+            (b[0],) = recovered_b
+            assert a[0].is_alive
+            assert b[0].is_alive
         finally:
             kill_cells(a)
             kill_cells(b)
@@ -225,8 +228,8 @@ class TestKillSubprocessKeepsMockActorReachable:
         placement_group_factory,
     ):
         pg = placement_group_factory(1)
-        cells = build_cells(num_cells=1)
-        await start_cells(cells, make_worker_manager(pg), mark_alive=True)
+        setups = build_cells(num_cells=1)
+        cells = await start_cells(setups, make_worker_manager(pg), mark_alive=True)
         actor = cells[0].primary_actor_handle
 
         try:
@@ -246,11 +249,11 @@ class TestRecoverMultiNodeEngine:
     ):
         """Recovering a 2-node engine must not send release/resume to node 1."""
         pg = placement_group_factory(16)
-        (cell,) = build_cells(num_cells=1, num_gpus_per_engine=16, needs_offload=True)
-        assert cell.num_nodes == 2
+        (setup,) = build_cells(num_cells=1, num_gpus_per_engine=16, needs_offload=True)
 
         try:
-            await start_cells([cell], make_worker_manager(pg), mark_alive=True)
+            (cell,) = await start_cells([setup], make_worker_manager(pg), mark_alive=True)
+            assert cell.num_nodes == 2
             await cell.release_offloaded_memory()
 
             node0_actor, node1_actor = cell.actor_handles

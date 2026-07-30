@@ -16,13 +16,9 @@ class StateBase(FrozenStrictBaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
 
-class StateStopped(StateBase):
-    pass
-
-
 class StateAllocatedBase(StateBase):
     actor_handles: list[ray.actor.ActorHandle]
-    addr_infos: list[AddrInfo] | None = None
+    addr_infos: list[AddrInfo]
 
 
 class StateAllocatedUninitialized(StateAllocatedBase):
@@ -33,4 +29,4 @@ class StateAllocatedAlive(StateAllocatedBase):
     pass
 
 
-CellState = StateStopped | StateAllocatedUninitialized | StateAllocatedAlive
+CellState = StateAllocatedUninitialized | StateAllocatedAlive

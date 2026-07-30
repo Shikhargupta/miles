@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 import ray
 
@@ -31,19 +33,29 @@ def placement_group_factory(ray_local_mode):
             pass
 
 
+@dataclasses.dataclass(frozen=True)
+class CellSetup:
+    """What a cell would be configured as, before any workers exist."""
+
+    args: object
+    spec: object
+    update_weights: bool
+
+
 def build_cells(
     *,
     num_cells: int = 2,
     num_gpus_per_engine: int = 1,
     rank_offset: int = 0,
     gpu_offset: int = 0,
+    cell_id_offset: int = 0,
     debug_train_only: bool = False,
     worker_type: str = "regular",
     needs_offload: bool = False,
     update_weights: bool = True,
     model_path: str | None = None,
 ):
-    """Build configured cells; the placement group belongs to the manager that starts them.
+    """Build cell setups; the cells themselves are born when their workers attach.
 
     ``rank_offset`` is a global rank (engines of several groups share it), while
     gpu indices are positions inside the placement group, so the two offsets are
@@ -51,18 +63,17 @@ def build_cells(
     """
     from tests.fast.ray.rollout.conftest import make_args, make_cell_spec
 
-    from miles.ray.rollout.server_cell import ServerCell
     from miles.ray.specs.inference import compute_nodes_per_engine
 
     args = make_args(num_gpus_per_node=8, debug_train_only=debug_train_only)
     nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     num_gpu_per_engine = min(num_gpus_per_engine, 8)
     return [
-        ServerCell(
+        CellSetup(
             args=args,
             spec=make_cell_spec(
                 args=args,
-                cell_id=f"cell-{cell_index}",
+                cell_id=f"cell-{cell_id_offset + cell_index}",
                 num_cells=num_cells,
                 num_gpus_per_engine=num_gpus_per_engine,
                 worker_type=worker_type,
@@ -84,39 +95,45 @@ def make_worker_manager(pg_tuple: tuple):
     return RayWorkerManager(pg=pg_tuple)
 
 
-async def start_cells(cells, worker_manager, *, mark_alive: bool = False):
-    """Bring every cell's workers up through one shared manager, then attach the cells."""
+async def start_cells(setups, worker_manager, *, mark_alive: bool = False):
+    """Bring every cell's workers up through one shared manager, then attach cells to them."""
     import asyncio
 
     worker_manager.register_cells(
-        [cell.spec for cell in cells if cell.cell_id not in worker_manager.registered_cell_ids()]
+        [setup.spec for setup in setups if setup.spec.cell_id not in worker_manager.registered_cell_ids()]
     )
-    await asyncio.gather(*[worker_manager.start_cell(cell.cell_id) for cell in cells])
-    await attach_cells(cells, worker_manager, mark_alive=mark_alive)
-    return worker_manager
+    await asyncio.gather(*[worker_manager.start_cell(setup.spec.cell_id) for setup in setups])
+    return await attach_cells(setups, worker_manager, mark_alive=mark_alive)
 
 
-async def attach_cells(cells, worker_manager, *, mark_alive: bool = False):
+async def attach_cells(setups, worker_manager, *, mark_alive: bool = False):
     """Attach cells to whatever the manager currently reports, like reconcile does."""
+    from miles.ray.rollout.server_cell import ServerCell
     from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
     observed = await RayWorkerProvider(worker_manager=worker_manager).list_cells()
-    for cell in cells:
-        if cell.is_allocated:
-            cell._mark_stopped()
-        cell.attach(observed[cell.cell_id])
-        if mark_alive:
+    cells = [
+        ServerCell.attach(
+            args=setup.args,
+            spec=setup.spec,
+            update_weights=setup.update_weights,
+            cell_info=observed[setup.spec.cell_id],
+        )
+        for setup in setups
+    ]
+    if mark_alive:
+        for cell in cells:
             cell.mark_alive()
+    return cells
 
 
 def kill_cells(cells) -> None:
     for cell in cells:
-        if cell.is_allocated:
-            for actor_handle in cell.actor_handles:
-                try:
-                    ray.kill(actor_handle)
-                except Exception:
-                    pass
+        for actor_handle in cell.actor_handles:
+            try:
+                ray.kill(actor_handle)
+            except Exception:
+                pass
 
 
 @pytest.fixture
@@ -152,6 +169,5 @@ class NoopRouterApiClient:
 
 
 async def detach_cell(cell, worker_manager) -> None:
-    """Drop a cell's workers the way a stop would, without the router round-trip."""
+    """Drop a cell's workers the way a stop would; the cell object is simply forgotten."""
     await worker_manager.stop_cell(cell.cell_id)
-    cell._mark_stopped()

@@ -32,10 +32,10 @@ class TestCheckWeightsAggregation:
         actually invoked (read from each mock server's request log)."""
         pg = placement_group_factory(5)
         worker_manager = make_worker_manager(pg)
-        a = build_cells(num_cells=2)
-        b = build_cells(num_cells=3, rank_offset=2, gpu_offset=2)
-        await start_cells(a, worker_manager, mark_alive=True)
-        await start_cells(b, worker_manager, mark_alive=True)
+        setups_a = build_cells(num_cells=2)
+        setups_b = build_cells(num_cells=3, rank_offset=2, gpu_offset=2, cell_id_offset=2)
+        a = await start_cells(setups_a, worker_manager, mark_alive=True)
+        b = await start_cells(setups_b, worker_manager, mark_alive=True)
 
         srv = _make_server(a + b)
         try:
@@ -65,10 +65,10 @@ class TestOffloadOnloadAggregation:
         """Both fan out across cells and return one flat result per engine."""
         pg = placement_group_factory(5)
         worker_manager = make_worker_manager(pg)
-        a = build_cells(num_cells=2, needs_offload=True)
-        b = build_cells(num_cells=3, rank_offset=2, gpu_offset=2, needs_offload=True)
-        await start_cells(a, worker_manager, mark_alive=True)
-        await start_cells(b, worker_manager, mark_alive=True)
+        setups_a = build_cells(num_cells=2, needs_offload=True)
+        setups_b = build_cells(num_cells=3, rank_offset=2, gpu_offset=2, cell_id_offset=2, needs_offload=True)
+        a = await start_cells(setups_a, worker_manager, mark_alive=True)
+        b = await start_cells(setups_b, worker_manager, mark_alive=True)
 
         srv = _make_server(a + b)
         try:
@@ -106,10 +106,12 @@ class TestOffloadOnloadAggregation:
         """Only the cells colocated with megatron give their memory back."""
         pg = placement_group_factory(4)
         worker_manager = make_worker_manager(pg)
-        offloading = build_cells(num_cells=2, needs_offload=True)
-        resident = build_cells(num_cells=2, rank_offset=2, gpu_offset=2, needs_offload=False)
-        await start_cells(offloading, worker_manager, mark_alive=True)
-        await start_cells(resident, worker_manager, mark_alive=True)
+        offloading = await start_cells(build_cells(num_cells=2, needs_offload=True), worker_manager, mark_alive=True)
+        resident = await start_cells(
+            build_cells(num_cells=2, rank_offset=2, gpu_offset=2, cell_id_offset=2, needs_offload=False),
+            worker_manager,
+            mark_alive=True,
+        )
 
         srv = _make_server(offloading + resident)
         try:
@@ -128,11 +130,12 @@ class TestOffloadOnloadAggregation:
     ):
         """Offload must not block forever on an engine the server already gave up on."""
         pg = placement_group_factory(2)
-        cells = build_cells(num_cells=2, needs_offload=True)
-        await start_cells(cells, make_worker_manager(pg), mark_alive=True)
-        cells[1].stop()
+        cells = await start_cells(
+            build_cells(num_cells=2, needs_offload=True), make_worker_manager(pg), mark_alive=True
+        )
 
         srv = _make_server(cells)
+        srv.remove_cell("cell-1")
         try:
             assert len(await srv.offload(tags=None)) == 1
         finally:

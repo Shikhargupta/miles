@@ -402,18 +402,10 @@ class TestCheckWeights:
             assert engine_result == {"mock": True}
 
         updatable_cells = [
-            cell
-            for srv in controller.servers.values()
-            if srv.update_weights
-            for cell in srv.server_cells.values()
-            if cell.is_allocated
+            cell for srv in controller.servers.values() if srv.update_weights for cell in srv.server_cells.values()
         ]
         frozen_cells = [
-            cell
-            for srv in controller.servers.values()
-            if not srv.update_weights
-            for cell in srv.server_cells.values()
-            if cell.is_allocated
+            cell for srv in controller.servers.values() if not srv.update_weights for cell in srv.server_cells.values()
         ]
         assert updatable_cells and frozen_cells
 

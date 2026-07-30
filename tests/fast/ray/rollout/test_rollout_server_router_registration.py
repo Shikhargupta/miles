@@ -42,20 +42,17 @@ def _build_server(
     worker_manager = RayWorkerManager(pg=None)
     cells = []
     for cell_start in range(0, num_engines, nodes_per_engine):
-        cell = ServerCell(
+        spec = make_cell_spec(
             args=args,
-            spec=make_cell_spec(
-                args=args,
-                cell_id=f"cell-{len(cells)}",
-                num_nodes=nodes_per_engine,
-                num_gpus_per_engine=num_gpus_per_engine,
-                worker_type=worker_type,
-                rank_offset=cell_start,
-            ),
+            cell_id=f"cell-{len(cells)}",
+            num_nodes=nodes_per_engine,
+            num_gpus_per_engine=num_gpus_per_engine,
+            worker_type=worker_type,
+            rank_offset=cell_start,
         )
         adopt_cell_workers(
             worker_manager,
-            cell_id=cell.cell_id,
+            cell_id=spec.cell_id,
             payloads=[
                 {
                     "host": f"10.0.0.{cell_start + local_index + 1}",
@@ -65,15 +62,18 @@ def _build_server(
                 for local_index in range(nodes_per_engine)
             ],
         )
-        workers = worker_manager.cell_workers(cell.cell_id)
-        cell.attach(
-            CellInfo(
-                cell_id=cell.cell_id,
+        workers = worker_manager.cell_workers(spec.cell_id)
+        cell = ServerCell.attach(
+            args=args,
+            spec=spec,
+            update_weights=True,
+            cell_info=CellInfo(
+                cell_id=spec.cell_id,
                 members=[
                     CellMember(handle=worker.actor, payload=worker.payload, placement=worker.placement)
                     for worker in workers
                 ],
-            )
+            ),
         )
         cell.mark_alive()
         cells.append(cell)

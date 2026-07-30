@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_dataclass_cells, make_sglang_config_yaml
+from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells, make_sglang_config_yaml
 
 from miles.ray.rollout import rollout_server
-from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
@@ -12,10 +11,9 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 class TestRolloutServerCrossCellProperties:
     def test_api_clients_expose_one_client_per_cell(self):
         """Each cell is addressed through its primary (node-0) endpoint."""
-        cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
-        for index, cell in enumerate(cells):
-            cell._mark_allocated_uninitialized([fake_actor_handle()])
-            cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{index + 1}:30000")])
+        cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(
+            num_cells=2, gpu_offset=2, host_offset=2
+        )
         srv = RolloutServer(
             cell_specs={f"cell-{i}": cell.spec for i, cell in enumerate(cells)},
             server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},

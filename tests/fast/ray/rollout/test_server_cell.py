@@ -1,115 +1,121 @@
 from __future__ import annotations
 
+import dataclasses
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_cell_spec
 
-from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.specs.inference import compute_nodes_per_engine, format_cell_id
+from miles.utils.workers.worker_provider.base import CellInfo, CellMember
+from miles.utils.workers.worker_spec import WorkerPlacement
 
 
-def _allocated_cell(
-    num_nodes: int = 1, *, alive: bool = True, addressed: bool = True, num_gpus_per_engine: int = 1
-) -> ServerCell:
-    cell = ServerCell(
-        args=make_args(num_gpus_per_node=8),
-        spec=make_cell_spec(num_nodes=num_nodes, num_gpus_per_engine=num_gpus_per_engine),
+def _cell_info(
+    num_nodes: int = 1, *, bootstrap_port: int | None = None, base_gpu_ids: list[int] | None = None
+) -> CellInfo:
+    base_gpu_ids = base_gpu_ids if base_gpu_ids is not None else list(range(num_nodes))
+    payloads = [{"host": f"10.0.0.{i + 1}", "port": 30000 + i} for i in range(num_nodes)]
+    if bootstrap_port is not None:
+        for payload in payloads:
+            payload["disaggregation_bootstrap_port"] = bootstrap_port
+    return CellInfo(
+        cell_id="cell-0",
+        members=[
+            CellMember(
+                handle=fake_actor_handle(),
+                payload=payloads[i],
+                placement=WorkerPlacement(local_index=i, global_rank=i, base_gpu_id=base_gpu_ids[i]),
+            )
+            for i in range(num_nodes)
+        ],
     )
-    cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(num_nodes)])
-    if not addressed:
-        return cell
-    cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{i + 1}:3000{i}") for i in range(num_nodes)])
+
+
+def _attached_cell(
+    num_nodes: int = 1,
+    *,
+    alive: bool = True,
+    num_gpus_per_engine: int = 1,
+    worker_type: str = "regular",
+    bootstrap_port: int | None = None,
+    base_gpu_ids: list[int] | None = None,
+    **args_overrides,
+) -> ServerCell:
+    args = make_args(num_gpus_per_node=8, **args_overrides)
+    cell = ServerCell.attach(
+        args=args,
+        spec=make_cell_spec(
+            args=args, num_nodes=num_nodes, num_gpus_per_engine=num_gpus_per_engine, worker_type=worker_type
+        ),
+        update_weights=True,
+        cell_info=_cell_info(num_nodes, bootstrap_port=bootstrap_port, base_gpu_ids=base_gpu_ids),
+    )
     if alive:
-        cell._mark_alive()
+        cell.mark_alive()
     return cell
 
 
 class TestEngineGpuIds:
-    def test_offsets_and_stride_follow_the_cell_layout(self):
-        """The driver-side gpu layout must match what the launch handed each actor."""
-        cell = ServerCell(
-            args=make_args(num_gpus_per_node=8),
-            worker_type="regular",
-            cell_id="cell-0",
-            pg=(None, [], [0, 1, 2, 3, 4, 5, 6, 7]),
-            num_gpus_per_engine=2,
-            gpu_offset=4,
-        )
+    def test_gpu_ranges_follow_the_attached_placements(self):
+        """The driver-side gpu layout must match where the launch actually put each actor."""
+        cell = _attached_cell(num_gpus_per_engine=2, base_gpu_ids=[4])
         assert cell.engine_gpu_ids == [[4, 5]]
 
     def test_each_node_rank_of_a_multi_node_engine_covers_its_node(self):
         """A 2-node engine reports one whole-node gpu range per node-rank."""
-        cell = ServerCell(
-            args=make_args(num_gpus_per_node=8),
-            worker_type="regular",
-            cell_id="cell-0",
-            pg=(None, [], list(range(8)) + list(range(8))),
-            num_nodes=2,
-            num_gpus_per_engine=16,
-        )
+        cell = _attached_cell(num_nodes=2, num_gpus_per_engine=16, base_gpu_ids=[0, 0])
         assert cell.engine_gpu_ids == [list(range(8)), list(range(8))]
 
 
 class TestServerCellState:
-    def test_a_fresh_cell_is_stopped(self):
-        """A cell owns one state machine for all of its node-ranks."""
-        cell = ServerCell(args=make_args(num_gpus_per_node=8), spec=make_cell_spec(num_nodes=2))
-        assert not cell.is_allocated
+    def test_a_cell_is_born_attached_but_not_yet_alive(self):
+        """Attachment is construction; readiness is still a separate step."""
+        cell = _attached_cell(num_nodes=2, alive=False)
         assert not cell.is_alive
-
-    def test_allocating_covers_every_node_rank(self):
-        """The cell's actors are the node-ranks of one engine, so they are held together."""
-        cell = _allocated_cell(num_nodes=2, alive=False)
-        assert cell.is_allocated and not cell.is_alive
         assert len(cell.actor_handles) == 2
         assert cell.primary_actor_handle is cell.actor_handles[0]
 
     def test_the_primary_addr_is_the_router_visible_one(self):
         """Only node 0 serves the endpoint the router routes to."""
-        cell = _allocated_cell(num_nodes=2)
+        cell = _attached_cell(num_nodes=2)
         assert cell.is_alive
         assert cell.addr_info is cell.addr_infos[0]
         assert cell.api_client.server_url == "http://10.0.0.1:30000"
 
-    def test_stopping_releases_the_whole_cell(self):
-        """Teardown is whole-cell: no node-rank may outlive the engine."""
-        cell = _allocated_cell(num_nodes=2)
-        cell._mark_stopped()
-        assert not cell.is_allocated
-        assert not cell.is_alive
+    def test_attach_rejects_a_cell_info_for_another_cell(self):
+        """Adopting another cell's workers would route requests to the wrong engine."""
+        args = make_args(num_gpus_per_node=8)
+        cell_info = _cell_info()
+        with pytest.raises(AssertionError, match="does not name"):
+            ServerCell.attach(
+                args=args,
+                spec=make_cell_spec(args=args, cell_id="cell-9"),
+                update_weights=True,
+                cell_info=cell_info,
+            )
 
-    def test_the_api_client_is_unavailable_before_the_url_is_known(self):
-        """An allocated but unaddressed cell has no endpoint to talk to yet."""
-        cell = _allocated_cell(num_nodes=2, addressed=False)
-        with pytest.raises(AssertionError):
-            _ = cell.api_client
+    def test_a_replacement_cell_serves_on_its_own_addr(self):
+        """A restarted cell is a new cell, serving its new endpoint, not the dead one."""
+        first = _attached_cell()
+        assert first.api_client.server_url == "http://10.0.0.1:30000"
 
-    def test_going_alive_requires_an_addr(self):
-        """A cell must not be reported alive before it knows its own url."""
-        cell = _allocated_cell(num_nodes=2, addressed=False)
-        with pytest.raises(AssertionError):
-            cell._mark_alive()
+        args = make_args(num_gpus_per_node=8)
+        info = _cell_info()
+        info.members[0] = dataclasses.replace(info.members[0], payload={"host": "10.0.0.9", "port": 39999})
+        replacement = ServerCell.attach(args=args, spec=make_cell_spec(args=args), update_weights=True, cell_info=info)
+        replacement.mark_alive()
 
-    def test_restarting_replaces_the_addr(self):
-        """A restarted cell must serve on its new endpoint, not the dead one."""
-        cell = _allocated_cell(num_nodes=1)
-        assert cell.api_client.server_url == "http://10.0.0.1:30000"
-
-        cell._mark_stopped()
-        cell._mark_allocated_uninitialized([fake_actor_handle()])
-        cell._mark_addressing([AddrInfo(server_url="http://10.0.0.9:39999")])
-        cell._mark_alive()
-
-        assert cell.api_client.server_url == "http://10.0.0.9:39999"
+        assert replacement.api_client.server_url == "http://10.0.0.9:39999"
 
 
 class TestServerCellApiCalls:
     async def test_offload_releases_memory_on_the_primary_engine_only(self):
         """Non-primary node-ranks are workers without their own HTTP endpoint."""
-        cell = _allocated_cell(num_nodes=2)
+        cell = _attached_cell(num_nodes=2)
         client = MagicMock()
         client.release_memory_occupation = AsyncMock(return_value="released")
         with patch.object(ServerCell, "api_client", property(lambda self: client)):
@@ -118,7 +124,7 @@ class TestServerCellApiCalls:
 
     async def test_onload_resumes_memory_on_the_primary_engine_only(self):
         """Non-primary node-ranks are workers without their own HTTP endpoint."""
-        cell = _allocated_cell(num_nodes=2)
+        cell = _attached_cell(num_nodes=2)
         client = MagicMock()
         client.resume_memory_occupation = AsyncMock(return_value="resumed")
         with patch.object(ServerCell, "api_client", property(lambda self: client)):
@@ -127,7 +133,7 @@ class TestServerCellApiCalls:
 
     async def test_check_weights_forwards_all_arguments_to_the_primary_engine(self):
         """The whole keyword set must reach the engine api unchanged."""
-        cell = _allocated_cell()
+        cell = _attached_cell()
         client = MagicMock()
         client.check_weights = AsyncMock(return_value={"ok": True})
         with patch.object(ServerCell, "api_client", property(lambda self: client)):
@@ -143,19 +149,7 @@ class TestServerCellApiCalls:
 def _addressed_cell(
     *, worker_type: str = "regular", bootstrap_port: int | None = None, **args_overrides
 ) -> ServerCell:
-    cell = ServerCell(
-        args=make_args(num_gpus_per_node=8, **args_overrides),
-        spec=make_cell_spec(worker_type=worker_type, num_nodes=2),
-    )
-    cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(2)])
-    cell._mark_addressing(
-        [
-            AddrInfo(server_url=f"http://10.0.0.{index + 1}:3000{index}", bootstrap_port=bootstrap_port)
-            for index in range(2)
-        ]
-    )
-    cell._mark_alive()
-    return cell
+    return _attached_cell(num_nodes=2, worker_type=worker_type, bootstrap_port=bootstrap_port, **args_overrides)
 
 
 class TestServerCellRouterMembership:
@@ -207,7 +201,7 @@ def _build_servers(
     for s_idx in range(num_servers):
         model_name = f"model_{s_idx}"
         cells = [
-            _allocated_cell(num_nodes=nodes_per_engine, num_gpus_per_engine=num_gpus_per_engine)
+            _attached_cell(num_nodes=nodes_per_engine, num_gpus_per_engine=num_gpus_per_engine)
             for _ in range(engines_per_server // nodes_per_engine)
         ]
         servers[model_name] = RolloutServer(

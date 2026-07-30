@@ -75,8 +75,12 @@ class RolloutServer:
         """Create the cell for the workers just observed and register it with the router."""
         assert cell_info.cell_id not in self.server_cells, f"cell {cell_info.cell_id} is already attached"
 
-        cell = ServerCell(args=self.args, spec=self.cell_specs[cell_info.cell_id], update_weights=self.update_weights)
-        cell.attach(cell_info)
+        cell = ServerCell.attach(
+            args=self.args,
+            spec=self.cell_specs[cell_info.cell_id],
+            update_weights=self.update_weights,
+            cell_info=cell_info,
+        )
         self.server_cells[cell_info.cell_id] = cell
 
         try:
@@ -132,12 +136,12 @@ class RolloutServer:
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.offload(tags=tags) for cell in self._allocated_cells_of() if cell.needs_offload]
+            *[cell.offload(tags=tags) for cell in self.server_cells.values() if cell.needs_offload]
         )
 
     async def onload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.onload(tags=tags) for cell in self._allocated_cells_of() if cell.needs_offload]
+            *[cell.onload(tags=tags) for cell in self.server_cells.values() if cell.needs_offload]
         )
 
     async def check_weights(
@@ -148,7 +152,7 @@ class RolloutServer:
                 cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for cell in self._allocated_cells_of()
+                for cell in self.server_cells.values()
             ]
         )
 
@@ -173,9 +177,6 @@ class RolloutServer:
         return len(self.server_cells) == len(self.cell_specs) and all(
             cell.is_alive for cell in self.server_cells.values()
         )
-
-    def _allocated_cells_of(self) -> list[ServerCell]:
-        return [cell for cell in self.server_cells.values() if cell.is_allocated]
 
     @property
     def router_api_client(self) -> SGLangRouterApiClient:
