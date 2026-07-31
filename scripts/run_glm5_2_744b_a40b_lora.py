@@ -274,11 +274,6 @@ def _train(args: ScriptArgs):
     perf_args = _get_parallel_config(args)
 
     if _is_full:
-        # As in run_glm5_2_744b_a40b.py. LoRA still backprops through the frozen base, so the
-        # activations are full-model sized; without this the step needs ~123 GiB against the
-        # ~124 GiB left once sglang's non-releasable ~15 GiB is subtracted.
-        perf_args += "--recompute-granularity full --recompute-method uniform --recompute-num-layers 1 "
-
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
@@ -288,7 +283,10 @@ def _train(args: ScriptArgs):
             else args.rollout_num_gpus_per_engine
         )
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
-        _cg = 256 if _fp8_full else 64
+        # Graph buffers are not covered by torch_memory_saver, so they stay resident while the
+        # trainer runs and are what the training step actually competes with. Capture only up to
+        # the batch we really serve (rollout_batch_size * n_samples_per_prompt).
+        _cg = 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
