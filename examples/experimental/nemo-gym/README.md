@@ -174,9 +174,13 @@ with "unrecognized arguments"), and:
 --custom-rm-path nemogym_generate.reward_func
 --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted
 --use-session-server
---session-server-ip 0.0.0.0  # listen on all interfaces for the dial-back
---tito-model qwen3           # match your policy model's TITO family
+--tito-model qwen3  # match your policy model's TITO family
 ```
+
+The session server's bind host is no longer configurable: it follows the
+sglang router's host (`args.sglang_router_ip`). When the NeMo-Gym host cannot
+reach that host directly, set `MILES_ROUTER_EXTERNAL_HOST` as shown above —
+it rewrites the host of the session URL handed to the agent.
 
 Per sample, `agentic_tool_call` opens a session on Miles' session server and
 hands its OpenAI-compatible URL to `nemogym_agent_function.run`, which POSTs
