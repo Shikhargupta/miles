@@ -381,6 +381,7 @@ def _report_nonfinite_grads(model: Sequence[DDP], step_id: int) -> None:
     """Name the trainable params whose accumulated grad went non-finite."""
     rank = torch.distributed.get_rank()
     bad: list[str] = []
+    good: list[str] = []
     total = 0
     finite_max = 0.0
     for chunk in model:
@@ -398,12 +399,17 @@ def _report_nonfinite_grads(model: Sequence[DDP], step_id: int) -> None:
                 infs = int(torch.isinf(grad).sum())
                 bad.append(f"{name}<nan={nans},inf={infs},n={grad.numel()},dtype={grad.dtype}>")
             else:
-                finite_max = max(finite_max, float(grad.abs().max()))
+                absmax = float(grad.abs().max())
+                finite_max = max(finite_max, absmax)
+                good.append(f"{name}<absmax={absmax:.3g}>")
     logger.error(
         f"[nan-grads] rank={rank} step={step_id} trainable={total} nonfinite={len(bad)} finite_absmax={finite_max:.6g}"
     )
     for entry in bad[:8]:
-        logger.error(f"[nan-grads] rank={rank} {entry}")
+        logger.error(f"[nan-grads] rank={rank} BAD {entry}")
+    # naming the survivors localises where in the backward the NaN is born
+    for entry in good[:12]:
+        logger.error(f"[nan-grads] rank={rank} OK {entry}")
 
 
 def train_one_step(
