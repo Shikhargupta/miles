@@ -298,11 +298,11 @@ def _train(args: ScriptArgs):
             "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
             f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
             f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
-            # keep the running batch inside a captured graph, and cap the prefill chunk: under
-            # colocate the engine shares HBM with the trainer, and 2048 * _eng is a 32k-token
-            # chunk once the engine spans two nodes.
+            # keep the running batch inside a captured graph, and ceiling the prefill chunk:
+            # under colocate the engine shares HBM with the trainer, and 2048 * _eng is a
+            # 32k-token chunk once the engine spans two nodes.
             f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests {_cg} "
-            f"--sglang-chunked-prefill-size 8192 --sglang-watchdog-timeout 3600 "
+            f"--sglang-chunked-prefill-size {min(8192, 2048 * _eng)} --sglang-watchdog-timeout 3600 "
             "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
             f"--sglang-max-lora-rank {args.lora_rank} "
