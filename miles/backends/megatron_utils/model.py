@@ -4,6 +4,7 @@ import dataclasses
 import gc
 import logging
 import math
+import os
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -377,6 +378,30 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def _report_nonfinite_grads(model: Sequence[DDP], step_id: int) -> None:
+    """MILES_DEBUG_NAN_GRADS=1: name the trainable params whose accumulated grad went non-finite."""
+    rank = torch.distributed.get_rank()
+    bad: list[str] = []
+    total = 0
+    for chunk in model:
+        for name, param in chunk.named_parameters():
+            if not param.requires_grad:
+                continue
+            total += 1
+            grad = getattr(param, "main_grad", None)
+            if grad is None:
+                grad = param.grad
+            if grad is None:
+                bad.append(f"{name}<no-grad>")
+            elif not torch.isfinite(grad).all():
+                nans = int(torch.isnan(grad).sum())
+                infs = int(torch.isinf(grad).sum())
+                bad.append(f"{name}<nan={nans},inf={infs},n={grad.numel()},dtype={grad.dtype}>")
+    logger.error(f"[nan-grads] rank={rank} step={step_id} trainable={total} nonfinite={len(bad)}")
+    for entry in bad[:8]:
+        logger.error(f"[nan-grads] rank={rank} {entry}")
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -575,6 +600,9 @@ def train_one_step(
     # step and subsequent zero_grad release them.
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
+
+    if os.environ.get("MILES_DEBUG_NAN_GRADS") == "1":
+        _report_nonfinite_grads(model, step_id)
 
     if not disable_optimizer and valid_step:
         if multi_lora:
