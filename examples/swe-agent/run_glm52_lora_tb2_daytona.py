@@ -56,7 +56,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_rollout_checkpoint: str = "/cluster-storage/models/GLM-5.2_fp8"
     save_dir: str = "/scratch/07ec30ff_glm52_lora_tb2/"
     save_traces_dir: str = ""
-    prompt_data: str = "/root/tb2_train.jsonl"
+    prompt_data: str = "/root/tb2_train_glm52.jsonl"
 
     # Sequence budget: --max-seq-len caps the whole session (prompt + every
     # completion + every env response); --rollout-max-response-len caps one turn.
@@ -105,7 +105,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # W&B settings
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
     wandb_project: str = os.environ.get("WANDB_PROJECT", "glm52-lora-agentic")
-    wandb_team: str = os.environ.get("WANDB_TEAM", "")
+    # The default entity has no Models write seat, so init_tracking dies without this.
+    wandb_team: str = os.environ.get("WANDB_TEAM", "eigent_radixark_training")
     wandb_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2"
 
     # Prometheus settings
