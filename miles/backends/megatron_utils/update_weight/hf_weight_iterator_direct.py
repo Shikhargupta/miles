@@ -33,7 +33,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
         rank = dist.get_rank()
 
         if weight_type == "lora":
-            from ..lora_native import resolve_lora_provider
+            from ..lora_utils import resolve_lora_provider
 
             yield resolve_lora_provider(self.args).export_lora_hf_named(self.model)
             return

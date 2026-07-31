@@ -10,7 +10,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.megatron_utils.lora_native import (
+from miles.backends.megatron_utils.lora_utils import (
+    _native_adapter_shard_name,
+    reduce_marked_lora_grads,
+    resolve_lora_provider,
+)
+from miles.utils.lora import lora_rollout_enabled
+from miles_plugins.lora.lora import (
     _ADAPTER_LAYOUT,
     SUPPORTED_TARGETS,
     _assert_supported_architecture,
@@ -21,11 +27,8 @@ from miles.backends.megatron_utils.lora_native import (
     convert_target_modules_to_hf,
     export_lora_hf_named,
     load_lora_adapter_hf,
-    resolve_lora_provider,
     wrap_model_provider_with_lora,
 )
-from miles.backends.megatron_utils.lora_utils import _native_adapter_shard_name, reduce_marked_lora_grads
-from miles.utils.lora import lora_rollout_enabled
 
 
 def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, num_query_groups=8, q_lora_rank=1536):
@@ -255,14 +258,14 @@ class TestShippedRegistries:
 
 
 class TestResolveLoraProvider:
-    def test_default_is_this_module(self):
+    def test_default_is_the_plugin(self):
         mod = resolve_lora_provider(Namespace())
         assert mod.wrap_model_provider_with_lora is wrap_model_provider_with_lora
         assert mod.export_lora_hf_named is export_lora_hf_named
         assert mod.load_lora_adapter_hf is load_lora_adapter_hf
 
     def test_explicit_path_is_imported(self):
-        args = Namespace(lora_provider_path="miles.backends.megatron_utils.lora_native")
+        args = Namespace(lora_provider_path="miles_plugins.lora.lora")
         assert resolve_lora_provider(args).export_lora_hf_named is export_lora_hf_named
 
     def test_module_without_protocol_is_rejected(self):
@@ -281,7 +284,7 @@ class TestWrapModelProvider:
 
         calls = []
         wrapped = wrap_model_provider_with_lora(provider, Namespace(lora_rank=8))
-        import miles.backends.megatron_utils.lora_native as ln
+        import miles_plugins.lora.lora as ln
 
         orig = ln.apply_native_lora
         ln.apply_native_lora = lambda m, a: calls.append((m, a)) or m

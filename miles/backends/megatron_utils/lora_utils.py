@@ -408,6 +408,24 @@ def create_lora_instance(args: Namespace):
     return lora
 
 
+_DEFAULT_LORA_PROVIDER = "miles_plugins.lora.lora"
+
+
+def resolve_lora_provider(args: Namespace):
+    """Return the module implementing the native-LoRA provider protocol.
+
+    ``--lora-provider-path`` selects a model-specific implementation (a dotted
+    module path); the default is the ``miles_plugins.lora`` plugin.
+    """
+    import importlib
+
+    path = getattr(args, "lora_provider_path", None) or _DEFAULT_LORA_PROVIDER
+    module = importlib.import_module(path)
+    for entry_point in ("wrap_model_provider_with_lora", "load_lora_adapter_hf", "export_lora_hf_named"):
+        assert hasattr(module, entry_point), f"--lora-provider-path {path} must define {entry_point}()"
+    return module
+
+
 # ---------------------------------------------------------------------------
 # Checkpoint save/load
 # ---------------------------------------------------------------------------
@@ -527,8 +545,6 @@ def save_lora_checkpoint(
             ):
                 lora_state_dict[hf_name] = weight
     else:
-        from .lora_native import resolve_lora_provider
-
         for hf_name, weight in resolve_lora_provider(args).export_lora_hf_named(model):
             lora_state_dict[hf_name] = weight.cpu()
 

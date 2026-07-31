@@ -3,8 +3,8 @@
 Companion to ``scripts/run_qwen3_lora_native.py``, which covers the dense GQA
 reference recipe. This one drives the shipped MoE registries whose attention is
 either multi-latent (GLM / DeepSeek / Kimi) or a gated GQA hybrid (Qwen3.5), i.e.
-exactly the layouts ``miles.backends.megatron_utils.lora_native`` grew beyond the
-plain fused-qkv case for.
+exactly the layouts ``miles_plugins.lora`` grew beyond the plain fused-qkv case
+for.
 
 Coverage is attention-only on purpose. Routed-expert adapters need a serving-side
 layout contract of their own, so ``--target-modules`` lists just the attention

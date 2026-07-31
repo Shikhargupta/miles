@@ -46,14 +46,14 @@ from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
 
-from miles.backends.megatron_utils.lora_native import (
+from miles.backends.megatron_utils.lora_utils import reduce_marked_lora_grads
+from miles_plugins.lora.lora import (
     NativeLoRAAdapter,
     _rmsnorm,
     apply_native_lora,
     export_lora_hf_named,
     load_lora_adapter_hf,
 )
-from miles.backends.megatron_utils.lora_utils import reduce_marked_lora_grads
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False

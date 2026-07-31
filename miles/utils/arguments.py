@@ -1463,9 +1463,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted module path implementing the native-LoRA provider protocol "
                     "(wrap_model_provider_with_lora / load_lora_adapter_hf / export_lora_hf_named). "
-                    "Defaults to miles.backends.megatron_utils.lora_native, which covers standard "
-                    "Megatron-core GPT models; point this at a model plugin whose module structure "
-                    "diverges from plain mcore. Only used with --megatron-to-hf-mode raw."
+                    "Defaults to miles_plugins.lora.lora, which covers the architectures registered "
+                    "in miles_plugins.lora.registry; point this at a model plugin whose module "
+                    "structure diverges from plain mcore. Only used with --megatron-to-hf-mode raw."
                 ),
             )
             parser.add_argument(

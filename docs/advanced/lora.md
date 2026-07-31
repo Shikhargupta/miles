@@ -44,10 +44,13 @@ There are two implementations, selected by `--megatron-to-hf-mode`:
 - **`bridge`** — Megatron-Bridge's PEFT integration. Use it for models the
   generic native provider cannot cover, and for the routed-expert adapter
   layouts (`--experts-shared-outer-loras`).
-- **`raw`** (default) — the *native* path in
-  `miles/backends/megatron_utils/lora_native.py`. Adapters attach directly to
-  the mcore model miles' own provider builds, before the DDP wrap, so DDP only
-  allocates grad buffers for adapter params.
+- **`raw`** (default) — the *native* path in the `miles_plugins/lora/` plugin.
+  Adapters attach directly to the mcore model miles' own provider builds,
+  before the DDP wrap, so DDP only allocates grad buffers for adapter params.
+  Which architectures it serves is an explicit registry keyed on the HF
+  `model_type` (`miles_plugins/lora/registry.py`); a checkpoint whose
+  `model_type` is not registered fails at startup with the supported list
+  rather than training unverified math.
 
 Native LoRA covers standard Megatron-core attention and gated MLPs:
 
@@ -134,11 +137,15 @@ reason.
 The bridge between Megatron's LoRA path and SGLang adapter loading is in:
 
 - `miles/backends/megatron_utils/lora_utils.py` — argument parsing helpers,
-  LoRA detection (`is_lora_enabled`, `is_lora_model`), and HF ↔ Megatron
-  module-name conversion for both the `lora` and `canonical_lora` variants.
-- `miles/backends/megatron_utils/lora_native.py` — the raw-mode path: adapter
-  attachment and sharding, the fused-qkv row permutation, HF/PEFT export, and
-  adapter load.
+  LoRA detection (`is_lora_enabled`, `is_lora_model`), the provider resolver
+  (`resolve_lora_provider`), and HF ↔ Megatron module-name conversion for both
+  the `lora` and `canonical_lora` variants.
+- `miles_plugins/lora/` — the raw-mode path, and the default
+  `--lora-provider-path` provider: the `model_type` → spec registry
+  (`registry.py`), the per-architecture attach specs (`spec/attention.py`,
+  `spec/mlp.py`), the self-describing adapter and its projection table
+  (`adapter.py`), HF/PEFT export and load (`io.py`), and HF naming
+  (`naming.py`).
 - `miles/backends/megatron_utils/bridge_lora_helpers.py` — the Megatron-Bridge
   PEFT hook that wraps the model with LoRA layers before training.
 - `miles/backends/megatron_utils/checkpoint.py` — adapter-aware save and load.
