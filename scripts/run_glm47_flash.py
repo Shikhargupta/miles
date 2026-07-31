@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import typer
+import yaml
 
 import miles.utils.external_utils.command_utils as U
 
@@ -9,6 +11,7 @@ import miles.utils.external_utils.command_utils as U
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
+    ppo: bool = False
     run_id: str = U.create_run_id()
     model_org: str = "zai-org"
     model_name: str = "GLM-4.7-Flash"
@@ -103,6 +106,21 @@ def execute(args: ScriptArgs):
         "--eps-clip-high 0.28 "
     )
 
+    advantage_args = grpo_args
+    if args.ppo:
+        overrides = {
+            "advantage_estimator": "ppo",
+            "eps_clip_high": None,
+            "num_critic_only_steps": 10,
+            "normalize_advantages": True,
+            "critic_lr": 1e-5,
+            "critic_save": f"{load_save_path}_critic",
+        }
+        config_path = f"{args.output_dir}/{args.run_id}/ppo_overrides.yaml"
+        Path(config_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(config_path).write_text(yaml.safe_dump(overrides))
+        advantage_args = grpo_args + f"--custom-config-path {config_path} "
+
     optimizer_args = (
         "--optimizer adam "
         "--lr 1e-6 "
@@ -146,7 +164,7 @@ def execute(args: ScriptArgs):
         f"{ckpt_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
-        f"{grpo_args} "
+        f"{advantage_args} "
         f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
