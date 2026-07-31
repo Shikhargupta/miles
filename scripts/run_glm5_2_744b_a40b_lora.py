@@ -274,6 +274,12 @@ def _train(args: ScriptArgs):
     perf_args = _get_parallel_config(args)
 
     if _is_full:
+        # LoRA still backprops through the frozen base, so activations are full-model sized and the
+        # step OOMs in the MoE-expert adapter. Recompute the biggest retained tensors instead.
+        # Only modules that do not re-enter the MoE router are listed: --recompute-granularity full
+        # (and the "moe"/"moe_layer" modules) re-run the router under autograd, which double-consumes
+        # the R3 routing-replay buffer and trains on another micro-batch's expert choice.
+        perf_args += "--recompute-granularity selective --recompute-modules moe_act mla_up_proj layernorm "
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
@@ -283,9 +289,9 @@ def _train(args: ScriptArgs):
             else args.rollout_num_gpus_per_engine
         )
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
-        # Graph buffers are not covered by torch_memory_saver, so they stay resident while the
-        # trainer runs and are what the training step actually competes with. Capture only up to
-        # the batch we really serve (rollout_batch_size * n_samples_per_prompt).
+        # torch_memory_saver does cover the graph buffers, so this is not a training-memory lever;
+        # it only needs to reach rollout_batch_size * n_samples_per_prompt, and capturing fewer
+        # shapes shortens engine startup.
         _cg = 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
         sglang_args = (
