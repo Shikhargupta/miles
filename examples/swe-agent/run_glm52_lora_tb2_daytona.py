@@ -54,9 +54,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hf_checkpoint: str = "/cluster-storage/models/GLM-5.2"
     # Rollout-side fp8 checkpoint; the trainer stays bf16.
     fp8_rollout_checkpoint: str = "/cluster-storage/models/GLM-5.2_fp8"
-    save_dir: str = "/scratch/07ec30ff_glm52_lora_tb2/"
+    # Must be shared across nodes: every rank writes its dist-checkpoint shard here,
+    # and the generated sglang config is read by engine actors on every node.
+    save_dir: str = "/personal/07ec30ff_glm52_lora_tb2/"
     save_traces_dir: str = ""
-    prompt_data: str = "/root/tb2_train_glm52.jsonl"
+    prompt_data: str = "/personal/07ec30ff_stage/tb2_train_glm52.jsonl"
 
     # Sequence budget: --max-seq-len caps the whole session (prompt + every
     # completion + every env response); --rollout-max-response-len caps one turn.
@@ -94,7 +96,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # Agent settings
     agent_server_url: str = os.environ.get(
-        "AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://127.0.0.1:11000")
+        "AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://127.0.0.1:11001")
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks_tb2/terminal-bench")
@@ -111,7 +113,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # Prometheus settings
     use_prometheus: bool = True
-    prometheus_port: int = 9090
+    prometheus_port: int = 9091
     prometheus_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2"
 
 
@@ -186,7 +188,7 @@ def _sglang_args(args: ScriptArgs) -> str:
         f"--sglang-lora-backend {args.sglang_lora_backend} "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
-        "--sglang-router-port 31000 "
+        "--sglang-router-port 31001 "
     )
 
 
@@ -280,7 +282,7 @@ def execute(args: ScriptArgs):
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model glm47 "
         "--use-session-server "
-        "--session-server-port 30000 "
+        "--session-server-port 30001 "
     )
 
     misc_args = (
