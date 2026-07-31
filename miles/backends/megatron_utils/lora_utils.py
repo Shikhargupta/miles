@@ -15,6 +15,8 @@ from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_LORA_PROVIDER = "miles_plugins.lora.lora"
+
 # ---------------------------------------------------------------------------
 # Unified HF <-> Megatron module name mappings
 # ---------------------------------------------------------------------------
@@ -406,9 +408,6 @@ def create_lora_instance(args: Namespace):
         f"exclude_modules={exclude_modules}"
     )
     return lora
-
-
-_DEFAULT_LORA_PROVIDER = "miles_plugins.lora.lora"
 
 
 def resolve_lora_provider(args: Namespace):
