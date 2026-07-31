@@ -6,7 +6,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
-from miles.ray.rollout.router_manager import start_session_server
+from miles.ray.rollout.router_manager import wait_session_server_ready
 
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class InferenceController:
 
         self.servers = await start_rollout_servers(self.args, self.pg)
         dashboard_hooks.register_router(self.args)
-        start_session_server(self.args)
+        await wait_session_server_ready(self.args)
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
