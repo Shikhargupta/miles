@@ -2638,10 +2638,16 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     # Parse LoRA target modules
+    args._target_modules_expanded_from_all_linear = bool(
+        getattr(args, "_target_modules_expanded_from_all_linear", False)
+        or (args.lora_rank > 0 and args.target_modules == "all-linear")
+    )
     if args.lora_rank > 0:
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
-        if args.target_modules == "all-linear":
+        if isinstance(args.target_modules, (list, tuple)):
+            modules = list(args.target_modules)
+        elif args.target_modules == "all-linear":
             # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
             # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
             modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]

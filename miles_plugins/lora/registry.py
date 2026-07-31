@@ -1,48 +1,47 @@
-"""Architecture registry for native LoRA: HF ``model_type`` -> spec family.
-
-Native LoRA only runs on architectures someone has verified; a checkpoint whose
-``model_type`` is not registered fails at startup instead of silently training
-the generic math on a layout nobody checked. The key is the HF config's
-``model_type`` -- the same key mbridge's ``register_model`` uses -- so this
-table and the raw-mode weight-conversion support stay keyed alike.
-
-An entry pins only the family (``spec/attention.py`` GQA fused-qkv vs MLA);
-per-variant details -- query groups, latent ranks, the gated query slice,
-hybrid GDN mixer layers, shared experts -- are still read off the built model's
-config at attach time, and the family's own guards
-(``_assert_supported_architecture``) still apply on top.
-"""
+"""HF ``model_type`` to complete native-LoRA architecture-spec registry."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
-from dataclasses import dataclass
+
+from miles_plugins.lora.spec.attention import GQA_ATTENTION_SPEC, HYBRID_GQA_GDN_ATTENTION_SPEC, MLA_ATTENTION_SPEC
+from miles_plugins.lora.spec.base import LoRAArchSpec
+from miles_plugins.lora.spec.mlp import FUSED_GATED_MLP_SPEC
+from miles_plugins.lora.spec.moe import SHARED_EXPERT_ONLY_MOE_SPEC
 
 logger = logging.getLogger(__name__)
 
 GQA = "gqa"
 MLA = "mla"
 
+_GQA_SPEC = LoRAArchSpec(
+    name=GQA,
+    model_family=GQA,
+    attention=GQA_ATTENTION_SPEC,
+    mlp=FUSED_GATED_MLP_SPEC,
+    moe=SHARED_EXPERT_ONLY_MOE_SPEC,
+)
+_MLA_SPEC = LoRAArchSpec(
+    name=MLA,
+    model_family=MLA,
+    attention=MLA_ATTENTION_SPEC,
+    mlp=FUSED_GATED_MLP_SPEC,
+    moe=SHARED_EXPERT_ONLY_MOE_SPEC,
+)
+_HYBRID_GQA_SPEC = LoRAArchSpec(
+    name="gqa_gdn",
+    model_family=GQA,
+    attention=HYBRID_GQA_GDN_ATTENTION_SPEC,
+    mlp=FUSED_GATED_MLP_SPEC,
+    moe=SHARED_EXPERT_ONLY_MOE_SPEC,
+)
 
-@dataclass(frozen=True)
-class ModelLoRASpec:
-    """What the registry pins for one architecture family."""
-
-    attention: str  # GQA (fused linear_qkv) or MLA (latent down/up projections)
-
-
-_GQA_SPEC = ModelLoRASpec(attention=GQA)
-_MLA_SPEC = ModelLoRASpec(attention=MLA)
-
-# GQA entries ride the fused linear_qkv / gated-MLP path (Qwen3-0.6B and
-# Qwen3-30B-A3B ran e2e; the gated hybrids are covered by the qkv permutation
-# and their GDN layers carry no attention adapter). MLA entries ride the
-# latent projection path, verified numerically on MLATransformerConfig models;
-# the q_lora_rank=None variant is rejected by the MLA guard regardless of the
-# registry entry.
-MODEL_SPECS: dict[str, ModelLoRASpec] = {
+# Every entry is explicitly mapped to a structurally covered spec. Variant
+# dimensions and runtime validation remain inside the concrete specs; tests
+# separately record which model types have completed end-to-end validation.
+MODEL_SPECS: dict[str, LoRAArchSpec] = {
     "llama": _GQA_SPEC,
     "qwen2": _GQA_SPEC,
     "qwen2_moe": _GQA_SPEC,
@@ -51,11 +50,11 @@ MODEL_SPECS: dict[str, ModelLoRASpec] = {
     "mimo": _GQA_SPEC,
     "glm4": _GQA_SPEC,
     "glm4_moe": _GQA_SPEC,
-    "qwen3_5": _GQA_SPEC,
-    "qwen3_5_moe": _GQA_SPEC,
-    "qwen3_6": _GQA_SPEC,
-    "qwen3_6_moe": _GQA_SPEC,
-    "qwen3_next": _GQA_SPEC,
+    "qwen3_5": _HYBRID_GQA_SPEC,
+    "qwen3_5_moe": _HYBRID_GQA_SPEC,
+    "qwen3_6": _HYBRID_GQA_SPEC,
+    "qwen3_6_moe": _HYBRID_GQA_SPEC,
+    "qwen3_next": _HYBRID_GQA_SPEC,
     "deepseek_v3": _MLA_SPEC,
     "deepseek_v32": _MLA_SPEC,
     "deepseek_v4": _MLA_SPEC,
@@ -68,11 +67,7 @@ MODEL_SPECS: dict[str, ModelLoRASpec] = {
 
 
 def _model_type_candidates(hf_checkpoint: str | None) -> list[str]:
-    """``model_type`` strings named by the checkpoint's config.json, outermost first.
-
-    Multimodal configs nest the decoder under ``text_config``, so both levels
-    are candidates; an empty list means there was no config to read.
-    """
+    """Return outer and nested text ``model_type`` values from HF config.json."""
     if not hf_checkpoint:
         return []
     path = os.path.join(hf_checkpoint, "config.json")
@@ -81,28 +76,38 @@ def _model_type_candidates(hf_checkpoint: str | None) -> list[str]:
     with open(path) as handle:
         config = json.load(handle)
     text_config = config.get("text_config") or {}
-    return [t for t in (config.get("model_type"), text_config.get("model_type")) if t]
+    return [model_type for model_type in (config.get("model_type"), text_config.get("model_type")) if model_type]
 
 
-def resolve_model_spec(args, config) -> tuple[str | None, ModelLoRASpec | None]:
-    """Return ``(model_type, spec)`` for this run's checkpoint.
+def _structural_spec(config) -> LoRAArchSpec:
+    """Spec used only by bare numerical/unit harnesses without an HF checkpoint."""
+    return _MLA_SPEC if bool(getattr(config, "multi_latent_attention", False)) else _GQA_SPEC
 
-    Raises when the checkpoint names an architecture nobody registered. Returns
-    ``(None, None)`` -- with a warning -- when there is no config.json to read
-    (numerical harnesses and unit fixtures build bare mcore models): structural
-    dispatch and the per-family guards are all that apply there.
+
+def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
+    """Resolve a complete architecture spec and verify it matches the built model.
+
+    Production checkpoints fail closed when their model type is not registered.
+    Bare test harnesses without config.json retain a warned structural fallback,
+    but still receive a concrete spec that drives attachment.
     """
     hf_checkpoint = getattr(args, "hf_checkpoint", None)
     candidates = _model_type_candidates(hf_checkpoint)
     if not candidates:
-        logger.warning(
-            "[lora-native] no config.json under %r; skipping the architecture registry and "
-            "dispatching on the built model's structure alone.",
-            hf_checkpoint,
+        assert not hf_checkpoint, (
+            f"native LoRA could not load model_type because {hf_checkpoint!r}/config.json is missing. "
+            "Provide a valid --hf-checkpoint or use a model-specific --lora-provider-path."
         )
-        return None, None
+        spec = _structural_spec(config)
+        logger.warning(
+            "[lora-native] no config.json under %r; using the %s architecture spec from the built "
+            "model structure. Production checkpoints must register model_type explicitly.",
+            hf_checkpoint,
+            spec.name,
+        )
+        return None, spec
 
-    model_type = next((c for c in candidates if c in MODEL_SPECS), None)
+    model_type = next((candidate for candidate in candidates if candidate in MODEL_SPECS), None)
     assert model_type is not None, (
         f"native LoRA has no spec registered for model_type {candidates[0]!r} "
         f"(--hf-checkpoint {hf_checkpoint}). Registered architectures: {sorted(MODEL_SPECS)}. "
@@ -113,8 +118,8 @@ def resolve_model_spec(args, config) -> tuple[str | None, ModelLoRASpec | None]:
     spec = MODEL_SPECS[model_type]
 
     built = MLA if bool(getattr(config, "multi_latent_attention", False)) else GQA
-    assert spec.attention == built, (
-        f"registry entry for model_type {model_type!r} says {spec.attention} attention but the "
+    assert spec.model_family == built, (
+        f"registry entry for model_type {model_type!r} says {spec.model_family} attention but the "
         f"built model uses {built}; the registry and the checkpoint disagree."
     )
     return model_type, spec

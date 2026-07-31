@@ -1,219 +1,127 @@
-"""Attention specs: GQA fused-qkv and multi-latent attention.
-
-GQA targets, selected by ``--target-modules`` (HF leaf names):
-
-===========================  ==========================================  ===============
-target                       megatron module                             kind
-===========================  ==========================================  ===============
-q_proj / k_proj / v_proj     ``self_attention.linear_qkv`` (fused)       column-parallel
-o_proj                       ``self_attention.linear_proj``              row-parallel
-===========================  ==========================================  ===============
-
-MLA (DeepSeek / GLM / Kimi) has no fused qkv and carries its own projection set:
-
-===========================  ==========================================  ===============
-target                       megatron module                             kind
-===========================  ==========================================  ===============
-q_a_proj                     ``self_attention.linear_q_down_proj``       replicated
-q_b_proj                     ``self_attention.linear_q_up_proj``         column-parallel
-q_proj (no q_lora_rank)      ``self_attention.linear_q_proj``            column-parallel
-kv_a_proj_with_mqa           ``self_attention.linear_kv_down_proj``      replicated
-kv_b_proj                    ``self_attention.linear_kv_up_proj``        column-parallel
-o_proj                       ``self_attention.linear_proj``              row-parallel
-===========================  ==========================================  ===============
-"""
+"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, and future GDN."""
 
 from __future__ import annotations
 
-import torch
+from dataclasses import dataclass
+
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ..adapter import _MLA_KV_A, _MLA_KV_B, _MLA_Q, _MLA_Q_A, _MLA_Q_B, _O, _QKV, NativeLoRAAdapter, _new_param
-from .base import _attach_row_parallel, _branch_input, _dropout, _Spec, _wrap_forward
+from miles_plugins.lora.modules.linear import LoRALinear, SplitQKV, attach_adapter_forward, build_qkv_permutation
+from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, ProjectionSpec
 
+QKV_PROJECTIONS = (
+    ProjectionSpec("q_proj", "q", COLUMN),
+    ProjectionSpec("k_proj", "k", COLUMN),
+    ProjectionSpec("v_proj", "v", COLUMN),
+)
+O_PROJECTION = ProjectionSpec("o_proj", "o", ROW)
+MLA_Q_A_PROJECTION = ProjectionSpec("q_a_proj", "a", REPLICATED)
+MLA_Q_B_PROJECTION = ProjectionSpec("q_b_proj", "b", COLUMN)
+MLA_KV_A_PROJECTION = ProjectionSpec("kv_a_proj_with_mqa", "a", REPLICATED)
+MLA_KV_B_PROJECTION = ProjectionSpec("kv_b_proj", "b", COLUMN)
 
-def _build_qkv_perm(
-    num_q_heads: int, num_groups: int, head_dim: int, device, output_gate: bool = False
-) -> torch.Tensor:
-    """Row permutation from plain ``[q; k; v]`` order into mcore's fused qkv layout.
-
-    mcore emits qkv grouped per query group -- ``q1 q2 k1 v1 | q3 q4 k2 v2 | ...``
-    (see ``SelfAttention.get_query_key_value_tensors``) -- while the adapter keeps
-    one ``B`` per projection. Permuting the assembled delta is cheaper and easier
-    to reason about than storing ``B`` interleaved.
-
-    With ``attention_output_gate`` (Qwen3.5 / Qwen3-Next) the query side carries a
-    second slice per head, and the two orders differ in more than the grouping: mcore
-    holds a group as ``[q heads][gate heads]`` while HF's ``q_proj`` interleaves them
-    per head as ``[q h0][gate h0][q h1][gate h1] ...``. The same permutation expresses
-    both, so the adapter still keeps one plain ``B`` per HF projection.
-    """
-    q_per_group = num_q_heads // num_groups
-    q_slices = 2 if output_gate else 1
-    k_base = num_q_heads * q_slices * head_dim
-    v_base = k_base + num_groups * head_dim
-    index: list[int] = []
-    for g in range(num_groups):
-        for slice_idx in range(q_slices):
-            for head in range(q_per_group):
-                start = ((g * q_per_group + head) * q_slices + slice_idx) * head_dim
-                index.extend(range(start, start + head_dim))
-        index.extend(range(k_base + g * head_dim, k_base + (g + 1) * head_dim))
-        index.extend(range(v_base + g * head_dim, v_base + (g + 1) * head_dim))
-    return torch.tensor(index, dtype=torch.long, device=device)
+GQA_TARGETS = frozenset(projection.hf for projection in (*QKV_PROJECTIONS, O_PROJECTION))
+MLA_TARGETS = frozenset(
+    projection.hf
+    for projection in (MLA_Q_A_PROJECTION, MLA_Q_B_PROJECTION, MLA_KV_A_PROJECTION, MLA_KV_B_PROJECTION, O_PROJECTION)
+)
+GDN_TARGETS = frozenset({"in_proj_qkvz", "in_proj_ba"})
+_GENERIC_QKV_TARGETS = frozenset({"q_proj", "k_proj", "v_proj"})
 
 
-def _attach_attention(attn: nn.Module, hf_prefix: str, spec: _Spec) -> int:
-    """Adapters on the fused qkv (column-parallel) and the output proj (row-parallel)."""
-    from megatron.core import parallel_state as ps
+@dataclass(frozen=True)
+class GQAAttentionSpec:
+    """Fused MCore QKV, including the gated-query layout used by Qwen hybrids."""
 
-    n = 0
-    tp_rank = ps.get_tensor_model_parallel_rank()
-    num_q = attn.num_attention_heads_per_partition
-    num_kv = attn.num_query_groups_per_partition
-    head_dim = attn.hidden_size_per_attention_head
+    name: str = "gqa"
+    supported_targets: frozenset[str] = GQA_TARGETS
 
-    if spec.wants("q_proj", "k_proj", "v_proj"):
-        qkv = attn.linear_qkv
-        q_rows = num_q * head_dim * (2 if spec.output_gate else 1)
-        ad = NativeLoRAAdapter(
-            _QKV, hf_prefix, num_q=num_q, num_kv=num_kv, head_dim=head_dim, q_rows=q_rows, tp_rank=tp_rank
+    def normalize_targets(
+        self,
+        targets: frozenset[str],
+        *,
+        expanded_from_all_linear: bool,
+    ) -> frozenset[str]:
+        del expanded_from_all_linear
+        return targets
+
+    def validate(self, config, *, tp_size: int) -> None:
+        num_query_groups = getattr(config, "num_query_groups", None)
+        assert num_query_groups is None or num_query_groups >= tp_size, (
+            "native LoRA (--megatron-to-hf-mode raw) does not support this architecture: "
+            f"num_query_groups ({num_query_groups}) < tensor parallel size ({tp_size}), so mcore splits a "
+            "single query group across ranks and the local qkv rows are not a per-group slice. "
+            "Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a model-specific provider."
         )
-        ref = qkv.weight
-        for name, rows in (("q", q_rows), ("k", num_kv * head_dim), ("v", num_kv * head_dim)):
-            ad.register_parameter(
-                f"{name}_A", _new_param(ref, (spec.rank, spec.hidden), init=spec.a_init, grad_sum_group="tp")
+
+    def attach(self, attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
+        """Attach fused-QKV and output-projection adapter modules."""
+        if not hasattr(attention, "linear_qkv"):
+            # Hybrid GDN/linear-attention layers are reported by the orchestrator.
+            return 0
+
+        count = 0
+        num_q = attention.num_attention_heads_per_partition
+        num_kv = attention.num_query_groups_per_partition
+        head_dim = attention.hidden_size_per_attention_head
+
+        qkv_projections = tuple(projection for projection in QKV_PROJECTIONS if projection.hf in context.targets)
+        if qkv_projections:
+            adapter = SplitQKV(
+                hf_prefix=hf_prefix,
+                reference=attention.linear_qkv.weight,
+                context=context,
+                projections=qkv_projections,
+                num_q=num_q,
+                num_kv=num_kv,
+                head_dim=head_dim,
             )
-            ad.register_parameter(f"{name}_B", _new_param(ref, (rows, spec.rank), init="zero"))
-        ad.register_buffer(
-            "out_perm", _build_qkv_perm(num_q, num_kv, head_dim, ref.device, spec.output_gate), persistent=False
-        )
-        attn.lora_qkv_adapter = ad
+            attention.lora_qkv_adapter = adapter
+            attach_adapter_forward(attention.linear_qkv, adapter, context.scale)
+            count += 1
 
-        def qkv_delta(x, _m=qkv, _ad=ad):
-            xn = _branch_input(x, _m, spec)
-            r = spec.rank
-            s = F.linear(xn, torch.cat([_ad.q_A, _ad.k_A, _ad.v_A], 0))
-            delta = torch.cat(
-                [
-                    F.linear(s[..., 0:r], _ad.q_B),
-                    F.linear(s[..., r : 2 * r], _ad.k_B),
-                    F.linear(s[..., 2 * r : 3 * r], _ad.v_B),
-                ],
-                dim=-1,
+        if context.wants("o_proj"):
+            in_local = num_q * head_dim
+            adapter = LoRALinear(
+                hf_prefix=hf_prefix,
+                projection=O_PROJECTION,
+                reference=attention.linear_proj.weight,
+                context=context,
+                in_features=in_local,
+                out_features=context.hidden,
             )
-            return delta.index_select(-1, _ad.out_perm)
-
-        _wrap_forward(qkv, qkv_delta, spec.scale)
-        n += 1
-
-    if spec.wants("o_proj"):
-        n += _attach_row_parallel(
-            attn.linear_proj, attn, _O, hf_prefix, spec, in_local=num_q * head_dim, tp_rank=tp_rank, attr="o"
-        )
-    return n
+            attention.lora_o_adapter = adapter
+            attach_adapter_forward(attention.linear_proj, adapter, context.scale)
+            count += 1
+        return count
 
 
-def _is_replicated_linear(module: nn.Module, full_out: int) -> bool:
-    """True when this linear holds the whole output dim (TELinear parallel_mode='duplicated')."""
-    if getattr(module, "parallel_mode", None) == "duplicated":
-        return True
-    return module.weight.shape[0] == full_out
+@dataclass(frozen=True)
+class MLAAttentionSpec:
+    """Compressed query and key/value projection layout used by DeepSeek/GLM/Kimi."""
 
+    name: str = "mla"
+    supported_targets: frozenset[str] = MLA_TARGETS
 
-def _attach_mla_attention(attn: nn.Module, hf_prefix: str, spec: _Spec, config) -> int:
-    """Adapters on multi-latent attention (DeepSeek / GLM / Kimi style).
+    def normalize_targets(
+        self,
+        targets: frozenset[str],
+        *,
+        expanded_from_all_linear: bool,
+    ) -> frozenset[str]:
+        """Drop generic Q/K/V names added by Miles' architecture-neutral all-linear expansion.
 
-    The query and key/value paths each compress to a latent and then expand, so
-    the adapter surface is four projections plus the output one (see the module
-    docstring's table). When ``q_lora_rank`` is unset there is no compression on
-    the query path and ``linear_q_proj`` (column-parallel, straight from hidden)
-    takes ``q_proj`` instead.
+        MLA checkpoints with ``q_lora_rank`` have q_a/q_b and kv_a/kv_b
+        projections instead. The argument parser records whether it expanded
+        the ``all-linear`` shorthand, so explicit mixed requests retain exact
+        semantics and fail validation rather than being silently rewritten.
+        """
+        if expanded_from_all_linear:
+            return targets - _GENERIC_QKV_TARGETS
+        return targets
 
-    The latent layernorms (``q_layernorm`` / ``kv_layernorm``) are separate modules
-    applied *before* the up-projections, so an up-projection's adapter sees an
-    already-normed input and does not recompute anything -- unlike the fused-layernorm
-    linears on the GQA path.
-    """
-    from megatron.core import parallel_state as ps
-
-    n = 0
-    tp_rank = ps.get_tensor_model_parallel_rank()
-    heads_local = attn.num_attention_heads_per_partition
-    q_head_dim = attn.q_head_dim
-    v_head_dim = config.v_head_dim
-    kv_lora_rank = config.kv_lora_rank
-    kv_down_out = kv_lora_rank + config.qk_pos_emb_head_dim
-
-    def add_replicated(module, kind, hf_name, full_out):
-        """Down-projection: weight, A and B are all replicated across TP."""
-        assert _is_replicated_linear(module, full_out), (
-            f"native MLA LoRA expects a replicated {hf_name} (TELinear parallel_mode='duplicated'); "
-            f"this build shards it ({tuple(module.weight.shape)} vs full out {full_out}). "
-            "Use --lora-provider-path for this variant."
-        )
-        tag = "tp" if spec.sequence_parallel else None
-        ad = NativeLoRAAdapter(kind, hf_prefix, tp_rank=tp_rank)
-        ad.register_parameter(
-            "a_A", _new_param(module.weight, (spec.rank, spec.hidden), init=spec.a_init, grad_sum_group=tag)
-        )
-        ad.register_parameter("a_B", _new_param(module.weight, (full_out, spec.rank), init="zero", grad_sum_group=tag))
-        setattr(attn, f"lora_{kind}_adapter", ad)
-
-        def delta(x, _m=module, _ad=ad):
-            return F.linear(F.linear(_dropout(x, spec, _m.training), _ad.a_A), _ad.a_B)
-
-        _wrap_forward(module, delta, spec.scale)
-        return 1
-
-    def add_column_parallel(module, kind, in_dim, out_local):
-        """Up-projection (or plain q_proj): A replicated, B sharded to this rank's heads."""
-        ad = NativeLoRAAdapter(kind, hf_prefix, out_local=out_local, tp_rank=tp_rank)
-        ad.register_parameter(
-            "b_A", _new_param(module.weight, (spec.rank, in_dim), init=spec.a_init, grad_sum_group="tp")
-        )
-        ad.register_parameter("b_B", _new_param(module.weight, (out_local, spec.rank), init="zero"))
-        setattr(attn, f"lora_{kind}_adapter", ad)
-
-        def delta(x, _m=module, _ad=ad):
-            return F.linear(F.linear(_branch_input(x, _m, spec), _ad.b_A), _ad.b_B)
-
-        _wrap_forward(module, delta, spec.scale)
-        return 1
-
-    if hasattr(attn, "linear_q_down_proj"):
-        if spec.wants("q_a_proj"):
-            n += add_replicated(attn.linear_q_down_proj, _MLA_Q_A, "q_a_proj", config.q_lora_rank)
-        if spec.wants("q_b_proj"):
-            n += add_column_parallel(attn.linear_q_up_proj, _MLA_Q_B, config.q_lora_rank, heads_local * q_head_dim)
-    elif spec.wants("q_proj") and hasattr(attn, "linear_q_proj"):
-        n += add_column_parallel(attn.linear_q_proj, _MLA_Q, spec.hidden, heads_local * q_head_dim)
-
-    if spec.wants("kv_a_proj_with_mqa"):
-        n += add_replicated(attn.linear_kv_down_proj, _MLA_KV_A, "kv_a_proj_with_mqa", kv_down_out)
-    if spec.wants("kv_b_proj"):
-        n += add_column_parallel(
-            attn.linear_kv_up_proj, _MLA_KV_B, kv_lora_rank, heads_local * (config.qk_head_dim + v_head_dim)
-        )
-
-    if spec.wants("o_proj"):
-        n += _attach_row_parallel(
-            attn.linear_proj, attn, _O, hf_prefix, spec, in_local=heads_local * v_head_dim, tp_rank=tp_rank, attr="o"
-        )
-    return n
-
-
-def _assert_supported_architecture(config, tp_size: int = 1) -> None:
-    """Reject layouts these specs would silently get wrong.
-
-    These are config-times-parallelism checks the registry's per-``model_type``
-    gate cannot express: each needs a different fused-qkv slicing or a down/up
-    projection pair, so they belong in a model-specific provider. Layers whose
-    mixer is not a fused qkv at all (linear-attention / GDN) are not an error:
-    they simply carry no attention adapter, which ``apply_native_lora`` reports.
-    """
-    if bool(getattr(config, "multi_latent_attention", False)):
+    def validate(self, config, *, tp_size: int) -> None:
+        del tp_size
         assert getattr(config, "q_lora_rank", None), (
             "native LoRA does not support multi-latent attention without q_lora_rank "
             "(DeepSeek-V2-Lite, Moonlight): the query path is uncompressed, so the adapter exports "
@@ -221,11 +129,179 @@ def _assert_supported_architecture(config, tp_size: int = 1) -> None:
             "qkv_a layout. Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a "
             "model-specific provider."
         )
-        return
-    num_query_groups = getattr(config, "num_query_groups", None)
-    assert num_query_groups is None or num_query_groups >= tp_size, (
-        "native LoRA (--megatron-to-hf-mode raw) does not support this architecture: "
-        f"num_query_groups ({num_query_groups}) < tensor parallel size ({tp_size}), so mcore splits a "
-        "single query group across ranks and the local qkv rows are not a per-group slice. "
-        "Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a model-specific provider."
-    )
+
+    def attach(self, attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
+        config = context.transformer_config
+        count = 0
+        heads_local = attention.num_attention_heads_per_partition
+        q_head_dim = attention.q_head_dim
+        v_head_dim = config.v_head_dim
+        kv_lora_rank = config.kv_lora_rank
+        kv_down_out = kv_lora_rank + config.qk_pos_emb_head_dim
+
+        def add_replicated(module, projection: ProjectionSpec, adapter_name: str, full_out: int) -> int:
+            assert _is_replicated_linear(module, full_out), (
+                f"native MLA LoRA expects a replicated {projection.hf} (TELinear parallel_mode='duplicated'); "
+                f"this build shards it ({tuple(module.weight.shape)} vs full out {full_out}). "
+                "Use --lora-provider-path for this variant."
+            )
+            adapter = LoRALinear(
+                hf_prefix=hf_prefix,
+                projection=projection,
+                reference=module.weight,
+                context=context,
+                in_features=context.hidden,
+                out_features=full_out,
+            )
+            setattr(attention, adapter_name, adapter)
+            attach_adapter_forward(module, adapter, context.scale)
+            return 1
+
+        def add_column_parallel(
+            module,
+            projection: ProjectionSpec,
+            adapter_name: str,
+            in_features: int,
+            out_local: int,
+        ) -> int:
+            adapter = LoRALinear(
+                hf_prefix=hf_prefix,
+                projection=projection,
+                reference=module.weight,
+                context=context,
+                in_features=in_features,
+                out_features=out_local,
+            )
+            setattr(attention, adapter_name, adapter)
+            attach_adapter_forward(module, adapter, context.scale)
+            return 1
+
+        if hasattr(attention, "linear_q_down_proj"):
+            if context.wants("q_a_proj"):
+                count += add_replicated(
+                    attention.linear_q_down_proj,
+                    MLA_Q_A_PROJECTION,
+                    "lora_mla_q_a_adapter",
+                    config.q_lora_rank,
+                )
+            if context.wants("q_b_proj"):
+                count += add_column_parallel(
+                    attention.linear_q_up_proj,
+                    MLA_Q_B_PROJECTION,
+                    "lora_mla_q_b_adapter",
+                    config.q_lora_rank,
+                    heads_local * q_head_dim,
+                )
+        if context.wants("kv_a_proj_with_mqa"):
+            count += add_replicated(
+                attention.linear_kv_down_proj,
+                MLA_KV_A_PROJECTION,
+                "lora_mla_kv_a_adapter",
+                kv_down_out,
+            )
+        if context.wants("kv_b_proj"):
+            count += add_column_parallel(
+                attention.linear_kv_up_proj,
+                MLA_KV_B_PROJECTION,
+                "lora_mla_kv_b_adapter",
+                kv_lora_rank,
+                heads_local * (config.qk_head_dim + v_head_dim),
+            )
+        if context.wants("o_proj"):
+            in_local = heads_local * v_head_dim
+            adapter = LoRALinear(
+                hf_prefix=hf_prefix,
+                projection=O_PROJECTION,
+                reference=attention.linear_proj.weight,
+                context=context,
+                in_features=in_local,
+                out_features=context.hidden,
+            )
+            attention.lora_o_adapter = adapter
+            attach_adapter_forward(attention.linear_proj, adapter, context.scale)
+            count += 1
+        return count
+
+
+@dataclass(frozen=True)
+class GDNAttentionSpec:
+    """Explicit future boundary for GDN/linear-attention LoRA projections."""
+
+    name: str = "gdn"
+    supported_targets: frozenset[str] = GDN_TARGETS
+
+    def normalize_targets(
+        self,
+        targets: frozenset[str],
+        *,
+        expanded_from_all_linear: bool,
+    ) -> frozenset[str]:
+        del expanded_from_all_linear
+        return targets
+
+    def validate(self, config, *, tp_size: int) -> None:
+        del config, tp_size
+        raise AssertionError(
+            "Miles-native GDN LoRA is not implemented yet; use --megatron-to-hf-mode bridge "
+            "or point --lora-provider-path at a model-specific provider."
+        )
+
+    def attach(self, attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
+        del attention, hf_prefix
+        if context.targets.intersection(self.supported_targets):
+            self.validate(None, tp_size=context.tp_size)
+        return 0
+
+
+@dataclass(frozen=True)
+class HybridGQAGDNAttentionSpec:
+    """Per-layer dispatch for Qwen hybrids containing both GQA and GDN mixers."""
+
+    name: str = "gqa_gdn"
+    supported_targets: frozenset[str] = GQA_TARGETS
+
+    def normalize_targets(
+        self,
+        targets: frozenset[str],
+        *,
+        expanded_from_all_linear: bool,
+    ) -> frozenset[str]:
+        del expanded_from_all_linear
+        return targets
+
+    def validate(self, config, *, tp_size: int) -> None:
+        GQA_ATTENTION_SPEC.validate(config, tp_size=tp_size)
+
+    def attach(self, attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
+        if hasattr(attention, "linear_qkv"):
+            return GQA_ATTENTION_SPEC.attach(attention, hf_prefix, context)
+        return GDN_ATTENTION_SPEC.attach(attention, hf_prefix, context)
+
+
+def _is_replicated_linear(module: nn.Module, full_out: int) -> bool:
+    if getattr(module, "parallel_mode", None) == "duplicated":
+        return True
+    return module.weight.shape[0] == full_out
+
+
+GQA_ATTENTION_SPEC = GQAAttentionSpec()
+MLA_ATTENTION_SPEC = MLAAttentionSpec()
+GDN_ATTENTION_SPEC = GDNAttentionSpec()
+HYBRID_GQA_GDN_ATTENTION_SPEC = HybridGQAGDNAttentionSpec()
+
+
+def _attach_attention(attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
+    return GQA_ATTENTION_SPEC.attach(attention, hf_prefix, context)
+
+
+def _attach_mla_attention(attention: nn.Module, hf_prefix: str, context: AttachContext, config=None) -> int:
+    del config
+    return MLA_ATTENTION_SPEC.attach(attention, hf_prefix, context)
+
+
+def _assert_supported_architecture(config, tp_size: int = 1) -> None:
+    spec = MLA_ATTENTION_SPEC if bool(getattr(config, "multi_latent_attention", False)) else GQA_ATTENTION_SPEC
+    spec.validate(config, tp_size=tp_size)
+
+
+_build_qkv_perm = build_qkv_permutation

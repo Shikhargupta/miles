@@ -15,10 +15,16 @@ def _apply_lora_arg_parsing(args: Namespace) -> Namespace:
     """Extract and apply only the LoRA target-module parsing logic from
     miles_validate_args, avoiding unrelated assertions."""
     args = deepcopy(args)
+    args._target_modules_expanded_from_all_linear = bool(
+        getattr(args, "_target_modules_expanded_from_all_linear", False)
+        or (args.lora_rank > 0 and args.target_modules == "all-linear")
+    )
     if args.lora_rank > 0:
         assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
 
-        if args.target_modules == "all-linear":
+        if isinstance(args.target_modules, (list, tuple)):
+            modules = list(args.target_modules)
+        elif args.target_modules == "all-linear":
             modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         elif "," in args.target_modules:
             modules = [m.strip() for m in args.target_modules.split(",")]
@@ -47,11 +53,17 @@ class TestLoraTargetModuleParsing:
         args = Namespace(lora_rank=32, target_modules="all-linear", exclude_modules=None)
         result = _apply_lora_arg_parsing(args)
         assert result.target_modules == ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        assert result._target_modules_expanded_from_all_linear
+
+        validated_again = _apply_lora_arg_parsing(result)
+        assert validated_again._target_modules_expanded_from_all_linear
+        assert validated_again.target_modules == result.target_modules
 
     def test_comma_separated_split(self):
         args = Namespace(lora_rank=16, target_modules="q_proj, k_proj, v_proj", exclude_modules=None)
         result = _apply_lora_arg_parsing(args)
         assert result.target_modules == ["q_proj", "k_proj", "v_proj"]
+        assert not result._target_modules_expanded_from_all_linear
 
     def test_comma_separated_no_spaces(self):
         args = Namespace(lora_rank=16, target_modules="q_proj,k_proj", exclude_modules=None)

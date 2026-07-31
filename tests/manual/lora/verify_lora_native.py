@@ -39,7 +39,6 @@ import sys
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-
 from megatron.core import parallel_state as ps
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
 from megatron.core.models.gpt.gpt_model import GPTModel
@@ -47,13 +46,9 @@ from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
 
 from miles.backends.megatron_utils.lora_utils import reduce_marked_lora_grads
-from miles_plugins.lora.lora import (
-    NativeLoRAAdapter,
-    _rmsnorm,
-    apply_native_lora,
-    export_lora_hf_named,
-    load_lora_adapter_hf,
-)
+from miles_plugins.lora.distributed import _rmsnorm
+from miles_plugins.lora.lora import apply_native_lora, export_lora_hf_named, load_lora_adapter_hf
+from miles_plugins.lora.modules.linear import NativeLoRAAdapter
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False

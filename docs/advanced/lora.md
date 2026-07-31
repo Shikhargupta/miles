@@ -118,6 +118,12 @@ reason.
 * **Target modules**: `--target-modules` is required whenever
   `--lora-rank > 0`. There is no auto-detection; the launcher asserts at
   startup.
+* **Native partial targets**: raw-mode native LoRA treats fused projections
+  exactly: `q_proj` does not allocate K/V adapters, and `gate_proj` does not
+  allocate an up-projection adapter. Experimental native checkpoints made
+  before this contract used a different optimizer parameter count for partial
+  targets; reload their HF adapter weights with a fresh optimizer rather than
+  resuming the old optimizer state.
 * **Single adapter per run**: only one set of `--lora-*` arguments is
   honored per training job. Training multiple LoRA adapters in parallel
   within a single `train.py` run is not implemented today — run separate
@@ -141,11 +147,12 @@ The bridge between Megatron's LoRA path and SGLang adapter loading is in:
   (`resolve_lora_provider`), and HF ↔ Megatron module-name conversion for both
   the `lora` and `canonical_lora` variants.
 - `miles_plugins/lora/` — the raw-mode path, and the default
-  `--lora-provider-path` provider: the `model_type` → spec registry
-  (`registry.py`), the per-architecture attach specs (`spec/attention.py`,
-  `spec/mlp.py`), the self-describing adapter and its projection table
-  (`adapter.py`), HF/PEFT export and load (`io.py`), and HF naming
-  (`naming.py`).
+  `--lora-provider-path` provider. `lora.py` is its single lifecycle entry
+  point; `config.py` and `registry.py` resolve run configuration and
+  `model_type` → `LoRAArchSpec`; `spec/` describes attention, MLP, and future
+  MoE layouts; `modules/` owns callable adapter modules; `codec/` owns HF
+  naming/load/export and native checkpoint helpers; and `distributed.py` owns
+  the remaining TP/SP communication and replicated-gradient reduction.
 - `miles/backends/megatron_utils/bridge_lora_helpers.py` — the Megatron-Bridge
   PEFT hook that wraps the model with LoRA layers before training.
 - `miles/backends/megatron_utils/checkpoint.py` — adapter-aware save and load.

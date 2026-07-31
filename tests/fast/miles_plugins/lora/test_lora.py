@@ -12,23 +12,24 @@ import torch
 
 from miles.backends.megatron_utils.lora_utils import (
     _native_adapter_shard_name,
+    convert_target_modules_to_hf,
     reduce_marked_lora_grads,
     resolve_lora_provider,
 )
 from miles.utils.lora import lora_rollout_enabled
+from miles_plugins.lora.codec.hf import _hf_naming
+from miles_plugins.lora.distributed import _rmsnorm
 from miles_plugins.lora.lora import (
-    _ADAPTER_LAYOUT,
-    SUPPORTED_TARGETS,
-    _assert_supported_architecture,
-    _build_qkv_perm,
-    _hf_naming,
     _require_grad_on_first_activation,
-    _rmsnorm,
-    convert_target_modules_to_hf,
     export_lora_hf_named,
     load_lora_adapter_hf,
     wrap_model_provider_with_lora,
 )
+from miles_plugins.lora.modules.linear import _build_qkv_perm
+from miles_plugins.lora.spec.attention import GQA_TARGETS, MLA_TARGETS, _assert_supported_architecture
+from miles_plugins.lora.spec.mlp import MLP_TARGETS
+
+IMPLEMENTED_TARGETS = GQA_TARGETS | MLA_TARGETS | MLP_TARGETS
 
 
 def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, num_query_groups=8, q_lora_rank=1536):
@@ -340,21 +341,33 @@ class TestSupportedTargets:
     attaching nothing while SGLang still set up LoRA for the full list.
     """
 
-    def test_table_and_supported_set_agree(self):
-        assert SUPPORTED_TARGETS == {proj.hf for projs in _ADAPTER_LAYOUT.values() for proj in projs}
+    def test_architecture_specs_own_the_implemented_target_names(self):
+        assert IMPLEMENTED_TARGETS == {
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "q_a_proj",
+            "q_b_proj",
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        }
 
     def test_megatron_names_normalise_into_the_supported_set(self):
         for megatron_name in ("linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"):
             converted = set(convert_target_modules_to_hf([megatron_name]))
             assert converted
-            assert converted <= SUPPORTED_TARGETS, (megatron_name, converted - SUPPORTED_TARGETS)
+            assert converted <= IMPLEMENTED_TARGETS, (megatron_name, converted - IMPLEMENTED_TARGETS)
 
     def test_mla_megatron_names_normalise_too(self):
-        assert set(convert_target_modules_to_hf(["linear_q_down_proj"])) <= SUPPORTED_TARGETS
+        assert set(convert_target_modules_to_hf(["linear_q_down_proj"])) <= IMPLEMENTED_TARGETS
 
     def test_hf_names_pass_through_unchanged(self):
         names = ["q_proj", "v_proj", "down_proj"]
         assert set(convert_target_modules_to_hf(names)) == set(names)
 
     def test_unimplemented_target_is_not_silently_accepted(self):
-        assert "in_proj_qkvz" not in SUPPORTED_TARGETS
+        assert "in_proj_qkvz" not in IMPLEMENTED_TARGETS

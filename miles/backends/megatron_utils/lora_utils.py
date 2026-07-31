@@ -117,61 +117,11 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
-_marked_lora_grad_params_cache: dict[int, list] = {}
-
-
 def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
-    """Sum partial grads of replicated native-LoRA params over their tagged group, pre-DP-reduce.
+    """Compatibility delegate to the native plugin's distributed gradient reducer."""
+    from miles_plugins.lora.distributed import reduce_marked_lora_grads as reduce_native_lora_grads
 
-    A native adapter's ``A`` on a column-parallel module is replicated across the TP
-    group while each rank only holds its slice of ``B``, so every rank computes a
-    partial ``dL/dA`` and the true gradient is their sum. The same applies to a
-    replicated ``B`` (row-parallel) or to both sides (MLA's replicated
-    down-projections) once sequence parallelism gives each rank a different sequence
-    shard. Params are tagged at creation with ``_lora_grad_sum_group``; ``ep`` is
-    accepted as a tag for providers whose adapters are expert-parallel, and this is a
-    no-op when nothing is tagged.
-    """
-    from megatron.core import parallel_state as ps
-
-    key = id(model[0]) if model else 0
-    marked = _marked_lora_grad_params_cache.get(key)
-    if marked is None:
-        marked = []
-        for chunk in model:
-            for param in chunk.parameters():
-                group_name = getattr(param, "_lora_grad_sum_group", None)
-                if group_name is not None and param.requires_grad:
-                    marked.append((param, group_name))
-        _marked_lora_grad_params_cache[key] = marked
-    if not marked:
-        return
-    groups = {
-        "tp": (ps.get_tensor_model_parallel_group(), ps.get_tensor_model_parallel_world_size()),
-        "ep": (ps.get_expert_model_parallel_group(), ps.get_expert_model_parallel_world_size()),
-    }
-    for group_name in ("tp", "ep"):
-        group, size = groups[group_name]
-        if size <= 1:
-            continue
-        grads = []
-        for param, g_name in marked:
-            if g_name != group_name:
-                continue
-            grad = getattr(param, "main_grad", None)
-            if grad is None:
-                grad = param.grad
-            if grad is not None:
-                grads.append(grad)
-        for dt in {g.dtype for g in grads}:
-            gs = [g for g in grads if g.dtype == dt]
-            if len(gs) == 1:
-                dist.all_reduce(gs[0], op=dist.ReduceOp.SUM, group=group)
-                continue
-            flat = torch._utils._flatten_dense_tensors(gs)
-            dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=group)
-            for g, red in zip(gs, torch._utils._unflatten_dense_tensors(flat, gs), strict=False):
-                g.copy_(red)
+    reduce_native_lora_grads(model)
 
 
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
@@ -196,9 +146,10 @@ def _is_adapter_param_name(name: str) -> bool:
 
 
 def _native_adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int) -> str:
-    """Per-rank adapter shard filename. EP is only in the name when it actually shards."""
-    suffix = f"_ep{ep_rank}" if ep_rank > 0 else ""
-    return f"adapter_megatron_tp{tp_rank}_pp{pp_rank}{suffix}.pt"
+    """Compatibility delegate for the native adapter checkpoint filename."""
+    from miles_plugins.lora.codec.checkpoint import native_adapter_shard_name
+
+    return native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
 
 
 _param_grad_buffer_patched = False
@@ -517,24 +468,31 @@ def save_lora_checkpoint(
     tp_rank = parallel_state.tp.rank
     pp_rank = parallel_state.pp.rank
     ep_rank = parallel_state.ep.rank
+    bridge_mode = getattr(args, "megatron_to_hf_mode", "raw") == "bridge"
+    built_in_native_provider = getattr(args, "lora_provider_path", None) in (None, _DEFAULT_LORA_PROVIDER)
 
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
         dist.barrier()
 
     if is_dp_cp_rank_0:
-        adapter_state: dict[str, torch.Tensor] = {}
-        for model_chunk in model:
-            for name, param in model_chunk.named_parameters():
-                if _is_adapter_param_name(name):
-                    adapter_state[name] = param.data.cpu()
+        if bridge_mode or not built_in_native_provider:
+            adapter_state: dict[str, torch.Tensor] = {}
+            for model_chunk in model:
+                for name, param in model_chunk.named_parameters():
+                    if _is_adapter_param_name(name):
+                        adapter_state[name] = param.data.cpu()
+        else:
+            from miles_plugins.lora.codec.checkpoint import native_adapter_state_dict
+
+            adapter_state = native_adapter_state_dict(model)
 
         native_path = save_path / _native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
         torch.save(adapter_state, native_path)
         logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
     lora_state_dict: dict[str, torch.Tensor] = {}
-    if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
+    if bridge_mode:
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         with megatron_bridge_utils.patch_megatron_model(model):
             for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
@@ -557,11 +515,16 @@ def save_lora_checkpoint(
             save_path / "adapter_model.safetensors",
         )
 
-        target_modules_hf = (
-            convert_target_modules_to_hf(list(args.target_modules))
-            if args.target_modules
-            else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        )
+        if bridge_mode:
+            target_modules_hf = (
+                convert_target_modules_to_hf(list(args.target_modules))
+                if args.target_modules
+                else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            )
+        else:
+            from miles_plugins.lora.codec.hf import target_modules_from_hf_names
+
+            target_modules_hf = target_modules_from_hf_names(lora_state_dict)
         config = {
             "peft_type": "LORA",
             "r": args.lora_rank,
@@ -638,15 +601,30 @@ def load_lora_adapter(
     native_path = adapter_dir / _native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
     if native_path.exists():
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
-        loaded = 0
-        for model_chunk in model:
-            for name, param in model_chunk.named_parameters():
-                if name in state_dict:
-                    param.data.copy_(state_dict[name].to(device=param.device))
-                    loaded += 1
+        from miles_plugins.lora.codec.checkpoint import has_native_adapters, load_native_adapter_state_dict
+
+        unexpected: list[str] = []
+        if has_native_adapters(model):
+            loaded, unexpected = load_native_adapter_state_dict(model, state_dict)
+            if unexpected:
+                logger.warning(
+                    "Ignored %d native adapter tensors absent from the current exact target set: %s. "
+                    "A pre-refactor partial-target checkpoint may have trained fused sibling projections; "
+                    "resume with matching targets or reload the selected weights using a fresh optimizer. "
+                    "Optimizer and scheduler state will not be restored for this incompatible shard.",
+                    len(unexpected),
+                    unexpected[:8],
+                )
+        else:
+            loaded = 0
+            for model_chunk in model:
+                for name, param in model_chunk.named_parameters():
+                    if name in state_dict:
+                        param.data.copy_(state_dict[name].to(device=param.device))
+                        loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+        iteration = None if unexpected else _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration
 
     # ---- HF PEFT format (future work) ----

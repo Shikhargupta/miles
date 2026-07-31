@@ -12,8 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles_plugins.lora.naming import _layer_prefix_from_mapping
+from miles_plugins.lora.codec.hf import _layer_prefix_from_mapping
+from miles_plugins.lora.config import LoRAConfig
 from miles_plugins.lora.registry import GQA, MLA, MODEL_SPECS, _model_type_candidates, resolve_model_spec
+from miles_plugins.lora.spec.base import LoRAArchSpec
 
 
 def _checkpoint(tmp_path, config: dict) -> str:
@@ -48,19 +50,21 @@ class TestResolveModelSpec:
         path = _checkpoint(tmp_path, {"model_type": "qwen3"})
         model_type, spec = resolve_model_spec(_args(path), _config())
         assert model_type == "qwen3"
-        assert spec.attention == GQA
+        assert spec.name == GQA
+        assert spec.attention.name == GQA
 
     def test_registered_mla_architecture_resolves(self, tmp_path):
         path = _checkpoint(tmp_path, {"model_type": "deepseek_v3"})
         model_type, spec = resolve_model_spec(_args(path), _config(mla=True))
         assert model_type == "deepseek_v3"
-        assert spec.attention == MLA
+        assert spec.name == MLA
+        assert spec.attention.name == MLA
 
     def test_nested_text_config_wins_when_the_wrapper_is_unregistered(self, tmp_path):
         path = _checkpoint(tmp_path, {"model_type": "some_vlm", "text_config": {"model_type": "qwen3_moe"}})
         model_type, spec = resolve_model_spec(_args(path), _config())
         assert model_type == "qwen3_moe"
-        assert spec.attention == GQA
+        assert spec.name == GQA
 
     def test_unregistered_architecture_raises_naming_the_escape_hatches(self, tmp_path):
         path = _checkpoint(tmp_path, {"model_type": "gpt_oss"})
@@ -77,26 +81,70 @@ class TestResolveModelSpec:
         with pytest.raises(AssertionError, match="disagree"):
             resolve_model_spec(_args(path), _config(mla=True))
 
-    def test_no_config_json_falls_back_to_structural_dispatch(self, tmp_path):
-        assert resolve_model_spec(_args(str(tmp_path)), _config()) == (None, None)
+    def test_checkpoint_without_config_json_fails_closed(self, tmp_path):
+        with pytest.raises(AssertionError, match="config.json"):
+            resolve_model_spec(_args(str(tmp_path)), _config())
 
     def test_no_checkpoint_falls_back_to_structural_dispatch(self):
-        assert resolve_model_spec(_args(None), _config()) == (None, None)
-        assert resolve_model_spec(SimpleNamespace(), _config()) == (None, None)
+        assert resolve_model_spec(_args(None), _config())[1].name == GQA
+        assert resolve_model_spec(SimpleNamespace(), _config(mla=True))[1].name == MLA
 
 
 class TestRegistryTable:
     def test_every_entry_names_a_known_family(self):
-        assert {spec.attention for spec in MODEL_SPECS.values()} <= {GQA, MLA}
+        assert all(isinstance(spec, LoRAArchSpec) for spec in MODEL_SPECS.values())
+        assert {spec.model_family for spec in MODEL_SPECS.values()} <= {GQA, MLA}
 
     def test_the_e2e_verified_architectures_are_registered(self):
         """Qwen3-0.6B and Qwen3-30B-A3B ran the full RL loop in #1792."""
-        assert MODEL_SPECS["qwen3"].attention == GQA
-        assert MODEL_SPECS["qwen3_moe"].attention == GQA
+        assert MODEL_SPECS["qwen3"].name == GQA
+        assert MODEL_SPECS["qwen3_moe"].name == GQA
 
     def test_the_shipped_mla_families_are_registered_as_mla(self):
         for model_type in ("deepseek_v3", "deepseek_v32", "glm4_moe_lite", "glm_moe_dsa", "kimi_k25"):
-            assert MODEL_SPECS[model_type].attention == MLA, model_type
+            assert MODEL_SPECS[model_type].name == MLA, model_type
+
+    def test_qwen_hybrids_use_per_layer_gqa_gdn_dispatch(self):
+        for model_type in ("qwen3_5", "qwen3_6", "qwen3_next"):
+            assert MODEL_SPECS[model_type].name == "gqa_gdn"
+            assert MODEL_SPECS[model_type].attention.name == "gqa_gdn"
+
+    def test_mla_all_linear_drops_only_parser_added_generic_qkv_targets(self):
+        config = LoRAConfig(
+            rank=8,
+            alpha=16,
+            dropout=0.0,
+            target_modules=frozenset(
+                {
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "q_a_proj",
+                    "q_b_proj",
+                    "kv_a_proj_with_mqa",
+                    "kv_b_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                }
+            ),
+            expanded_from_all_linear=True,
+        )
+        normalized = MODEL_SPECS["deepseek_v3"].normalize_config(config)
+        assert not normalized.target_modules.intersection({"q_proj", "k_proj", "v_proj"})
+        assert {"q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj"} <= normalized.target_modules
+
+    def test_mla_explicit_mixed_targets_are_not_silently_rewritten(self):
+        config = LoRAConfig(
+            rank=8,
+            alpha=16,
+            dropout=0.0,
+            target_modules=frozenset({"q_proj", "q_a_proj"}),
+        )
+        normalized = MODEL_SPECS["deepseek_v3"].normalize_config(config)
+        assert normalized is config
+        assert "q_proj" not in MODEL_SPECS["deepseek_v3"].supported_targets
 
 
 class TestMbridgePrefixParsing:

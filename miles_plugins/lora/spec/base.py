@@ -1,193 +1,153 @@
-"""Spec-shared runtime: per-run constants and the attach primitives.
-
-Parallelism contract, mirroring the module each adapter wraps:
-
-* column-parallel: ``A`` is replicated and each rank computes a partial product,
-  so its grads are summed over TP (tagged ``_lora_grad_sum_group``); ``B`` is
-  row-sharded to this rank's output slice.
-* row-parallel: ``A`` is column-sharded to this rank's input slice and the
-  partial products are TP-reduced (reduce-scatter under sequence parallelism);
-  ``B`` is replicated, and its grads are TP-summed when sequence parallel.
-* replicated (MLA down-projections): both ``A`` and ``B`` are replicated, so their
-  grads only diverge per rank -- and therefore only need summing -- under sequence
-  parallelism, where each rank feeds a different sequence shard.
-"""
+"""Architecture contracts shared by native-LoRA specs, modules, and codecs."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any, Literal, Protocol
 
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
+from miles_plugins.lora.config import LoRAConfig
 
-from ..adapter import SUPPORTED_TARGETS, NativeLoRAAdapter, _new_param
-from ..naming import _hf_naming
+COLUMN, ROW, REPLICATED = "column", "row", "replicated"
 
 
 @dataclass(frozen=True)
-class _Spec:
-    """Everything the wrappers need that is constant across a model chunk."""
+class ProjectionSpec:
+    """External name and shard layout for one logical HF LoRA projection.
 
-    rank: int
-    scale: float
-    dropout: float
-    a_init: str
-    eps: float
-    hidden: int
-    sequence_parallel: bool
-    zero_centered_gamma: bool
+    ``attr`` names the parameter pair stored on the adapter
+    (``<attr>_A``/``<attr>_B``). The codec derives each rank's shard width from
+    those parameter shapes, so this descriptor stays static and pickle-safe.
+    """
+
+    hf: str
+    attr: str
+    layout: Literal["column", "row", "replicated"]
+
+
+@dataclass(frozen=True)
+class AttachContext:
+    """Resolved runtime information passed to architecture attachment specs.
+
+    This deliberately keeps run-level ``LoRAConfig`` separate from model and
+    parallel metadata. It replaces the old ``_Spec`` object, which mixed all
+    three concerns together.
+    """
+
+    lora: LoRAConfig
+    transformer_config: Any
     tp_size: int
-    targets: frozenset[str]
-    output_gate: bool
+    tp_rank: int
     layer_prefix: str
     shared_expert: str
 
-    @classmethod
-    def from_args(cls, args, config) -> _Spec:
-        from megatron.core import parallel_state as ps
+    @property
+    def rank(self) -> int:
+        return self.lora.rank
 
-        rank = int(args.lora_rank)
-        assert rank > 0, "native LoRA requires --lora-rank > 0"
-        targets = frozenset(convert_target_modules_to_hf(list(args.target_modules or ())))
-        unsupported = sorted(targets - SUPPORTED_TARGETS)
-        assert not unsupported, (
-            f"native LoRA (--megatron-to-hf-mode raw) does not implement {unsupported}. "
-            f"Supported targets are {sorted(SUPPORTED_TARGETS)}; Megatron-style names are accepted "
-            "and normalised. Use --megatron-to-hf-mode bridge, or point --lora-provider-path at a "
-            "model-specific provider."
-        )
-        layer_prefix, shared_expert = _hf_naming(getattr(args, "hf_checkpoint", None))
-        return cls(
-            rank=rank,
-            scale=float(args.lora_alpha) / rank,
-            dropout=float(getattr(args, "lora_dropout", 0.0) or 0.0),
-            a_init=getattr(args, "lora_A_init_method", "xavier") or "xavier",
-            eps=config.layernorm_epsilon,
-            hidden=config.hidden_size,
-            sequence_parallel=bool(config.sequence_parallel),
-            zero_centered_gamma=bool(getattr(config, "layernorm_zero_centered_gamma", False)),
-            tp_size=ps.get_tensor_model_parallel_world_size(),
-            targets=targets,
-            output_gate=bool(getattr(config, "attention_output_gate", False)),
-            layer_prefix=layer_prefix,
-            shared_expert=shared_expert,
-        )
+    @property
+    def scale(self) -> float:
+        return self.lora.scale
+
+    @property
+    def dropout(self) -> float:
+        return self.lora.dropout
+
+    @property
+    def a_init(self) -> str:
+        return self.lora.a_init_method
+
+    @property
+    def targets(self) -> frozenset[str]:
+        return self.lora.target_modules
+
+    @property
+    def eps(self) -> float:
+        return self.transformer_config.layernorm_epsilon
+
+    @property
+    def hidden(self) -> int:
+        return self.transformer_config.hidden_size
+
+    @property
+    def sequence_parallel(self) -> bool:
+        return bool(self.transformer_config.sequence_parallel)
+
+    @property
+    def zero_centered_gamma(self) -> bool:
+        return bool(getattr(self.transformer_config, "layernorm_zero_centered_gamma", False))
+
+    @property
+    def output_gate(self) -> bool:
+        return bool(getattr(self.transformer_config, "attention_output_gate", False))
 
     def wants(self, *names: str) -> bool:
         return bool(self.targets.intersection(names))
 
 
-def _rmsnorm(x: torch.Tensor, gamma: torch.Tensor, eps: float, zero_centered_gamma: bool = False) -> torch.Tensor:
-    """Recompute the RMSNorm fused into TELayerNormColumnParallelLinear (fp32 internals).
+class AttentionLoRASpec(Protocol):
+    """Architecture-specific attention attachment contract."""
 
-    Under ``--apply-layernorm-1p`` (Qwen3.5 / Qwen3-Next) the stored weight is
-    ``gamma - 1``, so the branch has to add the 1 back or it sees a differently
-    scaled input than the base GEMM does.
-    """
-    xf = x.float()
-    normed = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps)
-    weight = gamma.float() + 1.0 if zero_centered_gamma else gamma.float()
-    return (normed * weight).to(x.dtype)
+    name: str
+    supported_targets: frozenset[str]
 
+    def normalize_targets(
+        self,
+        targets: frozenset[str],
+        *,
+        expanded_from_all_linear: bool,
+    ) -> frozenset[str]: ...
 
-def _branch_input(x: torch.Tensor, module: nn.Module, spec: _Spec) -> torch.Tensor:
-    """Input to a column-parallel adapter branch.
+    def validate(self, config, *, tp_size: int) -> None: ...
 
-    The wrapped module may fuse its layernorm (``layer_norm_weight``), in which
-    case the branch has to recompute it to see the same input the base GEMM does.
-    Under sequence parallelism the module's input is sequence-sharded, so gather
-    it back to the full sequence the adapter's replicated ``A`` expects.
-
-    Without sequence parallelism the input is replicated across TP instead, and each
-    rank's branch produces only its own output slice, so each computes a partial
-    ``dL/dx``. ``copy_to_tensor_model_parallel_region`` is identity forward and
-    all-reduce backward, which sums those partials the way the base GEMM's own copy
-    does; leaving it out sends every upstream layer a fraction of the adapter's
-    gradient.
-    """
-    gamma = getattr(module, "layer_norm_weight", None)
-    if gamma is not None:
-        x = _rmsnorm(x, gamma, spec.eps, spec.zero_centered_gamma)
-    if spec.sequence_parallel:
-        from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
-
-        x = gather_from_sequence_parallel_region(x)
-    elif spec.tp_size > 1:
-        from megatron.core.tensor_parallel.mappings import copy_to_tensor_model_parallel_region
-
-        x = copy_to_tensor_model_parallel_region(x)
-    return _dropout(x, spec, module.training)
+    def attach(self, attention: nn.Module, hf_prefix: str, context: AttachContext) -> int: ...
 
 
-def _dropout(x: torch.Tensor, spec: _Spec, training: bool) -> torch.Tensor:
-    if spec.dropout and training:
-        return F.dropout(x, p=spec.dropout, training=True)
-    return x
+class MLPLoRASpec(Protocol):
+    """Architecture-specific dense/shared-MLP attachment contract."""
+
+    name: str
+    supported_targets: frozenset[str]
+
+    def attach(self, mlp: nn.Module, hf_prefix: str, context: AttachContext) -> int: ...
 
 
-def _reduce_row_parallel(partial: torch.Tensor, spec: _Spec) -> torch.Tensor:
-    """Complete a row-parallel adapter branch: each rank holds a partial sum."""
-    if spec.tp_size <= 1:
-        return partial
-    from megatron.core.tensor_parallel.mappings import (
-        reduce_from_tensor_model_parallel_region,
-        reduce_scatter_to_sequence_parallel_region,
-    )
+class MoELoRASpec(Protocol):
+    """Routed-expert validation/attachment boundary."""
 
-    if spec.sequence_parallel:
-        return reduce_scatter_to_sequence_parallel_region(partial)
-    return reduce_from_tensor_model_parallel_region(partial)
+    supported_targets: frozenset[str]
+
+    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> None: ...
 
 
-def _wrap_forward(module: nn.Module, delta_fn, scale: float) -> None:
-    """Add ``scale * delta_fn(x)`` to ``module``'s output, keeping its (out, bias) contract."""
-    original = module.forward
+@dataclass(frozen=True)
+class LoRAArchSpec:
+    """Complete native-LoRA contract selected for one HF model architecture."""
 
-    def forward(x, *args, **kwargs):
-        out, bias = original(x, *args, **kwargs)
-        return torch.add(out, delta_fn(x), alpha=scale), bias
+    name: str
+    model_family: str
+    attention: AttentionLoRASpec
+    mlp: MLPLoRASpec
+    moe: MoELoRASpec
 
-    module.forward = forward
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        return self.attention.supported_targets | self.mlp.supported_targets | self.moe.supported_targets
 
+    def normalize_config(self, config: LoRAConfig) -> LoRAConfig:
+        """Apply architecture-specific compatibility normalization to targets."""
+        targets = self.attention.normalize_targets(
+            config.target_modules,
+            expanded_from_all_linear=config.expanded_from_all_linear,
+        )
+        return config if targets == config.target_modules else replace(config, target_modules=targets)
 
-def _attach_row_parallel(
-    module: nn.Module,
-    owner: nn.Module,
-    kind: str,
-    hf_prefix: str,
-    spec: _Spec,
-    *,
-    in_local: int,
-    tp_rank: int,
-    attr: str,
-) -> int:
-    """Adapter on a row-parallel linear: ``A`` col-sharded, ``B`` replicated.
-
-    Shared by ``o_proj`` on both attention flavours and by the MLP's ``down_proj``:
-    the three differ only in this rank's input width and the parameter names.
-    ``B`` is replicated, so its gradient only diverges per rank -- and therefore only
-    needs TP summing -- under sequence parallelism.
-    """
-    adapter = NativeLoRAAdapter(kind, hf_prefix, in_local=in_local, tp_rank=tp_rank)
-    reference = module.weight
-    adapter.register_parameter(f"{attr}_A", _new_param(reference, (spec.rank, in_local), init=spec.a_init))
-    adapter.register_parameter(
-        f"{attr}_B",
-        _new_param(
-            reference,
-            (spec.hidden, spec.rank),
-            init="zero",
-            grad_sum_group="tp" if spec.sequence_parallel else None,
-        ),
-    )
-    setattr(owner, f"lora_{kind}_adapter", adapter)
-
-    def delta(x, _m=module, _ad=adapter):
-        partial = F.linear(_dropout(x, spec, _m.training), getattr(_ad, f"{attr}_A"))
-        return F.linear(_reduce_row_parallel(partial, spec), getattr(_ad, f"{attr}_B"))
-
-    _wrap_forward(module, delta, spec.scale)
-    return 1
+    def validate(self, context: AttachContext) -> None:
+        unsupported = sorted(context.targets - self.supported_targets)
+        assert not unsupported, (
+            f"native LoRA architecture spec {self.name!r} does not implement targets {unsupported}. "
+            f"Supported targets are {sorted(self.supported_targets)}; use --megatron-to-hf-mode bridge "
+            "or point --lora-provider-path at a model-specific provider."
+        )
+        self.attention.validate(context.transformer_config, tp_size=context.tp_size)
