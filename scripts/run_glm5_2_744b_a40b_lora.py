@@ -132,6 +132,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # rollout engine
     rollout_num_gpus_per_engine: int = 2  # rollout tp=2
+    # GPUs per fp8 engine on the full model. Under colocate + LoRA sglang mirrors each GPU's
+    # weight shard into host RAM (enable_weights_cpu_backup), costing
+    # (fp8 ckpt / this) * gpus_per_node per node: 8 costs 704 GiB/node against the 744B fp8
+    # ckpt, 16 halves that. Raise it when the Megatron bridge load pushes a node past its
+    # cgroup limit; capped at the world size, so 8 is a no-op on a single node.
+    fp8_rollout_gpus_per_engine: int = 8
     sglang_mem_fraction_static: float = 0.5
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
@@ -271,7 +277,11 @@ def _train(args: ScriptArgs):
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
-        _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
+        _eng = (
+            min(args.fp8_rollout_gpus_per_engine, args.actor_num_nodes * args.num_gpus_per_node)
+            if _fp8_full
+            else args.rollout_num_gpus_per_engine
+        )
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
         _cg = 256 if _fp8_full else 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
