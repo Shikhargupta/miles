@@ -19,6 +19,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 8
     hardware: Literal["H200"] = "H200"
     enable_eval: bool = True
+    download_model: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -27,9 +28,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def prepare(args: ScriptArgs):
     U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(
-        f"hf download {args.model_org}/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}"
-    )
+    if args.download_model:
+        U.exec_command(
+            f"hf download {args.model_org}/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}"
+        )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
