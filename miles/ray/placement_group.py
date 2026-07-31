@@ -3,7 +3,7 @@ import socket
 from typing import NamedTuple
 
 import ray
-from ray.util.placement_group import placement_group
+from ray.util.placement_group import placement_group, PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.async_utils import eager_create_task
@@ -51,7 +51,13 @@ def sort_key(x):
     return (node_ip_parts, gpu_id)
 
 
-def _create_placement_group(num_gpus):
+class PlacementGroupInfo(NamedTuple):
+    pg: PlacementGroup
+    pg_reordered_bundle_indices: list[int]
+    pg_reordered_gpu_ids: list[int]
+
+
+def _create_placement_group(num_gpus) -> PlacementGroupInfo:
     """Create a placement group with the specified number of GPUs."""
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
@@ -86,10 +92,10 @@ def _create_placement_group(num_gpus):
             f"node: {gpu_ids[actual_bundle_index][0]}, gpu: {gpu_ids[actual_bundle_index][1]}"
         )
 
-    return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
+    return PlacementGroupInfo(pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids)
 
 
-def create_placement_groups(args):
+def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     """Create placement groups for actor and rollout engines."""
 
     num_gpus = 0
@@ -125,11 +131,13 @@ def create_placement_groups(args):
         critic_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[critic_offset:]
         critic_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[critic_offset:]
 
-    return {
-        "actor": (pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
-        "critic": (pg, critic_pg_reordered_bundle_indices, critic_pg_reordered_gpu_ids) if args.use_critic else None,
-        "rollout": (pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
+    ans = {
+        "actor": PlacementGroupInfo(pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
+        "rollout": PlacementGroupInfo(pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
     }
+    if args.use_critic:
+        ans["critic"] = PlacementGroupInfo(pg, critic_pg_reordered_bundle_indices, critic_pg_reordered_gpu_ids)
+    return ans
 
 
 def allocate_train_group(
