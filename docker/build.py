@@ -94,7 +94,13 @@ def run(cmd: list[str], dry_run: bool) -> None:
 
 
 def build_and_push(
-    variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
+    variant: str,
+    image_tag: str,
+    dry_run: bool,
+    dockerfile: str,
+    push: bool = False,
+    custom_tag: str = "",
+    build_args: list[str] | None = None,
 ) -> None:
     config = VARIANTS[variant]
     # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
@@ -142,6 +148,13 @@ def build_and_push(
     for key, value in config.get("build_args", {}).items():
         cmd += ["--build-arg", f"{key}={value}"]
 
+    # Caller-resolved extras (e.g. CI-resolved upstream SHAs / wheels fingerprints).
+    # Appended last so an explicit passthrough wins over a variant default.
+    for arg in build_args or []:
+        if "=" not in arg or not arg.split("=", 1)[0]:
+            raise SystemExit(f"--build-arg expects KEY=VALUE, got {arg!r}")
+        cmd += ["--build-arg", arg]
+
     for tag in tags:
         cmd += ["-t", tag]
 
@@ -162,6 +175,14 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them.")
     parser.add_argument("--push", action="store_true", help="Push images to registry after building.")
     parser.add_argument("--custom-tag", default="", help="Custom tag name (required when --image-tag is custom).")
+    parser.add_argument(
+        "--build-arg",
+        dest="build_args",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Extra KEY=VALUE forwarded to docker buildx build (repeatable).",
+    )
     args = parser.parse_args()
     build_and_push(
         args.variant,
@@ -170,6 +191,7 @@ def main() -> None:
         args.dockerfile,
         push=args.push,
         custom_tag=args.custom_tag,
+        build_args=args.build_args,
     )
 
 
