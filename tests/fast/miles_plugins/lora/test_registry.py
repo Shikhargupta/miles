@@ -82,8 +82,15 @@ class TestResolveModelSpec:
             resolve_model_spec(_args(path), _config(mla=True))
 
     def test_checkpoint_without_config_json_fails_closed(self, tmp_path):
-        with pytest.raises(AssertionError, match="config.json"):
+        with pytest.raises(AssertionError, match="missing"):
             resolve_model_spec(_args(str(tmp_path)), _config())
+
+    def test_config_json_without_model_type_names_the_actual_problem(self, tmp_path):
+        """The error must not claim config.json is missing when it exists but lacks model_type."""
+        path = _checkpoint(tmp_path, {"hidden_size": 64})
+        with pytest.raises(AssertionError, match="neither") as excinfo:
+            resolve_model_spec(_args(path), _config())
+        assert "missing" not in str(excinfo.value)
 
     def test_no_checkpoint_falls_back_to_structural_dispatch(self):
         assert resolve_model_spec(_args(None), _config())[1].name == GQA
@@ -103,6 +110,11 @@ class TestRegistryTable:
     def test_the_shipped_mla_families_are_registered_as_mla(self):
         for model_type in ("deepseek_v3", "deepseek_v32", "glm4_moe_lite", "glm_moe_dsa", "kimi_k25"):
             assert MODEL_SPECS[model_type].name == MLA, model_type
+
+    def test_deepseek_v4_flash_is_not_registered(self):
+        """DeepSeek-V4-Flash attention is wq_a/wq_b/wkv, not mcore MLA; docs declare it out of
+        scope, so the registry must fail closed instead of crashing inside MLA attach."""
+        assert "deepseek_v4" not in MODEL_SPECS
 
     def test_qwen_hybrids_use_per_layer_gqa_gdn_dispatch(self):
         for model_type in ("qwen3_5", "qwen3_6", "qwen3_next"):

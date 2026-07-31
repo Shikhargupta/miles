@@ -57,7 +57,8 @@ MODEL_SPECS: dict[str, LoRAArchSpec] = {
     "qwen3_next": _HYBRID_GQA_SPEC,
     "deepseek_v3": _MLA_SPEC,
     "deepseek_v32": _MLA_SPEC,
-    "deepseek_v4": _MLA_SPEC,
+    # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
+    # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
     "glm4_moe_lite": _MLA_SPEC,
     "glm_moe_dsa": _MLA_SPEC,
     "kimi_k2": _MLA_SPEC,
@@ -94,10 +95,18 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
     hf_checkpoint = getattr(args, "hf_checkpoint", None)
     candidates = _model_type_candidates(hf_checkpoint)
     if not candidates:
-        assert not hf_checkpoint, (
-            f"native LoRA could not load model_type because {hf_checkpoint!r}/config.json is missing. "
-            "Provide a valid --hf-checkpoint or use a model-specific --lora-provider-path."
-        )
+        if hf_checkpoint:
+            config_path = os.path.join(hf_checkpoint, "config.json")
+            if os.path.exists(config_path):
+                raise AssertionError(
+                    f"native LoRA could not resolve a model_type: {config_path} declares neither "
+                    "'model_type' nor 'text_config.model_type'. Fix the checkpoint config or use a "
+                    "model-specific --lora-provider-path."
+                )
+            raise AssertionError(
+                f"native LoRA could not load model_type because {hf_checkpoint!r}/config.json is missing. "
+                "Provide a valid --hf-checkpoint or use a model-specific --lora-provider-path."
+            )
         spec = _structural_spec(config)
         logger.warning(
             "[lora-native] no config.json under %r; using the %s architecture spec from the built "

@@ -178,8 +178,3 @@ def _load_adapter(adapter: NativeLoRAAdapter, take, copy_into) -> None:
                 a_full = a_full[:, span]
         copy_into(a_parameter, a_full)
         copy_into(b_parameter, b_full)
-
-
-# Compatibility names retained for the PR's numerical and registry tests.
-_hf_naming = resolve_hf_naming
-_mbridge_cross_check = mbridge_cross_check

@@ -17,19 +17,30 @@ from miles.backends.megatron_utils.lora_utils import (
     resolve_lora_provider,
 )
 from miles.utils.lora import lora_rollout_enabled
-from miles_plugins.lora.codec.hf import _hf_naming
-from miles_plugins.lora.distributed import _rmsnorm
+from miles_plugins.lora.codec.hf import resolve_hf_naming
+from miles_plugins.lora.distributed import rmsnorm
 from miles_plugins.lora.lora import (
     _require_grad_on_first_activation,
     export_lora_hf_named,
     load_lora_adapter_hf,
     wrap_model_provider_with_lora,
 )
-from miles_plugins.lora.modules.linear import _build_qkv_perm
-from miles_plugins.lora.spec.attention import GQA_TARGETS, MLA_TARGETS, _assert_supported_architecture
+from miles_plugins.lora.modules.linear import build_qkv_permutation
+from miles_plugins.lora.spec.attention import (
+    GQA_ATTENTION_SPEC,
+    GQA_TARGETS,
+    MLA_ATTENTION_SPEC,
+    MLA_TARGETS,
+)
 from miles_plugins.lora.spec.mlp import MLP_TARGETS
 
 IMPLEMENTED_TARGETS = GQA_TARGETS | MLA_TARGETS | MLP_TARGETS
+
+
+def _assert_supported_architecture(config, tp_size: int = 1) -> None:
+    """Dispatch to the family's attention-spec validate the way the registry resolves it."""
+    spec = MLA_ATTENTION_SPEC if bool(getattr(config, "multi_latent_attention", False)) else GQA_ATTENTION_SPEC
+    spec.validate(config, tp_size=tp_size)
 
 
 def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, num_query_groups=8, q_lora_rank=1536):
@@ -50,40 +61,40 @@ def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, nu
 
 class TestBuildQkvPerm:
     def test_mha_single_group(self):
-        perm = _build_qkv_perm(num_q_heads=1, num_groups=1, head_dim=2, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=1, num_groups=1, head_dim=2, device="cpu")
         assert perm.tolist() == [0, 1, 2, 3, 4, 5]
 
     def test_gqa_two_groups_matches_mcore_layout(self):
-        perm = _build_qkv_perm(num_q_heads=4, num_groups=2, head_dim=1, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=4, num_groups=2, head_dim=1, device="cpu")
         assert perm.tolist() == [0, 1, 4, 6, 2, 3, 5, 7]
 
     def test_permutation_is_a_bijection(self):
         nq, ng, hd = 8, 4, 3
-        perm = _build_qkv_perm(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
         total = (nq + 2 * ng) * hd
         assert perm.numel() == total
         assert sorted(perm.tolist()) == list(range(total))
 
     def test_applied_to_delta_places_projections_per_group(self):
         nq, ng, hd = 4, 2, 1
-        perm = _build_qkv_perm(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
         plain = torch.tensor([[10.0, 11.0, 12.0, 13.0, 20.0, 21.0, 30.0, 31.0]])
         out = plain.index_select(-1, perm)
         assert out.tolist() == [[10.0, 11.0, 20.0, 30.0, 12.0, 13.0, 21.0, 31.0]]
 
     def test_output_gate_deinterleaves_the_query_slices(self):
-        perm = _build_qkv_perm(num_q_heads=2, num_groups=1, head_dim=1, device="cpu", output_gate=True)
+        perm = build_qkv_permutation(num_q_heads=2, num_groups=1, head_dim=1, device="cpu", output_gate=True)
         assert perm.tolist() == [0, 2, 1, 3, 4, 5]
 
     def test_output_gate_permutation_is_a_bijection(self):
         nq, ng, hd = 8, 2, 3
-        perm = _build_qkv_perm(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu", output_gate=True)
+        perm = build_qkv_permutation(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu", output_gate=True)
         total = (2 * nq + 2 * ng) * hd
         assert perm.numel() == total
         assert sorted(perm.tolist()) == list(range(total))
 
     def test_output_gate_applied_to_delta(self):
-        perm = _build_qkv_perm(num_q_heads=4, num_groups=2, head_dim=1, device="cpu", output_gate=True)
+        perm = build_qkv_permutation(num_q_heads=4, num_groups=2, head_dim=1, device="cpu", output_gate=True)
         plain = torch.tensor([[10.0, 40.0, 11.0, 41.0, 12.0, 42.0, 13.0, 43.0, 20.0, 21.0, 30.0, 31.0]])
         out = plain.index_select(-1, perm)
         assert out.tolist() == [[10.0, 11.0, 40.0, 41.0, 20.0, 30.0, 12.0, 13.0, 42.0, 43.0, 21.0, 31.0]]
@@ -93,7 +104,7 @@ class TestRmsNorm:
     def test_plain_gamma_scales_by_the_stored_weight(self):
         x = torch.tensor([[3.0, 4.0]])
         gamma = torch.tensor([2.0, 2.0])
-        got = _rmsnorm(x, gamma, eps=0.0)
+        got = rmsnorm(x, gamma, eps=0.0)
         assert torch.allclose(got, torch.tensor([[3.0, 4.0]]) / 3.5355339 * 2.0, atol=1e-5)
 
     def test_zero_centered_gamma_adds_the_one_back(self):
@@ -102,8 +113,8 @@ class TestRmsNorm:
         x = torch.tensor([[3.0, 4.0]])
         stored = torch.tensor([1.0, 1.0])
         assert torch.allclose(
-            _rmsnorm(x, stored, eps=0.0, zero_centered_gamma=True),
-            _rmsnorm(x, stored + 1.0, eps=0.0),
+            rmsnorm(x, stored, eps=0.0, zero_centered_gamma=True),
+            rmsnorm(x, stored + 1.0, eps=0.0),
         )
 
 
@@ -148,7 +159,7 @@ class TestHfNaming:
                 "model.layers.1.mlp.shared_experts.gate_proj.weight",
             ],
         )
-        assert _hf_naming(path) == ("model.layers.", "mlp.shared_experts.")
+        assert resolve_hf_naming(path) == ("model.layers.", "mlp.shared_experts.")
 
     def test_qwen3_5_nests_the_decoder_and_uses_singular(self, tmp_path):
         """The mtp block also has `layers.N.`; it must not win the prefix vote."""
@@ -161,11 +172,11 @@ class TestHfNaming:
                 "vision_tower.encoder.blocks.0.wo.weight",
             ],
         )
-        assert _hf_naming(path) == ("model.language_model.layers.", "mlp.shared_expert.")
+        assert resolve_hf_naming(path) == ("model.language_model.layers.", "mlp.shared_expert.")
 
     def test_missing_index_falls_back_to_the_plain_layout(self, tmp_path):
-        assert _hf_naming(str(tmp_path)) == ("model.layers.", "mlp.shared_expert.")
-        assert _hf_naming(None) == ("model.layers.", "mlp.shared_expert.")
+        assert resolve_hf_naming(str(tmp_path)) == ("model.layers.", "mlp.shared_expert.")
+        assert resolve_hf_naming(None) == ("model.layers.", "mlp.shared_expert.")
 
 
 class TestArchitectureGuards:
@@ -218,11 +229,12 @@ class TestShippedRegistries:
             ("glm4.7-flash", dict(mla=True)),
             ("kimi-k25_2layer", dict(mla=True)),
             ("glm5-744B-A40B_4layer", dict(mla=True)),
-            ("deepseek-v4-flash-4layer", dict(mla=True)),
+            # deepseek-v4-flash is deliberately absent: its wq_a/wq_b/wkv attention is not
+            # mcore MLA, and the model_type registry fails it closed before any attach runs.
         ],
     )
     def test_mla_registries_are_accepted(self, registry, kwargs):
-        """MLA is covered by _attach_mla_attention, including when TP exceeds the
+        """MLA is covered by MLAAttentionSpec.attach, including when TP exceeds the
         (meaningless for MLA) query-group count."""
         model = _fake_model(num_query_groups=2, **kwargs)
         _assert_supported_architecture(model.config, tp_size=4)
@@ -241,7 +253,7 @@ class TestShippedRegistries:
         unfused q_proj plus kv_a_proj_with_mqa, which SGLang's fused qkv_a loader cannot ingest.
 
         Every shipped MLA registry sets --q-lora-rank (glm4.7-flash 768, kimi-k25 1536,
-        glm5-744B-A40B 2048, deepseek-v4-flash 1024), so this rejects only the uncovered layout.
+        glm5-744B-A40B 2048), so this rejects only the uncovered layout.
         """
         model = _fake_model(mla=True, q_lora_rank=None)
         with pytest.raises(AssertionError) as excinfo:

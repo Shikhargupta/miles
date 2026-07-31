@@ -15,7 +15,10 @@ from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_LORA_PROVIDER = "miles_plugins.lora.lora"
+_DEFAULT_LORA_PROVIDER = "miles_plugins.lora"
+# Provider paths that resolve to the built-in native plugin; the pre-#2017 module
+# path keeps working for explicit --lora-provider-path pins.
+_NATIVE_LORA_PROVIDER_PATHS = (None, "miles_plugins.lora", "miles_plugins.lora.lora")
 
 # ---------------------------------------------------------------------------
 # Unified HF <-> Megatron module name mappings
@@ -469,7 +472,7 @@ def save_lora_checkpoint(
     pp_rank = parallel_state.pp.rank
     ep_rank = parallel_state.ep.rank
     bridge_mode = getattr(args, "megatron_to_hf_mode", "raw") == "bridge"
-    built_in_native_provider = getattr(args, "lora_provider_path", None) in (None, _DEFAULT_LORA_PROVIDER)
+    built_in_native_provider = getattr(args, "lora_provider_path", None) in _NATIVE_LORA_PROVIDER_PATHS
 
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
@@ -575,7 +578,12 @@ def load_lora_adapter(
     through the native provider's ``load_lora_adapter_hf`` instead).
 
     When ``optimizer`` is provided, also restores training state (optimizer +
-    LR scheduler) from a co-located ``training_state_rank*.pt`` file.
+    LR scheduler) from a co-located ``training_state_rank*.pt`` file. The
+    restore decision is agreed across ranks: if any rank's shard is missing or
+    was saved for a different exact target set, every rank skips the optimizer
+    and scheduler restore so iterations and LR schedules stay in lockstep. This
+    makes the function collective — when ``torch.distributed`` is initialized,
+    all ranks must call it.
 
     Args:
         model: List of DDP-wrapped model chunks with LoRA layers already applied.
@@ -599,22 +607,30 @@ def load_lora_adapter(
 
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
     native_path = adapter_dir / _native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
-    if native_path.exists():
+    shard_found = native_path.exists()
+    shard_incompatible = False
+    if shard_found:
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
         from miles_plugins.lora.codec.checkpoint import has_native_adapters, load_native_adapter_state_dict
 
-        unexpected: list[str] = []
         if has_native_adapters(model):
-            loaded, unexpected = load_native_adapter_state_dict(model, state_dict)
+            loaded, unexpected, missing = load_native_adapter_state_dict(model, state_dict)
             if unexpected:
                 logger.warning(
                     "Ignored %d native adapter tensors absent from the current exact target set: %s. "
                     "A pre-refactor partial-target checkpoint may have trained fused sibling projections; "
-                    "resume with matching targets or reload the selected weights using a fresh optimizer. "
-                    "Optimizer and scheduler state will not be restored for this incompatible shard.",
+                    "resume with matching targets or reload the selected weights using a fresh optimizer.",
                     len(unexpected),
                     unexpected[:8],
                 )
+            if missing:
+                logger.warning(
+                    "%d adapter parameters have no tensor in the native shard and keep their fresh "
+                    "initialization: %s. The checkpoint was saved with a narrower --target-modules set.",
+                    len(missing),
+                    missing[:8],
+                )
+            shard_incompatible = bool(unexpected or missing)
         else:
             loaded = 0
             for model_chunk in model:
@@ -624,7 +640,26 @@ def load_lora_adapter(
                         loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = None if unexpected else _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+    # Collective agreement point: every rank reaches this exactly once, whether or
+    # not its own shard file exists, so per-rank shard differences cannot desync
+    # the resume iteration or LR schedule across the job.
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    has_training_state = optimizer is None or (adapter_dir / f"training_state_rank{rank}.pt").exists()
+    restore_training_state = _all_ranks_can_restore_training_state(
+        shard_found and not shard_incompatible and has_training_state
+    )
+
+    if shard_found:
+        if restore_training_state:
+            iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+        else:
+            iteration = None
+            if optimizer is not None:
+                logger.warning(
+                    "Skipping optimizer/scheduler restore: at least one rank reported a missing, "
+                    "incompatible, or training-state-less native adapter shard; all ranks resume "
+                    "with fresh training state for consistency."
+                )
         return True, iteration
 
     # ---- HF PEFT format (future work) ----
@@ -642,6 +677,21 @@ def load_lora_adapter(
 
     logger.warning(f"No adapter checkpoint found at {adapter_dir}")
     return False, None
+
+
+def _all_ranks_can_restore_training_state(local_ok: bool) -> bool:
+    """Agree across ranks whether to restore optimizer/scheduler state.
+
+    Per-rank native shards can disagree (a legacy shard with fused-sibling
+    extras on one PP stage, a missing per-rank file after a parallelism-layout
+    change); restoring on some ranks but not others silently desynchronizes the
+    resume iteration and LR schedule, so the decision must be unanimous.
+    """
+    if not dist.is_initialized() or dist.get_world_size() == 1:
+        return local_ok
+    decisions: list[bool | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(decisions, local_ok)
+    return all(decisions)
 
 
 def _load_training_state(

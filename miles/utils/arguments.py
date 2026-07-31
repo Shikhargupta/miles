@@ -1463,7 +1463,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted module path implementing the native-LoRA provider protocol "
                     "(wrap_model_provider_with_lora / load_lora_adapter_hf / export_lora_hf_named). "
-                    "Defaults to miles_plugins.lora.lora, which covers the architectures registered "
+                    "Defaults to miles_plugins.lora, which covers the architectures registered "
                     "in miles_plugins.lora.registry; point this at a model plugin whose module "
                     "structure diverges from plain mcore. Only used with --megatron-to-hf-mode raw."
                 ),
@@ -2453,6 +2453,50 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     return list(args.ft_components)
 
 
+def parse_lora_target_modules(args) -> None:
+    """Normalize ``--target-modules`` / ``--exclude-modules`` for LoRA runs, in place.
+
+    Idempotent (re-validation of already-expanded args is a no-op) and records
+    on ``args._target_modules_expanded_from_all_linear`` whether the list came
+    from the ``all-linear`` shorthand, so architecture specs can tell
+    parser-added names apart from explicit user requests. Called from
+    ``miles_validate_args``; tests exercise it directly.
+    """
+    args._target_modules_expanded_from_all_linear = bool(
+        getattr(args, "_target_modules_expanded_from_all_linear", False)
+        or (args.lora_rank > 0 and args.target_modules == "all-linear")
+    )
+    if args.lora_rank <= 0:
+        return
+    assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
+
+    if isinstance(args.target_modules, (list, tuple)):
+        modules = list(args.target_modules)
+    elif args.target_modules == "all-linear":
+        # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
+        # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
+        modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        hf_config = load_hf_config(args.hf_checkpoint)
+        if getattr(hf_config, "kv_lora_rank", None):
+            modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
+            if getattr(hf_config, "q_lora_rank", None):
+                modules += ["q_a_proj", "q_b_proj"]
+    elif "," in args.target_modules:
+        modules = [m.strip() for m in args.target_modules.split(",")]
+    else:
+        modules = [args.target_modules]
+
+    if args.exclude_modules:
+        exclude_set = (
+            set(m.strip() for m in args.exclude_modules.split(","))
+            if "," in args.exclude_modules
+            else {args.exclude_modules}
+        )
+        modules = [m for m in modules if m not in exclude_set]
+
+    args.target_modules = modules
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
@@ -2637,40 +2681,8 @@ def miles_validate_args(args):
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
-    # Parse LoRA target modules
-    args._target_modules_expanded_from_all_linear = bool(
-        getattr(args, "_target_modules_expanded_from_all_linear", False)
-        or (args.lora_rank > 0 and args.target_modules == "all-linear")
-    )
+    parse_lora_target_modules(args)
     if args.lora_rank > 0:
-        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
-
-        if isinstance(args.target_modules, (list, tuple)):
-            modules = list(args.target_modules)
-        elif args.target_modules == "all-linear":
-            # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
-            # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-            hf_config = load_hf_config(args.hf_checkpoint)
-            if getattr(hf_config, "kv_lora_rank", None):
-                modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
-                if getattr(hf_config, "q_lora_rank", None):
-                    modules += ["q_a_proj", "q_b_proj"]
-        elif "," in args.target_modules:
-            modules = [m.strip() for m in args.target_modules.split(",")]
-        else:
-            modules = [args.target_modules]
-
-        if args.exclude_modules:
-            exclude_set = (
-                set(m.strip() for m in args.exclude_modules.split(","))
-                if "," in args.exclude_modules
-                else {args.exclude_modules}
-            )
-            modules = [m for m in modules if m not in exclude_set]
-
-        args.target_modules = modules
-
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
         if args.experts_shared_outer_loras:
@@ -2681,7 +2693,7 @@ def miles_validate_args(args):
 
         # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
         _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
-        if any(leaf in str(tm) for tm in modules for leaf in _expert_leaves):
+        if any(leaf in str(tm) for tm in args.target_modules for leaf in _expert_leaves):
             logger.warning(
                 "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",

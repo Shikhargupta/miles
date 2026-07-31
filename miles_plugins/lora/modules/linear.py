@@ -310,10 +310,3 @@ def iter_adapters(model_chunks: Sequence[nn.Module]):
         for child in module.modules():
             if isinstance(child, NativeLoRAAdapter):
                 yield child
-
-
-# Compatibility names retained for the numerical harness while PR #2017 moves.
-_build_qkv_perm = build_qkv_permutation
-_iter_adapters = iter_adapters
-_new_param = new_lora_parameter
-_wrap_forward = attach_adapter_forward

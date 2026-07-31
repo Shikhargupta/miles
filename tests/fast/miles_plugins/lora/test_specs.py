@@ -9,13 +9,14 @@ from miles_plugins.lora.spec.base import AttachContext
 from miles_plugins.lora.spec.moe import SHARED_EXPERT_ONLY_MOE_SPEC
 
 
-def _context(*targets: str) -> AttachContext:
+def _context(*targets: str, expanded_from_all_linear: bool = False) -> AttachContext:
     return AttachContext(
         lora=LoRAConfig(
             rank=2,
             alpha=4,
             dropout=0.0,
             target_modules=frozenset(targets),
+            expanded_from_all_linear=expanded_from_all_linear,
         ),
         transformer_config=SimpleNamespace(
             hidden_size=8,
@@ -41,6 +42,15 @@ def test_moe_mlp_targets_fail_when_only_routed_experts_could_match():
     mlp = SimpleNamespace(experts=object())
     with pytest.raises(AssertionError, match="routed/grouped expert"):
         SHARED_EXPERT_ONLY_MOE_SPEC.validate_layer(mlp, _context("gate_proj"))
+
+
+def test_moe_parser_expanded_mlp_targets_skip_instead_of_failing():
+    """all-linear on a shared-expert-less MoE (e.g. qwen3_moe) trains attention-only, like the base branch."""
+    mlp = SimpleNamespace(experts=object())
+    SHARED_EXPERT_ONLY_MOE_SPEC.validate_layer(
+        mlp,
+        _context("q_proj", "gate_proj", "up_proj", "down_proj", expanded_from_all_linear=True),
+    )
 
 
 def test_attention_only_moe_does_not_require_a_shared_expert():

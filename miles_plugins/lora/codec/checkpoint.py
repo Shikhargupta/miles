@@ -37,8 +37,15 @@ def native_adapter_state_dict(model_chunks: Sequence[nn.Module]) -> dict[str, to
 def load_native_adapter_state_dict(
     model_chunks: Sequence[nn.Module],
     state_dict: dict[str, torch.Tensor],
-) -> tuple[int, list[str]]:
-    """Load a local native shard and report checkpoint tensors absent from this exact target set."""
+) -> tuple[int, list[str], list[str]]:
+    """Load a local native shard and report both target-set mismatch directions.
+
+    Returns ``(loaded, unexpected, missing)``: *unexpected* are checkpoint
+    tensors absent from the current exact target set, *missing* are current
+    adapter parameters the checkpoint has no tensor for (they keep their fresh
+    initialization). Either direction means the shard was saved for a different
+    ``--target-modules`` set.
+    """
     native_parameter_ids = {
         id(parameter) for adapter in iter_adapters(model_chunks) for parameter in adapter.parameters(recurse=False)
     }
@@ -53,11 +60,8 @@ def load_native_adapter_state_dict(
                 continue
             parameter.data.copy_(state_dict[name].to(device=parameter.device, dtype=parameter.dtype))
             loaded += 1
-    return loaded, sorted(set(state_dict) - current_names)
+    return loaded, sorted(set(state_dict) - current_names), sorted(current_names - set(state_dict))
 
 
 def has_native_adapters(model_chunks: Sequence[nn.Module]) -> bool:
     return next(iter(iter_adapters(model_chunks)), None) is not None
-
-
-_native_adapter_shard_name = native_adapter_shard_name

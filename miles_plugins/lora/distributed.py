@@ -155,11 +155,3 @@ def reduce_marked_lora_grads(model: Sequence[nn.Module]) -> None:
             reduced = torch._utils._unflatten_dense_tensors(flat, matching_grads)
             for grad, reduced_grad in zip(matching_grads, reduced, strict=False):
                 grad.copy_(reduced_grad)
-
-
-# Compatibility names used by the existing numerical harness.
-_branch_input = branch_input
-_dropout = apply_lora_dropout
-_reduce_row_parallel = reduce_row_parallel
-_rmsnorm = rmsnorm
-_TpGather = TensorParallelGather

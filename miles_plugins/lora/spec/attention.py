@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import LoRALinear, SplitQKV, attach_adapter_forward, build_qkv_permutation
+from miles_plugins.lora.modules.linear import LoRALinear, SplitQKV, attach_adapter_forward
 from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, ProjectionSpec
 
 QKV_PROJECTIONS = (
@@ -288,20 +288,3 @@ GQA_ATTENTION_SPEC = GQAAttentionSpec()
 MLA_ATTENTION_SPEC = MLAAttentionSpec()
 GDN_ATTENTION_SPEC = GDNAttentionSpec()
 HYBRID_GQA_GDN_ATTENTION_SPEC = HybridGQAGDNAttentionSpec()
-
-
-def _attach_attention(attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
-    return GQA_ATTENTION_SPEC.attach(attention, hf_prefix, context)
-
-
-def _attach_mla_attention(attention: nn.Module, hf_prefix: str, context: AttachContext, config=None) -> int:
-    del config
-    return MLA_ATTENTION_SPEC.attach(attention, hf_prefix, context)
-
-
-def _assert_supported_architecture(config, tp_size: int = 1) -> None:
-    spec = MLA_ATTENTION_SPEC if bool(getattr(config, "multi_latent_attention", False)) else GQA_ATTENTION_SPEC
-    spec.validate(config, tp_size=tp_size)
-
-
-_build_qkv_perm = build_qkv_permutation

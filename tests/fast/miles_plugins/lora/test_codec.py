@@ -95,9 +95,24 @@ def test_native_checkpoint_codec_reports_legacy_extra_projection_tensors():
     state["q_adapter.k_B"] = torch.zeros(1, 2)
 
     target = _partial_model()
-    loaded, unexpected = load_native_adapter_state_dict([target], state)
+    loaded, unexpected, missing = load_native_adapter_state_dict([target], state)
     assert loaded == 4
     assert unexpected == ["q_adapter.k_A", "q_adapter.k_B"]
+    assert missing == []
+
+
+def test_native_checkpoint_codec_reports_missing_projection_tensors():
+    """A shard saved with fewer targets leaves the extra adapters fresh — that must be visible."""
+    source = _partial_model()
+    state = native_adapter_state_dict([source])
+    del state["gate_adapter.gate_A"]
+    del state["gate_adapter.gate_B"]
+
+    target = _partial_model()
+    loaded, unexpected, missing = load_native_adapter_state_dict([target], state)
+    assert loaded == 2
+    assert unexpected == []
+    assert missing == ["gate_adapter.gate_A", "gate_adapter.gate_B"]
 
 
 def test_legacy_partial_shard_skips_incompatible_optimizer_restore(tmp_path, monkeypatch):
@@ -126,3 +141,57 @@ def test_legacy_partial_shard_skips_incompatible_optimizer_restore(tmp_path, mon
     assert loaded
     assert iteration is None
     optimizer.load_state_dict.assert_not_called()
+
+
+def test_narrower_shard_skips_incompatible_optimizer_restore(tmp_path, monkeypatch):
+    """Resuming with more targets than the shard was saved with must not restore optimizer state."""
+    source = _partial_model()
+    state = native_adapter_state_dict([source])
+    del state["gate_adapter.gate_A"]
+    del state["gate_adapter.gate_B"]
+    torch.save(state, tmp_path / "adapter_megatron_tp0_pp0.pt")
+    torch.save(
+        {"iteration": 7, "optimizer": {"legacy": True}, "opt_param_scheduler": None},
+        tmp_path / "training_state_rank0.pt",
+    )
+    parallel_state = SimpleNamespace(
+        tp=SimpleNamespace(rank=0),
+        pp=SimpleNamespace(rank=0),
+        ep=SimpleNamespace(rank=0),
+    )
+    monkeypatch.setattr(
+        "miles.backends.megatron_utils.lora_utils.get_parallel_state",
+        lambda: parallel_state,
+    )
+    optimizer = MagicMock()
+
+    loaded, iteration = load_lora_adapter([_partial_model()], str(tmp_path), optimizer=optimizer)
+
+    assert loaded
+    assert iteration is None
+    optimizer.load_state_dict.assert_not_called()
+
+
+def test_matching_shard_restores_optimizer_state(tmp_path, monkeypatch):
+    source = _partial_model()
+    torch.save(native_adapter_state_dict([source]), tmp_path / "adapter_megatron_tp0_pp0.pt")
+    torch.save(
+        {"iteration": 7, "optimizer": {"step": 7}, "opt_param_scheduler": None},
+        tmp_path / "training_state_rank0.pt",
+    )
+    parallel_state = SimpleNamespace(
+        tp=SimpleNamespace(rank=0),
+        pp=SimpleNamespace(rank=0),
+        ep=SimpleNamespace(rank=0),
+    )
+    monkeypatch.setattr(
+        "miles.backends.megatron_utils.lora_utils.get_parallel_state",
+        lambda: parallel_state,
+    )
+    optimizer = MagicMock()
+
+    loaded, iteration = load_lora_adapter([_partial_model()], str(tmp_path), optimizer=optimizer)
+
+    assert loaded
+    assert iteration == 7
+    optimizer.load_state_dict.assert_called_once_with({"step": 7})

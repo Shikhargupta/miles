@@ -57,7 +57,3 @@ class FusedGatedMLPSpec:
 
 
 FUSED_GATED_MLP_SPEC = FusedGatedMLPSpec()
-
-
-def _attach_mlp(mlp: nn.Module, hf_prefix: str, context: AttachContext) -> int:
-    return FUSED_GATED_MLP_SPEC.attach(mlp, hf_prefix, context)

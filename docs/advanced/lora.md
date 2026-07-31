@@ -28,7 +28,7 @@ the miles repo:
 | `--exclude-modules` | Comma-separated names to subtract from `--target-modules`. |
 | `--lora-adapter-path` | Path to a pre-trained adapter to resume from. |
 | `--lora-sync-from-tensor` | Sync adapter weights to SGLang via in-memory tensors instead of a file round-trip. |
-| `--lora-provider-path` | Dotted module supplying a model-specific native-LoRA implementation. Defaults to the generic provider. |
+| `--lora-provider-path` | Dotted module supplying a model-specific native-LoRA implementation. Defaults to the generic `miles_plugins.lora` provider. |
 | `--debug-lora-train-only` | Train adapters in Megatron while rollout stays on the frozen base policy. Useful when the engine cannot serve the adapter yet. |
 | `--check-lora-weight-equal` | Verify the Megatron → SGLang adapter sync with a per-tensor sha256 manifest. |
 
@@ -50,7 +50,11 @@ There are two implementations, selected by `--megatron-to-hf-mode`:
   Which architectures it serves is an explicit registry keyed on the HF
   `model_type` (`miles_plugins/lora/registry.py`); a checkpoint whose
   `model_type` is not registered fails at startup with the supported list
-  rather than training unverified math.
+  rather than training unverified math. Multimodal checkpoints resolve through
+  `text_config.model_type`: adapters attach to the registered language decoder
+  only and vision weights are never adapted. A VL wrapper whose text model type
+  is not registered (e.g. `qwen3_vl`, `qwen2_5_vl`) fails closed — use
+  `--megatron-to-hf-mode bridge` for those.
 
 Native LoRA covers standard Megatron-core attention and gated MLPs:
 
@@ -80,6 +84,12 @@ On a MoE model, list only the modules the trainer actually adapts. Naming
 `gate_proj` makes SGLang allocate adapter buffers for the routed experts too,
 and nothing fills them.
 </Note>
+
+On a MoE model without shared experts (e.g. Qwen3-MoE), the native path has no
+MLP module to adapt: `all-linear` drops its parser-added `gate_proj` /
+`up_proj` / `down_proj` with a log line and trains attention-only, while an
+explicitly listed MLP target fails at startup naming the bridge and
+provider-path escape hatches.
 
 ## MoE
 
