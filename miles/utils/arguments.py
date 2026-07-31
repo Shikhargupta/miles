@@ -2497,6 +2497,15 @@ def parse_lora_target_modules(args) -> None:
             if "," in args.exclude_modules
             else {args.exclude_modules}
         )
+        # Excludes are honored by subtracting exact names here — the only mechanism both LoRA
+        # paths share. A pattern would silently survive: the native provider matches leaf names,
+        # and bridge refuses exclude_modules alongside target_modules (see create_lora_instance).
+        patterns = sorted(name for name in exclude_set if "*" in name or "?" in name)
+        assert not patterns, (
+            f"--exclude-modules does not support wildcard patterns {patterns}: excludes are applied by "
+            "removing exact module names from --target-modules, so a pattern would be silently ignored. "
+            "List the module names to drop, or shorten --target-modules instead."
+        )
         modules = [m for m in modules if m not in exclude_set]
 
     args.target_modules = modules

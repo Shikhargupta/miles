@@ -1,9 +1,11 @@
 """Unit tests for miles.backends.megatron_utils.lora_utils.
 
 Tests cover module name conversion, LoRA detection helpers, parameter identification,
-exclude-module parsing, and LoRA sync config building — all without GPU.
+bridge LoRA construction, and LoRA sync config building — all without GPU.
 """
 
+import sys
+import types
 from argparse import Namespace
 from unittest.mock import MagicMock
 
@@ -15,9 +17,9 @@ from miles.backends.megatron_utils.lora_utils import (
     build_lora_sync_config,
     convert_target_modules_to_hf,
     convert_target_modules_to_megatron,
+    create_lora_instance,
     is_lora_enabled,
     is_lora_weight_name,
-    parse_exclude_modules,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -272,33 +274,73 @@ class TestIsAdapterParamName:
 
 
 # ---------------------------------------------------------------------------
-# parse_exclude_modules
+# create_lora_instance
 # ---------------------------------------------------------------------------
 
 
-class TestParseExcludeModules:
-    def test_none(self):
-        args = Namespace(exclude_modules=None)
-        assert parse_exclude_modules(args) == []
+@pytest.fixture
+def fake_bridge_peft(monkeypatch):
+    """Stand in for megatron.bridge.peft, which needs Transformer Engine to import.
 
-    def test_single_module_string(self):
-        args = Namespace(exclude_modules="o_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert result == ["linear_proj"]
+    Returns the two recording classes so a test can inspect the kwargs miles passed.
+    """
 
-    def test_comma_separated(self):
-        args = Namespace(exclude_modules="o_proj, down_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
+    class _Recorder:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
 
-    def test_list_input(self):
-        args = Namespace(exclude_modules=["o_proj", "down_proj"])
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
+    lora_cls = type("LoRA", (_Recorder,), {})
+    canonical_cls = type("CanonicalLoRA", (_Recorder,), {})
 
-    def test_missing_attr(self):
-        args = Namespace()
-        assert parse_exclude_modules(args) == []
+    for name, attr, value in (
+        ("megatron.bridge.peft.lora", "LoRA", lora_cls),
+        ("megatron.bridge.peft.canonical_lora", "CanonicalLoRA", canonical_cls),
+    ):
+        module = types.ModuleType(name)
+        setattr(module, attr, value)
+        monkeypatch.setitem(sys.modules, name, module)
+    for parent in ("megatron.bridge", "megatron.bridge.peft"):
+        monkeypatch.setitem(sys.modules, parent, types.ModuleType(parent))
+    return lora_cls, canonical_cls
+
+
+def _lora_args(**overrides) -> Namespace:
+    values = dict(
+        lora_rank=16,
+        lora_alpha=32,
+        lora_dropout=0.0,
+        target_modules=["q_proj", "k_proj", "v_proj"],
+        exclude_modules="o_proj",
+        lora_type="lora",
+    )
+    values.update(overrides)
+    return Namespace(**values)
+
+
+class TestCreateLoraInstance:
+    def test_exclude_modules_is_not_forwarded_to_the_bridge(self, fake_bridge_peft):
+        """Bridge asserts exclude_modules is empty whenever target_modules is set, and the
+        argument parser has already subtracted the excluded names — passing both crashed."""
+        lora_cls, _ = fake_bridge_peft
+        lora = create_lora_instance(_lora_args())
+        assert isinstance(lora, lora_cls)
+        assert "exclude_modules" not in lora.kwargs
+        assert lora.kwargs["target_modules"] == ["linear_qkv"]
+
+    def test_canonical_lora_type_selects_the_split_adapter(self, fake_bridge_peft):
+        _, canonical_cls = fake_bridge_peft
+        lora = create_lora_instance(_lora_args(lora_type="canonical_lora"))
+        assert isinstance(lora, canonical_cls)
+        assert lora.kwargs["target_modules"] == ["linear_q", "linear_k", "linear_v"]
+
+    def test_shared_outer_loras_requires_the_standard_adapter(self, fake_bridge_peft):
+        args = _lora_args(lora_type="canonical_lora", experts_shared_outer_loras=True)
+        with pytest.raises(AssertionError, match="experts-shared-outer-loras"):
+            create_lora_instance(args)
+
+    def test_shared_outer_loras_is_forwarded_for_standard_lora(self, fake_bridge_peft):
+        lora = create_lora_instance(_lora_args(experts_shared_outer_loras=True))
+        assert lora.kwargs["experts_shared_outer_loras"] is True
 
 
 # ---------------------------------------------------------------------------

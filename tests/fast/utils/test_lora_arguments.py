@@ -123,3 +123,11 @@ class TestLoraExcludeModules:
         args = _args(target_modules="q_proj,k_proj", exclude_modules="")
         parse_lora_target_modules(args)
         assert args.target_modules == ["q_proj", "k_proj"]
+
+    @pytest.mark.parametrize("pattern", ["*.layers.0.linear_qkv", "o_pro?", "q_proj,*.experts.*"])
+    def test_wildcard_exclude_is_rejected(self, pattern):
+        """Subtracting exact names cannot honor a pattern, and neither LoRA path can:
+        the native provider matches leaf names and bridge refuses excludes alongside targets."""
+        args = _args(target_modules="q_proj,k_proj,o_proj", exclude_modules=pattern)
+        with pytest.raises(AssertionError, match="wildcard"):
+            parse_lora_target_modules(args)

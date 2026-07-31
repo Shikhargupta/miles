@@ -334,21 +334,17 @@ def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
-    """Parse and convert exclude_modules argument."""
-    exclude_modules: list[str] = []
-    raw = getattr(args, "exclude_modules", None)
-    if raw:
-        if isinstance(raw, str):
-            exclude_modules = [m.strip() for m in raw.split(",")]
-        else:
-            exclude_modules = list(raw)
-        exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=lora_type)
-    return exclude_modules
-
-
 def create_lora_instance(args: Namespace):
     """Create a LoRA or CanonicalLoRA instance based on args.
+
+    ``--exclude-modules`` is deliberately not forwarded: Megatron-Bridge treats
+    ``target_modules`` and ``exclude_modules`` as mutually exclusive selection
+    mechanisms and asserts the latter is empty whenever the former is set
+    (``megatron/bridge/peft/module_matcher.py``). Passing both crashed at model
+    build. Miles never reaches the bridge branch that honors excludes anyway,
+    because ``--target-modules`` is required whenever LoRA is on; instead
+    ``miles.utils.arguments.parse_lora_target_modules`` has already subtracted
+    the excluded names from the target list by this point.
 
     Returns:
         A LoRA/CanonicalLoRA dataclass instance ready to be applied to a model.
@@ -364,11 +360,9 @@ def create_lora_instance(args: Namespace):
         lora_cls = LoRA
 
     target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
-    exclude_modules = parse_exclude_modules(args, lora_type=lora_cls)
 
     lora_kwargs = dict(
         target_modules=target_modules,
-        exclude_modules=exclude_modules,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=args.lora_dropout,
@@ -384,8 +378,8 @@ def create_lora_instance(args: Namespace):
 
     logger.info(
         f"Created {lora_cls.__name__}: rank={args.lora_rank}, alpha={args.lora_alpha}, "
-        f"dropout={args.lora_dropout}, target_modules={target_modules}, "
-        f"exclude_modules={exclude_modules}"
+        f"dropout={args.lora_dropout}, target_modules={target_modules} "
+        f"(--exclude-modules {getattr(args, 'exclude_modules', None)!r} already applied by the parser)"
     )
     return lora
 
