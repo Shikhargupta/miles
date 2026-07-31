@@ -62,6 +62,8 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
 
 
 def spec_session_server(args) -> CommandWorkerSpec:
+    from miles.ray.rollout.router_manager import compute_num_session_server_ports
+
     _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
