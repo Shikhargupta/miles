@@ -4,7 +4,6 @@ import dataclasses
 import gc
 import logging
 import math
-import os
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -379,10 +378,11 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
 
 
 def _report_nonfinite_grads(model: Sequence[DDP], step_id: int) -> None:
-    """MILES_DEBUG_NAN_GRADS=1: name the trainable params whose accumulated grad went non-finite."""
+    """Name the trainable params whose accumulated grad went non-finite."""
     rank = torch.distributed.get_rank()
     bad: list[str] = []
     total = 0
+    finite_max = 0.0
     for chunk in model:
         for name, param in chunk.named_parameters():
             if not param.requires_grad:
@@ -397,7 +397,11 @@ def _report_nonfinite_grads(model: Sequence[DDP], step_id: int) -> None:
                 nans = int(torch.isnan(grad).sum())
                 infs = int(torch.isinf(grad).sum())
                 bad.append(f"{name}<nan={nans},inf={infs},n={grad.numel()},dtype={grad.dtype}>")
-    logger.error(f"[nan-grads] rank={rank} step={step_id} trainable={total} nonfinite={len(bad)}")
+            else:
+                finite_max = max(finite_max, float(grad.abs().max()))
+    logger.error(
+        f"[nan-grads] rank={rank} step={step_id} trainable={total} nonfinite={len(bad)} finite_absmax={finite_max:.6g}"
+    )
     for entry in bad[:8]:
         logger.error(f"[nan-grads] rank={rank} {entry}")
 
@@ -601,8 +605,7 @@ def train_one_step(
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
 
-    if os.environ.get("MILES_DEBUG_NAN_GRADS") == "1":
-        _report_nonfinite_grads(model, step_id)
+    _report_nonfinite_grads(model, step_id)
 
     if not disable_optimizer and valid_step:
         if multi_lora:
