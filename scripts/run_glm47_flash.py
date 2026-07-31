@@ -117,6 +117,9 @@ def execute(args: ScriptArgs):
             "normalize_advantages": True,
             "critic_lr": 1e-5,
             "critic_save": f"{load_save_path}_critic",
+            # routing replay records router indices only for the actor's forward;
+            # the critic's MoE forward has no recorded routing and crashes
+            "use_rollout_routing_replay": False,
         }
         config_path = f"{args.output_dir}/{args.run_id}/ppo_overrides.yaml"
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
