@@ -9,6 +9,7 @@ on:
       - 'docker/build.py'
       - 'docker/resolve_upstream.py'
       - 'docker/fetch_wheels.py'
+      - 'docker/requirements-nodeps.txt'
       - 'docker/verify_transformer_engine.py'
       - 'docker/patch/**'
       - 'requirements.txt'

@@ -34,7 +34,7 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 | `MEGATRON_REPO`, `SGL_ROUTER_*`                                                                        | remaining source knobs for the layered repos                                                                                                                                                                                                                                                                                                          |
 
 
-**Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
+**Output** — one `radixark/miles` image for the platform buildx targets. Layer order is ascending change frequency: the sglang base, prebuilt release wheels and pinned third-party installs (TE, apex, `sgl-router` among them), the `requirements.txt` resolve (constrained so it cannot silently move anything already installed), then the fast-moving source trees last — Megatron-LM, sglang, miles (each at its required commit pin). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
 `docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`; the 7.2 variants also set `APPLY_ROCR_VMMFIX=1`, which downloads the ROCr VMM-pause fix `.so` from the `WHEELS_TAG_ROCM` release and installs it — ROCm 7.0 has no such regression and leaves it off).
 
@@ -63,7 +63,7 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push
 
 Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
 
-When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/resolve_upstream.py`, `docker/fetch_wheels.py`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
+When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/resolve_upstream.py`, `docker/fetch_wheels.py`, `docker/requirements-nodeps.txt`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
 
 | Job | What it does |
 | --- | --- |
