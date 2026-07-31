@@ -294,8 +294,8 @@ def _train(args: ScriptArgs):
             "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
             f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
             f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
-            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
-            f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
+            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests {_cg} "
+            f"--sglang-chunked-prefill-size 8192 --sglang-watchdog-timeout 3600 "
             "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
             f"--sglang-max-lora-rank {args.lora_rank} "
@@ -345,7 +345,11 @@ def _train(args: ScriptArgs):
             # GLM-5 DSA indexer uses interleaved RoPE; a mismatch garbles long sequences
             "INDEXER_ROPE_NEOX_STYLE": "0",
             "SGLANG_NSA_FORCE_MLA": "1",
-            # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True breaks torch_memory_saver
+            # The full-model step OOMs by a few hundred MiB while ~6 GiB sits reserved but
+            # unallocated, so make the allocator reclaim cached blocks before it grows the pool.
+            # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, the usual answer to that message,
+            # breaks torch_memory_saver.
+            "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8",
         },
         megatron_path=args.megatron_path,
     )
