@@ -274,6 +274,11 @@ def _train(args: ScriptArgs):
     perf_args = _get_parallel_config(args)
 
     if _is_full:
+        # As in run_glm5_2_744b_a40b.py. LoRA still backprops through the frozen base, so the
+        # activations are full-model sized; without this the step needs ~123 GiB against the
+        # ~124 GiB left once sglang's non-releasable ~15 GiB is subtracted.
+        perf_args += "--recompute-granularity full --recompute-method uniform --recompute-num-layers 1 "
+
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
