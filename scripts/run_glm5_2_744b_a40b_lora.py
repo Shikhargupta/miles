@@ -33,6 +33,14 @@ Usage:
   python scripts/run_glm5_2_744b_a40b_lora.py train   --model-name GLM-5.2_5layer --task dapo-math \\
       --rollout-max-response-len 4096 --num-gpus-per-node 4
 
+The full 744B model does not fit on one node: the bf16 base is ~1403 GiB against 1123 GiB
+of HBM on 8x H200. Shard it with --actor-num-nodes (EP spans the whole world, TP stays
+intra-node) and serve the rollout from the fp8 checkpoint. Ray must already be running
+across every node, so set MILES_SCRIPT_EXTERNAL_RAY=1 -- execute_train only ever starts a
+single-node head of its own:
+  MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_glm5_2_744b_a40b_lora.py train \\
+      --model-name GLM-5.2 --actor-num-nodes 4 --num-gpus-per-node 8 --fp8-rollout
+
 fp8 rollout (train stays bf16; sglang serves <hf_checkpoint>_fp8 via --sglang-config; LoRA
 adapters still sync per step, only the base-weight sync is skipped). The rollout checkpoint
 (<hf_checkpoint>_fp8, e.g. the official GLM-5.2 fp8 release) must already exist:
@@ -93,6 +101,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # performance
     num_gpus_per_node: int = 4
+    # The full 744B bf16 base is ~1403 GiB, so it only fits sharded across >1 node
+    # (8x H200 = 1123 GiB). Expert parallelism spans the whole world; TP stays
+    # intra-node so the TP all-reduce keeps to NVLink.
+    actor_num_nodes: int = 1
 
     # LoRA
     lora_rank: int = 16
@@ -147,7 +159,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
-    """Single-node MoE layout: TP = EP = num_gpus_per_node, DP1 (mirrors run_glm5_744b_a40b).
+    """MoE layout: TP = num_gpus_per_node (intra-node), EP = the whole world, ETP 1.
+
+    Megatron requires EP * ETP == TP * DP; with PP = CP = 1 that holds for any node
+    count, and at actor_num_nodes 1 this reproduces the previous TP = EP = ngpu, DP1
+    layout exactly.
 
     The DSA kernel backend dictates the query layout; both forbid --use-dynamic-batch-size,
     hence --micro-batch-size 1: megatron needs bshd (the unfused megatron-core
@@ -155,10 +171,11 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     cu_seqlens).
     """
     ngpu = args.num_gpus_per_node
+    world_size = args.actor_num_nodes * ngpu
     qkv_format = "thd" if args.dsa_attention_backend == "tilelang" else "bshd"
     return (
         f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
-        f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "
+        f"--context-parallel-size 1 --expert-model-parallel-size {world_size} --expert-tensor-parallel-size 1 "
         f"--qkv-format {qkv_format} --micro-batch-size 1 "
     )
 
@@ -287,13 +304,15 @@ def _train(args: ScriptArgs):
                 "    update_weights: true\n"
                 "    server_groups:\n"
                 "      - worker_type: regular\n"
-                f"        num_gpus: {args.num_gpus_per_node}\n"
+                # total GPUs for the group, not per engine: under --colocate the rollout
+                # spans the same world as the actor, split into world/_eng engines
+                f"        num_gpus: {args.actor_num_nodes * args.num_gpus_per_node}\n"
             )
         sglang_args += f"--sglang-config {sglang_config_path} "
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 
-    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
+    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes {args.actor_num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
