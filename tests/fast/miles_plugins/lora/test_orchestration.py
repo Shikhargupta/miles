@@ -199,6 +199,11 @@ class TestAssertSupportedRun:
         with pytest.raises(AssertionError, match="moe-shared-expert-overlap"):
             _assert_supported_run(Namespace(moe_shared_expert_overlap=True), _context("q_proj"))
 
+    def test_overlap_grad_reduce_is_rejected(self):
+        """The adapter TP grad sum and MCore's DP reduce-scatter would race on the same grad buffer."""
+        with pytest.raises(AssertionError, match="overlap-grad-reduce"):
+            _assert_supported_run(Namespace(overlap_grad_reduce=True), _context("q_proj"))
+
     def test_colocate_without_weights_backuper_is_rejected(self):
         args = Namespace(colocate=True, enable_weights_backuper=False)
         with pytest.raises(AssertionError, match="backuper"):

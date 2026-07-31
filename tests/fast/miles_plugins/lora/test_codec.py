@@ -101,6 +101,29 @@ def test_native_checkpoint_codec_reports_legacy_extra_projection_tensors():
     assert missing == []
 
 
+def test_native_shard_loads_on_a_nonzero_ep_rank(tmp_path, monkeypatch):
+    """Native state is EP-invariant: an EP rank > 0 must find the shard written for its (tp, pp).
+
+    Regression guard — the shard name used to carry ep_rank while only dense-DP-rank-0 ranks wrote,
+    so under TP2/EP4 the EP 2/3 ranks found no file and silently kept fresh adapters.
+    """
+    torch.save(native_adapter_state_dict([_partial_model()]), tmp_path / "adapter_megatron_tp0_pp0.pt")
+    parallel_state = SimpleNamespace(
+        tp=SimpleNamespace(rank=0),
+        pp=SimpleNamespace(rank=0),
+        ep=SimpleNamespace(rank=3),
+    )
+    monkeypatch.setattr(
+        "miles.backends.megatron_utils.lora_utils.get_parallel_state",
+        lambda: parallel_state,
+    )
+
+    loaded, iteration = load_lora_adapter([_partial_model()], str(tmp_path))
+
+    assert loaded
+    assert iteration is None
+
+
 def test_native_checkpoint_codec_reports_missing_projection_tensors():
     """A shard saved with fewer targets leaves the extra adapters fresh — that must be visible."""
     source = _partial_model()

@@ -11,7 +11,8 @@ import pytest
 import torch
 
 from miles.backends.megatron_utils.lora_utils import (
-    _native_adapter_shard_name,
+    _adapter_shard_name,
+    _is_canonical_shard_writer,
     convert_target_modules_to_hf,
     reduce_marked_lora_grads,
     resolve_lora_provider,
@@ -310,16 +311,22 @@ class TestWrapModelProvider:
         assert out is calls[0][0]
 
 
-class TestNativeAdapterShardName:
-    def test_no_ep_keeps_legacy_name(self):
-        assert _native_adapter_shard_name(1, 2, 0) == "adapter_megatron_tp1_pp2.pt"
+class TestAdapterShardName:
+    def test_native_name_is_ep_invariant(self):
+        """Routed experts carry no native adapter and the shared expert shards over attention TP,
+        so every EP rank holds identical state for a given (tp, pp) — one file serves them all."""
+        names = {_adapter_shard_name(1, 2, ep, ep_sharded=False) for ep in range(4)}
+        assert names == {"adapter_megatron_tp1_pp2.pt"}
 
-    def test_ep_rank_is_included(self):
-        assert _native_adapter_shard_name(1, 2, 3) == "adapter_megatron_tp1_pp2_ep3.pt"
-
-    def test_ranks_sharing_tp_pp_get_distinct_names(self):
-        names = {_native_adapter_shard_name(0, 0, ep) for ep in range(4)}
+    def test_bridge_name_keys_on_ep(self):
+        """Bridge PEFT can attach genuinely expert-parallel adapters, so its shards differ per EP rank."""
+        assert _adapter_shard_name(1, 2, 0, ep_sharded=True) == "adapter_megatron_tp1_pp2.pt"
+        assert _adapter_shard_name(1, 2, 3, ep_sharded=True) == "adapter_megatron_tp1_pp2_ep3.pt"
+        names = {_adapter_shard_name(0, 0, ep, ep_sharded=True) for ep in range(4)}
         assert len(names) == 4
+
+    def test_writer_election_is_a_noop_without_distributed(self):
+        assert _is_canonical_shard_writer("adapter_megatron_tp0_pp0.pt")
 
 
 class TestReduceMarkedLoraGrads:

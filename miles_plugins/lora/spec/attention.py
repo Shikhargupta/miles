@@ -98,7 +98,19 @@ class GQAAttentionSpec:
 
 @dataclass(frozen=True)
 class MLAAttentionSpec:
-    """Compressed query and key/value projection layout used by DeepSeek/GLM/Kimi."""
+    """Compressed query and key/value projection layout used by DeepSeek/GLM/Kimi.
+
+    Roadmap (the ``q_lora_rank`` guard in ``validate`` below): when
+    ``q_lora_rank`` is None, MCore builds a plain column-parallel
+    ``linear_q_proj`` instead of q_a/q_b, which bridge covers with no MLA-specific
+    code at all — its generic column-parallel branch attaches the adapter and the
+    per-model mappings already carry ``linear_q_proj -> self_attn.q_proj``. That
+    bridge needs zero extra code is the evidence this is naming/spec-local work
+    for native: a second MLA branch mapping ``linear_q_proj`` to HF ``q_proj``
+    with the COLUMN layout, plus a ``q_proj`` entry in
+    ``lora_utils._MLA_HF_TO_MEGATRON``. The guard is a serving-contract refusal
+    (SGLang expects the fused qkv_a layout), not a structural one.
+    """
 
     name: str = "mla"
     supported_targets: frozenset[str] = MLA_TARGETS
@@ -225,7 +237,21 @@ class MLAAttentionSpec:
 
 @dataclass(frozen=True)
 class GDNAttentionSpec:
-    """Explicit future boundary for GDN/linear-attention LoRA projections."""
+    """Explicit future boundary for GDN/linear-attention LoRA projections.
+
+    Roadmap: bridge needs no GDN-specific adapter — it attaches an ordinary
+    column-parallel adapter to the single fused Megatron ``in_proj`` and does the
+    work in the exporter, splitting the fused ``linear_out`` into the four HF
+    projections ``in_proj_qkv``/``in_proj_z``/``in_proj_b``/``in_proj_a``
+    (``megatron/bridge/models/conversion/peft_bridge.py:263-393``, ``:1113-1120``).
+    Native's blocker is the codec, not the attach: ``ProjectionSpec`` maps one
+    Megatron slice to one HF name, and the only multi-slice module,
+    ``LoRASplitFC1``, handles just the symmetric 2-way gate/up split. The
+    head-grouped qkvz/ba layout is not a contiguous row split, so this needs an
+    asymmetric N-way split projection type in ``codec/hf.py``. Miles already maps
+    ``in_proj_qkvz``/``in_proj_ba`` to the Megatron ``in_proj``
+    (``lora_utils._STANDARD_LORA_HF_TO_MEGATRON``), so bridge mode works today.
+    """
 
     name: str = "gdn"
     supported_targets: frozenset[str] = GDN_TARGETS

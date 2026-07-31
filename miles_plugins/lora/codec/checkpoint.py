@@ -15,10 +15,18 @@ import torch.nn as nn
 from miles_plugins.lora.modules.linear import iter_adapters
 
 
-def native_adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int) -> str:
-    """Return the per-rank native adapter filename, including EP when sharded."""
-    suffix = f"_ep{ep_rank}" if ep_rank > 0 else ""
-    return f"adapter_megatron_tp{tp_rank}_pp{pp_rank}{suffix}.pt"
+def native_adapter_shard_name(tp_rank: int, pp_rank: int) -> str:
+    """Return the per-rank native adapter filename.
+
+    Native adapter state is EP-invariant, so the expert-parallel rank is
+    deliberately absent from the key: routed/grouped experts carry no native
+    adapter (see ``miles_plugins.lora.spec.moe``), and the MoE shared expert is
+    sharded over the *attention* tensor-parallel group, not the expert one
+    (mcore ``transformer/moe/shared_experts.py`` builds it with
+    ``tp_group=pg_collection.tp``). Every EP rank therefore holds byte-identical
+    adapter state for a given ``(tp_rank, pp_rank)``.
+    """
+    return f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
 
 
 def native_adapter_state_dict(model_chunks: Sequence[nn.Module]) -> dict[str, torch.Tensor]:

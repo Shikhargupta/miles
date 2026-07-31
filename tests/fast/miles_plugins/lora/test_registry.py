@@ -111,6 +111,26 @@ class TestRegistryTable:
         for model_type in ("deepseek_v3", "deepseek_v32", "glm4_moe_lite", "glm_moe_dsa", "kimi_k25"):
             assert MODEL_SPECS[model_type].name == MLA, model_type
 
+    def test_hybrid_gdn_family_warns_about_raw_mode_backward(self, tmp_path, caplog):
+        """The adapter side is verified, but raw mode's frozen-base backward diverges there;
+        the run must say so instead of starting clean and blowing up at step 1."""
+        import logging
+
+        path = _checkpoint(tmp_path, {"model_type": "qwen3_5_moe"})
+        with caplog.at_level(logging.WARNING, logger="miles_plugins.lora.registry"):
+            model_type, spec = resolve_model_spec(_args(path), _config())
+        assert model_type == "qwen3_5_moe"
+        assert spec.name == "gqa_gdn"
+        assert "bridge" in caplog.text and "grad_norm" in caplog.text
+
+    def test_stable_families_do_not_warn(self, tmp_path, caplog):
+        import logging
+
+        path = _checkpoint(tmp_path, {"model_type": "qwen3"})
+        with caplog.at_level(logging.WARNING, logger="miles_plugins.lora.registry"):
+            resolve_model_spec(_args(path), _config())
+        assert caplog.text == ""
+
     def test_deepseek_v4_flash_is_not_registered(self):
         """DeepSeek-V4-Flash attention is wq_a/wq_b/wkv, not mcore MLA; docs declare it out of
         scope, so the registry must fail closed instead of crashing inside MLA attach."""

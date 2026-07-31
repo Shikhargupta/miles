@@ -148,11 +148,37 @@ def _is_adapter_param_name(name: str) -> bool:
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
 
 
-def _native_adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int) -> str:
-    """Compatibility delegate for the native adapter checkpoint filename."""
+def _adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, *, ep_sharded: bool) -> str:
+    """Filename identifying this rank's adapter shard.
+
+    ``ep_sharded`` distinguishes the two providers' state: Megatron-Bridge PEFT
+    can attach genuinely expert-parallel adapters (routed/grouped experts), so
+    its shards must be keyed by EP rank, while native adapter state is
+    EP-invariant (see ``native_adapter_shard_name``).
+    """
     from miles_plugins.lora.codec.checkpoint import native_adapter_shard_name
 
-    return native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
+    name = native_adapter_shard_name(tp_rank, pp_rank)
+    if ep_sharded and ep_rank > 0:
+        name = name.removesuffix(".pt") + f"_ep{ep_rank}.pt"
+    return name
+
+
+def _is_canonical_shard_writer(shard_name: str) -> bool:
+    """True on exactly one rank per distinct shard filename.
+
+    Gating writes on data-parallel rank 0 alone is not enough once the filename
+    carries an EP component: with TP2/EP4 on 8 GPUs the dense-DP-rank-0 ranks
+    are {0, 1}, which hold EP ranks 0 and 1, so the shards EP ranks 2 and 3 ask
+    for on resume were never written. Electing the lowest global rank per
+    filename covers every name some rank will request, for any layout, and
+    collapses to DP-rank-0 behavior when the name has no EP component.
+    """
+    if not dist.is_initialized():
+        return True
+    names: list[str | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(names, shard_name)
+    return names.index(shard_name) == dist.get_rank()
 
 
 _param_grad_buffer_patched = False
@@ -478,8 +504,10 @@ def save_lora_checkpoint(
     if dist.is_initialized():
         dist.barrier()
 
-    if is_dp_cp_rank_0:
-        if bridge_mode or not built_in_native_provider:
+    ep_sharded_provider = bridge_mode or not built_in_native_provider
+    shard_name = _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=ep_sharded_provider)
+    if _is_canonical_shard_writer(shard_name):
+        if ep_sharded_provider:
             adapter_state: dict[str, torch.Tensor] = {}
             for model_chunk in model:
                 for name, param in model_chunk.named_parameters():
@@ -490,7 +518,7 @@ def save_lora_checkpoint(
 
             adapter_state = native_adapter_state_dict(model)
 
-        native_path = save_path / _native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
+        native_path = save_path / shard_name
         torch.save(adapter_state, native_path)
         logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
@@ -606,14 +634,17 @@ def load_lora_adapter(
     ep_rank = get_parallel_state().ep.rank
 
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
-    native_path = adapter_dir / _native_adapter_shard_name(tp_rank, pp_rank, ep_rank)
+    from miles_plugins.lora.codec.checkpoint import has_native_adapters, load_native_adapter_state_dict
+
+    # The provider that attached the adapters also decides the shard key: only
+    # bridge/custom providers can hold expert-parallel adapter state.
+    native_adapters = has_native_adapters(model)
+    native_path = adapter_dir / _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=not native_adapters)
     shard_found = native_path.exists()
     shard_incompatible = False
     if shard_found:
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
-        from miles_plugins.lora.codec.checkpoint import has_native_adapters, load_native_adapter_state_dict
-
-        if has_native_adapters(model):
+        if native_adapters:
             loaded, unexpected, missing = load_native_adapter_state_dict(model, state_dict)
             if unexpected:
                 logger.warning(

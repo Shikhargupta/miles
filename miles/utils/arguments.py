@@ -2357,6 +2357,11 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+        assert args.lora_rank <= 0, (
+            "LoRA is not supported for the FSDP backend: it attaches no adapters, so the run would "
+            "silently full-finetune while the rollout engine is still configured to serve an adapter. "
+            "Use --train-backend megatron."
+        )
 
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
     # locates the per-test record). No CLI flag: non-CI runs always stay False.
@@ -2686,6 +2691,13 @@ def miles_validate_args(args):
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
         if args.experts_shared_outer_loras:
+            assert args.megatron_to_hf_mode == "bridge" or args.lora_provider_path is not None, (
+                "--experts-shared-outer-loras is a Megatron-Bridge PEFT adapter layout: the native "
+                "raw-mode provider adapts only attention, dense MLPs and MoE shared experts, so the "
+                "grouped-expert buffers this flag makes SGLang allocate would never be filled. Use "
+                "--megatron-to-hf-mode bridge, or point --lora-provider-path at a provider that "
+                "implements the layout."
+            )
             args.sglang_experts_shared_outer_loras = True
         assert args.experts_shared_outer_loras == bool(
             args.sglang_experts_shared_outer_loras

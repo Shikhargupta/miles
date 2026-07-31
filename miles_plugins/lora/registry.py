@@ -67,6 +67,11 @@ MODEL_SPECS: dict[str, LoRAArchSpec] = {
 }
 
 
+# Registered (the adapter side is verified: attach, export and SGLang ingest all check out) but
+# raw mode's own frozen-base backward blows up on these; see scripts/run_lora_native.py's header.
+_RAW_MODE_BACKWARD_UNSTABLE = frozenset({"qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_6_moe", "qwen3_next"})
+
+
 def _model_type_candidates(hf_checkpoint: str | None) -> list[str]:
     """Return outer and nested text ``model_type`` values from HF config.json."""
     if not hf_checkpoint:
@@ -125,6 +130,15 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
         "--lora-provider-path at a model-specific provider."
     )
     spec = MODEL_SPECS[model_type]
+    if model_type in _RAW_MODE_BACKWARD_UNSTABLE:
+        logger.warning(
+            "[lora-native] %s adapter attachment is verified, but raw mode's own backward is known to "
+            "diverge on this family once the base is frozen (grad_norm 1e7-1e10 with recompute, NaN "
+            "without it, NaN at CP=2), while bridge mode stays stable on the identical batch. This is a "
+            "model-path issue rather than a LoRA one; prefer --megatron-to-hf-mode bridge until it is "
+            "fixed, and watch grad_norm from step 1 if you continue.",
+            model_type,
+        )
 
     built = MLA if bool(getattr(config, "multi_latent_attention", False)) else GQA
     assert spec.model_family == built, (

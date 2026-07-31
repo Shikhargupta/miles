@@ -73,6 +73,18 @@ def _assert_supported_run(args, context: AttachContext) -> None:
         "communication, so the adapter's gather/reduce no longer matches the module's effective parallel "
         "mode. Drop the flag, or use --megatron-to-hf-mode bridge."
     )
+    assert not getattr(args, "overlap_grad_reduce", False), (
+        "native LoRA does not support --overlap-grad-reduce: replicated adapter gradients need a "
+        "tensor-parallel sum (reduce_marked_lora_grads) over the same buffer MCore's per-bucket "
+        "data-parallel reduce-scatter writes, and with overlap those collectives are already in flight "
+        "on another stream when the sum runs, so adapter gradients come out nondeterministic. The sum "
+        "cannot simply move after finish_grad_sync either: with --use-distributed-optimizer the "
+        "reduce-scatter leaves only this rank's shard of main_grad valid. Drop the flag. Bridge mode is "
+        "not an escape hatch here — its DDP config does not forward the flag either "
+        "(miles.backends.megatron_utils.bridge_lora_helpers) — so the flag is inert under LoRA today; "
+        "removing this restriction means making adapters real MCore parallel linears (see "
+        "miles_plugins/lora/distributed.py's roadmap note)."
+    )
     if getattr(args, "colocate", False) and context.targets:
         assert getattr(args, "enable_weights_backuper", True), (
             "native LoRA under --colocate needs the weights backuper: adapter pages are memory-saver-paused "
