@@ -11,7 +11,7 @@ from miles.backends.megatron_utils.lora_utils import load_lora_adapter
 from miles_plugins.lora.codec.checkpoint import load_native_adapter_state_dict, native_adapter_state_dict
 from miles_plugins.lora.codec.hf import export_lora_hf_named, load_lora_adapter_hf, target_modules_from_hf_names
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.modules.linear import SplitFC1, SplitQKV
+from miles_plugins.lora.modules.linear import LoRASplitFC1, LoRASplitQKV
 from miles_plugins.lora.spec.attention import QKV_PROJECTIONS
 from miles_plugins.lora.spec.base import AttachContext
 from miles_plugins.lora.spec.mlp import FC1_PROJECTIONS
@@ -41,7 +41,7 @@ def _context(*targets: str) -> AttachContext:
 
 def _partial_model() -> nn.Module:
     model = nn.Module()
-    model.q_adapter = SplitQKV(
+    model.q_adapter = LoRASplitQKV(
         hf_prefix="model.layers.0.self_attn.",
         reference=torch.empty(4, 8),
         context=_context("q_proj"),
@@ -50,7 +50,7 @@ def _partial_model() -> nn.Module:
         num_kv=1,
         head_dim=1,
     )
-    model.gate_adapter = SplitFC1(
+    model.gate_adapter = LoRASplitFC1(
         hf_prefix="model.layers.0.mlp.",
         reference=torch.empty(16, 8),
         context=_context("gate_proj"),

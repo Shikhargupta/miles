@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import LoRALinear, SplitQKV, attach_adapter_forward
+from miles_plugins.lora.modules.linear import LoRALinear, LoRASplitQKV, attach_adapter_forward
 from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, ProjectionSpec
 
 QKV_PROJECTIONS = (
@@ -67,7 +67,7 @@ class GQAAttentionSpec:
 
         qkv_projections = tuple(projection for projection in QKV_PROJECTIONS if projection.hf in context.targets)
         if qkv_projections:
-            adapter = SplitQKV(
+            adapter = LoRASplitQKV(
                 hf_prefix=hf_prefix,
                 reference=attention.linear_qkv.weight,
                 context=context,

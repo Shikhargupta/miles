@@ -6,7 +6,7 @@ import pytest
 
 from miles_plugins.lora.config import LoRAConfig
 from miles_plugins.lora.spec.base import AttachContext
-from miles_plugins.lora.spec.moe import SHARED_EXPERT_ONLY_MOE_SPEC
+from miles_plugins.lora.spec.moe import GENERAL_EXPERT_MOE_SPEC, SHARED_OUTER_EXPERT_MOE_SPEC
 
 
 def _context(*targets: str, expanded_from_all_linear: bool = False) -> AttachContext:
@@ -35,19 +35,26 @@ def test_moe_mlp_targets_preserve_existing_shared_expert_support():
         experts=object(),
         shared_experts=SimpleNamespace(linear_fc1=object()),
     )
-    SHARED_EXPERT_ONLY_MOE_SPEC.validate_layer(mlp, _context("gate_proj", "down_proj"))
+    SHARED_OUTER_EXPERT_MOE_SPEC.validate_layer(mlp, _context("gate_proj", "down_proj"))
 
 
 def test_moe_mlp_targets_fail_when_only_routed_experts_could_match():
+    """A shared-outer-expert model with a routed-only layer delegates to the general spec."""
     mlp = SimpleNamespace(experts=object())
     with pytest.raises(AssertionError, match="routed/grouped expert"):
-        SHARED_EXPERT_ONLY_MOE_SPEC.validate_layer(mlp, _context("gate_proj"))
+        SHARED_OUTER_EXPERT_MOE_SPEC.validate_layer(mlp, _context("gate_proj"))
+
+
+def test_general_expert_spec_rejects_explicit_mlp_targets_directly():
+    mlp = SimpleNamespace(experts=object())
+    with pytest.raises(AssertionError, match="routed/grouped expert"):
+        GENERAL_EXPERT_MOE_SPEC.validate_layer(mlp, _context("down_proj"))
 
 
 def test_moe_parser_expanded_mlp_targets_skip_instead_of_failing():
     """all-linear on a shared-expert-less MoE (e.g. qwen3_moe) trains attention-only, like the base branch."""
     mlp = SimpleNamespace(experts=object())
-    SHARED_EXPERT_ONLY_MOE_SPEC.validate_layer(
+    SHARED_OUTER_EXPERT_MOE_SPEC.validate_layer(
         mlp,
         _context("q_proj", "gate_proj", "up_proj", "down_proj", expanded_from_all_linear=True),
     )
@@ -55,4 +62,4 @@ def test_moe_parser_expanded_mlp_targets_skip_instead_of_failing():
 
 def test_attention_only_moe_does_not_require_a_shared_expert():
     mlp = SimpleNamespace(experts=object())
-    SHARED_EXPERT_ONLY_MOE_SPEC.validate_layer(mlp, _context("q_proj"))
+    SHARED_OUTER_EXPERT_MOE_SPEC.validate_layer(mlp, _context("q_proj"))

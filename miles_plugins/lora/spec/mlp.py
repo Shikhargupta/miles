@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import LoRALinear, SplitFC1, attach_adapter_forward
+from miles_plugins.lora.modules.linear import LoRALinear, LoRASplitFC1, attach_adapter_forward
 from miles_plugins.lora.spec.base import COLUMN, ROW, AttachContext, ProjectionSpec
 
 FC1_PROJECTIONS = (
@@ -30,7 +30,7 @@ class FusedGatedMLPSpec:
 
         fc1_projections = tuple(projection for projection in FC1_PROJECTIONS if projection.hf in context.targets)
         if fc1_projections:
-            adapter = SplitFC1(
+            adapter = LoRASplitFC1(
                 hf_prefix=hf_prefix,
                 reference=mlp.linear_fc1.weight,
                 context=context,

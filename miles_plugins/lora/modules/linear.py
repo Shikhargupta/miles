@@ -138,7 +138,7 @@ class LoRALinear(NativeLoRAAdapter):
         return F.linear(F.linear(x, a), b)
 
 
-class SplitQKV(NativeLoRAAdapter):
+class LoRASplitQKV(NativeLoRAAdapter):
     """Independent Q/K/V adapters whose delta is packed into one fused QKV output."""
 
     def __init__(
@@ -155,11 +155,11 @@ class SplitQKV(NativeLoRAAdapter):
         q_rows = num_q * head_dim * (2 if context.output_gate else 1)
         projections = tuple(projections)
         attrs = [projection.attr for projection in projections]
-        assert len(set(attrs)) == len(attrs), "SplitQKV projection attributes must be unique"
-        assert set(attrs) <= {"q", "k", "v"}, "SplitQKV requires q/k/v projections"
+        assert len(set(attrs)) == len(attrs), "LoRASplitQKV projection attributes must be unique"
+        assert set(attrs) <= {"q", "k", "v"}, "LoRASplitQKV requires q/k/v projections"
         assert all(
             projection.layout == COLUMN for projection in projections
-        ), "SplitQKV projections must be column parallel"
+        ), "LoRASplitQKV projections must be column parallel"
         by_attr = {projection.attr: projection for projection in projections}
         projections = tuple(by_attr[name] for name in ("q", "k", "v") if name in by_attr)
         super().__init__(
@@ -206,7 +206,7 @@ class SplitQKV(NativeLoRAAdapter):
         return torch.cat(full_delta, dim=-1).index_select(-1, self.out_perm)
 
 
-class SplitFC1(NativeLoRAAdapter):
+class LoRASplitFC1(NativeLoRAAdapter):
     """Independent gate/up adapters whose delta is packed into one fused FC1 output."""
 
     def __init__(
@@ -220,11 +220,11 @@ class SplitFC1(NativeLoRAAdapter):
     ):
         projections = tuple(projections)
         attrs = [projection.attr for projection in projections]
-        assert len(set(attrs)) == len(attrs), "SplitFC1 projection attributes must be unique"
-        assert set(attrs) <= {"gate", "up"}, "SplitFC1 requires gate/up projections"
+        assert len(set(attrs)) == len(attrs), "LoRASplitFC1 projection attributes must be unique"
+        assert set(attrs) <= {"gate", "up"}, "LoRASplitFC1 requires gate/up projections"
         assert all(
             projection.layout == COLUMN for projection in projections
-        ), "SplitFC1 projections must be column parallel"
+        ), "LoRASplitFC1 projections must be column parallel"
         by_attr = {projection.attr: projection for projection in projections}
         projections = tuple(by_attr[name] for name in ("gate", "up") if name in by_attr)
         super().__init__(

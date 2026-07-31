@@ -9,7 +9,7 @@ import os
 from miles_plugins.lora.spec.attention import GQA_ATTENTION_SPEC, HYBRID_GQA_GDN_ATTENTION_SPEC, MLA_ATTENTION_SPEC
 from miles_plugins.lora.spec.base import LoRAArchSpec
 from miles_plugins.lora.spec.mlp import FUSED_GATED_MLP_SPEC
-from miles_plugins.lora.spec.moe import SHARED_EXPERT_ONLY_MOE_SPEC
+from miles_plugins.lora.spec.moe import SHARED_OUTER_EXPERT_MOE_SPEC
 
 logger = logging.getLogger(__name__)
 
@@ -21,21 +21,21 @@ _GQA_SPEC = LoRAArchSpec(
     model_family=GQA,
     attention=GQA_ATTENTION_SPEC,
     mlp=FUSED_GATED_MLP_SPEC,
-    moe=SHARED_EXPERT_ONLY_MOE_SPEC,
+    moe=SHARED_OUTER_EXPERT_MOE_SPEC,
 )
 _MLA_SPEC = LoRAArchSpec(
     name=MLA,
     model_family=MLA,
     attention=MLA_ATTENTION_SPEC,
     mlp=FUSED_GATED_MLP_SPEC,
-    moe=SHARED_EXPERT_ONLY_MOE_SPEC,
+    moe=SHARED_OUTER_EXPERT_MOE_SPEC,
 )
 _HYBRID_GQA_SPEC = LoRAArchSpec(
     name="gqa_gdn",
     model_family=GQA,
     attention=HYBRID_GQA_GDN_ATTENTION_SPEC,
     mlp=FUSED_GATED_MLP_SPEC,
-    moe=SHARED_EXPERT_ONLY_MOE_SPEC,
+    moe=SHARED_OUTER_EXPERT_MOE_SPEC,
 )
 
 # Every entry is explicitly mapped to a structurally covered spec. Variant

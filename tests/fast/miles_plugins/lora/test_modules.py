@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import torch
 
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.modules.linear import SplitFC1, SplitQKV
+from miles_plugins.lora.modules.linear import LoRASplitFC1, LoRASplitQKV
 from miles_plugins.lora.spec.attention import QKV_PROJECTIONS
 from miles_plugins.lora.spec.base import AttachContext
 from miles_plugins.lora.spec.mlp import FC1_PROJECTIONS
@@ -35,7 +35,7 @@ def _context(*targets: str) -> AttachContext:
 
 
 def test_split_qkv_registers_only_requested_logical_projection():
-    adapter = SplitQKV(
+    adapter = LoRASplitQKV(
         hf_prefix="model.layers.0.self_attn.",
         reference=torch.empty(8, 8),
         context=_context("q_proj"),
@@ -49,7 +49,7 @@ def test_split_qkv_registers_only_requested_logical_projection():
 
 
 def test_split_qkv_leaves_unrequested_kv_delta_zero():
-    adapter = SplitQKV(
+    adapter = LoRASplitQKV(
         hf_prefix="model.layers.0.self_attn.",
         reference=torch.empty(4, 8),
         context=_context("q_proj"),
@@ -68,7 +68,7 @@ def test_split_qkv_leaves_unrequested_kv_delta_zero():
 
 
 def test_split_fc1_registers_only_requested_logical_projection():
-    adapter = SplitFC1(
+    adapter = LoRASplitFC1(
         hf_prefix="model.layers.0.mlp.",
         reference=torch.empty(16, 8),
         context=_context("gate_proj"),
@@ -80,7 +80,7 @@ def test_split_fc1_registers_only_requested_logical_projection():
 
 
 def test_split_fc1_leaves_unrequested_up_delta_zero():
-    adapter = SplitFC1(
+    adapter = LoRASplitFC1(
         hf_prefix="model.layers.0.mlp.",
         reference=torch.empty(16, 8),
         context=_context("gate_proj"),
@@ -97,7 +97,7 @@ def test_split_fc1_leaves_unrequested_up_delta_zero():
 
 
 def test_split_fc1_is_a_callable_module_and_preserves_fused_output_shape():
-    adapter = SplitFC1(
+    adapter = LoRASplitFC1(
         hf_prefix="model.layers.0.mlp.",
         reference=torch.empty(16, 8),
         context=_context("gate_proj", "up_proj"),
@@ -110,7 +110,7 @@ def test_split_fc1_is_a_callable_module_and_preserves_fused_output_shape():
 
 
 def test_split_modules_canonicalize_projection_execution_order():
-    qkv = SplitQKV(
+    qkv = LoRASplitQKV(
         hf_prefix="model.layers.0.self_attn.",
         reference=torch.empty(4, 8),
         context=_context("q_proj", "v_proj"),
@@ -119,7 +119,7 @@ def test_split_modules_canonicalize_projection_execution_order():
         num_kv=1,
         head_dim=1,
     )
-    fc1 = SplitFC1(
+    fc1 = LoRASplitFC1(
         hf_prefix="model.layers.0.mlp.",
         reference=torch.empty(16, 8),
         context=_context("gate_proj", "up_proj"),
