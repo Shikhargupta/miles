@@ -262,6 +262,12 @@ def _train(args: ScriptArgs):
 
     # routing replay only: --use-rollout-indexer-replay is debug-only and its
     # ~78-128 GB/rank host buffer OOMs the colocate pod
+    if _is_full and args.use_r3:
+        raise ValueError(
+            "the full-model path recomputes activations, which re-runs each MoE router twice per "
+            "micro-batch; routing replay pops one entry per forward and would desynchronise. "
+            "Pass --no-use-r3."
+        )
     r3_args = "--use-rollout-routing-replay " if args.use_r3 else ""
 
     optimizer_args = (
@@ -275,11 +281,15 @@ def _train(args: ScriptArgs):
 
     if _is_full:
         # LoRA still backprops through the frozen base, so activations are full-model sized and the
-        # step OOMs in the MoE-expert adapter. Recompute the biggest retained tensors instead.
-        # Only modules that do not re-enter the MoE router are listed: --recompute-granularity full
-        # (and the "moe"/"moe_layer" modules) re-run the router under autograd, which double-consumes
-        # the R3 routing-replay buffer and trains on another micro-batch's expert choice.
-        perf_args += "--recompute-granularity selective --recompute-modules moe_act mla_up_proj layernorm "
+        # step OOMs in the MoE-expert adapter unless the activations are recomputed.
+        # Granularity must be full: the selective modules (moe_act/layernorm/mla_up_proj) go through
+        # Megatron's CheckpointWithoutOutput, which frees the recomputed output after its first
+        # backward consumer -- but a LoRA-wrapped linear gives that output two consumers (base +
+        # adapter), so the second one raises "backward through the graph a second time".
+        # Full granularity re-runs the layer under autograd, which also re-runs the MoE router, so
+        # it needs --no-use-r3: routing replay pops one entry per forward and would hand the
+        # recomputed pass another micro-batch's expert choice.
+        perf_args += "--recompute-granularity full --recompute-method uniform --recompute-num-layers 1 "
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
         # fits engine=min(8, ngpu) on one node
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
