@@ -83,7 +83,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # MoE-expert LoRA layout: shared-outer when True, per-expert when False.
     experts_shared_outer_loras: bool = True
 
-    # GLM-5.2 specifics
+    # GLM-5.2 specifics. tilelang stays off: at DP > 1 its backward returns non-finite
+    # gradients on every trainable adapter while its forward stays healthy.
     dsa_attention_backend: Literal["megatron", "tilelang"] = "megatron"
     # R3 rollout routing replay (arxiv 2510.11370)
     use_r3: bool = True
@@ -113,12 +114,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     wandb_project: str = os.environ.get("WANDB_PROJECT", "glm52-lora-agentic")
     # The default entity has no Models write seat, so init_tracking dies without this.
     wandb_team: str = os.environ.get("WANDB_TEAM", "eigent_radixark_training")
-    wandb_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v3"
+    wandb_run_name: str = "260801-glm52-lora-tb2-daytona-terminus2-v4"
 
     # Prometheus settings
     use_prometheus: bool = True
     prometheus_port: int = 9091
-    prometheus_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v3"
+    prometheus_run_name: str = "260801-glm52-lora-tb2-daytona-terminus2-v4"
 
 
 def cleanup():
@@ -156,10 +157,9 @@ def _parallel_args(args: ScriptArgs) -> str:
         "--expert-tensor-parallel-size 1 "
         f"--qkv-format {qkv_format} "
         "--micro-batch-size 1 "
-        # 64k-token sessions at micro-batch 1 still need the activation savings
-        "--recompute-granularity full "
-        "--recompute-method uniform "
-        "--recompute-num-layers 1 "
+        # No activation recompute: GLM-5.2's cross-layer DSA index-share keeps its per-
+        # microbatch top-k on packed_seq_params, which bshd does not carry, so recompute
+        # would read a stale anchor top-k. megatron-bridge asserts on the combination.
         "--optimizer-cpu-offload "
         "--overlap-cpu-optimizer-d2h-h2d "
         "--use-precision-aware-optimizer "
