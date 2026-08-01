@@ -1,20 +1,16 @@
 """Exact HF naming, loading, and export for native LoRA.
 
-Roadmap: every adapter tensor here is 2D with exactly one sharded axis, gathered
-over a single group (see ``export_lora_hf_named`` and ``_load_adapter``).
-Supporting routed-expert LoRA (``spec/moe.py``) additionally needs: an EP
-all-gather stage keyed by *global* expert index; 3D stacking with a choice
-between ``experts.<idx>``-indexed and packed HF names; per-projection selection
-of the expert-TP group instead of the attention TP group; mirror-image slicing on
-load by both ``ep_rank`` and ``etp_rank``; and a fused-FC1 gate/up split done
-per expert. Bridge implements all of it in
-``megatron/bridge/models/conversion/peft_bridge.py`` (``:452-546``, ``:878-960``,
-``:1021-1085``) and is the reference to port from.
+Every adapter tensor is 2D with one sharded axis, gathered over one group.
 
-That change also retracts the EP-invariance of the native checkpoint shard name
-(``codec/checkpoint.py``), at which point the ``ep_sharded`` split in
-``miles.backends.megatron_utils.lora_utils._adapter_shard_name`` stops being
-bridge-only.
+Unsupported:
+
+- Expert-axis tensors for routed/grouped-expert adapters.
+
+TODO:
+
+- Add EP gathering, 3D stacking, and per-expert HF names.
+- Select the expert-TP group and slice on load by ``ep_rank``.
+- Then drop the shard name's EP-invariance in ``codec/checkpoint.py``.
 """
 
 from __future__ import annotations

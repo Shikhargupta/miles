@@ -1,8 +1,9 @@
-"""Future routed/grouped-expert LoRA modules.
+"""Future routed/grouped-expert LoRA modules; exports nothing yet.
 
-The current native implementation has no routed-expert parameter layout or EP
-codec contract. This module intentionally exports no apparently usable
-``GroupedExpertLoRA`` placeholder; those pieces will land together later.
+TODO:
+
+- Routed-expert parameter layout.
+- EP codec contract; lands with the layout.
 """
 
 __all__: list[str] = []

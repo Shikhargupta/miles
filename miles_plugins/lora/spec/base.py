@@ -30,9 +30,7 @@ class ProjectionSpec:
 class AttachContext:
     """Resolved runtime information passed to architecture attachment specs.
 
-    This deliberately keeps run-level ``LoRAConfig`` separate from model and
-    parallel metadata. It replaces the old ``_Spec`` object, which mixed all
-    three concerns together.
+    Deliberately keeps run-level ``LoRAConfig`` separate from model and parallel metadata.
     """
 
     lora: LoRAConfig

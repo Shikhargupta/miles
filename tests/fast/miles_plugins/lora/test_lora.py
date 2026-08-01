@@ -211,12 +211,11 @@ class TestArchitectureGuards:
 
 
 class TestShippedRegistries:
-    """Lock in which shipped model registries the generic provider serves.
+    """Lock in which shipped registries (scripts/models/*.sh) the generic provider serves.
 
-    Values mirror scripts/models/*.sh. These are not hypothetical: each is a
-    checkpoint someone will eventually point at --megatron-to-hf-mode raw, so a
-    layout the generic path cannot slice has to fail with a startup assert naming
-    --lora-provider-path rather than produce silently wrong gradients.
+    Each may run --megatron-to-hf-mode raw, so a layout the generic path cannot
+    slice must assert at startup naming --lora-provider-path rather than produce
+    silently wrong gradients.
     """
 
     @pytest.mark.parametrize(
@@ -225,8 +224,7 @@ class TestShippedRegistries:
             ("glm4.7-flash", dict(mla=True)),
             ("kimi-k25_2layer", dict(mla=True)),
             ("glm5-744B-A40B_4layer", dict(mla=True)),
-            # deepseek-v4-flash is deliberately absent: its wq_a/wq_b/wkv attention is not
-            # mcore MLA, and the model_type registry fails it closed before any attach runs.
+            # deepseek-v4-flash absent: wq_a/wq_b/wkv is not mcore MLA; registry fails it closed.
         ],
     )
     def test_mla_registries_are_accepted(self, registry, kwargs):
@@ -245,11 +243,10 @@ class TestShippedRegistries:
         _assert_supported_architecture(model.config, tp_size=2)
 
     def test_mla_without_q_lora_rank_is_rejected(self):
-        """DeepSeek-V2-Lite / Moonlight: the query path is uncompressed, so the export is an
-        unfused q_proj plus kv_a_proj_with_mqa, which SGLang's fused qkv_a loader cannot ingest.
-
-        Every shipped MLA registry sets --q-lora-rank (glm4.7-flash 768, kimi-k25 1536,
-        glm5-744B-A40B 2048), so this rejects only the uncovered layout.
+        """DeepSeek-V2-Lite / Moonlight: an uncompressed query path exports unfused
+        q_proj + kv_a_proj_with_mqa, which SGLang's fused qkv_a loader cannot ingest.
+        Every shipped MLA registry sets --q-lora-rank (scripts/models/*.sh), so only
+        this uncovered layout is rejected.
         """
         model = _fake_model(mla=True, q_lora_rank=None)
         with pytest.raises(AssertionError) as excinfo:

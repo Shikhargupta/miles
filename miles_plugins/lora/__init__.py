@@ -1,10 +1,11 @@
-"""Miles-native LoRA plugin.
+"""Miles-native LoRA plugin implementing the provider protocol.
 
-The package implements the native-LoRA provider protocol directly, so
-``--lora-provider-path miles_plugins.lora`` (the default) resolves here. The
-pre-#2017 module path ``miles_plugins.lora.lora`` keeps working for explicit
-pins. Core Miles utilities are imported lazily at call time, never at module
-level, so importing this package stays cycle-free and light.
+``--lora-provider-path miles_plugins.lora`` (the default) resolves here; the
+older ``miles_plugins.lora.lora`` path still works for explicit pins.
+
+Constraint:
+
+- Import ``miles``/``megatron`` inside functions, never at module level.
 """
 
 from miles_plugins.lora.codec.sglang import export_lora_sglang_named

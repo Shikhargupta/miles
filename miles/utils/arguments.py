@@ -2461,11 +2461,9 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 def parse_lora_target_modules(args) -> None:
     """Normalize ``--target-modules`` / ``--exclude-modules`` for LoRA runs, in place.
 
-    Idempotent (re-validation of already-expanded args is a no-op) and records
-    on ``args._target_modules_expanded_from_all_linear`` whether the list came
-    from the ``all-linear`` shorthand, so architecture specs can tell
-    parser-added names apart from explicit user requests. Called from
-    ``miles_validate_args``; tests exercise it directly.
+    Idempotent: re-running on already-expanded args is a no-op. Sets
+    ``args._target_modules_expanded_from_all_linear`` so specs can tell
+    ``all-linear`` expansions from explicit user requests.
     """
     args._target_modules_expanded_from_all_linear = bool(
         getattr(args, "_target_modules_expanded_from_all_linear", False)

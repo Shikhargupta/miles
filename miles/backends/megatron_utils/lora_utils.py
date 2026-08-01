@@ -164,10 +164,9 @@ def _is_adapter_param_name(name: str) -> bool:
 def _adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, *, ep_sharded: bool) -> str:
     """Filename identifying this rank's adapter shard.
 
-    ``ep_sharded`` distinguishes the two providers' state: Megatron-Bridge PEFT
-    can attach genuinely expert-parallel adapters (routed/grouped experts), so
-    its shards must be keyed by EP rank, while native adapter state is
-    EP-invariant (see ``native_adapter_shard_name``).
+    ``ep_sharded`` keys the name by EP rank, since bridge/custom providers may
+    hold routed-expert adapter state; native state is EP-invariant
+    (``native_adapter_shard_name``).
     """
     from miles_plugins.lora.codec.checkpoint import native_adapter_shard_name
 
@@ -216,12 +215,12 @@ def _non_native_adapter_load_plan(model, state_dict):
 def _is_canonical_shard_writer(shard_name: str) -> bool:
     """True on exactly one rank per distinct shard filename.
 
-    Gating writes on data-parallel rank 0 alone is not enough once the filename
-    carries an EP component: with TP2/EP4 on 8 GPUs the dense-DP-rank-0 ranks
-    are {0, 1}, which hold EP ranks 0 and 1, so the shards EP ranks 2 and 3 ask
-    for on resume were never written. Electing the lowest global rank per
-    filename covers every name some rank will request, for any layout, and
-    collapses to DP-rank-0 behavior when the name has no EP component.
+    Elects the lowest global rank holding each filename, so every name some rank
+    asks for on resume gets written. Collective: all ranks must call it.
+
+    DP-rank-0 gating is not enough for EP-keyed names: under TP2/EP4 on 8 GPUs
+    DP-rank-0 is {0, 1}, so only EP 0-1 were written. With no EP component in
+    the name this election collapses to DP-rank-0.
     """
     if not dist.is_initialized():
         return True
@@ -401,14 +400,12 @@ def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
 def create_lora_instance(args: Namespace):
     """Create a LoRA or CanonicalLoRA instance based on args.
 
-    ``--exclude-modules`` is deliberately not forwarded: Megatron-Bridge treats
-    ``target_modules`` and ``exclude_modules`` as mutually exclusive selection
-    mechanisms and asserts the latter is empty whenever the former is set
-    (``megatron/bridge/peft/module_matcher.py``). Passing both crashed at model
-    build. Miles never reaches the bridge branch that honors excludes anyway,
-    because ``--target-modules`` is required whenever LoRA is on; instead
-    ``miles.utils.arguments.parse_lora_target_modules`` has already subtracted
-    the excluded names from the target list by this point.
+    ``--exclude-modules`` is not forwarded: ``parse_lora_target_modules`` already
+    subtracted those names from ``--target-modules``.
+
+    Unsupported:
+
+    - Bridge excludes with targets: asserts at build (``peft/module_matcher.py``).
 
     Returns:
         A LoRA/CanonicalLoRA dataclass instance ready to be applied to a model.
@@ -699,8 +696,7 @@ def load_lora_adapter(
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
     from miles_plugins.lora.codec.checkpoint import native_adapter_load_plan
 
-    # The provider that attached the adapters also decides the shard key: only
-    # bridge/custom providers can hold expert-parallel adapter state.
+    # Shard key follows the provider: only bridge/custom adapters are EP-sharded.
     ep_sharded_provider = _adapter_shards_are_ep_sharded(model)
     native_adapters = not ep_sharded_provider
     native_path = adapter_dir / _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=ep_sharded_provider)
@@ -811,10 +807,8 @@ def load_lora_adapter(
 def _all_ranks_can_restore_training_state(local_ok: bool) -> bool:
     """Agree across ranks whether to restore optimizer/scheduler state.
 
-    Per-rank native shards can disagree (a legacy shard with fused-sibling
-    extras on one PP stage, a missing per-rank file after a parallelism-layout
-    change); restoring on some ranks but not others silently desynchronizes the
-    resume iteration and LR schedule, so the decision must be unanimous.
+    Collective: every rank must call it. Restoring on some ranks only would
+    silently desync the resume iteration and LR schedule.
     """
     if not dist.is_initialized() or dist.get_world_size() == 1:
         return local_ok

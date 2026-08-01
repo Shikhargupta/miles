@@ -1,10 +1,9 @@
 """Callable linear adapter branches used by the Miles-native LoRA specs.
 
-The adapter remains a sibling of the physical MCore/TE linear so base parameter
-names such as ``linear_qkv.weight`` do not change. A single attachment seam
-patches the physical linear's forward and calls one of the modules below for the
-LoRA delta. This gives LoRA parameters a real module call path without changing
-base checkpoint, weight-sync, or quantizer naming contracts.
+Each adapter is a sibling module of the physical MCore/TE linear;
+``attach_adapter_forward`` patches that linear's forward to add the delta. Base
+parameter names are unchanged, so checkpoint, weight-sync, and quantizer naming
+contracts hold.
 """
 
 from __future__ import annotations

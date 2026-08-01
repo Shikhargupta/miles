@@ -1,8 +1,11 @@
-"""Native adapter checkpoint helpers.
+"""Native-specific adapter checkpoint helpers.
 
-Shared save/load orchestration and PP assembly still serve both native and
-Megatron-Bridge paths in ``miles.backends.megatron_utils.lora_utils``. They stay
-there until the bridge refactor; this module owns only native-specific pieces.
+Shared save/load orchestration and PP assembly live in
+``miles.backends.megatron_utils.lora_utils``, still serving Megatron-Bridge too.
+
+TODO:
+
+- Revisit this split once the bridge refactor lands.
 """
 
 from __future__ import annotations

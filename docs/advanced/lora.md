@@ -81,21 +81,22 @@ SGLang also has no LoRA support for).
 
 ### Parallelism: what each path supports
 
-Native handles TP, SP, PP/VPP, and CP; expert tensor parallelism is moot for it
-because the only MoE module it adapts — the shared expert — is sharded over the
-*attention* TP group. `--overlap-grad-reduce`, `--overlap-param-gather` and
-`--moe-shared-expert-overlap` are refused at startup (the flags are inert under
-bridge-mode LoRA too, since the bridge hook builds its own DDP config).
+Native handles TP, SP, PP/VPP and CP. Expert tensor parallelism is moot for it:
+the only MoE module it adapts, the shared expert, shards over the *attention*
+TP group.
 
-Bridge covers several dimensions native does not: routed/grouped-expert LoRA in
-three layouts (EP-shared, per-expert packed, and the shared-outer layout behind
-`--experts-shared-outer-loras`), router LoRA, GDN `in_proj` projections, MLA
-without `q_lora_rank`, and `--moe-shared-expert-overlap`. Each gap is documented
-as a roadmap note next to the native code that would change — see the module
-docstrings of `miles_plugins/lora/spec/moe.py` (the MoE cluster),
-`distributed.py` (expert-TP group, overlap flags), `codec/hf.py` (expert-axis
-export), and the `GDNAttentionSpec` / `MLAAttentionSpec` docstrings in
-`spec/attention.py`.
+Native refuses at startup (all inert under bridge-mode LoRA too, since the
+bridge hook builds its own DDP config):
+
+- `--overlap-grad-reduce`, `--overlap-param-gather`
+- `--moe-shared-expert-overlap`
+
+Bridge-only, each with a TODO beside the native code that would change:
+
+- routed/grouped-expert LoRA, three layouts — `spec/moe.py`
+- router LoRA — `spec/moe.py`
+- expert-TP group, expert-axis export — `distributed.py`, `codec/hf.py`
+- GDN `in_proj`, MLA without `q_lora_rank` — `spec/attention.py`
 
 <Note>
 On a MoE model, list only the modules the trainer actually adapts. Naming
