@@ -239,6 +239,7 @@ def with_session_server(
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
+        sglang_speculative_algorithm=args.sglang_speculative_algorithm,
         session_server_instance_id=instance_id,
     )
     session_server = SessionServer(server_args, backend_url=backend_url)
