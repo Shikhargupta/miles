@@ -27,12 +27,7 @@ from miles_plugins.lora.lora import (
     wrap_model_provider_with_lora,
 )
 from miles_plugins.lora.modules.linear import build_qkv_permutation
-from miles_plugins.lora.spec.attention import (
-    GQA_ATTENTION_SPEC,
-    GQA_TARGETS,
-    MLA_ATTENTION_SPEC,
-    MLA_TARGETS,
-)
+from miles_plugins.lora.spec.attention import GQA_ATTENTION_SPEC, GQA_TARGETS, MLA_ATTENTION_SPEC, MLA_TARGETS
 from miles_plugins.lora.spec.mlp import MLP_TARGETS
 
 IMPLEMENTED_TARGETS = GQA_TARGETS | MLA_TARGETS | MLP_TARGETS
@@ -281,6 +276,12 @@ class TestResolveLoraProvider:
     def test_explicit_path_is_imported(self):
         args = Namespace(lora_provider_path="miles_plugins.lora.lora")
         assert resolve_lora_provider(args).export_lora_hf_named is export_lora_hf_named
+
+    def test_pre_plugin_native_provider_path_remains_compatible(self):
+        args = Namespace(lora_provider_path="miles.backends.megatron_utils.lora_native")
+        provider = resolve_lora_provider(args)
+        assert provider.wrap_model_provider_with_lora is wrap_model_provider_with_lora
+        assert provider.export_lora_hf_named is export_lora_hf_named
 
     def test_module_without_protocol_is_rejected(self):
         args = Namespace(lora_provider_path="json")

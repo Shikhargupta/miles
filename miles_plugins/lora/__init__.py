@@ -7,6 +7,7 @@ pins. Core Miles utilities are imported lazily at call time, never at module
 level, so importing this package stays cycle-free and light.
 """
 
+from miles_plugins.lora.codec.sglang import export_lora_sglang_named
 from miles_plugins.lora.lora import (
     apply_native_lora,
     export_lora_hf_named,
@@ -17,6 +18,7 @@ from miles_plugins.lora.lora import (
 __all__ = [
     "apply_native_lora",
     "export_lora_hf_named",
+    "export_lora_sglang_named",
     "load_lora_adapter_hf",
     "wrap_model_provider_with_lora",
 ]

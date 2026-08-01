@@ -2,20 +2,21 @@
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.modules.linear import LoRASplitFC1, LoRASplitQKV
+from miles_plugins.lora.modules.linear import LoRALinear, LoRASplitFC1, LoRASplitQKV
 from miles_plugins.lora.spec.attention import QKV_PROJECTIONS
-from miles_plugins.lora.spec.base import AttachContext
+from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, ProjectionSpec
 from miles_plugins.lora.spec.mlp import FC1_PROJECTIONS
 
 
-def _context(*targets: str) -> AttachContext:
+def _context(*targets: str, sequence_parallel: bool = False) -> AttachContext:
     transformer_config = SimpleNamespace(
         hidden_size=8,
         layernorm_epsilon=1e-6,
-        sequence_parallel=False,
+        sequence_parallel=sequence_parallel,
         layernorm_zero_centered_gamma=False,
         attention_output_gate=False,
     )
@@ -128,3 +129,83 @@ def test_split_modules_canonicalize_projection_execution_order():
     )
     assert [projection.attr for projection in qkv.projection_specs] == ["q", "v"]
     assert [projection.attr for projection in fc1.projection_specs] == ["gate", "up"]
+
+
+@pytest.mark.parametrize(
+    ("layout", "a_metadata", "b_metadata"),
+    [
+        (COLUMN, (False, -1), (True, 0)),
+        (ROW, (True, 1), (False, -1)),
+        (REPLICATED, (False, -1), (False, -1)),
+    ],
+)
+def test_lora_linear_marks_only_tp_sharded_parameter(layout, a_metadata, b_metadata):
+    adapter = LoRALinear(
+        hf_prefix="model.layers.0.projection.",
+        projection=ProjectionSpec("proj", "proj", layout),
+        reference=torch.empty(8, 8),
+        context=_context("proj"),
+        in_features=8,
+        out_features=8,
+    )
+
+    assert (adapter.proj_A.tensor_model_parallel, adapter.proj_A.partition_dim) == a_metadata
+    assert (adapter.proj_B.tensor_model_parallel, adapter.proj_B.partition_dim) == b_metadata
+    assert adapter.proj_A.partition_stride == 1
+    assert adapter.proj_B.partition_stride == 1
+
+
+@pytest.mark.parametrize(
+    ("layout", "a_grad_group", "b_grad_group"),
+    [
+        (COLUMN, "tp", None),
+        (ROW, None, "tp"),
+        (REPLICATED, "tp", "tp"),
+    ],
+)
+def test_lora_linear_preserves_sequence_parallel_grad_sum_groups(layout, a_grad_group, b_grad_group):
+    adapter = LoRALinear(
+        hf_prefix="model.layers.0.projection.",
+        projection=ProjectionSpec("proj", "proj", layout),
+        reference=torch.empty(8, 8),
+        context=_context("proj", sequence_parallel=True),
+        in_features=8,
+        out_features=8,
+    )
+
+    assert getattr(adapter.proj_A, "_lora_grad_sum_group", None) == a_grad_group
+    assert getattr(adapter.proj_B, "_lora_grad_sum_group", None) == b_grad_group
+
+
+def test_split_qkv_marks_only_output_factors_tp_sharded():
+    adapter = LoRASplitQKV(
+        hf_prefix="model.layers.0.self_attn.",
+        reference=torch.empty(4, 8),
+        context=_context("q_proj", "v_proj"),
+        projections=(QKV_PROJECTIONS[0], QKV_PROJECTIONS[2]),
+        num_q=2,
+        num_kv=1,
+        head_dim=1,
+    )
+
+    for name in ("q", "v"):
+        a = getattr(adapter, f"{name}_A")
+        b = getattr(adapter, f"{name}_B")
+        assert (a.tensor_model_parallel, a.partition_dim) == (False, -1)
+        assert (b.tensor_model_parallel, b.partition_dim) == (True, 0)
+
+
+def test_split_fc1_marks_only_output_factors_tp_sharded():
+    adapter = LoRASplitFC1(
+        hf_prefix="model.layers.0.mlp.",
+        reference=torch.empty(16, 8),
+        context=_context("gate_proj", "up_proj"),
+        projections=FC1_PROJECTIONS,
+        inter_local=8,
+    )
+
+    for name in ("gate", "up"):
+        a = getattr(adapter, f"{name}_A")
+        b = getattr(adapter, f"{name}_B")
+        assert (a.tensor_model_parallel, a.partition_dim) == (False, -1)
+        assert (b.tensor_model_parallel, b.partition_dim) == (True, 0)

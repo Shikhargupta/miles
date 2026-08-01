@@ -17,6 +17,7 @@ from miles_plugins.lora.codec.hf import (
     mbridge_cross_check,
     resolve_hf_naming,
 )
+from miles_plugins.lora.codec.sglang import export_lora_sglang_named
 from miles_plugins.lora.config import LoRAConfig
 from miles_plugins.lora.registry import GQA, resolve_model_spec
 from miles_plugins.lora.spec.base import AttachContext
@@ -92,6 +93,22 @@ def _assert_supported_run(args, context: AttachContext) -> None:
         )
 
 
+def _validate_plain_gqa_chunk(layers, arch_spec, context: AttachContext) -> None:
+    """Reject a registry/structure mismatch before attaching or freezing anything."""
+    attention_targets = context.targets.intersection(arch_spec.attention.supported_targets)
+    if arch_spec.name != GQA or not attention_targets:
+        return
+    missing = [
+        layer.layer_number - 1 for layer in layers if not hasattr(getattr(layer, "self_attention", None), "linear_qkv")
+    ]
+    assert not missing, (
+        "native LoRA's plain-GQA spec expected self_attention.linear_qkv in "
+        f"layers {missing[:8]} for targets {sorted(attention_targets)}, but the projection is missing. "
+        "Register the model under a hybrid/mixer-aware spec, use --megatron-to-hf-mode bridge, "
+        "or point --lora-provider-path at a model-specific provider."
+    )
+
+
 def apply_native_lora(model, args):
     """Attach native LoRA to one model chunk before Float16Module/DDP wrapping."""
     transformer_config = model.config
@@ -100,6 +117,8 @@ def apply_native_lora(model, args):
     arch_spec.validate(context)
     _assert_supported_run(args, context)
     mbridge_cross_check(model_type, context.layer_prefix)
+    layers = model.decoder.layers
+    _validate_plain_gqa_chunk(layers, arch_spec, context)
 
     for parameter in model.parameters():
         parameter.requires_grad = False
@@ -107,7 +126,7 @@ def apply_native_lora(model, args):
 
     wrapped = 0
     mixer_only_layers = []
-    for layer in model.decoder.layers:
+    for layer in layers:
         layer_index = layer.layer_number - 1
         hf_layer = f"{context.layer_prefix}{layer_index}."
         attention = getattr(layer, "self_attention", None)
@@ -153,10 +172,31 @@ def apply_native_lora(model, args):
             len(model.decoder.layers),
             shown,
         )
-    assert wrapped > 0, (
-        f"native LoRA matched no modules for --target-modules {sorted(context.targets)}; "
-        f"the {arch_spec.name} spec supports {sorted(arch_spec.supported_targets)}"
+    pp_size = int(getattr(args, "pipeline_model_parallel_size", 1) or 1)
+    vpp_size = int(getattr(args, "virtual_pipeline_model_parallel_size", 1) or 1)
+    partitioned_empty_stage = (pp_size > 1 or vpp_size > 1) and not bool(layers)
+    mixer_only_attention_chunk = (
+        arch_spec.allows_mixer_only_adapter_chunks
+        and bool(layers)
+        and len(mixer_only_layers) == len(layers)
+        and bool(context.targets)
+        and context.targets <= arch_spec.attention.supported_targets
     )
+    legal_empty_chunk = partitioned_empty_stage or mixer_only_attention_chunk
+    if wrapped == 0 and legal_empty_chunk:
+        logger.info(
+            "[lora-native] this PP/VPP or hybrid-mixer chunk carries no adapter for targets %s; "
+            "other model chunks may carry the requested projections",
+            sorted(context.targets),
+        )
+    else:
+        assert wrapped > 0, (
+            f"native LoRA matched no modules for --target-modules {sorted(context.targets)}; "
+            f"the {arch_spec.name} spec supports {sorted(arch_spec.supported_targets)}"
+        )
+    # Checkpoint classification cannot infer the provider from adapter modules
+    # when a legal PP/VPP chunk carries zero local adapters.
+    model._miles_native_lora_provider = True
     return model
 
 
@@ -172,6 +212,7 @@ def wrap_model_provider_with_lora(provider_func, args):
 __all__ = [
     "apply_native_lora",
     "export_lora_hf_named",
+    "export_lora_sglang_named",
     "load_lora_adapter_hf",
     "wrap_model_provider_with_lora",
 ]

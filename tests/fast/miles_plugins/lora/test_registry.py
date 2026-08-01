@@ -14,7 +14,15 @@ import pytest
 
 from miles_plugins.lora.codec.hf import _layer_prefix_from_mapping
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.registry import GQA, MLA, MODEL_SPECS, _model_type_candidates, resolve_model_spec
+from miles_plugins.lora.registry import (
+    GQA,
+    MLA,
+    MODEL_SPECS,
+    _model_type_candidates,
+    resolve_model_spec,
+    resolve_native_lora_config,
+    resolve_registered_model_spec,
+)
 from miles_plugins.lora.spec.base import LoRAArchSpec
 
 
@@ -97,6 +105,52 @@ class TestResolveModelSpec:
         assert resolve_model_spec(SimpleNamespace(), _config(mla=True))[1].name == MLA
 
 
+class TestPreBuildResolution:
+    def test_registered_spec_resolves_without_built_transformer_config(self, tmp_path):
+        path = _checkpoint(tmp_path, {"model_type": "qwen3"})
+        model_type, spec = resolve_registered_model_spec(path)
+        assert model_type == "qwen3"
+        assert spec.name == GQA
+
+    def test_prebuild_resolution_has_no_structural_fallback(self):
+        with pytest.raises(AssertionError, match="hf-checkpoint"):
+            resolve_registered_model_spec(None)
+
+    def test_effective_mla_targets_are_available_before_model_build(self, tmp_path):
+        path = _checkpoint(tmp_path, {"model_type": "deepseek_v3"})
+        args = SimpleNamespace(
+            hf_checkpoint=path,
+            lora_rank=8,
+            lora_alpha=16,
+            lora_dropout=0.0,
+            target_modules=[
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "q_a_proj",
+                "q_b_proj",
+                "kv_a_proj_with_mqa",
+                "kv_b_proj",
+            ],
+            _target_modules_expanded_from_all_linear=True,
+        )
+        effective = resolve_native_lora_config(args)
+        assert not effective.target_modules.intersection({"q_proj", "k_proj", "v_proj"})
+        assert {"q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj"} <= effective.target_modules
+
+    def test_prebuild_config_rejects_unsupported_targets(self, tmp_path):
+        path = _checkpoint(tmp_path, {"model_type": "qwen3"})
+        args = SimpleNamespace(
+            hf_checkpoint=path,
+            lora_rank=8,
+            lora_alpha=16,
+            target_modules=["not_a_projection"],
+        )
+        with pytest.raises(AssertionError, match="does not implement"):
+            resolve_native_lora_config(args)
+
+
 class TestRegistryTable:
     def test_every_entry_names_a_known_family(self):
         assert all(isinstance(spec, LoRAArchSpec) for spec in MODEL_SPECS.values())
@@ -177,6 +231,17 @@ class TestRegistryTable:
         normalized = MODEL_SPECS["deepseek_v3"].normalize_config(config)
         assert normalized is config
         assert "q_proj" not in MODEL_SPECS["deepseek_v3"].supported_targets
+
+    def test_architecture_normalization_cannot_remove_every_target(self):
+        config = LoRAConfig(
+            rank=8,
+            alpha=16,
+            dropout=0.0,
+            target_modules=frozenset({"q_proj", "k_proj", "v_proj"}),
+            expanded_from_all_linear=True,
+        )
+        with pytest.raises(AssertionError, match="no effective target modules"):
+            MODEL_SPECS["deepseek_v3"].normalize_config(config)
 
 
 class TestMbridgePrefixParsing:

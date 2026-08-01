@@ -2,6 +2,7 @@ import sys
 import types
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -103,6 +104,42 @@ def _param(name: str, size: int) -> ParamInfo:
         size=size,
         src_rank=0,
     )
+
+
+def test_lora_weight_chunks_prefer_provider_sglang_export(direct_module, monkeypatch):
+    from miles.backends.megatron_utils import lora_utils
+
+    provider = SimpleNamespace(
+        export_lora_hf_named=MagicMock(return_value=[("exact", torch.tensor(1))]),
+        export_lora_sglang_named=MagicMock(return_value=[("serving", torch.tensor(2))]),
+    )
+    monkeypatch.setattr(lora_utils, "resolve_lora_provider", lambda _args: provider)
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+    iterator = object.__new__(direct_module.HfWeightIteratorDirect)
+    iterator.args = SimpleNamespace()
+    iterator.model = [object()]
+
+    chunks = list(iterator.get_hf_weight_chunks({}, weight_type="lora"))
+
+    assert [name for name, _ in chunks[0]] == ["serving"]
+    provider.export_lora_sglang_named.assert_called_once_with(iterator.model)
+    provider.export_lora_hf_named.assert_not_called()
+
+
+def test_lora_weight_chunks_keep_legacy_provider_fallback(direct_module, monkeypatch):
+    from miles.backends.megatron_utils import lora_utils
+
+    provider = SimpleNamespace(export_lora_hf_named=MagicMock(return_value=[("exact", torch.tensor(1))]))
+    monkeypatch.setattr(lora_utils, "resolve_lora_provider", lambda _args: provider)
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+    iterator = object.__new__(direct_module.HfWeightIteratorDirect)
+    iterator.args = SimpleNamespace()
+    iterator.model = [object()]
+
+    chunks = list(iterator.get_hf_weight_chunks({}, weight_type="lora"))
+
+    assert [name for name, _ in chunks[0]] == ["exact"]
+    provider.export_lora_hf_named.assert_called_once_with(iterator.model)
 
 
 def test_atomic_group_is_single_update_unit_and_packed_together(direct_module, monkeypatch):

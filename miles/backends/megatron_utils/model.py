@@ -982,6 +982,7 @@ def initialize_model_and_optimizer(
         and role == "actor"
         and args.megatron_to_hf_mode != "bridge"
         and getattr(args, "lora_adapter_path", None)
+        and not all(getattr(chunk, "_miles_lora_native_checkpoint_loaded", False) for chunk in model)
     ):
         from .lora_utils import resolve_lora_provider
 

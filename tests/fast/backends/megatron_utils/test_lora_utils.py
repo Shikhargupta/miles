@@ -386,8 +386,49 @@ class TestBuildLoraSyncConfig:
             target_modules=["linear_q", "linear_k"],
         )
         config = build_lora_sync_config(args)
-        assert config["target_modules"] == ["q_proj", "k_proj"]
+        assert config["target_modules"] == ["k_proj", "q_proj", "v_proj"]
         assert config["r"] == 8
+
+    def test_bridge_target_modules_are_not_native_zero_expanded(self):
+        args = Namespace(
+            lora_rank=8,
+            lora_alpha=8,
+            lora_dropout=0.0,
+            target_modules=["linear_q"],
+            megatron_to_hf_mode="bridge",
+        )
+        config = build_lora_sync_config(args)
+        assert config["target_modules"] == ["q_proj"]
+
+    def test_native_rollout_uses_architecture_normalized_targets(self, tmp_path):
+        (tmp_path / "config.json").write_text('{"model_type": "deepseek_v3"}')
+        args = Namespace(
+            lora_rank=8,
+            lora_alpha=8,
+            lora_dropout=0.0,
+            target_modules=[
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "q_a_proj",
+                "q_b_proj",
+                "kv_a_proj_with_mqa",
+                "kv_b_proj",
+            ],
+            megatron_to_hf_mode="raw",
+            lora_provider_path=None,
+            hf_checkpoint=str(tmp_path),
+            _target_modules_expanded_from_all_linear=True,
+        )
+
+        config = build_lora_sync_config(args)
+
+        assert set(config["target_modules"]) == {
+            "q_a_proj",
+            "q_b_proj",
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
+        }
 
 
 # ---------------------------------------------------------------------------

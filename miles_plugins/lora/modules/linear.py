@@ -25,6 +25,7 @@ def new_lora_parameter(
     *,
     init: str,
     grad_sum_group: str | None = None,
+    partition_dim: int | None = None,
 ) -> nn.Parameter:
     """Create an adapter parameter matching the base weight's dtype and device."""
     tensor = torch.empty(*shape, dtype=reference.dtype, device=reference.device)
@@ -33,8 +34,8 @@ def new_lora_parameter(
     else:
         nn.init.xavier_uniform_(tensor)
     parameter = nn.Parameter(tensor)
-    parameter.tensor_model_parallel = False
-    parameter.partition_dim = -1
+    parameter.tensor_model_parallel = partition_dim is not None
+    parameter.partition_dim = partition_dim if partition_dim is not None else -1
     parameter.partition_stride = 1
     if grad_sum_group is not None:
         parameter._lora_grad_sum_group = grad_sum_group
@@ -110,6 +111,7 @@ class LoRALinear(NativeLoRAAdapter):
                 (context.rank, in_features),
                 init=context.a_init,
                 grad_sum_group=a_grad_group,
+                partition_dim=1 if self.layout == ROW else None,
             ),
         )
         self.register_parameter(
@@ -119,6 +121,7 @@ class LoRALinear(NativeLoRAAdapter):
                 (out_features, context.rank),
                 init="zero",
                 grad_sum_group=b_grad_group,
+                partition_dim=0 if self.layout == COLUMN else None,
             ),
         )
         self._validate_projection_parameters()
@@ -182,7 +185,12 @@ class LoRASplitQKV(NativeLoRAAdapter):
             )
             self.register_parameter(
                 f"{name}_B",
-                new_lora_parameter(reference, (self._rows[name], context.rank), init="zero"),
+                new_lora_parameter(
+                    reference,
+                    (self._rows[name], context.rank),
+                    init="zero",
+                    partition_dim=0,
+                ),
             )
         self.register_buffer(
             "out_perm",
@@ -247,7 +255,12 @@ class LoRASplitFC1(NativeLoRAAdapter):
             )
             self.register_parameter(
                 f"{name}_B",
-                new_lora_parameter(reference, (inter_local, context.rank), init="zero"),
+                new_lora_parameter(
+                    reference,
+                    (inter_local, context.rank),
+                    init="zero",
+                    partition_dim=0,
+                ),
             )
         self._validate_projection_parameters()
 

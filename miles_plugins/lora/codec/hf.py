@@ -1,4 +1,4 @@
-"""HF naming, load/export, and SGLang-facing packing for native LoRA.
+"""Exact HF naming, loading, and export for native LoRA.
 
 Roadmap: every adapter tensor here is 2D with exactly one sharded axis, gathered
 over a single group (see ``export_lora_hf_named`` and ``_load_adapter``).
@@ -107,9 +107,11 @@ def mbridge_cross_check(model_type: str | None, layer_prefix: str) -> None:
 def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     """Materialize full HF/PEFT adapter tensors on every TP rank.
 
-    The resulting names and tensors are also the native provider's SGLang
-    packing contract. PP assembly remains with the shared Miles checkpoint
-    orchestrator until the bridge path is split in a later refactor.
+    This representation preserves the user's exact target set for checkpoint
+    interoperability. The serving-only codec consumes it and may add zero
+    siblings required by SGLang's fused buffers. PP assembly remains with the
+    shared Miles checkpoint orchestrator until the bridge path is split in a
+    later refactor.
     """
     started = time.perf_counter()
     gather = TensorParallelGather()
@@ -146,7 +148,13 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
 
 
 def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
-    """Load and slice an HF/PEFT adapter into attached native modules."""
+    """Load and slice an HF/PEFT adapter into attached native modules.
+
+    Every full HF tensor is shape-checked before any TP slicing or parameter
+    mutation. This rejects oversized global tensors whose valid-looking local
+    prefix used to be silently accepted and also keeps a failed load locally
+    atomic.
+    """
     from safetensors import safe_open
 
     path = os.path.join(adapter_path, "adapter_model.safetensors")
@@ -154,36 +162,55 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
         f"[lora-native] no adapter_model.safetensors under {adapter_path}; "
         "checkpoints written by save_lora_checkpoint use that name"
     )
-    loaded = 0
     with safe_open(path, framework="pt") as adapter_file:
         keys = {re.sub(r"^base_model\.model\.", "", key): key for key in adapter_file.keys()}
 
         def take(name: str) -> torch.Tensor:
-            assert name in keys, f"[lora-native] adapter tensor missing: {name}"
+            if name not in keys:
+                raise KeyError(f"[lora-native] adapter tensor missing: {name}")
             return adapter_file.get_tensor(keys[name])
 
-        def copy_into(parameter: torch.Tensor, tensor: torch.Tensor) -> None:
-            nonlocal loaded
-            assert parameter.shape == tensor.shape, (
-                f"[lora-native] shape mismatch: param {tuple(parameter.shape)} "
-                f"vs adapter slice {tuple(tensor.shape)}"
-            )
-            with torch.no_grad():
-                parameter.copy_(tensor.to(dtype=parameter.dtype, device=parameter.device))
-            loaded += 1
-
+        load_plan: list[tuple[torch.Tensor, torch.Tensor]] = []
         for adapter in iter_adapters(model_chunks):
-            _load_adapter(adapter, take, copy_into)
+            load_plan.extend(_load_adapter(adapter, take))
+
+    with torch.no_grad():
+        for parameter, tensor in load_plan:
+            parameter.copy_(tensor.to(dtype=parameter.dtype, device=parameter.device))
+    loaded = len(load_plan)
     logger.info("[lora-native] loaded %d adapter tensors from %s", loaded, adapter_path)
     return loaded
 
 
-def _load_adapter(adapter: NativeLoRAAdapter, take, copy_into) -> None:
+def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Build a fully shape-validated load plan for one native adapter."""
+    tp_size = adapter.context.tp_size
+    plan: list[tuple[torch.Tensor, torch.Tensor]] = []
     for projection in adapter.projection_specs:
         a_parameter = getattr(adapter, f"{projection.attr}_A")
         b_parameter = getattr(adapter, f"{projection.attr}_B")
-        a_full = take(f"{adapter.hf_prefix}{projection.hf}.lora_A.weight")
-        b_full = take(f"{adapter.hf_prefix}{projection.hf}.lora_B.weight")
+        a_name = f"{adapter.hf_prefix}{projection.hf}.lora_A.weight"
+        b_name = f"{adapter.hf_prefix}{projection.hf}.lora_B.weight"
+        a_full = take(a_name)
+        b_full = take(b_name)
+
+        expected_a = tuple(a_parameter.shape)
+        expected_b = tuple(b_parameter.shape)
+        if projection.layout == COLUMN:
+            expected_b = (b_parameter.shape[0] * tp_size, b_parameter.shape[1])
+        elif projection.layout == ROW:
+            expected_a = (a_parameter.shape[0], a_parameter.shape[1] * tp_size)
+        if tuple(a_full.shape) != expected_a:
+            raise ValueError(
+                f"[lora-native] global shape mismatch for {a_name}: "
+                f"checkpoint {tuple(a_full.shape)} != expected {expected_a}"
+            )
+        if tuple(b_full.shape) != expected_b:
+            raise ValueError(
+                f"[lora-native] global shape mismatch for {b_name}: "
+                f"checkpoint {tuple(b_full.shape)} != expected {expected_b}"
+            )
+
         if projection.layout != REPLICATED:
             if projection.layout == COLUMN:
                 width = b_parameter.shape[0]
@@ -193,5 +220,6 @@ def _load_adapter(adapter: NativeLoRAAdapter, take, copy_into) -> None:
                 width = a_parameter.shape[1]
                 span = slice(adapter.tp_rank * width, (adapter.tp_rank + 1) * width)
                 a_full = a_full[:, span]
-        copy_into(a_parameter, a_full)
-        copy_into(b_parameter, b_full)
+        plan.append((a_parameter, a_full))
+        plan.append((b_parameter, b_full))
+    return plan

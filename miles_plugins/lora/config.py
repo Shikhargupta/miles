@@ -34,8 +34,22 @@ class LoRAConfig:
         assert rank > 0, "native LoRA requires --lora-rank > 0"
         raw_targets = args.target_modules or ()
         if isinstance(raw_targets, str):
-            raw_targets = [raw_targets]
+            raw_targets = [target.strip() for target in raw_targets.split(",")]
+        non_leaf_selectors = {
+            str(target) for target in raw_targets if any(token in str(target) for token in (".", "*", "?", "[", "]"))
+        }
+        non_leaf_selectors.update(getattr(args, "_lora_non_leaf_target_selectors", ()))
+        assert not non_leaf_selectors, (
+            "the built-in native LoRA provider accepts only HF or Megatron projection leaf names; "
+            f"scoped/wildcard --target-modules selectors {sorted(non_leaf_selectors)} would broaden "
+            "silently when converted to HF names. Use explicit leaf names, --megatron-to-hf-mode "
+            "bridge, or a model-specific --lora-provider-path that implements scoped matching."
+        )
         targets = frozenset(convert_target_modules_to_hf(list(raw_targets)))
+        assert targets, (
+            "the built-in native LoRA provider has no target modules after parsing/exclusion; "
+            "select at least one supported projection or disable LoRA"
+        )
         return cls(
             rank=rank,
             alpha=float(args.lora_alpha),

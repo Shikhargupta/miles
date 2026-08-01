@@ -2491,22 +2491,58 @@ def parse_lora_target_modules(args) -> None:
     else:
         modules = [args.target_modules]
 
+    # Keep enough provenance for the built-in native provider to reject selectors
+    # whose scope cannot be represented by its architecture specs.  The shared
+    # parser still accepts them because a custom/Bridge provider may implement
+    # richer matching semantics.
+    non_leaf_selectors = {
+        str(module) for module in modules if any(token in str(module) for token in (".", "*", "?", "[", "]"))
+    }
+    non_leaf_selectors.update(getattr(args, "_lora_non_leaf_target_selectors", ()))
+    args._lora_non_leaf_target_selectors = tuple(sorted(non_leaf_selectors))
+
+    from miles.backends.megatron_utils.lora_utils import (
+        convert_target_modules_to_hf,
+        uses_builtin_native_lora_provider,
+    )
+
+    builtin_native = uses_builtin_native_lora_provider(args)
     if args.exclude_modules:
-        exclude_set = (
-            set(m.strip() for m in args.exclude_modules.split(","))
-            if "," in args.exclude_modules
-            else {args.exclude_modules}
-        )
-        # Excludes are honored by subtracting exact names here — the only mechanism both LoRA
-        # paths share. A pattern would silently survive: the native provider matches leaf names,
-        # and bridge refuses exclude_modules alongside target_modules (see create_lora_instance).
-        patterns = sorted(name for name in exclude_set if "*" in name or "?" in name)
-        assert not patterns, (
-            f"--exclude-modules does not support wildcard patterns {patterns}: excludes are applied by "
-            "removing exact module names from --target-modules, so a pattern would be silently ignored. "
-            "List the module names to drop, or shorten --target-modules instead."
-        )
-        modules = [m for m in modules if m not in exclude_set]
+        exclude_modules = [module.strip() for module in args.exclude_modules.split(",")]
+        if builtin_native:
+            non_leaf_excludes = sorted(
+                name for name in exclude_modules if any(token in name for token in (".", "*", "?", "[", "]"))
+            )
+            assert not non_leaf_excludes, (
+                f"--exclude-modules does not support scoped/wildcard selectors {non_leaf_excludes}: excludes "
+                "are applied by removing canonical projection leaves from --target-modules, so scoped "
+                "matching would be silently broadened. List the exact projection leaves to drop instead."
+            )
+            assert not non_leaf_selectors, (
+                "--exclude-modules cannot be combined with scoped/wildcard --target-modules selectors "
+                f"{sorted(non_leaf_selectors)}: Miles cannot subtract projection leaves without changing "
+                "their matching scope. Shorten the target selector or use a provider-specific selection."
+            )
+        else:
+            # Keep the pre-native-plugin parser contract for Bridge and custom
+            # providers: they own their target namespace and matching rules.
+            # Miles only subtracts exact spellings here.
+            patterns = sorted(name for name in exclude_modules if "*" in name or "?" in name)
+            assert not patterns, (
+                f"--exclude-modules does not support wildcard patterns {patterns}: excludes are applied by "
+                "removing exact module names from --target-modules, so a pattern would be silently ignored."
+            )
+            exclude_set = set(exclude_modules)
+            modules = [module for module in modules if module not in exclude_set]
+
+    if builtin_native and not non_leaf_selectors:
+        # Canonicalize both sides to HF projection leaves *before* subtraction.
+        # Otherwise e.g. targets=q_proj,k_proj,v_proj + exclude=linear_qkv (or
+        # the inverse spelling) retains adapters the user explicitly excluded.
+        modules = convert_target_modules_to_hf(modules)
+        if args.exclude_modules:
+            exclude_set = set(convert_target_modules_to_hf(exclude_modules))
+            modules = [m for m in modules if m not in exclude_set]
 
     args.target_modules = modules
 

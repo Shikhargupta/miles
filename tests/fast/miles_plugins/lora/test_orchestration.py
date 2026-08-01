@@ -142,7 +142,44 @@ class TestApplyNativeLora:
         layers = [_FakeLayer(1, _MixerOnlyAttention(), nn.Module())]
         model = _FakeModel(layers, hidden=8, num_query_groups=2)
         with pytest.raises(AssertionError, match="matched no modules"):
-            apply_native_lora(model, _args(["q_proj"]))
+            apply_native_lora(model, _args(["gate_proj"]))
+
+    def test_plain_gqa_missing_qkv_fails_even_when_mlp_attaches(self, single_rank):
+        layers = [_FakeLayer(1, _MixerOnlyAttention(), _FakeMLP(8, 16))]
+        model = _FakeModel(layers, hidden=8, num_query_groups=2)
+        with pytest.raises(AssertionError, match="plain-GQA spec expected self_attention.linear_qkv"):
+            apply_native_lora(model, _args(["q_proj", "gate_proj"]))
+        assert all(parameter.requires_grad for parameter in model.parameters())
+
+    def test_pipeline_chunk_with_no_local_adapter_is_legal(self, single_rank, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+        model = _FakeModel([], hidden=8, num_query_groups=2)
+        result = apply_native_lora(
+            model,
+            _args(["q_proj"], hf_checkpoint=str(tmp_path), pipeline_model_parallel_size=2),
+        )
+        assert result is model
+        assert result._miles_native_lora_provider is True
+
+    def test_single_chunk_with_no_local_adapter_still_fails(self, single_rank, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+        model = _FakeModel([], hidden=8, num_query_groups=2)
+        with pytest.raises(AssertionError, match="matched no modules"):
+            apply_native_lora(model, _args(["q_proj"], hf_checkpoint=str(tmp_path)))
+
+    def test_hybrid_mixer_only_chunk_is_legal(self, single_rank, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+        layers = [_FakeLayer(1, _MixerOnlyAttention(), nn.Module())]
+        model = _FakeModel(layers, hidden=8, num_query_groups=2)
+        result = apply_native_lora(model, _args(["q_proj"], hf_checkpoint=str(tmp_path)))
+        assert result is model
+
+    def test_hybrid_missing_mlp_target_is_not_treated_as_legal_mixer_chunk(self, single_rank, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+        layers = [_FakeLayer(1, _MixerOnlyAttention(), nn.Module())]
+        model = _FakeModel(layers, hidden=8, num_query_groups=2)
+        with pytest.raises(AssertionError, match="matched no modules"):
+            apply_native_lora(model, _args(["gate_proj"], hf_checkpoint=str(tmp_path)))
 
     def test_routed_only_moe_with_expanded_targets_trains_attention_only(self, single_rank):
         """qwen3_moe + all-linear: parser-added MLP targets skip instead of crashing the run."""

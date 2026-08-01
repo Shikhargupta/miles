@@ -6,6 +6,7 @@ import json
 import logging
 import os
 
+from miles_plugins.lora.config import LoRAConfig
 from miles_plugins.lora.spec.attention import GQA_ATTENTION_SPEC, HYBRID_GQA_GDN_ATTENTION_SPEC, MLA_ATTENTION_SPEC
 from miles_plugins.lora.spec.base import LoRAArchSpec
 from miles_plugins.lora.spec.mlp import FUSED_GATED_MLP_SPEC
@@ -36,6 +37,9 @@ _HYBRID_GQA_SPEC = LoRAArchSpec(
     attention=HYBRID_GQA_GDN_ATTENTION_SPEC,
     mlp=FUSED_GATED_MLP_SPEC,
     moe=SHARED_OUTER_EXPERT_MOE_SPEC,
+    # A PP/VPP chunk may contain only GDN mixer layers. Native GDN adapters are
+    # intentionally absent, while GQA layers in another chunk still carry LoRA.
+    allows_mixer_only_adapter_chunks=True,
 )
 
 # Every entry is explicitly mapped to a structurally covered spec. Variant
@@ -90,14 +94,13 @@ def _structural_spec(config) -> LoRAArchSpec:
     return _MLA_SPEC if bool(getattr(config, "multi_latent_attention", False)) else _GQA_SPEC
 
 
-def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
-    """Resolve a complete architecture spec and verify it matches the built model.
+def resolve_registered_model_spec(hf_checkpoint: str | None) -> tuple[str, LoRAArchSpec]:
+    """Resolve a registered spec from checkpoint metadata without a built model.
 
-    Production checkpoints fail closed when their model type is not registered.
-    Bare test harnesses without config.json retain a warned structural fallback,
-    but still receive a concrete spec that drives attachment.
+    Unlike :func:`resolve_model_spec`, this helper has no structural fallback:
+    serving/configuration callers run before model construction and must fail
+    closed when checkpoint metadata is absent or unsupported.
     """
-    hf_checkpoint = getattr(args, "hf_checkpoint", None)
     candidates = _model_type_candidates(hf_checkpoint)
     if not candidates:
         if hf_checkpoint:
@@ -112,14 +115,10 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
                 f"native LoRA could not load model_type because {hf_checkpoint!r}/config.json is missing. "
                 "Provide a valid --hf-checkpoint or use a model-specific --lora-provider-path."
             )
-        spec = _structural_spec(config)
-        logger.warning(
-            "[lora-native] no config.json under %r; using the %s architecture spec from the built "
-            "model structure. Production checkpoints must register model_type explicitly.",
-            hf_checkpoint,
-            spec.name,
+        raise AssertionError(
+            "native LoRA requires --hf-checkpoint/config.json to resolve an architecture spec before "
+            "model construction; provide a checkpoint or a model-specific --lora-provider-path."
         )
-        return None, spec
 
     model_type = next((candidate for candidate in candidates if candidate in MODEL_SPECS), None)
     assert model_type is not None, (
@@ -129,7 +128,41 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
         "miles_plugins.lora.registry.MODEL_SPECS, use --megatron-to-hf-mode bridge, or point "
         "--lora-provider-path at a model-specific provider."
     )
-    spec = MODEL_SPECS[model_type]
+    return model_type, MODEL_SPECS[model_type]
+
+
+def resolve_native_lora_config(args) -> LoRAConfig:
+    """Return the architecture-normalized config before native model build.
+
+    Rollout setup can consume ``.target_modules`` from this result so SGLang
+    allocates buffers for the same effective projection set the native model
+    will attach (notably MLA ``all-linear`` normalization).
+    """
+    _model_type, spec = resolve_registered_model_spec(getattr(args, "hf_checkpoint", None))
+    config = spec.normalize_config(LoRAConfig.from_args(args))
+    spec.validate_targets(config.target_modules)
+    return config
+
+
+def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
+    """Resolve a complete architecture spec and verify it matches the built model.
+
+    Production checkpoints fail closed when their model type is not registered.
+    Bare test harnesses without config.json retain a warned structural fallback,
+    but still receive a concrete spec that drives attachment.
+    """
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    if not hf_checkpoint:
+        spec = _structural_spec(config)
+        logger.warning(
+            "[lora-native] no config.json under %r; using the %s architecture spec from the built "
+            "model structure. Production checkpoints must register model_type explicitly.",
+            hf_checkpoint,
+            spec.name,
+        )
+        return None, spec
+
+    model_type, spec = resolve_registered_model_spec(hf_checkpoint)
     if model_type in _RAW_MODE_BACKWARD_UNSTABLE:
         logger.warning(
             "[lora-native] %s adapter attachment is verified, but raw mode's own backward is known to "

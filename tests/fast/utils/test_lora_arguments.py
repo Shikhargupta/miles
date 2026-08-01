@@ -15,7 +15,14 @@ from miles.utils.arguments import parse_lora_target_modules
 
 
 def _args(**overrides) -> Namespace:
-    defaults = dict(lora_rank=32, target_modules="all-linear", exclude_modules=None, hf_checkpoint=None)
+    defaults = dict(
+        lora_rank=32,
+        target_modules="all-linear",
+        exclude_modules=None,
+        hf_checkpoint=None,
+        megatron_to_hf_mode="raw",
+        lora_provider_path=None,
+    )
     defaults.update(overrides)
     return Namespace(**defaults)
 
@@ -83,6 +90,33 @@ class TestLoraTargetModuleParsing:
         with pytest.raises(AssertionError, match="--target-modules"):
             parse_lora_target_modules(args)
 
+    def test_megatron_targets_are_normalized_to_hf_leaves(self):
+        args = _args(target_modules="linear_qkv,linear_fc2")
+        parse_lora_target_modules(args)
+        assert args.target_modules == ["q_proj", "k_proj", "v_proj", "down_proj"]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"lora_provider_path": "example.custom_lora"},
+            {"megatron_to_hf_mode": "bridge"},
+        ],
+    )
+    def test_bridge_and_custom_providers_keep_their_target_namespace(self, overrides):
+        args = _args(target_modules="linear_qkv,linear_fc2", **overrides)
+        parse_lora_target_modules(args)
+        assert args.target_modules == ["linear_qkv", "linear_fc2"]
+
+    @pytest.mark.parametrize(
+        "selector",
+        ["model.layers.0.self_attention.linear_qkv", "model.layers.*.self_attention.linear_qkv"],
+    )
+    def test_scoped_target_is_preserved_for_bridge_and_recorded_for_native(self, selector):
+        args = _args(target_modules=selector)
+        parse_lora_target_modules(args)
+        assert args.target_modules == [selector]
+        assert args._lora_non_leaf_target_selectors == (selector,)
+
 
 # ---------------------------------------------------------------------------
 # Exclude modules filtering
@@ -95,6 +129,11 @@ class TestLoraExcludeModules:
         parse_lora_target_modules(args)
         assert "o_proj" not in args.target_modules
         assert len(args.target_modules) == 6
+
+    def test_single_exclude_strips_surrounding_whitespace(self):
+        args = _args(target_modules="q_proj,k_proj", exclude_modules=" q_proj ")
+        parse_lora_target_modules(args)
+        assert args.target_modules == ["k_proj"]
 
     def test_multiple_exclude_comma_separated(self, dense_hf_config):
         args = _args(exclude_modules="o_proj, down_proj")
@@ -113,6 +152,16 @@ class TestLoraExcludeModules:
         parse_lora_target_modules(args)
         assert args.target_modules == ["q_proj", "k_proj"]
 
+    def test_megatron_exclude_removes_equivalent_hf_targets(self):
+        args = _args(target_modules="q_proj,k_proj,v_proj,o_proj", exclude_modules="linear_qkv")
+        parse_lora_target_modules(args)
+        assert args.target_modules == ["o_proj"]
+
+    def test_hf_exclude_removes_one_projection_from_megatron_target(self):
+        args = _args(target_modules="linear_qkv", exclude_modules="q_proj")
+        parse_lora_target_modules(args)
+        assert args.target_modules == ["k_proj", "v_proj"]
+
     def test_no_exclude_modules(self):
         args = _args(target_modules="q_proj,k_proj")
         parse_lora_target_modules(args)
@@ -124,10 +173,34 @@ class TestLoraExcludeModules:
         parse_lora_target_modules(args)
         assert args.target_modules == ["q_proj", "k_proj"]
 
-    @pytest.mark.parametrize("pattern", ["*.layers.0.linear_qkv", "o_pro?", "q_proj,*.experts.*"])
-    def test_wildcard_exclude_is_rejected(self, pattern):
+    @pytest.mark.parametrize(
+        "selector",
+        ["*.layers.0.linear_qkv", "model.layers.0.linear_qkv", "o_pro?", "q_proj,*.experts.*"],
+    )
+    def test_scoped_or_wildcard_exclude_is_rejected(self, selector):
         """Subtracting exact names cannot honor a pattern, and neither LoRA path can:
         the native provider matches leaf names and bridge refuses excludes alongside targets."""
-        args = _args(target_modules="q_proj,k_proj,o_proj", exclude_modules=pattern)
-        with pytest.raises(AssertionError, match="wildcard"):
+        args = _args(target_modules="q_proj,k_proj,o_proj", exclude_modules=selector)
+        with pytest.raises(AssertionError, match="scoped/wildcard"):
             parse_lora_target_modules(args)
+
+    def test_scoped_target_cannot_be_combined_with_leaf_exclude(self):
+        args = _args(target_modules="model.layers.*.self_attention.linear_qkv", exclude_modules="q_proj")
+        with pytest.raises(AssertionError, match="cannot be combined"):
+            parse_lora_target_modules(args)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"lora_provider_path": "example.custom_lora"},
+            {"megatron_to_hf_mode": "bridge"},
+        ],
+    )
+    def test_bridge_and_custom_providers_keep_exact_exclude_semantics(self, overrides):
+        args = _args(
+            target_modules="linear_qkv,linear_fc2",
+            exclude_modules="linear_qkv",
+            **overrides,
+        )
+        parse_lora_target_modules(args)
+        assert args.target_modules == ["linear_fc2"]

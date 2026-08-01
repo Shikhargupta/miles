@@ -130,6 +130,7 @@ class LoRAArchSpec:
     attention: AttentionLoRASpec
     mlp: MLPLoRASpec
     moe: MoELoRASpec
+    allows_mixer_only_adapter_chunks: bool = False
 
     @property
     def supported_targets(self) -> frozenset[str]:
@@ -141,13 +142,21 @@ class LoRAArchSpec:
             config.target_modules,
             expanded_from_all_linear=config.expanded_from_all_linear,
         )
+        assert targets, (
+            f"native LoRA architecture spec {self.name!r} has no effective target modules after "
+            "architecture normalization; select a projection implemented by this model family"
+        )
         return config if targets == config.target_modules else replace(config, target_modules=targets)
 
-    def validate(self, context: AttachContext) -> None:
-        unsupported = sorted(context.targets - self.supported_targets)
+    def validate_targets(self, targets: frozenset[str]) -> None:
+        """Fail closed on projection names before model/runtime metadata exists."""
+        unsupported = sorted(targets - self.supported_targets)
         assert not unsupported, (
             f"native LoRA architecture spec {self.name!r} does not implement targets {unsupported}. "
             f"Supported targets are {sorted(self.supported_targets)}; use --megatron-to-hf-mode bridge "
             "or point --lora-provider-path at a model-specific provider."
         )
+
+    def validate(self, context: AttachContext) -> None:
+        self.validate_targets(context.targets)
         self.attention.validate(context.transformer_config, tp_size=context.tp_size)

@@ -187,3 +187,67 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
     assert result == (model, optimizer, opt_param_scheduler, 100)
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+
+
+def _lora_initialize_args() -> Namespace:
+    return Namespace(
+        use_checkpoint_opt_param_scheduler=True,
+        global_batch_size=8,
+        lora_rank=8,
+        lora_adapter_path="/adapter",
+        megatron_to_hf_mode="raw",
+        fp16=False,
+        bf16=True,
+    )
+
+
+def test_initialize_does_not_overwrite_a_successful_native_adapter_resume_with_hf():
+    from miles.backends.megatron_utils import lora_utils
+    from miles.backends.megatron_utils.model import initialize_model_and_optimizer
+
+    args = _lora_initialize_args()
+    chunk = _FakeModelChunk()
+    chunk._miles_lora_native_checkpoint_loaded = True
+    model = [chunk]
+    optimizer = MagicMock()
+    provider = MagicMock()
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
+                return_value=(model, optimizer, None),
+            )
+        )
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(7, 0)))
+        stack.enter_context(patch.object(lora_utils, "resolve_lora_provider", return_value=provider))
+        _patch_initialize_side_effects(stack)
+        initialize_model_and_optimizer(args)
+
+    provider.load_lora_adapter_hf.assert_not_called()
+    optimizer.reload_model_params.assert_not_called()
+
+
+def test_initialize_uses_hf_as_the_warm_start_fallback_when_no_native_shard_loaded():
+    from miles.backends.megatron_utils import lora_utils
+    from miles.backends.megatron_utils.model import initialize_model_and_optimizer
+
+    args = _lora_initialize_args()
+    model = [_FakeModelChunk()]
+    optimizer = MagicMock()
+    provider = MagicMock()
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "miles.backends.megatron_utils.model.setup_model_and_optimizer",
+                return_value=(model, optimizer, None),
+            )
+        )
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(0, 0)))
+        stack.enter_context(patch.object(lora_utils, "resolve_lora_provider", return_value=provider))
+        _patch_initialize_side_effects(stack)
+        initialize_model_and_optimizer(args)
+
+    provider.load_lora_adapter_hf.assert_called_once_with(model, args.lora_adapter_path)
+    optimizer.reload_model_params.assert_called_once_with()
