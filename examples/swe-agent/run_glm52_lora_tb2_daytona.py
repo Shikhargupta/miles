@@ -12,8 +12,9 @@ across every node, so set ``MILES_SCRIPT_EXTERNAL_RAY=1``.
 ``--dsa-attention-backend megatron`` is deliberate: at DP>1 the tilelang DSA backward
 returns non-finite gradients on every trainable adapter while its forward stays healthy.
 The megatron backend requires the bshd query layout, which forbids
-``--use-dynamic-batch-size``, hence ``--micro-batch-size 1`` plus full recompute to fit
-64k-token sessions.
+``--use-dynamic-batch-size``, hence ``--micro-batch-size 1``. bshd also rules out
+activation recompute: GLM-5.2 shares DSA top-k across layers via ``packed_seq_params``,
+which bshd does not carry, so a recomputed skip layer would read a stale anchor top-k.
 
 Usage (4 nodes x 8 H200, ray already running):
   MILES_SCRIPT_EXTERNAL_RAY=1 python run_glm52_lora_tb2_daytona.py \\
