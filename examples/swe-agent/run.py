@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 import typer
+import yaml
 
 import miles.utils.external_utils.command_utils as U
 
@@ -48,6 +49,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     global_batch_size: int = 32
     save_interval: int = 100
     save_traces_dir: str = ""
+    ppo: bool = False
 
     # Agent settings
     agent_server_url: str = os.environ.get(
@@ -148,6 +150,26 @@ def execute(args: ScriptArgs):
         "--eps-clip-high 0.28 "
     )
 
+    advantage_args = grpo_args
+    if args.ppo:
+        overrides = {
+            "advantage_estimator": "ppo",
+            "eps_clip_high": None,
+            "num_critic_only_steps": 10,
+            "normalize_advantages": True,
+            "critic_lr": 1e-5,
+            "critic_save": args.save_dir.rstrip("/") + "_critic",
+            # routing replay records router indices only for the actor's forward;
+            # the critic's MoE forward has no recorded routing and crashes
+            "use_rollout_routing_replay": False,
+            "save_retain_interval": 100,
+            "no_save_optim": True,
+        }
+        config_path = Path(args.save_dir) / "ppo_overrides.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(yaml.safe_dump(overrides))
+        advantage_args = grpo_args + f"--custom-config-path {config_path} "
+
     optimizer_args = (
         "--optimizer adam "
         "--lr 1e-6 "
@@ -217,7 +239,7 @@ def execute(args: ScriptArgs):
         f"{ckpt_args}"
         f"{rollout_args}"
         f"{optimizer_args}"
-        f"{grpo_args}"
+        f"{advantage_args}"
         f"{wandb_args}"
         f"{prometheus_args}"
         f"{trace_args}"
