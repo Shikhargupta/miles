@@ -65,6 +65,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # completion + every env response); --rollout-max-response-len caps one turn.
     max_seq_len: int = 65536
     rollout_max_response_len: int = 8192
+    # Serving window, deliberately independent of max_seq_len. max_seq_len only trims
+    # what the trainer keeps, and the megatron DSA indexer is O(S^2) in fp32 so it has
+    # to stay small; the agent still needs the full window or its very first request is
+    # rejected for exceeding the context.
+    sglang_context_length: int = 65536
 
     # Training settings
     num_rollout: int = 200
@@ -183,7 +188,7 @@ def _sglang_args(args: ScriptArgs) -> str:
         "--sglang-nsa-prefill-backend flashmla_sparse "
         "--sglang-page-size 64 "
         "--sglang-kv-cache-dtype fp8_e4m3 "
-        f"--sglang-context-length {args.max_seq_len} "
+        f"--sglang-context-length {args.sglang_context_length} "
         f"--sglang-cuda-graph-max-bs {max_bs} --sglang-max-running-requests {max_bs} "
         f"--sglang-chunked-prefill-size {min(8192, 2048 * engine)} "
         "--sglang-watchdog-timeout 3600 "
