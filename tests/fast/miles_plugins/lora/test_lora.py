@@ -273,13 +273,9 @@ class TestResolveLoraProvider:
         assert mod.export_lora_hf_named is export_lora_hf_named
         assert mod.load_lora_adapter_hf is load_lora_adapter_hf
 
-    def test_explicit_path_is_imported(self):
-        args = Namespace(lora_provider_path="miles_plugins.lora.lora")
-        assert resolve_lora_provider(args).export_lora_hf_named is export_lora_hf_named
-
-    def test_pre_plugin_native_provider_path_remains_compatible(self):
-        args = Namespace(lora_provider_path="miles.backends.megatron_utils.lora_native")
-        provider = resolve_lora_provider(args)
+    @pytest.mark.parametrize("path", ["miles_plugins.lora.lora", "miles.backends.megatron_utils.lora_native"])
+    def test_native_provider_paths_are_imported(self, path):
+        provider = resolve_lora_provider(Namespace(lora_provider_path=path))
         assert provider.wrap_model_provider_with_lora is wrap_model_provider_with_lora
         assert provider.export_lora_hf_named is export_lora_hf_named
 

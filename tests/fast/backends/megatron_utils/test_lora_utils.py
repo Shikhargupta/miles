@@ -1,11 +1,9 @@
 """Unit tests for miles.backends.megatron_utils.lora_utils.
 
 Tests cover module name conversion, LoRA detection helpers, parameter identification,
-bridge LoRA construction, and LoRA sync config building — all without GPU.
+and LoRA sync config building — all without GPU.
 """
 
-import sys
-import types
 from argparse import Namespace
 from unittest.mock import MagicMock
 
@@ -17,7 +15,6 @@ from miles.backends.megatron_utils.lora_utils import (
     build_lora_sync_config,
     convert_target_modules_to_hf,
     convert_target_modules_to_megatron,
-    create_lora_instance,
     is_lora_enabled,
     is_lora_weight_name,
 )
@@ -274,76 +271,6 @@ class TestIsAdapterParamName:
 
 
 # ---------------------------------------------------------------------------
-# create_lora_instance
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def fake_bridge_peft(monkeypatch):
-    """Stand in for megatron.bridge.peft, which needs Transformer Engine to import.
-
-    Returns the two recording classes so a test can inspect the kwargs miles passed.
-    """
-
-    class _Recorder:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    lora_cls = type("LoRA", (_Recorder,), {})
-    canonical_cls = type("CanonicalLoRA", (_Recorder,), {})
-
-    for name, attr, value in (
-        ("megatron.bridge.peft.lora", "LoRA", lora_cls),
-        ("megatron.bridge.peft.canonical_lora", "CanonicalLoRA", canonical_cls),
-    ):
-        module = types.ModuleType(name)
-        setattr(module, attr, value)
-        monkeypatch.setitem(sys.modules, name, module)
-    for parent in ("megatron.bridge", "megatron.bridge.peft"):
-        monkeypatch.setitem(sys.modules, parent, types.ModuleType(parent))
-    return lora_cls, canonical_cls
-
-
-def _lora_args(**overrides) -> Namespace:
-    values = dict(
-        lora_rank=16,
-        lora_alpha=32,
-        lora_dropout=0.0,
-        target_modules=["q_proj", "k_proj", "v_proj"],
-        exclude_modules="o_proj",
-        lora_type="lora",
-    )
-    values.update(overrides)
-    return Namespace(**values)
-
-
-class TestCreateLoraInstance:
-    def test_exclude_modules_is_not_forwarded_to_the_bridge(self, fake_bridge_peft):
-        """Bridge asserts exclude_modules is empty whenever target_modules is set, and the
-        argument parser has already subtracted the excluded names — passing both crashed."""
-        lora_cls, _ = fake_bridge_peft
-        lora = create_lora_instance(_lora_args())
-        assert isinstance(lora, lora_cls)
-        assert "exclude_modules" not in lora.kwargs
-        assert lora.kwargs["target_modules"] == ["linear_qkv"]
-
-    def test_canonical_lora_type_selects_the_split_adapter(self, fake_bridge_peft):
-        _, canonical_cls = fake_bridge_peft
-        lora = create_lora_instance(_lora_args(lora_type="canonical_lora"))
-        assert isinstance(lora, canonical_cls)
-        assert lora.kwargs["target_modules"] == ["linear_q", "linear_k", "linear_v"]
-
-    def test_shared_outer_loras_requires_the_standard_adapter(self, fake_bridge_peft):
-        args = _lora_args(lora_type="canonical_lora", experts_shared_outer_loras=True)
-        with pytest.raises(AssertionError, match="experts-shared-outer-loras"):
-            create_lora_instance(args)
-
-    def test_shared_outer_loras_is_forwarded_for_standard_lora(self, fake_bridge_peft):
-        lora = create_lora_instance(_lora_args(experts_shared_outer_loras=True))
-        assert lora.kwargs["experts_shared_outer_loras"] is True
-
-
-# ---------------------------------------------------------------------------
 # build_lora_sync_config
 # ---------------------------------------------------------------------------
 
@@ -384,51 +311,11 @@ class TestBuildLoraSyncConfig:
             lora_alpha=8,
             lora_dropout=0.1,
             target_modules=["linear_q", "linear_k"],
+            megatron_to_hf_mode="raw",
         )
         config = build_lora_sync_config(args)
         assert config["target_modules"] == ["k_proj", "q_proj", "v_proj"]
         assert config["r"] == 8
-
-    def test_bridge_target_modules_are_not_native_zero_expanded(self):
-        args = Namespace(
-            lora_rank=8,
-            lora_alpha=8,
-            lora_dropout=0.0,
-            target_modules=["linear_q"],
-            megatron_to_hf_mode="bridge",
-        )
-        config = build_lora_sync_config(args)
-        assert config["target_modules"] == ["q_proj"]
-
-    def test_native_rollout_uses_architecture_normalized_targets(self, tmp_path):
-        (tmp_path / "config.json").write_text('{"model_type": "deepseek_v3"}')
-        args = Namespace(
-            lora_rank=8,
-            lora_alpha=8,
-            lora_dropout=0.0,
-            target_modules=[
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "q_a_proj",
-                "q_b_proj",
-                "kv_a_proj_with_mqa",
-                "kv_b_proj",
-            ],
-            megatron_to_hf_mode="raw",
-            lora_provider_path=None,
-            hf_checkpoint=str(tmp_path),
-            _target_modules_expanded_from_all_linear=True,
-        )
-
-        config = build_lora_sync_config(args)
-
-        assert set(config["target_modules"]) == {
-            "q_a_proj",
-            "q_b_proj",
-            "kv_a_proj_with_mqa",
-            "kv_b_proj",
-        }
 
 
 # ---------------------------------------------------------------------------

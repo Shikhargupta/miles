@@ -1,34 +1,19 @@
-"""Parallel communication and gradient handling for Miles-native LoRA.
+"""Distributed abstractions for Miles-native LoRA.
 
-Every collective here runs on the *attention* tensor-parallel group, which is
-sufficient for what the plugin attaches today: MCore builds the MoE shared
-expert with ``tp_group=pg_collection.tp``
-(``megatron/core/transformer/moe/shared_experts.py``), i.e. the attention TP
-group, so ``--expert-tensor-parallel-size != --tensor-model-parallel-size`` is
-harmless; and context parallelism needs no adapter-side code because adapter
-params are ordinary replicated DDP-bucket params reduced over ``dp_cp``.
+This module owns TP/SP input mapping, row-parallel reduction, TP gathering for
+HF export, and gradient reduction for marked adapter parameters.
 
-Roadmap: two dimensions Megatron-Bridge PEFT covers and this module does not.
+Unsupported:
 
-1. **Expert tensor parallelism.** Routed experts are built on
-   ``pg_collection.expt_tp`` (``moe/experts.py``), not the attention TP group,
-   and bridge resolves that per adapter
-   (``megatron/bridge/peft/utils.py:290-313``, ``:1780-1885``). The moment an
-   adapter lands on a routed expert, ``branch_input``, ``reduce_row_parallel``
-   and ``TensorParallelGather`` below are on the wrong group. They would need a
-   group parameter plumbed through ``AttachContext`` rather than reading
-   ``parallel_state`` directly. See ``spec/moe.py`` for the wider MoE roadmap.
-2. **Overlapped grad reduce / param gather.** Bridge adapters are real MCore
-   parallel linears, so they ride MCore's DDP buckets and forward pre-hooks and
-   need no adapter-specific overlap handling; for grouped-expert LoRA bridge even
-   wraps the 3D weight in a callable module so the pre-hook that drives
-   overlapped param gather fires (``peft/utils.py:1706-1720``). Native attaches
-   siblings and monkeypatches the wrapped module's forward, which forces the
-   out-of-band cross-TP grad sum below over the same ``main_grad`` buffer DDP
-   reduce-scatters — hence the ``--overlap-grad-reduce`` /
-   ``--overlap-param-gather`` refusals in ``lora.py``. Lifting them means making
-   the adapter a real parallel linear (or at least a callable weight container),
-   not adding more collectives here.
+- Expert-TP groups for routed/grouped-expert adapters.
+- Native routed/grouped-expert LoRA across EP ranks.
+- ``overlap_grad_reduce`` and ``overlap_param_gather``.
+
+TODO:
+
+- Pass the process group through ``AttachContext`` for routed experts.
+- Integrate adapters with MCore parallel linears and DDP hooks before enabling
+  overlap.
 """
 
 from __future__ import annotations
