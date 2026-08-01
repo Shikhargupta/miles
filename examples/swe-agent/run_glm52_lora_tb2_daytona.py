@@ -9,12 +9,22 @@ so the trainer is sharded over ``--num-nodes`` (EP spans the whole world, TP sta
 intra-node) and the rollout is served from the fp8 checkpoint. Ray must already be up
 across every node, so set ``MILES_SCRIPT_EXTERNAL_RAY=1``.
 
-``--dsa-attention-backend megatron`` is deliberate: at DP>1 the tilelang DSA backward
-returns non-finite gradients on every trainable adapter while its forward stays healthy.
-The megatron backend requires the bshd query layout, which forbids
-``--use-dynamic-batch-size``, hence ``--micro-batch-size 1``. bshd also rules out
-activation recompute: GLM-5.2 shares DSA top-k across layers via ``packed_seq_params``,
+The two DSA backends trade correctness risk against a sequence-length ceiling:
+
+``megatron`` (default) requires the bshd query layout, which forbids
+``--use-dynamic-batch-size`` (hence ``--micro-batch-size 1``) and rules out activation
+recompute, because GLM-5.2 shares DSA top-k across layers via ``packed_seq_params``,
 which bshd does not carry, so a recomputed skip layer would read a stale anchor top-k.
+Its indexer also materializes a dense fp32 ``[S, 1, index_n_heads, S]`` score tensor
+(``index_n_heads`` is 32), i.e. 8 GiB at S=8192 and 32 GiB at S=16384. On 4 nodes the
+training step has ~8 GiB free, so megatron tops out near S=4096.
+
+``tilelang`` uses the thd layout, whose ``packed_seq_params`` is closure-captured by
+Megatron's checkpoint ``custom_forward``, re-enabling activation recompute; its fused
+indexer reduces over heads in-kernel and chunks at 8192, so the score buffer is ~1 GiB
+at S=16384. The catch: at DP>1 the tilelang DSA backward has been observed to return
+non-finite gradients on every trainable adapter while its forward stayed healthy, so
+check ``grad_norm`` on the first training step before trusting a tilelang run.
 
 Usage (4 nodes x 8 H200, ray already running):
   MILES_SCRIPT_EXTERNAL_RAY=1 python run_glm52_lora_tb2_daytona.py \\
@@ -154,6 +164,15 @@ def _parallel_args(args: ScriptArgs) -> str:
     # megatron's unfused DSA core-attention takes a 4D query, so bshd; bshd in turn
     # forbids --use-dynamic-batch-size, so microbatches are single sequences.
     qkv_format = "thd" if args.dsa_attention_backend == "tilelang" else "bshd"
+    # Only thd carries packed_seq_params, and the cross-layer DSA top-k holder rides on
+    # it, so Megatron's checkpoint custom_forward closure-captures the right anchor top-k
+    # at recompute time. bshd falls back to a thread-local the closure never sees, and
+    # megatron-bridge asserts on that combination rather than emit stale gradients.
+    recompute = (
+        "--recompute-granularity full --recompute-method uniform --recompute-num-layers 1 "
+        if qkv_format == "thd"
+        else ""
+    )
     return (
         f"--tensor-model-parallel-size {ngpu} "
         "--sequence-parallel "
@@ -163,9 +182,7 @@ def _parallel_args(args: ScriptArgs) -> str:
         "--expert-tensor-parallel-size 1 "
         f"--qkv-format {qkv_format} "
         "--micro-batch-size 1 "
-        # No activation recompute: GLM-5.2's cross-layer DSA index-share keeps its per-
-        # microbatch top-k on packed_seq_params, which bshd does not carry, so recompute
-        # would read a stale anchor top-k. megatron-bridge asserts on the combination.
+        f"{recompute}"
         "--optimizer-cpu-offload "
         "--overlap-cpu-optimizer-d2h-h2d "
         "--use-precision-aware-optimizer "
