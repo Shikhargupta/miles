@@ -88,8 +88,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # R3 rollout routing replay (arxiv 2510.11370)
     use_r3: bool = True
 
-    # Rollout engine
-    fp8_rollout_gpus_per_engine: int = 8
+    # Rollout engine.
+    # Under colocate + LoRA sglang mirrors each GPU's weight shard into host RAM
+    # (enable_weights_cpu_backup), costing (fp8 ckpt / this) * gpus_per_node per node:
+    # against the 744B fp8 ckpt, 8 costs ~704 GiB/node and 16 halves that. 8 leaves too
+    # little room for the concurrent Megatron bridge load and OOMs the pod cgroup.
+    fp8_rollout_gpus_per_engine: int = 16
     sglang_mem_fraction_static: float = 0.85
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
@@ -109,12 +113,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     wandb_project: str = os.environ.get("WANDB_PROJECT", "glm52-lora-agentic")
     # The default entity has no Models write seat, so init_tracking dies without this.
     wandb_team: str = os.environ.get("WANDB_TEAM", "eigent_radixark_training")
-    wandb_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2"
+    wandb_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v2"
 
     # Prometheus settings
     use_prometheus: bool = True
     prometheus_port: int = 9091
-    prometheus_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2"
+    prometheus_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v2"
 
 
 def cleanup():
