@@ -113,12 +113,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     wandb_project: str = os.environ.get("WANDB_PROJECT", "glm52-lora-agentic")
     # The default entity has no Models write seat, so init_tracking dies without this.
     wandb_team: str = os.environ.get("WANDB_TEAM", "eigent_radixark_training")
-    wandb_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v2"
+    wandb_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v3"
 
     # Prometheus settings
     use_prometheus: bool = True
     prometheus_port: int = 9091
-    prometheus_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v2"
+    prometheus_run_name: str = "260731-glm52-lora-tb2-daytona-terminus2-v3"
 
 
 def cleanup():
