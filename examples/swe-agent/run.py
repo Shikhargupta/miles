@@ -56,6 +56,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         "AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://agent_env:11000")
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
+    # bind address for the session server; set to 0.0.0.0 when off-cluster
+    # agents reach it through an interface other than the default-route one
+    session_server_ip: str = ""
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
@@ -197,6 +200,8 @@ def execute(args: ScriptArgs):
         "--use-session-server "
         "--session-server-port 30000 "
     )
+    if args.session_server_ip:
+        agent_args += f"--session-server-ip {args.session_server_ip} "
 
     misc_args = (
         "--attention-dropout 0.0 "
