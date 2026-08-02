@@ -16,7 +16,7 @@ from miles.ray.specs.inference import (
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
-from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext
+from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerMetaContext
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
@@ -221,3 +221,66 @@ class TestInferenceEnginePortSchema:
             "nccl",
             "engine_info_bootstrap",
         ]
+
+
+class TestEngineMetaApiKey:
+    def _meta_for(self, tmp_path, *, overrides_yaml: str = "", **args_overrides):
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            "sglang:\n"
+            "  - name: default\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 1\n" + overrides_yaml
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=8, **args_overrides)
+        (spec,) = specs_inference_engine(args)
+        return spec.meta(WorkerMetaContext(cell_index=0))
+
+    def test_a_group_api_key_override_wins_over_the_args_key(self, tmp_path):
+        """The ServerArgs-named api_key override reaches the cell meta ahead of the global args key."""
+        meta = self._meta_for(
+            tmp_path,
+            overrides_yaml="        overrides:\n          api_key: from-override\n",
+            sglang_api_key="from-args",
+        )
+        assert meta["sglang_api_key"] == "from-override"
+
+    def test_the_args_key_is_used_without_an_override(self, tmp_path):
+        """Without a group override the engine api key falls back to args.sglang_api_key."""
+        meta = self._meta_for(tmp_path, sglang_api_key="from-args")
+        assert meta["sglang_api_key"] == "from-args"
+
+    def test_an_explicit_empty_override_is_kept_verbatim(self, tmp_path):
+        """An override disabling the key must win over the args key instead of silently falling back."""
+        meta = self._meta_for(
+            tmp_path,
+            overrides_yaml='        overrides:\n          api_key: ""\n',
+            sglang_api_key="from-args",
+        )
+        assert meta["sglang_api_key"] == ""
+
+
+class TestTrailingPartialEngineRejection:
+    def _specs_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "regular", "num_gpus": num_gpus, "num_gpus_per_engine": num_gpus_per_engine}
+                ]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
+        return specs_inference_engine(args)
+
+    def test_a_trailing_partial_multi_node_engine_is_rejected(self, tmp_path):
+        """24 GPUs cannot host 16-GPU engines on 8-GPU nodes and must fail fast instead of silently flooring."""
+        with pytest.raises(AssertionError, match="whole number of"):
+            self._specs_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
+
+    def test_a_whole_number_of_multi_node_engines_passes(self, tmp_path):
+        """32 GPUs host exactly two 16-GPU engines and resolve into two cells."""
+        (spec,) = self._specs_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        assert spec.scheduling.num_cells == 2
