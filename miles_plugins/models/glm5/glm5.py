@@ -59,10 +59,16 @@ def _grad_probe(name: str, t: torch.Tensor | None, layer_number: int) -> None:
         f = g.float()
         finite = torch.isfinite(f)
         absmax = f[finite].abs().max().item() if bool(finite.any()) else float("nan")
+        # A handful of bad rows means a data-dependent fault in specific positions; every row
+        # bad means a numerical blowup that merely surfaces here.
+        rows = f.reshape(f.shape[0], -1)
+        bad = ~torch.isfinite(rows).all(dim=1)
         print(
             f"[DSA GRADPROBE] layer={layer_number} tensor={name} NON-FINITE "
             f"nan={int(torch.isnan(f).sum())} inf={int(torch.isinf(f).sum())} "
-            f"absmax={absmax:.4e} shape={tuple(g.shape)} dtype={g.dtype}",
+            f"absmax={absmax:.4e} shape={tuple(g.shape)} dtype={g.dtype} "
+            f"bad_rows={int(bad.sum())}/{rows.shape[0]} "
+            f"first_bad={torch.nonzero(bad).flatten()[:6].tolist()}",
             flush=True,
         )
 
