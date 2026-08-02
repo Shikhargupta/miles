@@ -1,9 +1,11 @@
+import asyncio
 import logging
+from functools import partial
 
 import ray.actor
 
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
-from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
@@ -12,8 +14,9 @@ POLL_INTERVAL_SECONDS = 5.0
 
 
 class RayWorkerProvider(BaseWorkerProvider):
-    def __init__(self, worker_manager_handle: ray.actor.ActorHandle):
+    def __init__(self, worker_manager_handle: ray.actor.ActorHandle, poll_interval_seconds: float = 5.0):
         self._worker_manager_handle = worker_manager_handle
+        self._poll_interval_seconds = poll_interval_seconds
 
     @classmethod
     def create(cls) -> "RayWorkerProvider":
@@ -24,3 +27,34 @@ class RayWorkerProvider(BaseWorkerProvider):
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
+
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        # the initial sync must complete (and raise on failure) before the watch is considered established
+        seen_infos = await self._poll_once(reconcile, seen_infos={})
+        task = asyncio.create_task(self._watch_loop(reconcile, seen_infos))
+        return partial(_cancel_and_await_task, task)
+
+    async def _watch_loop(self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo]) -> None:
+        while True:
+            await asyncio.sleep(self._poll_interval_seconds)
+            try:
+                seen_infos = await self._poll_once(reconcile, seen_infos=seen_infos)
+            except Exception:
+                logger.exception("Worker provider poll failed; retrying")
+
+    async def _poll_once(self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo]) -> dict[str, CellInfo]:
+        observed_infos = await self._worker_manager_handle.get_cell_infos.remote()
+        for cell_id in sorted(set(seen_infos) | set(observed_infos)):
+            observed_info = observed_infos.get(cell_id)
+            if seen_infos.get(cell_id) == observed_info:
+                continue
+            await reconcile(cell_id, observed_info)
+        return observed_infos
+
+
+async def _cancel_and_await_task(task) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
