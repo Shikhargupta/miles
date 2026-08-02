@@ -112,11 +112,15 @@ class MLPLoRASpec(Protocol):
 
 
 class MoELoRASpec(Protocol):
-    """Routed-expert validation/attachment boundary."""
+    """Routed-expert validation/attachment boundary.
+
+    ``validate_layer`` returns the MLP targets the layer cannot attach (for the
+    orchestrator to report once per run) and raises when the miss is an error.
+    """
 
     supported_targets: frozenset[str]
 
-    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> None: ...
+    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> frozenset[str]: ...
 
 
 @dataclass(frozen=True)

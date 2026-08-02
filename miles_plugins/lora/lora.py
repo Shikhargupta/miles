@@ -126,6 +126,7 @@ def apply_native_lora(model, args):
 
     wrapped = 0
     mixer_only_layers = []
+    moe_skipped_targets: set[str] = set()
     for layer in layers:
         layer_index = layer.layer_number - 1
         hf_layer = f"{context.layer_prefix}{layer_index}."
@@ -137,7 +138,7 @@ def apply_native_lora(model, args):
                 mixer_only_layers.append(layer_index)
 
         mlp = layer.mlp
-        arch_spec.moe.validate_layer(mlp, context)
+        moe_skipped_targets.update(arch_spec.moe.validate_layer(mlp, context))
         if hasattr(mlp, "linear_fc1"):
             assert getattr(mlp.config, "gated_linear_unit", True), "native LoRA assumes a gated (SwiGLU) MLP"
             wrapped += arch_spec.mlp.attach(mlp, hf_layer + "mlp.", context)
@@ -163,6 +164,13 @@ def apply_native_lora(model, args):
         100.0 * trainable / max(total, 1),
         hooked_embedding is not None,
     )
+    if moe_skipped_targets:
+        logger.info(
+            "[lora-native] all-linear MLP targets %s skipped on MoE layers without an attachable "
+            "shared expert; routed/grouped expert LoRA needs --megatron-to-hf-mode bridge or a "
+            "model-specific --lora-provider-path.",
+            sorted(moe_skipped_targets),
+        )
     if mixer_only_layers:
         shown = f"{mixer_only_layers[:4]}{'...' if len(mixer_only_layers) > 4 else ''}"
         logger.info(

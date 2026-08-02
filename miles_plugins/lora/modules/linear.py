@@ -4,11 +4,16 @@ Each adapter is a sibling module of the physical MCore/TE linear;
 ``attach_adapter_forward`` patches that linear's forward to add the delta. Base
 parameter names are unchanged, so checkpoint, weight-sync, and quantizer naming
 contracts hold.
+
+Adapters are self-describing: :meth:`NativeLoRAAdapter.exports` yields one
+:class:`ProjectionExport` per logical projection so codecs consume a public
+descriptor instead of module internals.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -16,6 +21,31 @@ import torch.nn.functional as F
 
 from miles_plugins.lora.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
 from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, ProjectionSpec
+
+
+@dataclass(frozen=True)
+class SGLangFusedGroup:
+    """A serving-side fused buffer this projection belongs to.
+
+    ``member_rows`` maps every member's HF leaf name to its FULL (TP-gathered)
+    ``lora_B`` row count, so the serving codec can zero-fill absent siblings
+    with the architecture's true widths.
+    """
+
+    name: str
+    member_rows: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class ProjectionExport:
+    """Public per-projection descriptor consumed by the codecs."""
+
+    hf_name: str  # full name, e.g. "model.layers.3.self_attn.q_proj"
+    layout: str  # COLUMN / ROW / REPLICATED
+    a: torch.Tensor  # local lora_A parameter
+    b: torch.Tensor  # local lora_B parameter
+    b_rows_full: int  # TP-gathered lora_B rows
+    fused_group: SGLangFusedGroup | None = None
 
 
 def new_lora_parameter(
@@ -76,6 +106,10 @@ class NativeLoRAAdapter(nn.Module):
                 self, f"{projection.attr}_B"
             ), f"native LoRA projection {projection.hf!r} has no complete A/B parameter pair"
 
+    def exports(self) -> Iterator[ProjectionExport]:
+        """Yield one public descriptor per logical projection this adapter carries."""
+        raise NotImplementedError
+
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         """Keep adapter params out of MCore distributed checkpoints for now."""
         return {}
@@ -93,11 +127,15 @@ class LoRALinear(NativeLoRAAdapter):
         context: AttachContext,
         in_features: int,
         out_features: int,
+        sglang_group: SGLangFusedGroup | None = None,
     ):
         super().__init__(hf_prefix, (projection,), context.tp_rank)
         self.context = context
         self.attr = projection.attr
         self.layout = projection.layout
+        self.hf_leaf = projection.hf
+        self.out_features = out_features
+        self.sglang_group = sglang_group
 
         a_grad_group = "tp" if self.layout == COLUMN else None
         b_grad_group = "tp" if self.layout in (ROW, REPLICATED) and context.sequence_parallel else None
@@ -138,6 +176,17 @@ class LoRALinear(NativeLoRAAdapter):
         assert self.layout == REPLICATED, f"unknown LoRA linear layout {self.layout}"
         x = apply_lora_dropout(x, self.context, base_module.training)
         return F.linear(F.linear(x, a), b)
+
+    def exports(self) -> Iterator[ProjectionExport]:
+        b = getattr(self, f"{self.attr}_B")
+        yield ProjectionExport(
+            hf_name=f"{self.hf_prefix}{self.hf_leaf}",
+            layout=self.layout,
+            a=getattr(self, f"{self.attr}_A"),
+            b=b,
+            b_rows_full=b.shape[0] * (self.context.tp_size if self.layout == COLUMN else 1),
+            fused_group=self.sglang_group,
+        )
 
 
 class LoRASplitQKV(NativeLoRAAdapter):
@@ -212,6 +261,23 @@ class LoRASplitQKV(NativeLoRAAdapter):
         ]
         return torch.cat(full_delta, dim=-1).index_select(-1, self.out_perm)
 
+    def exports(self) -> Iterator[ProjectionExport]:
+        tp = self.context.tp_size
+        group = SGLangFusedGroup(
+            name="qkv",
+            member_rows={_QKV_HF_NAMES[attr]: rows * tp for attr, rows in self._rows.items()},
+        )
+        for projection in self.projection_specs:
+            b = getattr(self, f"{projection.attr}_B")
+            yield ProjectionExport(
+                hf_name=f"{self.hf_prefix}{projection.hf}",
+                layout=projection.layout,
+                a=getattr(self, f"{projection.attr}_A"),
+                b=b,
+                b_rows_full=b.shape[0] * tp,
+                fused_group=group,
+            )
+
 
 class LoRASplitFC1(NativeLoRAAdapter):
     """Independent gate/up adapters whose delta is packed into one fused FC1 output."""
@@ -278,6 +344,27 @@ class LoRASplitFC1(NativeLoRAAdapter):
             ],
             dim=-1,
         )
+
+    def exports(self) -> Iterator[ProjectionExport]:
+        tp = self.context.tp_size
+        group = SGLangFusedGroup(
+            name="gate_up",
+            member_rows={_FC1_HF_NAMES[attr]: self.inter_local * tp for attr in ("gate", "up")},
+        )
+        for projection in self.projection_specs:
+            b = getattr(self, f"{projection.attr}_B")
+            yield ProjectionExport(
+                hf_name=f"{self.hf_prefix}{projection.hf}",
+                layout=projection.layout,
+                a=getattr(self, f"{projection.attr}_A"),
+                b=b,
+                b_rows_full=b.shape[0] * tp,
+                fused_group=group,
+            )
+
+
+_QKV_HF_NAMES = {"q": "q_proj", "k": "k_proj", "v": "v_proj"}
+_FC1_HF_NAMES = {"gate": "gate_proj", "up": "up_proj"}
 
 
 def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter, scale: float) -> None:

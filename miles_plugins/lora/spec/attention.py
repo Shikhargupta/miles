@@ -1,4 +1,11 @@
-"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, and future GDN."""
+"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, and future GDN.
+
+Each family is a declarative :class:`ModuleLayout` table — the projection
+names, the physical linears they live on, and their shard geometry — walked by
+the shared :func:`attach_layout` mechanism. Only genuinely per-family logic
+(fused-QKV construction, replicated-layout guards, hybrid dispatch) remains as
+code.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +13,9 @@ from dataclasses import dataclass
 
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import LoRALinear, LoRASplitQKV, attach_adapter_forward
+from miles_plugins.lora.modules.linear import LoRASplitQKV
+from miles_plugins.lora.spec import dims
+from miles_plugins.lora.spec.attach import FusedAttach, ModuleLayout, ProjectionBinding, ServingGroup, attach_layout
 from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, ProjectionSpec
 
 QKV_PROJECTIONS = (
@@ -27,6 +36,110 @@ MLA_TARGETS = frozenset(
 )
 GDN_TARGETS = frozenset({"in_proj_qkvz", "in_proj_ba"})
 _GENERIC_QKV_TARGETS = frozenset({"q_proj", "k_proj", "v_proj"})
+
+
+def _build_split_qkv(
+    attention: nn.Module,
+    hf_prefix: str,
+    context: AttachContext,
+    active: tuple[ProjectionSpec, ...],
+) -> LoRASplitQKV:
+    return LoRASplitQKV(
+        hf_prefix=hf_prefix,
+        reference=attention.linear_qkv.weight,
+        context=context,
+        projections=active,
+        num_q=attention.num_attention_heads_per_partition,
+        num_kv=attention.num_query_groups_per_partition,
+        head_dim=attention.hidden_size_per_attention_head,
+    )
+
+
+def _replicated_guard(host: nn.Module, _context: AttachContext, projection: ProjectionSpec, full_out: int) -> None:
+    assert _is_replicated_linear(host, full_out), (
+        f"native MLA LoRA expects a replicated {projection.hf} (TELinear parallel_mode='duplicated'); "
+        f"this build shards it ({tuple(host.weight.shape)} vs full out {full_out}). "
+        "Use --lora-provider-path for this variant."
+    )
+
+
+GQA_LAYOUT = ModuleLayout(
+    name="gqa",
+    present_when_attr="linear_qkv",
+    fused=(
+        FusedAttach(
+            module_attr="linear_qkv",
+            projections=QKV_PROJECTIONS,
+            adapter_attr="lora_qkv_adapter",
+            build=_build_split_qkv,
+        ),
+    ),
+    singles=(
+        ProjectionBinding(
+            projection=O_PROJECTION,
+            module_attr="linear_proj",
+            in_dim=dims.gqa_o_in_local,
+            out_dim=dims.hidden,
+            adapter_attr="lora_o_adapter",
+        ),
+    ),
+)
+
+# SGLang packs the two replicated MLA down projections into one
+# fused_qkv_a_proj_with_mqa buffer; each member's true output width comes from
+# the architecture config, not from its sibling's shape.
+_MLA_A_SERVING_GROUP = ServingGroup(
+    name="mla_a",
+    member_rows=(
+        ("q_a_proj", dims.cfg("q_lora_rank")),
+        ("kv_a_proj_with_mqa", dims.mla_kv_down_out),
+    ),
+)
+
+MLA_LAYOUT = ModuleLayout(
+    name="mla",
+    singles=(
+        ProjectionBinding(
+            projection=MLA_Q_A_PROJECTION,
+            module_attr="linear_q_down_proj",
+            in_dim=dims.hidden,
+            out_dim=dims.cfg("q_lora_rank"),
+            adapter_attr="lora_mla_q_a_adapter",
+            guard=_replicated_guard,
+            serving_group=_MLA_A_SERVING_GROUP,
+        ),
+        ProjectionBinding(
+            projection=MLA_Q_B_PROJECTION,
+            module_attr="linear_q_up_proj",
+            in_dim=dims.cfg("q_lora_rank"),
+            out_dim=dims.mla_q_up_out_local,
+            adapter_attr="lora_mla_q_b_adapter",
+        ),
+        ProjectionBinding(
+            projection=MLA_KV_A_PROJECTION,
+            module_attr="linear_kv_down_proj",
+            in_dim=dims.hidden,
+            out_dim=dims.mla_kv_down_out,
+            adapter_attr="lora_mla_kv_a_adapter",
+            guard=_replicated_guard,
+            serving_group=_MLA_A_SERVING_GROUP,
+        ),
+        ProjectionBinding(
+            projection=MLA_KV_B_PROJECTION,
+            module_attr="linear_kv_up_proj",
+            in_dim=dims.cfg("kv_lora_rank"),
+            out_dim=dims.mla_kv_up_out_local,
+            adapter_attr="lora_mla_kv_b_adapter",
+        ),
+        ProjectionBinding(
+            projection=O_PROJECTION,
+            module_attr="linear_proj",
+            in_dim=dims.mla_o_in_local,
+            out_dim=dims.hidden,
+            adapter_attr="lora_o_adapter",
+        ),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -55,45 +168,8 @@ class GQAAttentionSpec:
         )
 
     def attach(self, attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
-        """Attach fused-QKV and output-projection adapter modules."""
-        if not hasattr(attention, "linear_qkv"):
-            # Hybrid GDN/linear-attention layers are reported by the orchestrator.
-            return 0
-
-        count = 0
-        num_q = attention.num_attention_heads_per_partition
-        num_kv = attention.num_query_groups_per_partition
-        head_dim = attention.hidden_size_per_attention_head
-
-        qkv_projections = tuple(projection for projection in QKV_PROJECTIONS if projection.hf in context.targets)
-        if qkv_projections:
-            adapter = LoRASplitQKV(
-                hf_prefix=hf_prefix,
-                reference=attention.linear_qkv.weight,
-                context=context,
-                projections=qkv_projections,
-                num_q=num_q,
-                num_kv=num_kv,
-                head_dim=head_dim,
-            )
-            attention.lora_qkv_adapter = adapter
-            attach_adapter_forward(attention.linear_qkv, adapter, context.scale)
-            count += 1
-
-        if context.wants("o_proj"):
-            in_local = num_q * head_dim
-            adapter = LoRALinear(
-                hf_prefix=hf_prefix,
-                projection=O_PROJECTION,
-                reference=attention.linear_proj.weight,
-                context=context,
-                in_features=in_local,
-                out_features=context.hidden,
-            )
-            attention.lora_o_adapter = adapter
-            attach_adapter_forward(attention.linear_proj, adapter, context.scale)
-            count += 1
-        return count
+        # Hybrid GDN/linear-attention layers (no linear_qkv) are reported by the orchestrator.
+        return attach_layout(attention, GQA_LAYOUT, hf_prefix, context)
 
 
 @dataclass(frozen=True)
@@ -140,96 +216,7 @@ class MLAAttentionSpec:
         )
 
     def attach(self, attention: nn.Module, hf_prefix: str, context: AttachContext) -> int:
-        config = context.transformer_config
-        count = 0
-        heads_local = attention.num_attention_heads_per_partition
-        q_head_dim = attention.q_head_dim
-        v_head_dim = config.v_head_dim
-        kv_lora_rank = config.kv_lora_rank
-        kv_down_out = kv_lora_rank + config.qk_pos_emb_head_dim
-
-        def add_replicated(module, projection: ProjectionSpec, adapter_name: str, full_out: int) -> int:
-            assert _is_replicated_linear(module, full_out), (
-                f"native MLA LoRA expects a replicated {projection.hf} (TELinear parallel_mode='duplicated'); "
-                f"this build shards it ({tuple(module.weight.shape)} vs full out {full_out}). "
-                "Use --lora-provider-path for this variant."
-            )
-            adapter = LoRALinear(
-                hf_prefix=hf_prefix,
-                projection=projection,
-                reference=module.weight,
-                context=context,
-                in_features=context.hidden,
-                out_features=full_out,
-            )
-            setattr(attention, adapter_name, adapter)
-            attach_adapter_forward(module, adapter, context.scale)
-            return 1
-
-        def add_column_parallel(
-            module,
-            projection: ProjectionSpec,
-            adapter_name: str,
-            in_features: int,
-            out_local: int,
-        ) -> int:
-            adapter = LoRALinear(
-                hf_prefix=hf_prefix,
-                projection=projection,
-                reference=module.weight,
-                context=context,
-                in_features=in_features,
-                out_features=out_local,
-            )
-            setattr(attention, adapter_name, adapter)
-            attach_adapter_forward(module, adapter, context.scale)
-            return 1
-
-        if hasattr(attention, "linear_q_down_proj"):
-            if context.wants("q_a_proj"):
-                count += add_replicated(
-                    attention.linear_q_down_proj,
-                    MLA_Q_A_PROJECTION,
-                    "lora_mla_q_a_adapter",
-                    config.q_lora_rank,
-                )
-            if context.wants("q_b_proj"):
-                count += add_column_parallel(
-                    attention.linear_q_up_proj,
-                    MLA_Q_B_PROJECTION,
-                    "lora_mla_q_b_adapter",
-                    config.q_lora_rank,
-                    heads_local * q_head_dim,
-                )
-        if context.wants("kv_a_proj_with_mqa"):
-            count += add_replicated(
-                attention.linear_kv_down_proj,
-                MLA_KV_A_PROJECTION,
-                "lora_mla_kv_a_adapter",
-                kv_down_out,
-            )
-        if context.wants("kv_b_proj"):
-            count += add_column_parallel(
-                attention.linear_kv_up_proj,
-                MLA_KV_B_PROJECTION,
-                "lora_mla_kv_b_adapter",
-                kv_lora_rank,
-                heads_local * (config.qk_head_dim + v_head_dim),
-            )
-        if context.wants("o_proj"):
-            in_local = heads_local * v_head_dim
-            adapter = LoRALinear(
-                hf_prefix=hf_prefix,
-                projection=O_PROJECTION,
-                reference=attention.linear_proj.weight,
-                context=context,
-                in_features=in_local,
-                out_features=context.hidden,
-            )
-            attention.lora_o_adapter = adapter
-            attach_adapter_forward(attention.linear_proj, adapter, context.scale)
-            count += 1
-        return count
+        return attach_layout(attention, MLA_LAYOUT, hf_prefix, context)
 
 
 @dataclass(frozen=True)

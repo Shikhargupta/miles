@@ -114,15 +114,15 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     plan: list[tuple[str, object]] = []
 
     for adapter in iter_adapters(model_chunks):
-        for projection in adapter.projection_specs:
-            a = getattr(adapter, f"{projection.attr}_A")
-            b = getattr(adapter, f"{projection.attr}_B")
-            if projection.layout == COLUMN:
-                b = gather.request(b, 0)
-            elif projection.layout == ROW:
-                a = gather.request(a, 1)
-            plan.append((f"{adapter.hf_prefix}{projection.hf}.lora_A.weight", a))
-            plan.append((f"{adapter.hf_prefix}{projection.hf}.lora_B.weight", b))
+        for export in adapter.exports():
+            a: object = export.a
+            b: object = export.b
+            if export.layout == COLUMN:
+                b = gather.request(export.b, 0)
+            elif export.layout == ROW:
+                a = gather.request(export.a, 1)
+            plan.append((f"{export.hf_name}.lora_A.weight", a))
+            plan.append((f"{export.hf_name}.lora_B.weight", b))
 
     gather.flush()
     exported = [
