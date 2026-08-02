@@ -35,6 +35,39 @@ from .ops.sparse_mla import SparseMLA
 # sharing* these only exist on "computing" layers; "skip" layers drop them.
 _INDEXER_SUBMODULE_NAMES = ("wq_b", "wk", "k_norm", "weights_proj")
 
+# ``train/grad_norm = nan`` next to a finite loss says only that *some* parameter grad went
+# bad. The sparse-MLA kernel has been cleared (its dq/dkv are finite), so the NaN is born
+# elsewhere inside the attention block. Hooking the intermediates reports the first
+# non-finite gradient in backward order, which names the exact edge that creates it.
+_grad_probe_budget = 24
+_grad_probe_armed = False
+
+
+def _grad_probe(name: str, t: torch.Tensor | None, layer_number: int) -> None:
+    global _grad_probe_armed
+    if not isinstance(t, torch.Tensor) or not t.requires_grad:
+        return
+    if not _grad_probe_armed:
+        _grad_probe_armed = True
+        print("[DSA GRADPROBE] armed", flush=True)
+
+    def hook(g: torch.Tensor) -> None:
+        global _grad_probe_budget
+        if _grad_probe_budget <= 0 or g is None or torch.isfinite(g).all():
+            return
+        _grad_probe_budget -= 1
+        f = g.float()
+        finite = torch.isfinite(f)
+        absmax = f[finite].abs().max().item() if bool(finite.any()) else float("nan")
+        print(
+            f"[DSA GRADPROBE] layer={layer_number} tensor={name} NON-FINITE "
+            f"nan={int(torch.isnan(f).sum())} inf={int(torch.isinf(f).sum())} "
+            f"absmax={absmax:.4e} shape={tuple(g.shape)} dtype={g.dtype}",
+            flush=True,
+        )
+
+    t.register_hook(hook)
+
 
 def is_skip_topk_layer(layer_number: int, skip_topk_offset: int, topk_freq: int) -> bool:
     """Whether the (1-indexed) Megatron ``layer_number`` reuses a previous layer's top-k.
@@ -223,6 +256,7 @@ class DSAMultiLatentAttention(Attention):
         # query: [96, 16, 128], key: [96, 16, 128], value: [96, 16, 128]
 
         # query_absorbed: [96, 16, 576], kv: [96, 1, 576], wv: [16, 128, 512]
+        _grad_probe("hidden_states", hidden_states, self.layer_number)
         q, kv, wv, index_query, index_key, head_weights = self.get_absorb_query_key_value_tensors(
             hidden_states,
             key_value_states,
@@ -230,6 +264,12 @@ class DSAMultiLatentAttention(Attention):
             packed_seq_params,
             inference_context=inference_context,
         )
+        _grad_probe("q", q, self.layer_number)
+        _grad_probe("kv", kv, self.layer_number)
+        _grad_probe("wv", wv, self.layer_number)
+        _grad_probe("index_query", index_query, self.layer_number)
+        _grad_probe("index_key", index_key, self.layer_number)
+        _grad_probe("head_weights", head_weights, self.layer_number)
 
         def fused_select_topk(index_q, index_k, w, starts, ends, block_size=8192):
             seq_len = index_q.shape[0]
@@ -305,7 +345,9 @@ class DSAMultiLatentAttention(Attention):
             _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
         core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
+        _grad_probe("sparse_mla_out", core_attn_out, self.layer_number)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
+        _grad_probe("wv_einsum_out", core_attn_out, self.layer_number)
 
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
 

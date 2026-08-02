@@ -1,4 +1,3 @@
-import logging
 import os
 
 import torch
@@ -6,7 +5,19 @@ import torch
 from .tilelang_sparse_mla_bwd import sparse_mla_bwd
 from .tilelang_sparse_mla_fwd import sparse_mla_fwd_interface
 
-logger = logging.getLogger(__name__)
+_armed = False
+
+
+def _emit(fmt: str, *args: object) -> None:
+    """Print rather than log: a silent ``logger`` is indistinguishable from a clean kernel."""
+    print(fmt % args, flush=True)
+
+
+def _arm() -> None:
+    global _armed
+    if not _armed:
+        _armed = True
+        print("DSA nan probe: armed", flush=True)
 
 # A non-finite adapter gradient is reported as a bare ``train/grad_norm = nan`` next to a
 # perfectly finite loss, which does not say whether this kernel produced the NaN or merely
@@ -69,6 +80,7 @@ class SparseMLA(torch.autograd.Function):
         """
         global _probe_budget
 
+        _arm()
         indices = indices.contiguous()
         q, kv = q.contiguous(), kv.contiguous()
         ctx.scaling = scaling
@@ -76,7 +88,7 @@ class SparseMLA(torch.autograd.Function):
 
         if _probe_budget > 0 and not (torch.isfinite(tl_out).all() and torch.isfinite(tl_lse).all()):
             _probe_budget -= 1
-            logger.error(
+            _emit(
                 "DSA nan probe [forward]: %s | %s | %s | empty_index_rows=%d scaling=%s",
                 _census(q=q, kv=kv, out=tl_out, lse=tl_lse),
                 _row_report("out", tl_out, indices),
@@ -110,7 +122,7 @@ class SparseMLA(torch.autograd.Function):
         if _probe_budget > 0 and not (torch.isfinite(tl_dq).all() and torch.isfinite(tl_dkv).all()):
             _probe_budget -= 1
             delta = (tl_out.float() * do.float()).sum(-1)
-            logger.error(
+            _emit(
                 "DSA nan probe [backward]: %s | %s | %s | %s | empty_index_rows=%d "
                 "lse_min=%s idx_min=%d idx_max=%d kv_len=%d n_out_of_range=%d scaling=%s",
                 _census(q=q, kv=kv, out=tl_out, lse=tl_lse, do=do, delta=delta, dq=tl_dq, dkv=tl_dkv),
@@ -142,7 +154,7 @@ class SparseMLA(torch.autograd.Function):
                     },
                     path,
                 )
-                logger.error("DSA nan probe [backward]: dumped failing inputs to %s", path)
+                _emit("DSA nan probe [backward]: dumped failing inputs to %s", path)
 
         # Return gradients for each input (None for indices as it's not differentiable)
         return tl_dq, tl_dkv, None, None
