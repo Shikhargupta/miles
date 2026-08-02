@@ -114,19 +114,11 @@ MODEL_SPECS: dict[str, ModelEntry] = {
     # 2026-08-02: GLM-5.2_5layer ran 20 native rollouts, logprob_abs_diff 0.0096.
     "glm_moe_dsa": ModelEntry(_MLA_SPEC, SupportStatus.VALIDATED),
     "kimi_k2": ModelEntry(_MLA_SPEC),
-    "kimi_k25": ModelEntry(
-        _MLA_SPEC,
-        SupportStatus.UNSTABLE,
-        "the miles side is verified end-to-end (torch_dist conversion bit-identical to HF; raw-mode "
-        "mcore forward matches an HF-transformers reference to ~0.02 logprob on every prompt "
-        "position), but SGLANG's serving of the K2.5 checkpoint is degenerate on this stack: its "
-        "next-token distribution is context-free (identical top-k at every position; depends only "
-        "on the token at that position), so rollouts are garbage and train/rollout "
-        "logprob_abs_diff sits at ~2.2. Fix or pin the SGLang K2.5 text path (position/mrope "
-        "handling for raw input_ids is the prime suspect; the dequantized checkpoint also still "
-        "declares quantization_config, sending SGLang through the CompressedTensors fallback) "
-        "before trusting native K2.5 RL.",
-    ),
+    # 2026-08-02: Kimi-K2.5-2layer ran 20 native rollouts, logprob_abs_diff 0.0124. Requires the
+    # dequantized BF16 base to carry NO quantization_config (tools/convert_kimi_int4_to_bf16.py now
+    # strips it): a surviving one sends SGLang through its CompressedTensors path, which serves the
+    # checkpoint with a context-free forward and logprob_abs_diff ~2.2.
+    "kimi_k25": ModelEntry(_MLA_SPEC, SupportStatus.VALIDATED),
     "joyai_llm_flash": ModelEntry(_MLA_SPEC),
 }
 
