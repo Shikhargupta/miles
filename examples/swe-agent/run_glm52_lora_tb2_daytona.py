@@ -9,22 +9,26 @@ so the trainer is sharded over ``--num-nodes`` (EP spans the whole world, TP sta
 intra-node) and the rollout is served from the fp8 checkpoint. Ray must already be up
 across every node, so set ``MILES_SCRIPT_EXTERNAL_RAY=1``.
 
-The two DSA backends trade correctness risk against a sequence-length ceiling:
+The two DSA backends differ by a sequence-length ceiling, so prefer ``tilelang``:
 
-``megatron`` (default) requires the bshd query layout, which forbids
+``megatron`` is a naive dense reference, not a memory-efficient one. ``unfused_dsa_fn``
+materializes the full fp32 ``[b, np, S, S]`` score matrix and applies DSA sparsity as an
+additive ``-inf`` mask, so the top-k buys no memory and no FLOPs. With 78 layers and 8
+heads per rank at TP=8 that retains roughly ``3744 * S**2`` bytes: 59 GiB at S=4096 and
+234 GiB at S=8192. It also requires the bshd query layout, which forbids
 ``--use-dynamic-batch-size`` (hence ``--micro-batch-size 1``) and rules out activation
 recompute, because GLM-5.2 shares DSA top-k across layers via ``packed_seq_params``,
 which bshd does not carry, so a recomputed skip layer would read a stale anchor top-k.
-Its indexer also materializes a dense fp32 ``[S, 1, index_n_heads, S]`` score tensor
-(``index_n_heads`` is 32), i.e. 8 GiB at S=8192 and 32 GiB at S=16384. On 4 nodes the
-training step has ~8 GiB free, so megatron tops out near S=4096.
+Together these cap it near S=4096, and since the cost is quadratic in S, no larger GPU
+moves that ceiling much -- 2x the memory buys only sqrt(2) the sequence length.
 
-``tilelang`` uses the thd layout, whose ``packed_seq_params`` is closure-captured by
-Megatron's checkpoint ``custom_forward``, re-enabling activation recompute; its fused
-indexer reduces over heads in-kernel and chunks at 8192, so the score buffer is ~1 GiB
-at S=16384. The catch: at DP>1 the tilelang DSA backward has been observed to return
-non-finite gradients on every trainable adapter while its forward stayed healthy, so
-check ``grad_norm`` on the first training step before trusting a tilelang run.
+``tilelang`` never materializes the matrix (it is O(S * topk)) and uses the thd layout,
+whose ``packed_seq_params`` is closure-captured by Megatron's checkpoint
+``custom_forward``, re-enabling activation recompute. It trains S=16384 on 4 nodes with
+room to spare. Its backward previously returned NaN gradients on every trainable adapter
+while the forward stayed healthy; that was two kernel defects, both fixed in
+``miles_plugins/models/glm5/ops/`` (an aggressive shared-memory-merge pass that aliased
+live buffers, and an unguarded ``sumexp == 0`` on query rows with no valid key).
 
 Usage (4 nodes x 8 H200, ray already running):
   MILES_SCRIPT_EXTERNAL_RAY=1 python run_glm52_lora_tb2_daytona.py \\
@@ -99,9 +103,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # MoE-expert LoRA layout: shared-outer when True, per-expert when False.
     experts_shared_outer_loras: bool = True
 
-    # GLM-5.2 specifics. tilelang stays off: at DP > 1 its backward returns non-finite
-    # gradients on every trainable adapter while its forward stays healthy.
-    dsa_attention_backend: Literal["megatron", "tilelang"] = "megatron"
+    # GLM-5.2 specifics. megatron is dense O(S**2) and caps near S=4096, so agentic
+    # sequence lengths need tilelang; see the module docstring.
+    dsa_attention_backend: Literal["megatron", "tilelang"] = "tilelang"
     # R3 rollout routing replay (arxiv 2510.11370)
     use_r3: bool = True
 
@@ -327,7 +331,11 @@ def execute(args: ScriptArgs):
 
     traces_dir = args.save_traces_dir or f"{args.save_dir.rstrip('/')}/traces"
     if traces_dir != "disabled":
-        misc_args += f"--dump-details {traces_dir} "
+        misc_args += f"--dump-details {traces_dir} --use-miles-dashboard "
+
+    # train/entropy_loss is a hardcoded 0.0 unless this is set, and a falling entropy is the
+    # earliest warning of policy collapse on a long agentic run.
+    misc_args += "--observe-training-entropy "
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
