@@ -135,10 +135,14 @@ def _preflight(args: ScriptArgs) -> None:
 
 def _convert(args: ScriptArgs):
     _preflight(args)
+    # Single-rank conversion: the convert tool pipeline-shards across its ranks,
+    # and any PP split of the 5-layer toy starts a stage on a DSA skip layer
+    # (cross-layer top-k sharing cannot cross PP boundaries -> provider assert).
+    # The toy is ~50 GB of bf16 weights, well within one H200.
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=min(args.num_gpus_per_node, 4),
+        num_gpus_per_node=1,
         dir_dst=args.model_dir,
         hf_checkpoint=args.hf_checkpoint,
         megatron_path=args.megatron_path,
