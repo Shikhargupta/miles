@@ -362,9 +362,9 @@ def _send_to_colocated_engine(
     refs = []
     if is_gather_src:
         if is_lora:
-            if lora_loaded:
-                ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
-
+            # Refresh the adapter in place rather than unload-then-load: unload_lora_adapter
+            # wedges the scheduler request broadcast, so every rank after the first weight
+            # push blocks forever inside recv_requests.
             # (Yusheng) to-do-1: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
             # currently, we only support 1 type. If there are multiple dtypes, we need to serialize the tensors for each dtype.
             # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
@@ -388,6 +388,7 @@ def _send_to_colocated_engine(
                     ],
                     load_format="flattened_bucket",
                     expected_checksums=expected_checksums,
+                    upsert=lora_loaded,
                 )
             )
 
