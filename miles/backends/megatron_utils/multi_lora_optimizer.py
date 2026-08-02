@@ -238,11 +238,18 @@ def step_adapter_slots(
             grads_for_norm += child.get_main_grads_for_grad_norm()
             slot_params += child.get_parameters()
         slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
-        if not math.isfinite(float(slot_norm)):
+        grad_norms[slot] = float(slot_norm)
+
+        # Megatron's found_inf gate, which the multi-LoRA path otherwise bypasses. Without it
+        # clipping scales by clip/(nan + eps) and step_with_ready_grads writes NaN into every
+        # tensor of the slot, so one bad microbatch permanently destroys the adapter.
+        if not math.isfinite(grad_norms[slot]):
             report_nonfinite_adapter_grads(model, slot)
+            zero_adapter_slot_grads(model, slot)
+            continue
+
         if clip_grad > 0.0 and slot_params:
             clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
-        grad_norms[slot] = float(slot_norm)
 
         for child in children:
             child.step_with_ready_grads()
