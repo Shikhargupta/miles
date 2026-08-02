@@ -343,11 +343,6 @@ def execute(args: ScriptArgs):
     # miles' own guard instead, which skips the offending step and leaves the weights intact.
     misc_args += "--no-check-for-nan-in-loss-and-grad "
 
-    # The default backuper pins a full host-RAM mirror of every parameter, which pushed
-    # offload_train to 98% of host RAM and got a worker SIGTERM'd. Safe to disable only because
-    # nothing here needs weight-swapping: no --ref-load and no --keep-old-actor.
-    misc_args += "--disable-weights-backuper "
-
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
     wandb_args = ""
