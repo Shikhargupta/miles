@@ -337,6 +337,17 @@ def execute(args: ScriptArgs):
     # earliest warning of policy collapse on a long agentic run.
     misc_args += "--observe-training-entropy "
 
+    # Under bf16 there is no grad scaler, so Megatron's prepare_grads() returns found_inf=False
+    # unconditionally and a non-finite grad norm reaches the step, where clipping by
+    # clip/(norm + eps) writes NaN into every adapter tensor. This flag routes the step through
+    # miles' own guard instead, which skips the offending step and leaves the weights intact.
+    misc_args += "--no-check-for-nan-in-loss-and-grad "
+
+    # The default backuper pins a full host-RAM mirror of every parameter, which pushed
+    # offload_train to 98% of host RAM and got a worker SIGTERM'd. Safe to disable only because
+    # nothing here needs weight-swapping: no --ref-load and no --keep-old-actor.
+    misc_args += "--disable-weights-backuper "
+
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
     wandb_args = ""
