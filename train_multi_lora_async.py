@@ -36,9 +36,7 @@ async def main(args):
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
     _handle, pgs = launch_worker_manager(args)
     init_tracking(args)
-    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(
-        args, pgs["rollout"]
-    )
+    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     controller = create_multilora_controller(args, f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
