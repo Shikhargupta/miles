@@ -3,6 +3,7 @@ requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gra
 
 import logging
 import math
+import os
 from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -133,6 +134,31 @@ def _slot_children(optimizer, slot: int):
     return [optimizer.chained_optimizers[i] for i in optimizer.miles_slot_child_indices[slot]]
 
 
+def audit_grad_buffers(model_chunks, where: str) -> None:
+    """Report non-finite values already sitting in the trainable params' ``main_grad`` views.
+
+    Only meaningful because this path never calls ``zero_grad_buffer``: anything non-finite
+    here predates the backward, which separates a poisoned buffer from a genuinely bad gradient.
+    """
+    bad_elems = 0
+    bad_tensors: list[str] = []
+    total = 0
+    for model_chunk in model_chunks:
+        for name, param in model_chunk.named_parameters():
+            if not param.requires_grad or (main_grad := getattr(param, "main_grad", None)) is None:
+                continue
+            total += main_grad.numel()
+            n_bad = int((~torch.isfinite(main_grad)).sum())
+            if n_bad:
+                bad_elems += n_bad
+                bad_tensors.append(name)
+    logger.log(
+        logging.ERROR if bad_elems else logging.INFO,
+        f"[multi-LoRA] grad audit @ {where}: {bad_elems}/{total} non-finite elements "
+        f"across {len(bad_tensors)} tensors; first 8: {bad_tensors[:8]}",
+    )
+
+
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
     """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
     survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
@@ -142,6 +168,8 @@ def reset_grad_metadata_keep_grads(model_chunks) -> None:
                 param.grad_added_to_main_grad = False
         for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
             bucket_group.reset()
+    if os.environ.get("MILES_MULTI_LORA_GRAD_AUDIT") == "1":
+        audit_grad_buffers(model_chunks, "before-backward")
 
 
 def zero_adapter_slot_grads(model, slot: int) -> None:
