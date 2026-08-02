@@ -390,7 +390,8 @@ def _report_nonfinite_grads(model: Sequence[DDP], rollout_id: int, step_id: int,
     alongside a perfectly finite loss, which says nothing about where it came from.
     """
     bad: list[str] = []
-    total = 0
+    good: list[str] = []
+    n_nan = 0
     for model_chunk in model:
         for name, param in model_chunk.named_parameters():
             if not param.requires_grad:
@@ -400,12 +401,19 @@ def _report_nonfinite_grads(model: Sequence[DDP], rollout_id: int, step_id: int,
                 grad = param.grad
             if grad is None:
                 continue
-            total += 1
-            if not torch.isfinite(grad).all():
-                bad.append(name)
+            if torch.isfinite(grad).all():
+                good.append(name)
+                continue
+            bad.append(name)
+            n_nan += int(torch.isnan(grad).any())
+    total = len(bad) + len(good)
+    # The finite minority is what localises the fault: gradients flow from the loss down, so
+    # the shallowest clean tensor sits just above the layer that first went non-finite.
     logger.error(
         f"rollout {rollout_id} step {step_id}: grad norm is non-finite; {len(bad)}/{total} "
-        f"trainable grads are non-finite; first {limit}: {bad[:limit]}"
+        f"trainable grads are non-finite, {n_nan} of them NaN; "
+        f"first {limit} non-finite: {bad[:limit]}; "
+        f"all {len(good)} finite: {good[:64]}"
     )
 
 

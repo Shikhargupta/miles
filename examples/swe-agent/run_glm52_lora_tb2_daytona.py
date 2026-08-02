@@ -116,6 +116,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # little room for the concurrent Megatron bridge load and OOMs the pod cgroup.
     fp8_rollout_gpus_per_engine: int = 16
     sglang_mem_fraction_static: float = 0.85
+    # The paused actor is ~50 GiB/rank, so a pinned host copy costs ~400 GiB/node on top of
+    # sglang's own backup and OOMs the 2 TiB node during offload. Spill it to node-local disk
+    # instead; host use then stays at one chunk per rank. Must not be tmpfs.
+    offload_train_disk_dir: str = "/scratch/miles_train_offload_07ec30ff"
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
 
@@ -327,6 +331,12 @@ def execute(args: ScriptArgs):
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
+    )
+
+    misc_args += (
+        "--offload-train-target disk "
+        f"--offload-train-disk-dir {args.offload_train_disk_dir} "
+        "--offload-train-disk-chunk-mb 256 "
     )
 
     traces_dir = args.save_traces_dir or f"{args.save_dir.rstrip('/')}/traces"
