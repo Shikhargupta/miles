@@ -49,6 +49,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_interval: int = 100
     save_traces_dir: str = ""
 
+    # Observability settings
+    use_miles_dashboard: bool = True
+    observe_training_entropy: bool = True
+    use_rollout_entropy: bool = True
+
     # Agent settings
     agent_server_url: str = os.environ.get(
         "AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://agent_env:11000")
@@ -193,6 +198,14 @@ def execute(args: ScriptArgs):
     trace_args = ""
     if args.save_traces_dir:
         trace_args = f"--dump-details {args.save_traces_dir} "
+        if args.use_miles_dashboard:
+            trace_args += "--use-miles-dashboard "
+
+    entropy_args = ""
+    if args.observe_training_entropy:
+        entropy_args += "--observe-training-entropy "
+    if args.use_rollout_entropy:
+        entropy_args += "--use-rollout-entropy "
 
     wandb_args = ""
     if args.wandb_key:
@@ -221,6 +234,7 @@ def execute(args: ScriptArgs):
         f"{wandb_args}"
         f"{prometheus_args}"
         f"{trace_args}"
+        f"{entropy_args}"
         f"{perf_args}"
         f"{sglang_args}"
         f"{agent_args}"
