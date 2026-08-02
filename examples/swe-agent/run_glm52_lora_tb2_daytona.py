@@ -207,6 +207,10 @@ def _sglang_args(args: ScriptArgs) -> str:
         f"--rollout-num-gpus-per-engine {engine} "
         f"--sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
         f"--sglang-enable-dp-attention --sglang-ep-size {engine} --sglang-dp-size {engine} "
+        # Deliver control msgs (unload_lora/abort/pause) to every DP leader directly;
+        # the default relay via a per-iteration all-ranks gloo broadcast deadlocks
+        # when agentic abort/retract churn breaks scheduler lockstep.
+        "--sglang-enable-dp-attention-local-control-broadcast "
         "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
         "--sglang-attention-backend nsa "
         "--sglang-nsa-decode-backend flashmla_kv "
