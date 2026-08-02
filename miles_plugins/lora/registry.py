@@ -99,7 +99,10 @@ MODEL_SPECS: dict[str, ModelEntry] = {
     "glm4": ModelEntry(_GQA_SPEC),
     "glm4_moe": ModelEntry(_GQA_SPEC),
     "qwen3_5": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-    "qwen3_5_moe": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
+    # 2026-08-02: Qwen3.5-35B-A3B ran 20 GRPO rollouts through the native raw path with
+    # grad_norm ~1e-2 throughout and train/rollout logprob_abs_diff 0.0105 — the recorded
+    # GDN backward divergence did not reproduce on the current branch.
+    "qwen3_5_moe": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.VALIDATED),
     "qwen3_6": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
     "qwen3_6_moe": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
     "qwen3_next": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
@@ -108,9 +111,20 @@ MODEL_SPECS: dict[str, ModelEntry] = {
     # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
     # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
     "glm4_moe_lite": ModelEntry(_MLA_SPEC, SupportStatus.VALIDATED),
-    "glm_moe_dsa": ModelEntry(_MLA_SPEC),
+    # 2026-08-02: GLM-5.2_5layer ran 20 native rollouts, logprob_abs_diff 0.0096.
+    "glm_moe_dsa": ModelEntry(_MLA_SPEC, SupportStatus.VALIDATED),
     "kimi_k2": ModelEntry(_MLA_SPEC),
-    "kimi_k25": ModelEntry(_MLA_SPEC),
+    "kimi_k25": ModelEntry(
+        _MLA_SPEC,
+        SupportStatus.UNSTABLE,
+        "adapter attach/export and the torch_dist conversion are verified (every converted tensor "
+        "is bit-identical to the HF checkpoint), but the raw-mode mcore-MLA forward disagrees with "
+        "SGLang on the same weights (prompt logprob abs diff ~1.8 mean / ~3.9 max, position-"
+        "independent) -> train/rollout logprob_abs_diff ~2.2. Suspect a runtime numeric convention "
+        "(yarn mscale / softmax scale / router top-k normalization) in the default mcore MLA path; "
+        "kimi is the only registry model using it (GLM-5 ships its own spec). Debug layer-by-layer "
+        "with the dumper/comparator before trusting raw-mode K2.5 training.",
+    ),
     "joyai_llm_flash": ModelEntry(_MLA_SPEC),
 }
 
