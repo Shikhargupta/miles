@@ -117,13 +117,15 @@ MODEL_SPECS: dict[str, ModelEntry] = {
     "kimi_k25": ModelEntry(
         _MLA_SPEC,
         SupportStatus.UNSTABLE,
-        "adapter attach/export and the torch_dist conversion are verified (every converted tensor "
-        "is bit-identical to the HF checkpoint), but the raw-mode mcore-MLA forward disagrees with "
-        "SGLang on the same weights (prompt logprob abs diff ~1.8 mean / ~3.9 max, position-"
-        "independent) -> train/rollout logprob_abs_diff ~2.2. Suspect a runtime numeric convention "
-        "(yarn mscale / softmax scale / router top-k normalization) in the default mcore MLA path; "
-        "kimi is the only registry model using it (GLM-5 ships its own spec). Debug layer-by-layer "
-        "with the dumper/comparator before trusting raw-mode K2.5 training.",
+        "the miles side is verified end-to-end (torch_dist conversion bit-identical to HF; raw-mode "
+        "mcore forward matches an HF-transformers reference to ~0.02 logprob on every prompt "
+        "position), but SGLANG's serving of the K2.5 checkpoint is degenerate on this stack: its "
+        "next-token distribution is context-free (identical top-k at every position; depends only "
+        "on the token at that position), so rollouts are garbage and train/rollout "
+        "logprob_abs_diff sits at ~2.2. Fix or pin the SGLang K2.5 text path (position/mrope "
+        "handling for raw input_ids is the prime suspect; the dequantized checkpoint also still "
+        "declares quantization_config, sending SGLang through the CompressedTensors fallback) "
+        "before trusting native K2.5 RL.",
     ),
     "joyai_llm_flash": ModelEntry(_MLA_SPEC),
 }
