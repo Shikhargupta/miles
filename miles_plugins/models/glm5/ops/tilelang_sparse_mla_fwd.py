@@ -157,7 +157,13 @@ def sparse_mla_fwd(
                 T.copy(acc_s, S_shared)
                 T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-            # Rescale
+            # Rescale. A query row whose indices are all -1 has no valid key, so sumexp is 0 and
+            # both the divide and the log2 go non-finite -- out becomes 0/0 = NaN and Lse becomes
+            # -inf, which the backward then turns into exp2(-inf - -inf) = NaN. Any row with at
+            # least one valid key has sumexp >= 1 (the running-max term is exp2(0)), so flooring
+            # here is a no-op for real rows and makes an empty row contribute an exact zero.
+            for h_i in T.Parallel(H_per_block):
+                sumexp[h_i] = T.max(sumexp[h_i], 1e-30)
             for h_i, d_i in T.Parallel(H_per_block, D):
                 acc_o[h_i, d_i] /= sumexp[h_i]
             for h_i in T.Parallel(H_per_block):

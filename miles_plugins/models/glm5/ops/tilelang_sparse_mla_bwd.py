@@ -78,7 +78,11 @@ def postprocess(
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
+        # Aggressive smem merge aliases still-live shared buffers in this kernel and returns
+        # NaN dQ/dKV. Measured on H200 (sm90) as well as Blackwell, so it must stay off
+        # everywhere, not just on sm10x: with it on, 240/256 query rows come back NaN on random
+        # data with valid indices; with it off the same inputs match an fp32 reference to 3e-3.
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
     },
 )
 def bwd(
