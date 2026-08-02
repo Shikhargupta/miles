@@ -3,7 +3,7 @@ import socket
 from typing import NamedTuple
 
 import ray
-from ray.util.placement_group import placement_group, PlacementGroup
+from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.async_utils import eager_create_task
