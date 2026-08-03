@@ -408,14 +408,17 @@ def execute(args: ScriptArgs):
         # GLM-5 DSA indexer uses interleaved RoPE; a mismatch garbles long sequences
         "INDEXER_ROPE_NEOX_STYLE": "0",
         "SGLANG_NSA_FORCE_MLA": "1",
-        # The full-model step OOMs by a few hundred MiB while ~6 GiB sits reserved but
-        # unallocated, so make the allocator reclaim cached blocks before growing the
-        # pool. expandable_segments:True, the usual answer, breaks torch_memory_saver.
-        # gc_threshold alone was not enough: variable-length agentic batches fragmented
-        # the pool until 112 GiB sat reserved against 57 GiB allocated and NCCL's own
-        # cudaMalloc during the backward LoRA grad all-reduce found 0 bytes free.
-        # max_split_size_mb keeps big blocks intact so gc can actually return them.
+        # The backward's LoRA grad all-reduce OOMs inside NCCL: variable-length
+        # agentic batches fragment the pool until ~113 GiB sits reserved against
+        # ~57 GiB allocated, and NCCL's own cudaMalloc finds 0 bytes free. Allocator
+        # knobs alone cannot fix this because gc_threshold is relative to the
+        # per-process cap, which defaults to the whole device; NCCL allocates outside
+        # torch's pool. expandable_segments:True, the usual answer, breaks
+        # torch_memory_saver. So hard-cap torch at 0.72 x 139.8 GiB = 100.6 GiB
+        # (peak allocated ~57 GiB, non-torch usage ~26 GiB, leaving ~13 GiB free),
+        # which also makes gc_threshold fire at 0.8 x cap = 80 GiB reserved.
         "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8,max_split_size_mb:512",
+        "MILES_TRAIN_MEMORY_FRACTION": "0.72",
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
