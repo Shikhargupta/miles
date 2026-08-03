@@ -3,10 +3,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.ft_utils.api_server.server import compute_engine_cell_ids
 
-from .conftest import MockHandle, make_cell_summaries
+from miles.utils.test_utils.fault_injector import FailureMode
+
+from .conftest import MockHandler
 
 
 class TestGetHealth:
@@ -29,20 +29,19 @@ class TestGetCells:
         }
 
     @pytest.mark.asyncio
-    async def test_returns_all_cells_golden(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
+    async def test_returns_all_cells_golden(
+        self, actor_handler: MockHandler, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
         """Golden test: full JSON response for GET /api/v1/cells with two cells."""
-        registry.register(MockHandle(cell_id="actor-0", cell_type="actor", phase="Running"))
-        registry.register(
-            MockHandle(
-                cell_id="rollout-0",
-                cell_type="rollout",
-                phase="Suspended",
-                is_suspended=True,
-                conditions=[
-                    {"type": "Allocated", "status": "False"},
-                    {"type": "Healthy", "status": "False"},
-                ],
-            )
+        actor_handler.add("0", phase="Running")
+        rollout_handler.add(
+            "0",
+            phase="Suspended",
+            is_suspended=True,
+            conditions=[
+                {"type": "Allocated", "status": "False"},
+                {"type": "Healthy", "status": "False"},
+            ],
         )
 
         resp = await async_client.get("/api/v1/cells")
@@ -113,9 +112,11 @@ class TestGetCells:
 
 class TestGetCell:
     @pytest.mark.asyncio
-    async def test_returns_single_cell_golden(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
+    async def test_returns_single_cell_golden(
+        self, actor_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
         """Golden test: full JSON response for GET /api/v1/cells/{name}."""
-        registry.register(MockHandle(cell_id="actor-0", cell_type="actor", phase="Running"))
+        actor_handler.add("0", phase="Running")
 
         resp = await async_client.get("/api/v1/cells/actor-0")
         assert resp.status_code == 200
@@ -159,35 +160,34 @@ class TestGetCell:
 
 class TestPatchCell:
     @pytest.mark.asyncio
-    async def test_suspend_cell_via_patch(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
-        handle = MockHandle(cell_id="actor-0", cell_type="actor", phase="Running")
-        registry.register(handle)
+    async def test_suspend_cell_via_patch(self, actor_handler: MockHandler, async_client: httpx.AsyncClient) -> None:
+        cell = actor_handler.add("0", phase="Running")
 
         resp = await async_client.patch("/api/v1/cells/actor-0", json={"spec": {"suspend": True}})
         assert resp.status_code == 200
-        assert handle.suspend_calls == 1
+        assert cell.suspend_calls == 1
         assert resp.json()["status"]["phase"] == "Suspended"
         assert resp.json()["spec"]["suspend"] is True
 
     @pytest.mark.asyncio
-    async def test_resume_cell_via_patch(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
-        handle = MockHandle(cell_id="actor-0", cell_type="actor", phase="Suspended", is_suspended=True)
-        registry.register(handle)
+    async def test_resume_cell_via_patch(self, actor_handler: MockHandler, async_client: httpx.AsyncClient) -> None:
+        cell = actor_handler.add("0", phase="Suspended", is_suspended=True)
 
         resp = await async_client.patch("/api/v1/cells/actor-0", json={"spec": {"suspend": False}})
         assert resp.status_code == 200
-        assert handle.resume_calls == 1
+        assert cell.resume_calls == 1
         assert resp.json()["status"]["phase"] == "Running"
 
     @pytest.mark.asyncio
-    async def test_patch_with_no_spec_is_noop(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
-        handle = MockHandle(cell_id="actor-0", cell_type="actor", phase="Running")
-        registry.register(handle)
+    async def test_patch_with_no_spec_is_noop(
+        self, actor_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        cell = actor_handler.add("0", phase="Running")
 
         resp = await async_client.patch("/api/v1/cells/actor-0", json={})
         assert resp.status_code == 200
-        assert handle.suspend_calls == 0
-        assert handle.resume_calls == 0
+        assert cell.suspend_calls == 0
+        assert cell.resume_calls == 0
 
     @pytest.mark.asyncio
     async def test_patch_not_found_returns_k8s_status(self, async_client: httpx.AsyncClient) -> None:
@@ -197,20 +197,18 @@ class TestPatchCell:
         assert resp.json()["reason"] == "NotFound"
 
     @pytest.mark.asyncio
-    async def test_patch_suspend_idempotent(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
-        handle = MockHandle(cell_id="actor-0", cell_type="actor", phase="Suspended", is_suspended=True)
-        registry.register(handle)
+    async def test_patch_suspend_idempotent(self, actor_handler: MockHandler, async_client: httpx.AsyncClient) -> None:
+        cell = actor_handler.add("0", phase="Suspended", is_suspended=True)
 
         resp = await async_client.patch("/api/v1/cells/actor-0", json={"spec": {"suspend": True}})
         assert resp.status_code == 200
-        assert handle.suspend_calls == 1
+        assert cell.suspend_calls == 1
 
     @pytest.mark.asyncio
     async def test_patch_error_returns_500_k8s_status(
-        self, registry: _CellRegistry, async_client: httpx.AsyncClient
+        self, actor_handler: MockHandler, async_client: httpx.AsyncClient
     ) -> None:
-        handle = MockHandle(cell_id="actor-0", cell_type="actor", suspend_error=RuntimeError("engine crashed"))
-        registry.register(handle)
+        actor_handler.add("0", suspend_error=RuntimeError("engine crashed"))
 
         resp = await async_client.patch("/api/v1/cells/actor-0", json={"spec": {"suspend": True}})
         assert resp.status_code == 500
@@ -218,22 +216,54 @@ class TestPatchCell:
         assert resp.json()["reason"] == "InternalError"
 
 
-class TestComputeEngineCellIds:
-    def test_only_cells_carrying_a_model_are_registered(self) -> None:
-        """Routers and session servers are cells too, but healing them is not rollout ft."""
-        summaries = {
-            **make_cell_summaries("inference-engine-0-0-1", "inference-engine-0-0-0"),
-            **make_cell_summaries("miles-router-0", engine=False),
-        }
+class TestDynamicCells:
+    @pytest.mark.asyncio
+    async def test_a_cell_that_appears_after_startup_is_served(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """Engine cells are reconciled in, so the server cannot snapshot them once at startup."""
+        assert (await async_client.get("/api/v1/cells/rollout-engine-0")).status_code == 404
 
-        assert compute_engine_cell_ids(summaries) == ["inference-engine-0-0-0", "inference-engine-0-0-1"]
+        rollout_handler.add("engine-0")
 
-    def test_a_suspended_engine_cell_is_still_registered(self) -> None:
-        """A suspended cell that dropped out of the registry could never be resumed."""
-        summaries = make_cell_summaries("inference-engine-0-0-0", suspended=True)
+        assert (await async_client.get("/api/v1/cells/rollout-engine-0")).status_code == 200
 
-        assert compute_engine_cell_ids(summaries) == ["inference-engine-0-0-0"]
+    @pytest.mark.asyncio
+    async def test_a_cell_that_disappears_stops_being_served(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A removed cell must 404 instead of reporting stale status."""
+        rollout_handler.add("engine-0")
+        assert (await async_client.get("/api/v1/cells/rollout-engine-0")).status_code == 200
 
-    def test_nothing_is_registered_without_engine_cells(self) -> None:
-        """A train-only deployment registers no rollout handles."""
-        assert compute_engine_cell_ids(make_cell_summaries("miles-router-0", engine=False)) == []
+        del rollout_handler.cells["engine-0"]
+
+        assert (await async_client.get("/api/v1/cells/rollout-engine-0")).status_code == 404
+
+
+class TestInjectFault:
+    @pytest.mark.asyncio
+    async def test_injection_reaches_the_handler_of_that_cell(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """CI fault injection targets one cell by name."""
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.add("engine-0")
+
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "sigkill", "sub_index": 1}
+        )
+
+        assert resp.status_code == 200
+        assert rollout_handler.injected == [("engine-0", FailureMode.SIGKILL, 1)]
+
+    @pytest.mark.asyncio
+    async def test_a_handler_without_injection_support_answers_bad_request(
+        self, actor_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """Not every kind of cell can be crashed on demand."""
+        actor_handler.add("0")
+
+        resp = await async_client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill"})
+
+        assert resp.status_code == 400

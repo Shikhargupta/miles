@@ -5,7 +5,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.ray.train.group import RayTrainGroup
-from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
+from miles.utils.ft_utils.api_server.handles import (
+    _ActorCellHandler,
+    _CellHandler,
+    _RolloutCellHandler,
+    compute_engine_cell_ids,
+)
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.test_utils.fault_injector import FailureMode
 
@@ -18,18 +23,22 @@ from .conftest import (
 )
 
 
-class TestActorCellHandle:
-    def test_cell_id_and_type(self) -> None:
-        group = make_mock_group([MockRayTrainCell()])
-        handle = _ActorCellHandle(group=group, cell_index=0)
-        assert handle.cell_id == "actor-0"
-        assert handle.cell_type == "actor"
+class TestActorCellHandler:
+    async def test_every_cell_of_the_group_is_listed(self) -> None:
+        """The api server addresses trainer cells by their index in the group."""
+        handler = _ActorCellHandler(group=make_mock_group([MockRayTrainCell(), MockRayTrainCell()]))
+        assert await handler.list_cell_keys() == ["0", "1"]
+
+    def test_cell_type(self) -> None:
+        handler = _ActorCellHandler(group=make_mock_group([MockRayTrainCell()]))
+        assert handler.cell_type == "actor"
+        assert handler.compute_cell_name("0") == "actor-0"
 
     @pytest.mark.asyncio
     async def test_get_cell_returns_full_cell_structure(self) -> None:
         group = make_mock_group([MockRayTrainCell()])
-        handle = _ActorCellHandle(group=group, cell_index=0)
-        cell = await handle.get_cell()
+        handler = _ActorCellHandler(group=group)
+        cell = await handler.get_cell("0")
 
         assert cell.model_dump() == {
             "apiVersion": "miles.io/v1",
@@ -71,8 +80,8 @@ class TestActorCellHandle:
                 )
             ]
         )
-        handle = _ActorCellHandle(group=group, cell_index=0)
-        cell = await handle.get_cell()
+        handler = _ActorCellHandler(group=group)
+        cell = await handler.get_cell("0")
 
         assert cell.spec.suspend is True
         assert cell.status.phase == "Suspended"
@@ -81,42 +90,41 @@ class TestActorCellHandle:
     async def test_suspend_delegates_to_group(self) -> None:
         group = make_mock_group([MockRayTrainCell()])
         group.stop_cell = MagicMock()
-        handle = _ActorCellHandle(group=group, cell_index=2)
-        await handle.suspend()
+        handler = _ActorCellHandler(group=group)
+        await handler.suspend("2")
         group.stop_cell.assert_called_once_with(2)
 
     @pytest.mark.asyncio
     async def test_resume_delegates_to_group(self) -> None:
         group = make_mock_group([MockRayTrainCell()])
         group.start_cell = MagicMock()
-        handle = _ActorCellHandle(group=group, cell_index=1)
-        await handle.resume()
+        handler = _ActorCellHandler(group=group)
+        await handler.resume("1")
         group.start_cell.assert_called_once_with(1)
 
 
-def _make_rollout_handle(
+ENGINE_CELL_ID = "inference-engine-0-0-0"
+
+
+def _make_rollout_handler(
     *,
-    cell_id: str = "inference-engine-0-0-0",
+    cell_id: str = ENGINE_CELL_ID,
     suspended: bool = False,
     health: TriState | None = TriState.TRUE,
-) -> tuple[_RolloutCellHandle, MockWorkerManager, MockInferenceController]:
+) -> tuple[_RolloutCellHandler, MockWorkerManager, MockInferenceController]:
     manager = MockWorkerManager(make_cell_summaries(cell_id, suspended=suspended))
     controller = MockInferenceController({cell_id: health} if health is not None else {})
-    handle = _RolloutCellHandle(
-        worker_manager=manager,
-        inference_controller=controller,
-        rollout_cell_id=cell_id,
-    )
-    return handle, manager, controller
+    handler = _RolloutCellHandler(worker_manager=manager, inference_controller=controller)
+    return handler, manager, controller
 
 
-class TestRolloutCellHandle:
+class TestRolloutCellHandler:
     @pytest.mark.asyncio
     async def test_a_healthy_cell_is_reported_running(self) -> None:
         """A serving engine that answers its probe is what the heal loop must leave alone."""
-        handle, _manager, _controller = _make_rollout_handle()
+        handler, _manager, _controller = _make_rollout_handler()
 
-        cell = await handle.get_cell()
+        cell = await handler.get_cell(ENGINE_CELL_ID)
 
         assert cell.metadata.name == "rollout-inference-engine-0-0-0"
         assert cell.metadata.labels["miles.io/cell-type"] == "rollout"
@@ -130,9 +138,9 @@ class TestRolloutCellHandle:
     @pytest.mark.asyncio
     async def test_a_failing_probe_is_reported_unhealthy(self) -> None:
         """This is the signal the mini ft controller heals on."""
-        handle, _manager, _controller = _make_rollout_handle(health=TriState.FALSE)
+        handler, _manager, _controller = _make_rollout_handler(health=TriState.FALSE)
 
-        cell = await handle.get_cell()
+        cell = await handler.get_cell(ENGINE_CELL_ID)
 
         assert cell.status.phase == "Running"
         assert [(c.type, c.status) for c in cell.status.conditions] == [
@@ -143,9 +151,9 @@ class TestRolloutCellHandle:
     @pytest.mark.asyncio
     async def test_suspension_comes_from_the_worker_manager(self) -> None:
         """The manager owns the processes, so it alone knows a cell was suspended."""
-        handle, _manager, _controller = _make_rollout_handle(suspended=True)
+        handler, _manager, _controller = _make_rollout_handler(suspended=True)
 
-        cell = await handle.get_cell()
+        cell = await handler.get_cell(ENGINE_CELL_ID)
 
         assert cell.spec.suspend is True
         assert cell.status.phase == "Suspended"
@@ -153,18 +161,18 @@ class TestRolloutCellHandle:
     @pytest.mark.asyncio
     async def test_a_suspended_cell_reports_no_health(self) -> None:
         """Its engine is gone, so any health the controller still remembers is stale."""
-        handle, _manager, _controller = _make_rollout_handle(suspended=True, health=TriState.TRUE)
+        handler, _manager, _controller = _make_rollout_handler(suspended=True, health=TriState.TRUE)
 
-        cell = await handle.get_cell()
+        cell = await handler.get_cell(ENGINE_CELL_ID)
 
         assert [(c.type, c.status) for c in cell.status.conditions] == [("Allocated", TriState.FALSE)]
 
     @pytest.mark.asyncio
     async def test_a_cell_the_controller_does_not_track_yet_is_unknown(self) -> None:
         """A cell exists in the manager before reconcile hands it to the controller."""
-        handle, _manager, _controller = _make_rollout_handle(health=None)
+        handler, _manager, _controller = _make_rollout_handler(health=None)
 
-        cell = await handle.get_cell()
+        cell = await handler.get_cell(ENGINE_CELL_ID)
 
         assert [(c.type, c.status) for c in cell.status.conditions] == [
             ("Allocated", TriState.TRUE),
@@ -174,16 +182,60 @@ class TestRolloutCellHandle:
     @pytest.mark.asyncio
     async def test_health_is_read_without_awaiting_the_controller(self) -> None:
         """The api server serves from its own event loop, so the controller is read synchronously."""
-        handle, _manager, controller = _make_rollout_handle()
+        handler, _manager, controller = _make_rollout_handler()
 
-        await handle.get_cell()
+        await handler.get_cell(ENGINE_CELL_ID)
 
         assert controller.health_status_calls == 1
 
     def test_cell_type_is_rollout(self) -> None:
-        handle, _manager, _controller = _make_rollout_handle(cell_id="inference-engine-0-0-3")
-        assert handle.cell_type == "rollout"
-        assert handle.cell_id == "rollout-inference-engine-0-0-3"
+        handler, _manager, _controller = _make_rollout_handler(cell_id="inference-engine-0-0-3")
+        assert handler.cell_type == "rollout"
+        assert handler.compute_cell_name("inference-engine-0-0-3") == "rollout-inference-engine-0-0-3"
+
+    async def test_only_engine_cells_are_listed(self) -> None:
+        """Routers and session servers are cells of the manager too, but not rollout cells."""
+        manager = MockWorkerManager(
+            {
+                **make_cell_summaries("inference-engine-0-0-0"),
+                **make_cell_summaries("miles-router-0", engine=False),
+            }
+        )
+        handler = _RolloutCellHandler(worker_manager=manager, inference_controller=MockInferenceController())
+
+        assert await handler.list_cell_keys() == ["inference-engine-0-0-0"]
+
+    async def test_a_suspended_cell_is_still_listed(self) -> None:
+        """A suspended cell that vanished from the listing could never be resumed."""
+        handler, _manager, _controller = _make_rollout_handler(suspended=True)
+
+        assert await handler.list_cell_keys() == [ENGINE_CELL_ID]
+
+    async def test_listing_reads_its_sources_once_for_all_cells(self) -> None:
+        """This listing is polled for the life of the run, so it must not scale in round trips."""
+        manager = MockWorkerManager(make_cell_summaries("engine-a", "engine-b", "engine-c"))
+        controller = MockInferenceController()
+        handler = _RolloutCellHandler(worker_manager=manager, inference_controller=controller)
+
+        cells = await handler.list_cells()
+
+        assert len(cells) == 3
+        assert controller.health_status_calls == 1
+
+
+class TestComputeEngineCellIds:
+    def test_only_cells_carrying_a_model_are_engine_cells(self) -> None:
+        """Routers and session servers are cells too, but healing them is not rollout ft."""
+        summaries = {
+            **make_cell_summaries("inference-engine-0-0-1", "inference-engine-0-0-0"),
+            **make_cell_summaries("miles-router-0", engine=False),
+        }
+
+        assert compute_engine_cell_ids(summaries) == ["inference-engine-0-0-0", "inference-engine-0-0-1"]
+
+    def test_nothing_matches_without_engine_cells(self) -> None:
+        """A train-only deployment exposes no rollout cells."""
+        assert compute_engine_cell_ids(make_cell_summaries("miles-router-0", engine=False)) == []
 
 
 class _FakeRemoteMethod:
@@ -219,34 +271,33 @@ def _make_inject_group(cell: _FakeInjectCell) -> object:
     return group
 
 
-class _ConcreteCellHandle(_CellHandle):
+class _ConcreteCellHandler(_CellHandler):
     @property
     def cell_type(self) -> str:
         return "fake"
 
-    @property
-    def cell_key(self) -> str:
-        return "0"
+    async def list_cell_keys(self) -> list[str]:
+        return ["0"]
 
-    async def get_cell(self) -> object:
+    async def get_cell(self, cell_key: str) -> object:
         raise NotImplementedError
 
-    async def suspend(self) -> None:
+    async def suspend(self, cell_key: str) -> None:
         raise NotImplementedError
 
-    async def resume(self) -> None:
+    async def resume(self, cell_key: str) -> None:
         raise NotImplementedError
 
 
-class TestActorCellHandleInjectFault:
+class TestActorCellHandlerInjectFault:
     @pytest.mark.asyncio
     async def test_inject_fault_calls_actor_with_mode_value(self) -> None:
         """inject_fault forwards mode.value to the selected actor's remote handle."""
         cell = _FakeInjectCell(is_alive=True, num_actors=2)
         group = _make_inject_group(cell)
-        handle = _ActorCellHandle(group=group, cell_index=0)
+        handler = _ActorCellHandler(group=group)
 
-        await handle.inject_fault(mode=FailureMode.SIGKILL, sub_index=1)
+        await handler.inject_fault("0", mode=FailureMode.SIGKILL, sub_index=1)
 
         assert cell._actor.inject_fault.remote_calls == [(("sigkill",), {})]
 
@@ -255,10 +306,10 @@ class TestActorCellHandleInjectFault:
         """inject_fault raises RuntimeError when the target cell is not alive."""
         cell = _FakeInjectCell(is_alive=False, num_actors=2)
         group = _make_inject_group(cell)
-        handle = _ActorCellHandle(group=group, cell_index=0)
+        handler = _ActorCellHandler(group=group)
 
         with pytest.raises(RuntimeError, match="not alive"):
-            await handle.inject_fault(mode=FailureMode.SIGKILL, sub_index=0)
+            await handler.inject_fault("0", mode=FailureMode.SIGKILL, sub_index=0)
 
         assert cell._actor.inject_fault.remote_calls == []
 
@@ -267,10 +318,10 @@ class TestActorCellHandleInjectFault:
         """inject_fault raises IndexError when sub_index exceeds the actor count."""
         cell = _FakeInjectCell(is_alive=True, num_actors=2)
         group = _make_inject_group(cell)
-        handle = _ActorCellHandle(group=group, cell_index=0)
+        handler = _ActorCellHandler(group=group)
 
         with pytest.raises(IndexError, match="out of range"):
-            await handle.inject_fault(mode=FailureMode.SIGKILL, sub_index=2)
+            await handler.inject_fault("0", mode=FailureMode.SIGKILL, sub_index=2)
 
         assert cell._actor.inject_fault.remote_calls == []
 
@@ -279,17 +330,17 @@ class TestActorCellHandleInjectFault:
         """inject_fault raises IndexError when sub_index is negative."""
         cell = _FakeInjectCell(is_alive=True, num_actors=2)
         group = _make_inject_group(cell)
-        handle = _ActorCellHandle(group=group, cell_index=0)
+        handler = _ActorCellHandler(group=group)
 
         with pytest.raises(IndexError, match="out of range"):
-            await handle.inject_fault(mode=FailureMode.SIGKILL, sub_index=-1)
+            await handler.inject_fault("0", mode=FailureMode.SIGKILL, sub_index=-1)
 
 
-class TestBaseCellHandleInjectFault:
+class TestBaseCellHandlerInjectFault:
     @pytest.mark.asyncio
     async def test_base_inject_fault_raises_not_implemented(self) -> None:
-        """The base _CellHandle.inject_fault raises NotImplementedError naming the subclass."""
-        handle = _ConcreteCellHandle()
+        """The base handler names the subclass that cannot inject faults."""
+        handler = _ConcreteCellHandler()
 
-        with pytest.raises(NotImplementedError, match="_ConcreteCellHandle does not support fault injection"):
-            await handle.inject_fault(mode=FailureMode.SIGKILL, sub_index=0)
+        with pytest.raises(NotImplementedError, match="_ConcreteCellHandler does not support fault injection"):
+            await handler.inject_fault("0", mode=FailureMode.SIGKILL, sub_index=0)

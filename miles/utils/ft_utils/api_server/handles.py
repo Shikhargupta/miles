@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 
 import ray
 
@@ -9,125 +10,144 @@ from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMeta
 from miles.utils.test_utils.fault_injector import FailureMode
 
 
-class _CellHandle(abc.ABC):
-    @property
-    def cell_id(self) -> str:
-        return f"{self.cell_type}-{self.cell_key}"
+class _CellHandler(abc.ABC):
+    """Owns every cell of one kind, and is asked which of them exist right now.
+
+    Cells come and go (reconcile, healing, elastic scaling), so the set is resolved per
+    request instead of captured once at startup.
+    """
 
     @property
     @abc.abstractmethod
     def cell_type(self) -> str: ...
 
-    @property
     @abc.abstractmethod
-    def cell_key(self) -> str: ...
+    async def list_cell_keys(self) -> list[str]: ...
 
     @abc.abstractmethod
-    async def get_cell(self) -> Cell: ...
+    async def get_cell(self, cell_key: str) -> Cell: ...
 
     @abc.abstractmethod
-    async def suspend(self) -> None: ...
+    async def suspend(self, cell_key: str) -> None: ...
 
     @abc.abstractmethod
-    async def resume(self) -> None: ...
+    async def resume(self, cell_key: str) -> None: ...
 
-    async def inject_fault(self, *, mode: FailureMode, sub_index: int) -> None:
+    async def inject_fault(self, cell_key: str, *, mode: FailureMode, sub_index: int) -> None:
         raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
 
+    async def list_cells(self) -> list[Cell]:
+        cell_keys = await self.list_cell_keys()
+        return list(await asyncio.gather(*(self.get_cell(cell_key) for cell_key in cell_keys)))
 
-class _ActorCellHandle(_CellHandle):
-    def __init__(self, *, group: RayTrainGroup, cell_index: int) -> None:
+    def compute_cell_name(self, cell_key: str) -> str:
+        return f"{self.cell_type}-{cell_key}"
+
+    def parse_cell_name(self, cell_name: str) -> str | None:
+        prefix = f"{self.cell_type}-"
+        return cell_name[len(prefix) :] if cell_name.startswith(prefix) else None
+
+    def _compute_metadata(self, cell_key: str) -> CellMetadata:
+        return CellMetadata(
+            name=self.compute_cell_name(cell_key),
+            labels={
+                "miles.io/cell-type": self.cell_type,
+                "miles.io/cell-index": cell_key,
+            },
+        )
+
+
+class _ActorCellHandler(_CellHandler):
+    def __init__(self, *, group: RayTrainGroup) -> None:
         self._group = group
-        self._cell_index = cell_index
 
     @property
     def cell_type(self) -> str:
         return "actor"
 
-    @property
-    def cell_key(self) -> str:
-        return str(self._cell_index)
+    async def list_cell_keys(self) -> list[str]:
+        return [str(cell_index) for cell_index in range(len(self._group._cells))]
 
-    async def get_cell(self) -> Cell:
-        cell = self._group._cells[self._cell_index]
+    async def get_cell(self, cell_key: str) -> Cell:
+        cell = self._find_cell(cell_key)
         return Cell(
-            metadata=CellMetadata(
-                name=self.cell_id,
-                labels={
-                    "miles.io/cell-type": "actor",
-                    "miles.io/cell-index": self.cell_key,
-                },
-            ),
+            metadata=self._compute_metadata(cell_key),
             spec=CellSpec(suspend=cell.is_stopped),
             status=cell.cell_status(),
         )
 
-    async def suspend(self) -> None:
-        self._group.stop_cell(self._cell_index)
+    async def suspend(self, cell_key: str) -> None:
+        self._group.stop_cell(int(cell_key))
 
-    async def resume(self) -> None:
-        self._group.start_cell(self._cell_index)
+    async def resume(self, cell_key: str) -> None:
+        self._group.start_cell(int(cell_key))
 
-    async def inject_fault(self, *, mode: FailureMode, sub_index: int) -> None:
+    async def inject_fault(self, cell_key: str, *, mode: FailureMode, sub_index: int) -> None:
         """Inject a fault into a specific actor of this cell. Fire-and-forget."""
-        cell = self._group._cells[self._cell_index]
+        cell = self._find_cell(cell_key)
         if not cell.is_alive:
-            raise RuntimeError(f"Cell {self._cell_index} is not alive, cannot inject fault")
+            raise RuntimeError(f"Cell {cell_key} is not alive, cannot inject fault")
         actors = cell._get_actor_handles()
         if sub_index < 0 or sub_index >= len(actors):
-            raise IndexError(
-                f"sub_index {sub_index} out of range for cell {self._cell_index} " f"(has {len(actors)} actors)"
-            )
+            raise IndexError(f"sub_index {sub_index} out of range for cell {cell_key} (has {len(actors)} actors)")
         actors[sub_index].inject_fault.remote(mode.value)
 
+    def _find_cell(self, cell_key: str):
+        return self._group._cells[int(cell_key)]
 
-class _RolloutCellHandle(_CellHandle):
+
+class _RolloutCellHandler(_CellHandler):
     """Two sources: the worker manager owns the processes, the controller owns their health."""
 
-    def __init__(
-        self,
-        *,
-        worker_manager: ray.actor.ActorHandle,
-        inference_controller: object,
-        rollout_cell_id: str,
-    ) -> None:
+    def __init__(self, *, worker_manager: ray.actor.ActorHandle, inference_controller: object) -> None:
         self._worker_manager = worker_manager
         self._inference_controller = inference_controller
-        self._rollout_cell_id = rollout_cell_id
 
     @property
     def cell_type(self) -> str:
         return "rollout"
 
-    @property
-    def cell_key(self) -> str:
-        return self._rollout_cell_id
+    async def list_cell_keys(self) -> list[str]:
+        return compute_engine_cell_ids(await self._worker_manager.get_cell_summaries.remote())
 
-    async def get_cell(self) -> Cell:
+    async def list_cells(self) -> list[Cell]:
+        # one round trip for the whole listing: this endpoint is polled for the life of the run
         summaries = await self._worker_manager.get_cell_summaries.remote()
         health_statuses = self._inference_controller.get_cell_health_statuses()
-        suspended = summaries[self._rollout_cell_id].suspended
+        return [
+            self._compute_cell(cell_key, summaries=summaries, health_statuses=health_statuses)
+            for cell_key in compute_engine_cell_ids(summaries)
+        ]
+
+    async def get_cell(self, cell_key: str) -> Cell:
+        return self._compute_cell(
+            cell_key,
+            summaries=await self._worker_manager.get_cell_summaries.remote(),
+            health_statuses=self._inference_controller.get_cell_health_statuses(),
+        )
+
+    def _compute_cell(self, cell_key: str, *, summaries: dict, health_statuses: dict) -> Cell:
+        suspended = summaries[cell_key].suspended
         return Cell(
-            metadata=CellMetadata(
-                name=self.cell_id,
-                labels={
-                    "miles.io/cell-type": "rollout",
-                    "miles.io/cell-index": self.cell_key,
-                },
-            ),
+            metadata=self._compute_metadata(cell_key),
             spec=CellSpec(suspend=suspended),
             status=_compute_rollout_cell_status(
                 suspended=suspended,
-                health_checker_status=health_statuses.get(self._rollout_cell_id, TriState.UNKNOWN),
+                health_checker_status=health_statuses.get(cell_key, TriState.UNKNOWN),
             ),
         )
 
     # TODO the write path lands in the next op, on the worker manager verbs it needs
-    async def suspend(self) -> None:
+    async def suspend(self, cell_key: str) -> None:
         raise NotImplementedError("rollout cell suspend is being rebuilt on the worker manager")
 
-    async def resume(self) -> None:
+    async def resume(self, cell_key: str) -> None:
         raise NotImplementedError("rollout cell resume is being rebuilt on the worker manager")
+
+
+def compute_engine_cell_ids(summaries: dict) -> list[str]:
+    """Engine cells are the ones carrying a model, unlike routers and session servers."""
+    return sorted(cell_id for cell_id, summary in summaries.items() if "model_id" in summary.meta)
 
 
 def _compute_rollout_cell_status(*, suspended: bool, health_checker_status: TriState) -> CellStatus:
