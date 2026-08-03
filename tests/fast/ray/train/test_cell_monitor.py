@@ -125,6 +125,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+            get_activeness=lambda: True,
         )
 
         await checker._check_fn()
@@ -140,6 +141,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+            get_activeness=lambda: True,
         )
 
         with pytest.raises(ray.exceptions.RayActorError):
@@ -154,6 +156,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+            get_activeness=lambda: True,
         )
 
         await checker._check_fn()
