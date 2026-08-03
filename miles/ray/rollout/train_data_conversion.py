@@ -214,7 +214,8 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
     Requires a full schedule config (megatron, non-indep_dp). Also excluded:
     multi-LoRA (slot-contiguity stays on the legacy path), multimodal batches
     (train-side media-token expansion changes ``total_lengths``), and sample
-    counts not divisible by the (dynamic) global batch size.
+    counts not divisible by the (dynamic) global batch size (the legacy path
+    silently drops the remainder per rank; keep that behavior there).
     """
     if not has_full_schedule_config(train_parallel_config):
         return False
