@@ -23,10 +23,10 @@ class EvalDispatcher:
         self.rollout_manager = rollout_manager
         self.pending: deque[tuple[int, ray.ObjectRef, str | None]] = deque()
         self._exported: list[str] = []
-        self._snapshot_eval = args.eval_uses_snapshots
 
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
-        if not self._snapshot_eval:
+        """A caller-supplied ``hf_dir`` is an existing checkpoint, not one of our exports."""
+        if not self.args.eval_uses_snapshots:
             await self.rollout_manager.eval.remote(rollout_id)
             return
 
@@ -39,6 +39,7 @@ class EvalDispatcher:
 
         export_time = None
         exported_dir = None
+        require_marker = hf_dir is None
         if hf_dir is None:
             if self.args.eval_hf_dir is None:
                 hf_dir = self.args.save_hf.format(rollout_id=rollout_id)
@@ -53,7 +54,9 @@ class EvalDispatcher:
                     return
                 exported_dir = hf_dir
 
-        ref = self.rollout_manager.eval.remote(rollout_id, hf_dir=hf_dir, export_time_seconds=export_time)
+        ref = self.rollout_manager.eval.remote(
+            rollout_id, hf_dir=hf_dir, export_time_seconds=export_time, require_marker=require_marker
+        )
         self.pending.append((rollout_id, ref, exported_dir))
 
     async def drain(self) -> None:
