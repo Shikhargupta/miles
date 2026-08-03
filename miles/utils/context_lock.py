@@ -2,10 +2,15 @@ import asyncio
 import contextvars
 import functools
 import inspect
+import logging
+import time
 from collections.abc import Callable
 from types import TracebackType
 from typing import Any, NamedTuple
 
+logger = logging.getLogger(__name__)
+
+WAIT_LOG_INTERVAL_SECONDS: float = 5.0
 LOCK_ATTRIBUTE_NAME: str = "context_lock"
 
 _DISCIPLINE_MARKER_ATTRIBUTE_NAME: str = "_context_lock_discipline"
@@ -57,7 +62,11 @@ class ContextLock:
     async def acquire(self) -> None:
         grant = _held_lock.get()
         assert grant is None or not grant.lock.held_in_current_context, f"Cannot acquire lock {self._name!r}: a context lock is already held"
-        await self._lock.acquire()
+        wait_reminder = asyncio.ensure_future(self._remind_while_waiting())
+        try:
+            await self._lock.acquire()
+        finally:
+            wait_reminder.cancel()
         self._generation_counter += 1
         self._active_generation = self._generation_counter
         _held_lock.set(_LockGrant(lock=self, generation=self._generation_counter))
@@ -81,6 +90,12 @@ class ContextLock:
 
     def _assert_held_in_current_context(self) -> None:
         assert self.held_in_current_context, f"Lock {self._name!r} must be held by the current context"
+
+    async def _remind_while_waiting(self) -> None:
+        wait_start_time = time.monotonic()
+        while True:
+            await asyncio.sleep(WAIT_LOG_INTERVAL_SECONDS)
+            logger.info(f"Still waiting for lock {self._name!r} after {time.monotonic() - wait_start_time:.0f}s")
 
 
 def enforce_lock_discipline(cls: type) -> type:
