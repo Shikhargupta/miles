@@ -44,8 +44,7 @@ class TestRolloutServerPureFunctions:
         assert group.overrides["model_path"] == args.hf_checkpoint
 
     def test_tp_coupled_sizes_are_not_inherited_across_a_different_eval_tp(self):
-        """SGLang ties dp/pp/ep/attn_cp to tp_size, so inheriting them across a smaller
-        eval fleet produces an engine that fails ServerArgs validation at boot."""
+        """Inheriting these across a different eval tp gives an engine that will not boot."""
         args = make_args(rollout_num_gpus_per_engine=8, eval_num_gpus=1, eval_num_gpus_per_engine=1)
         [group] = [m for m in _resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
 

@@ -88,8 +88,7 @@ def export_hf_model_direct(
             index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
             (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
     finally:
-        # Rank 0 is the only one that can fail above; without this the others would
-        # sit in the barrier until the NCCL watchdog kills them.
+        # In a finally: rank 0 is the only rank that can fail above.
         torch.distributed.barrier()
 
     if is_writer:

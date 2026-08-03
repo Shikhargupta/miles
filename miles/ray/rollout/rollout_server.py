@@ -103,10 +103,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     return servers
 
 
-# SGLang ties these to tp_size (tp_size % (dp_size * attn_cp_size) == 0,
-# ep_size * moe_dp_size == tp_size), and the eval fleet's tp comes from
-# --eval-num-gpus-per-engine. Inheriting them across a different tp is not a
-# smaller fleet, it is an engine that fails ServerArgs validation at boot.
+# Inheriting these across a different tp gives an engine SGLang refuses to boot.
 _TP_COUPLED_SERVER_ARGS = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
 
 
@@ -120,9 +117,8 @@ def _eval_sglang_overrides(args) -> dict:
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
         overrides |= dict.fromkeys(_TP_COUPLED_SERVER_ARGS, 1)
         logger.info(
-            f"Eval fleet tp={args.eval_num_gpus_per_engine} differs from rollout "
-            f"tp={args.rollout_num_gpus_per_engine}; {', '.join(_TP_COUPLED_SERVER_ARGS)} default to 1 "
-            f"instead of being inherited. Override with --eval-sglang-*."
+            f"Eval tp={args.eval_num_gpus_per_engine} != rollout tp={args.rollout_num_gpus_per_engine}; "
+            f"{', '.join(_TP_COUPLED_SERVER_ARGS)} default to 1. Override with --eval-sglang-*."
         )
     return overrides | collect_eval_sglang_overrides(args)
 
