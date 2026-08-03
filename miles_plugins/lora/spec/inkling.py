@@ -22,20 +22,9 @@ import torch
 import torch.nn as nn
 
 from miles_plugins.lora.modules.linear import LoRALinear, LoRASplitAdapter, attach_adapter_forward
-from miles_plugins.lora.modules.moe import (
-    LoRAGroupedFC1,
-    LoRAGroupedFC2,
-    LoRAOutputHead,
-    LoRASharedExpertsAdapter,
-)
+from miles_plugins.lora.modules.moe import LoRAGroupedFC1, LoRAGroupedFC2, LoRAOutputHead, LoRASharedExpertsAdapter
 from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec, ShardLayout
-from miles_plugins.lora.spec.layout import (
-    AttentionSpecBase,
-    FusedAttach,
-    LayoutSpec,
-    ModuleLayout,
-    ProjectionBinding,
-)
+from miles_plugins.lora.spec.layout import AttentionSpecBase, FusedAttach, LayoutSpec, ModuleLayout, ProjectionBinding
 
 MODEL_TYPES = ("inkling_mm_model",)
 
