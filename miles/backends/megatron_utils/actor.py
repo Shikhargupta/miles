@@ -721,6 +721,13 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.loaded_adapters, self._multi_lora_pending_push, has_new_engines
             )
 
+        if self.args.offload_train and not self._asleep and not self.args.colocate:
+            # Param buffers are excluded from the memory-saver CPU backup
+            # (disable_param_buffers_cpu_backup), so a sleep()/wake_up() cycle
+            # leaves them zero-filled. The distributed updater reads live GPU
+            # tensors, so restore the actor weights before transferring them.
+            self._switch_model("actor")
+
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             self.weight_updater.update_weights()
