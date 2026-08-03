@@ -8,6 +8,7 @@ from argparse import Namespace
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from functools import partial
+from pathlib import Path
 
 import torch
 from megatron.core import mpu
@@ -54,6 +55,11 @@ from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
 logger = logging.getLogger(__name__)
+
+
+def _has_loadable_ckpt(load_dir: str | None) -> bool:
+    """Whether ``--load`` holds anything; ``load_checkpoint`` dispatches dist vs HF itself."""
+    return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
 
 
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
@@ -144,7 +150,16 @@ def setup_model_and_optimizer(
     ):
         model = _setup_lora_model_via_bridge(args)
     else:
-        model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+        provider_func = get_model_provider_func(args, role)
+        if (
+            is_lora_enabled(args)
+            and role == "actor"
+            and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+        ):
+            from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
+
+            provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+        model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
@@ -163,6 +178,12 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+            if is_first_replica_megatron_main_rank():
+                logger.info(
+                    "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
+                )
+            config.muon_split_qkv = False
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
@@ -630,6 +651,9 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+    from .lora_utils import reduce_marked_lora_grads
+
+    reduce_marked_lora_grads(args[0])
     return finalize_model_grads(*args, **kwargs)
 
 
@@ -898,8 +922,7 @@ def initialize_model_and_optimizer(
     model[0].role = role
     clear_memory()
 
-    multi_lora = is_multi_lora_enabled(args)
-    if multi_lora:
+    if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
         from megatron.bridge.peft.multi_lora_layers import hide_adapters
@@ -908,14 +931,38 @@ def initialize_model_and_optimizer(
     else:
         load_ctx = nullcontext()
 
-    with load_ctx:
-        iteration, _ = load_checkpoint(
-            model,
-            optimizer,
-            opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=False,
-        )
+    load_dir = getattr(args, "load", None)
+    # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
+    if load_dir is None or _has_loadable_ckpt(load_dir):
+        with load_ctx:
+            iteration, _ = load_checkpoint(
+                model,
+                optimizer,
+                opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=False,
+            )
+    else:
+        if is_first_replica_megatron_main_rank():
+            logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
+        iteration = 0
+
+    if (
+        is_lora_enabled(args)
+        and role == "actor"
+        and args.megatron_to_hf_mode != "bridge"
+        and getattr(args, "lora_adapter_path", None)
+        and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+    ):
+        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+            from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
+
+            load_inkling_lora_adapter(model, args.lora_adapter_path)
+            if optimizer is not None:
+                # refresh the fp32 masters, or the first step() restores the
+                # pre-load init values over the adapter we just wrote
+                optimizer.reload_model_params()
+
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 
