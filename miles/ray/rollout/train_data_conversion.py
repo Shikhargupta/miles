@@ -230,6 +230,7 @@ def split_train_data_by_dp_scheduled_raw(
     args, data: dict[str, Any], *, train_parallel_config: dict
 ) -> list[dict[str, Any]]:
     """Object-store-free core of :func:`split_train_data_by_dp_scheduled`."""
+    # "Total" means each sample's whole trajectory: prompt + response tokens.
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
@@ -254,6 +255,7 @@ def split_train_data_by_dp_scheduled_raw(
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
     """Split the train data by data parallel size."""
+    # "Total" means each sample's whole trajectory: prompt + response tokens.
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
