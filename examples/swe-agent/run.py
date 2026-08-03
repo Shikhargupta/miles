@@ -50,6 +50,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_interval: int = 100
     save_traces_dir: str = ""
     ppo: bool = False
+    # one-step-off-policy async training (train_async.py); disaggregates GPUs:
+    # actor+critic on num_nodes-1 nodes, rollout engines on the last node
+    train_async: bool = False
 
     # Agent settings
     agent_server_url: str = os.environ.get(
@@ -173,6 +176,10 @@ def execute(args: ScriptArgs):
         config_path.write_text(yaml.safe_dump(overrides))
         advantage_args = grpo_args + f"--custom-config-path {config_path} "
 
+    if args.train_async:
+        # behavior-policy correction required by validate_async_off_policy_correction
+        advantage_args += "--use-tis "
+
     optimizer_args = (
         "--optimizer adam "
         "--lr 1e-6 "
@@ -203,14 +210,19 @@ def execute(args: ScriptArgs):
     if args.session_server_ip:
         agent_args += f"--session-server-ip {args.session_server_ip} "
 
+    if args.train_async:
+        assert args.num_nodes >= 2, "async mode needs >=1 node for actor and 1 for rollout"
+        placement_args = f"--offload-train --actor-num-nodes {args.num_nodes - 1} "
+    else:
+        placement_args = f"--colocate --actor-num-nodes {args.num_nodes} "
+
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
-        "--colocate "
-        f"--actor-num-nodes {args.num_nodes} "
+        f"{placement_args}"
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {args.num_gpus_per_node} "
     )
@@ -273,6 +285,7 @@ def execute(args: ScriptArgs):
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
+        train_script="train_async.py" if args.train_async else "train.py",
         megatron_path=args.megatron_path,
         extra_env_vars=extra_env_vars,
     )
