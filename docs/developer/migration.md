@@ -97,9 +97,11 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 The controller is not a Ray actor, so nothing inside another actor may call it. Train
 actors receive only the executor handle (`set_rollout_manager` → `set_rollout_executor`),
-and the trainer group — which runs in the driver — clears `has_new_engines` after the
-weight update instead of rank 0 doing it. `start_api_server` (formerly
-`start_control_server`) takes `inference_controller=`.
+and the trainer group — which runs in the driver — brackets the weight update with
+`start_update_weights` / `end_update_weights` instead of rank 0 doing it. Whether the
+trainer must reconnect is derived from the cell snapshot those calls carry, not from a
+hand-maintained flag. `start_api_server` (formerly `start_control_server`) takes
+`inference_controller=`.
 
 `RolloutExecutor.generate` is now `RolloutExecutor.get`: the executor hands over data
 the rollout already produced, it does not itself generate.
