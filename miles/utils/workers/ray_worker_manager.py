@@ -88,7 +88,7 @@ class RayWorkerManager:
 
     def get_cell_infos(self) -> dict[str, CellInfo]:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
-        infos = [c.get_info() for _, g in self._group_infos.items() for c in g.cells if c.alive]
+        infos = [c.get_info() for _, g in self._group_infos.items() for c in g.cells if c.alive and c.started]
         return {info.cell_id: info for info in infos}
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:

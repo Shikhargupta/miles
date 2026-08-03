@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import pytest
@@ -10,7 +10,13 @@ from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayC
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import (
+    CommandWorkerSpec,
+    LaunchCommandContext,
+    PortInfo,
+    SchedulingSpec,
+    StartupProbeContext,
+)
 
 
 @dataclass
@@ -44,6 +50,7 @@ def _make_spec(
     pg_name: str | None = None,
     pg_slot_offset: int = 0,
     pin_to_head: bool = False,
+    startup_probe: Callable[[StartupProbeContext], Awaitable[bool]] | None = None,
 ) -> CommandWorkerSpec:
     return CommandWorkerSpec(
         name=name,
@@ -61,6 +68,7 @@ def _make_spec(
             pin_to_head=pin_to_head,
         ),
         launch_command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
+        startup_probe=startup_probe,
     )
 
 
@@ -774,6 +782,152 @@ class TestStopDetails:
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 3
         assert all(handle.killed for handle in fake_ray_cluster.handles)
+
+
+async def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+    async def _loop() -> None:
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_loop(), timeout=timeout)
+
+
+@pytest.fixture
+def fast_probe_interval(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("miles.utils.workers.ray_worker_manager._STARTUP_PROBE_INTERVAL_SECONDS", 0.01)
+
+
+class TestGetCellInfos:
+    async def test_lists_every_cell_with_its_workers_and_hash(self, fake_ray_cluster: FakeRayCluster):
+        """Without a startup probe every launched cell is immediately visible, fully described."""
+        manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=2), _make_spec("router")])
+
+        infos = manager.get_cell_infos()
+
+        assert sorted(infos) == ["engine-0", "engine-1", "router-0"]
+        assert infos["engine-0"].worker_names == ["engine-0-0", "engine-0-1"]
+        assert infos["engine-0"].workers_hash == "pseudo-hash-1"
+
+    async def test_the_spec_meta_is_evaluated_with_the_cell_index(self, fake_ray_cluster: FakeRayCluster):
+        """Each cell's info carries the meta its spec computed for that cell."""
+        spec = _make_spec("engine", num_cells=2)
+        spec = spec.model_copy(update={"meta": lambda ctx: {"cell": ctx.cell_index}})
+        manager = await _launch([spec])
+
+        infos = manager.get_cell_infos()
+
+        assert infos["engine-0"].meta == {"cell": 0}
+        assert infos["engine-1"].meta == {"cell": 1}
+
+    async def test_a_stopped_cell_disappears(self, fake_ray_cluster: FakeRayCluster):
+        """Dead cells must not be reported to the reconciler as alive."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+
+        await manager._group_infos["engine"].cells[0].stop()
+
+        assert sorted(manager.get_cell_infos()) == ["engine-1"]
+
+
+class TestStartupProbe:
+    async def test_a_cell_is_hidden_until_its_probe_first_succeeds(
+        self, fake_ray_cluster: FakeRayCluster, fast_probe_interval
+    ):
+        """The provider contract says a not-yet-started cell is indistinguishable from a missing one."""
+        ready = False
+
+        async def _probe(ctx: StartupProbeContext) -> bool:
+            return ready
+
+        manager = await _launch([_make_spec("engine", startup_probe=_probe)])
+
+        assert manager.get_cell_infos() == {}
+
+        ready = True
+        await _wait_until(lambda: manager._group_infos["engine"].cells[0].started)
+        assert sorted(manager.get_cell_infos()) == ["engine-0"]
+
+    async def test_the_probe_receives_the_addrs_of_the_cells_first_worker(
+        self, fake_ray_cluster: FakeRayCluster, fast_probe_interval
+    ):
+        """The probe must be pointed at the worker that serves the cell's endpoint."""
+        contexts: list[StartupProbeContext] = []
+
+        async def _probe(ctx: StartupProbeContext) -> bool:
+            contexts.append(ctx)
+            return True
+
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2, startup_probe=_probe)])
+
+        await _wait_until(lambda: manager._group_infos["engine"].cells[0].started)
+        assert contexts[0].addrs == manager.get_worker_addrs("engine-0-0")
+
+    async def test_probing_stops_after_the_first_success(self, fake_ray_cluster: FakeRayCluster, fast_probe_interval):
+        """The probe mirrors a k8s startup probe: once started, a cell is never probed again."""
+        calls: list[int] = []
+
+        async def _probe(ctx: StartupProbeContext) -> bool:
+            calls.append(len(calls))
+            return True
+
+        manager = await _launch([_make_spec("engine", startup_probe=_probe)])
+
+        await _wait_until(lambda: manager._group_infos["engine"].cells[0].started)
+        await asyncio.sleep(0.1)
+        assert len(calls) == 1
+
+    async def test_a_raising_probe_is_retried_instead_of_killing_the_poller(
+        self, fake_ray_cluster: FakeRayCluster, fast_probe_interval
+    ):
+        """A transient probe error (e.g. connection refused) must count as not-started, not crash."""
+        calls: list[int] = []
+
+        async def _probe(ctx: StartupProbeContext) -> bool:
+            calls.append(len(calls))
+            if len(calls) == 1:
+                raise RuntimeError("connection refused")
+            return True
+
+        manager = await _launch([_make_spec("engine", startup_probe=_probe)])
+
+        await _wait_until(lambda: manager._group_infos["engine"].cells[0].started)
+        assert len(calls) == 2
+
+    async def test_stopping_a_cell_cancels_its_pending_probe(
+        self, fake_ray_cluster: FakeRayCluster, fast_probe_interval
+    ):
+        """A stopped cell must never come back as started through a stale probe task."""
+        calls: list[int] = []
+
+        async def _probe(ctx: StartupProbeContext) -> bool:
+            calls.append(len(calls))
+            return False
+
+        manager = await _launch([_make_spec("engine", startup_probe=_probe)])
+        cell = manager._group_infos["engine"].cells[0]
+
+        await _wait_until(lambda: len(calls) >= 1)
+        await cell.stop()
+        calls_at_stop = len(calls)
+        await asyncio.sleep(0.1)
+
+        assert len(calls) == calls_at_stop
+        assert cell.startup_prober is None
+
+    async def test_a_slow_cell_does_not_hide_its_already_started_siblings(
+        self, fake_ray_cluster: FakeRayCluster, fast_probe_interval
+    ):
+        """Cells become visible one by one as their own probe succeeds, not all at once."""
+        ready_ports: set[int] = set()
+
+        async def _probe(ctx: StartupProbeContext) -> bool:
+            return ctx.addrs["primary"].port in ready_ports
+
+        manager = await _launch([_make_spec("engine", num_cells=2, startup_probe=_probe)])
+
+        ready_ports.add(manager.get_worker_addrs("engine-1-0")["primary"].port)
+        await _wait_until(lambda: manager._group_infos["engine"].cells[1].started)
+
+        assert sorted(manager.get_cell_infos()) == ["engine-1"]
 
 
 class TestGetWorkerInfos:

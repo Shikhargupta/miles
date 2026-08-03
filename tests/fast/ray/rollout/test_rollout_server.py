@@ -195,7 +195,6 @@ class TestAddCellRollback:
             cell_id="inference-engine-0-0-0",
             num_gpus_per_engine=1,
             gpu_offset=0,
-            sglang_api_key=None,
             worker_name="inference-engine-0-0-0-0",
             needs_offload=False,
             update_weights=True,

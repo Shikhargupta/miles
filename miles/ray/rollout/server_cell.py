@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import CellState, StatePendingWeights, StateServing, StateUnknown
@@ -25,7 +25,6 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     cell_id: str
     num_gpus_per_engine: int
     gpu_offset: int
-    sglang_api_key: str | None
     worker_name: str
     needs_offload: bool
     update_weights: bool
@@ -67,11 +66,6 @@ class ServerCell:
         primary = master_addrs["primary"]
         server_url = build_server_url(host=primary.host, port=primary.port)
         bootstrap_port = x.port if (x := master_addrs.get("disaggregation_bootstrap")) else None
-
-        await wait_server_healthy(
-            server_url=server_url,
-            api_key=self.meta.sglang_api_key,
-        )
 
         if self.meta.needs_offload:
             api_client = SGLangApiClient(server_url=server_url)

@@ -208,7 +208,6 @@ def _compute_spec_inference_engine(
             num_gpus_per_engine=server_group_config.num_gpus_per_engine,
             gpu_offset=server_group_config.gpu_offset
             + ctx.cell_index * scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
-            sglang_api_key=server_group_config.overrides.get("api_key", args.sglang_api_key),
             needs_offload=server_group_config.needs_offload,
             update_weights=model_cfg.update_weights,
         ),
