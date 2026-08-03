@@ -20,12 +20,14 @@ import ray
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.http_utils import wait_http_ok
+from miles.utils.misc import load_function
 
 __all__ = [
     "retarget_args",
     "EvalSkip",
     "CheckpointEvalFn",
     "FleetEvalFn",
+    "eval_uses_snapshots",
     "resolve_checkpoint_eval_fn",
 ]
 
@@ -201,18 +203,27 @@ class FleetEvalFn(CheckpointEvalFn):
                     engine.mark_stopped()
 
 
+def eval_uses_snapshots(args: Namespace) -> bool:
+    """Whether eval consumes HF snapshots. A function of ``args`` alone, so the driver
+    can size its dispatch without asking the manager."""
+    if args.eval_num_gpus > 0:
+        return True
+    eval_fn = load_function(args.eval_function_path)
+    return inspect.isclass(eval_fn) and issubclass(eval_fn, CheckpointEvalFn)
+
+
 def resolve_checkpoint_eval_fn(args: Namespace, *, eval_fn, servers) -> CheckpointEvalFn | None:
-    """The single place that decides whether eval consumes snapshots, and with
-    which backend. None = shared-engine eval (the fn runs on its own state)."""
+    """Build the backend for the posture ``eval_uses_snapshots`` picked.
+    None = shared-engine eval (the fn runs on its own state)."""
+    if not eval_uses_snapshots(args):
+        return None
     if args.eval_num_gpus > 0:
         return FleetEvalFn(args, srv=servers["eval"], inner=eval_fn)
-    if isinstance(eval_fn, CheckpointEvalFn):
-        assert args.eval_hf_dir is not None or args.save_hf is not None, (
-            "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "
-            "or --save-hf (reuse periodic HF checkpoints)."
-        )
-        return eval_fn
-    assert not (
-        inspect.isclass(eval_fn) and issubclass(eval_fn, CheckpointEvalFn)
+    assert isinstance(
+        eval_fn, CheckpointEvalFn
     ), "checkpoint eval fns require the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
-    return None
+    assert args.eval_hf_dir is not None or args.save_hf is not None, (
+        "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "
+        "or --save-hf (reuse periodic HF checkpoints)."
+    )
+    return eval_fn

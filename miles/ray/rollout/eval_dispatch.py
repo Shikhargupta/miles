@@ -6,6 +6,8 @@ from collections import deque
 
 import ray
 
+from miles.rollout.checkpoint_eval import eval_uses_snapshots
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,7 +15,7 @@ class EvalDispatcher:
     """Fire-and-forget evals pinned to HF snapshots when the manager's eval fn
     consumes checkpoints (dedicated fleet or external backend); blocking
     shared-engine call otherwise. Failures degrade to a skipped point, never a
-    crash. The manager is the single authority on which posture is active.
+    crash.
 
     Owns the snapshots it exports for their whole life: nothing else deletes them,
     and every eval outcome retires exactly one.
@@ -25,11 +27,9 @@ class EvalDispatcher:
         self.rollout_manager = rollout_manager
         self.pending: deque[tuple[int, ray.ObjectRef, str | None]] = deque()
         self._exported: list[str] = []
-        self._snapshot_eval: bool | None = None
+        self._snapshot_eval = eval_uses_snapshots(args)
 
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
-        if self._snapshot_eval is None:
-            self._snapshot_eval = await self.rollout_manager.eval_uses_snapshots.remote()
         if not self._snapshot_eval:
             await self.rollout_manager.eval.remote(rollout_id)
             return

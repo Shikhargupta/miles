@@ -15,6 +15,7 @@ from miles.rollout.checkpoint_eval import (
     CheckpointEvalFn,
     EvalSkip,
     FleetEvalFn,
+    eval_uses_snapshots,
     resolve_checkpoint_eval_fn,
     retarget_args,
 )
@@ -337,6 +338,17 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
     assert extra is None
 
 
+STUB_PATH = "tests.fast.rollout.test_checkpoint_eval.CheckpointFnStub"
+
+
+def test_eval_uses_snapshots_is_a_function_of_args():
+    """The driver sizes its dispatch off this without asking the manager, so it must
+    agree with resolve_checkpoint_eval_fn from args alone."""
+    assert eval_uses_snapshots(make_args(eval_num_gpus=1, eval_function_path=None))
+    assert eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=STUB_PATH))
+    assert not eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=None))
+
+
 def test_resolve_checkpoint_eval_fn():
     """The single discrimination point: fleet flag wins, then CheckpointEvalFn
     instances (validated), else shared."""
@@ -347,28 +359,30 @@ def test_resolve_checkpoint_eval_fn():
     assert fleet._inner is plain_fn
 
     external = CheckpointFnStub()
-    args = make_args(
-        eval_num_gpus=0, eval_hf_dir="/staging", save_hf=None, eval_keep_snapshots=2, eval_max_in_flight=2
-    )
+    args = make_args(eval_num_gpus=0, eval_function_path=STUB_PATH, eval_hf_dir="/staging", save_hf=None)
     assert resolve_checkpoint_eval_fn(args, eval_fn=external, servers={}) is external
 
     with pytest.raises(AssertionError, match="snapshot source"):
         resolve_checkpoint_eval_fn(
-            make_args(eval_num_gpus=0, eval_hf_dir=None, save_hf=None), eval_fn=external, servers={}
+            make_args(eval_num_gpus=0, eval_function_path=STUB_PATH, eval_hf_dir=None, save_hf=None),
+            eval_fn=external,
+            servers={},
         )
 
     assert resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0), eval_fn=plain_fn, servers={}) is None
 
     with pytest.raises(AssertionError, match="class-based"):
         # Legacy (non-class) loading leaves the class unconstructed.
-        resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0), eval_fn=CheckpointFnStub, servers={})
+        resolve_checkpoint_eval_fn(
+            make_args(eval_num_gpus=0, eval_function_path=STUB_PATH), eval_fn=CheckpointFnStub, servers={}
+        )
 
 
 # ---------------- driver (train_async.EvalDispatcher) ----------------
 
 
 class FakeManagerActor:
-    def __init__(self, snapshot_eval=True):
+    def __init__(self):
         self.eval_calls = []
         self.skip_calls = []
         self._futures = []
@@ -389,15 +403,8 @@ class FakeManagerActor:
                 fut.set_result(None)
                 return fut
 
-        class _UsesSnapshots:
-            def remote(self):
-                fut = asyncio.get_event_loop().create_future()
-                fut.set_result(snapshot_eval)
-                return fut
-
         self.eval = _Eval()
         self.report_eval_skip = _Skip()
-        self.eval_uses_snapshots = _UsesSnapshots()
 
     def finish(self, index=0):
         self._futures[index].set_result(None)
@@ -428,6 +435,7 @@ def dispatcher_env(monkeypatch):
 
 def make_dispatcher(eval_dispatch, manager, actor_model, **arg_overrides):
     dispatcher_defaults = dict(
+        eval_num_gpus=1,
         eval_hf_dir="/dev/shm/eval_hf",
         eval_max_in_flight=2,
         eval_overflow_policy="backpressure",
@@ -600,9 +608,8 @@ class TestSnapshotOwnership:
 
 
 async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
-    """The manager is the single authority: when it reports no snapshot posture,
-    dispatch degrades to the plain blocking call."""
-    manager = FakeManagerActor(snapshot_eval=False)
+    """No snapshot posture in args -> the plain blocking call, no dispatch machinery."""
+    manager = FakeManagerActor()
 
     class _LegacyEval:
         def __init__(self):
@@ -615,7 +622,9 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
             return fut
 
     manager.eval = _LegacyEval()
-    dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel())
+    dispatcher, _ = make_dispatcher(
+        dispatcher_env, manager, FakeActorModel(), eval_num_gpus=0, eval_function_path=None
+    )
 
     await dispatcher.dispatch(3)
     assert manager.eval.calls == [3]

@@ -189,10 +189,6 @@ class RolloutManager:
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
-    def eval_uses_snapshots(self) -> bool:
-        """Whether dispatch must export an HF snapshot per eval point."""
-        return self._checkpoint_fn is not None
-
     async def _eval_checkpoint(self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None):
         """Evaluate a snapshot through the checkpoint eval fn (fleet or external
         backend) and log at ``rollout_id``. Every failure degrades to a skipped
