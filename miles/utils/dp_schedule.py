@@ -96,7 +96,15 @@ def build_dp_schedule(
                 # Match the original floor-to-mb_group rounding (with min=1).
                 num_mbs_per_rank = max(num_mbs_per_rank // mb_group * mb_group, 1)
             for r in range(dp_size):
-                expand_bins_by_splitting(rank_mbs[r], num_mbs_per_rank, rank_lens[r])
+                if len(rank_mbs[r]) > num_mbs_per_rank:
+                    # VPP rounding lowered the target below this rank's cap-minimal
+                    # bin count, so the token cap is unsatisfiable; re-pack into
+                    # exactly num_mbs_per_rank token-balanced bins like the legacy
+                    # train side did after the same rounding.
+                    rank_mbs[r] = get_seqlen_balanced_partitions(rank_lens[r], num_mbs_per_rank, equal_size=False)
+                else:
+                    expand_bins_by_splitting(rank_mbs[r], num_mbs_per_rank, rank_lens[r])
+                assert len(rank_mbs[r]) == num_mbs_per_rank
 
         num_microbatches.append(num_mbs_per_rank)
 

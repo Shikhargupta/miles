@@ -180,6 +180,46 @@ def test_dynamic_with_vpp_rounds_to_mb_group():
     assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=8)
 
 
+def test_dynamic_vpp_round_down_repacks_to_num_microbatches():
+    """When VPP rounding lowers the mbs target below a rank's first-fit bin count,
+    that rank must be re-packed into exactly num_microbatches bins (the legacy
+    behavior), not left holding extra bins that training would never consume.
+
+    No max_per_bin here: rounding down below the cap-minimal bin count makes the
+    token cap unsatisfiable, so merged bins may exceed it (same as legacy)."""
+    total_lengths = [9, 1, 9, 1, 9, 1, 1, 1]  # rank0 (strided) = [9,9,9,1] -> 3 first-fit bins at cap 10
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
+    tp = make_tp(dp_size=2, vpp_size=2, microbatch_group_size_per_vp_stage=2)
+
+    partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+
+    assert nmb == [2]
+    assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths)
+
+
+def test_randomized_invariants_dynamic_vpp():
+    """Randomized sweep of the dynamic path with vpp_size > 1: every rank must end
+    with exactly sum(num_microbatches) bins even when mb_group rounding lowers the
+    target (token cap intentionally unchecked, see the regression test above)."""
+    rng = random.Random(11)
+    for _ in range(30):
+        dp_size = rng.choice([1, 2, 4])
+        gbs = dp_size * rng.choice([2, 4, 8])
+        num_steps = rng.randint(1, 2)
+        total_lengths = [rng.randint(1, 40) for _ in range(gbs * num_steps)]
+        max_tokens = rng.randint(20, 60)
+        mb_group = rng.choice([2, 3, 4])
+        balance = rng.random() < 0.5
+
+        args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=max_tokens, balance_data=balance)
+        tp = make_tp(dp_size=dp_size, vpp_size=2, microbatch_group_size_per_vp_stage=mb_group)
+        partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=gbs)
+
+        assert_invariants(partitions, mbi, nmb, dp_size=dp_size, total_lengths=total_lengths)
+        for n in nmb:
+            assert n % mb_group == 0 or n == 1, f"num_microbatches {n} not aligned to mb_group={mb_group}"
+
+
 def test_static_indivisible_per_rank_batch_asserts():
     """gbs/dp not a multiple of micro_batch_size must fail loudly, not mis-schedule."""
     args = make_args(micro_batch_size=3)
