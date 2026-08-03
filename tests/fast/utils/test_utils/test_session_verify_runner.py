@@ -50,6 +50,12 @@ def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
     assert "--ci-test" in train_args
 
 
+def test_namespace_to_train_args_uses_session_server_v2():
+    train_args = _build_args()
+
+    assert "--use-session-server v2" in train_args
+
+
 def test_namespace_to_train_args_has_no_append_role_policy_flag():
     train_args = _build_args()
 
