@@ -262,6 +262,40 @@ async def test_eval_checkpoint_threads_input_and_logs(controller_env, tmp_path):
     assert extra["eval/export_time_seconds"] == 1.5
 
 
+async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path):
+    """The fleet only delivers weights — the configured eval fn still generates, and it
+    is the same object the shared posture would call."""
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    seen_inputs = []
+
+    def eval_generate_rollout(input):
+        seen_inputs.append(input)
+        return RolloutFnEvalOutput(data={"ds": {"rewards": [1.0]}})
+
+    class FakeFleet:
+        def __init__(self):
+            self.pins = []
+
+        async def pin(self, checkpoint_dir, weight_version):
+            self.pins.append((checkpoint_dir, weight_version))
+            return "fleet-state"
+
+    fleet = FakeFleet()
+    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
+    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
+    mgr = make_manager(args, eval_fn=eval_generate_rollout, fleet=fleet)
+
+    await mgr.eval(5, hf_dir=str(snapshot))
+
+    assert fleet.pins == [(str(snapshot), "5")]
+    assert seen_inputs[0].generate_state == "fleet-state"
+    assert seen_inputs[0].hf_dir == str(snapshot)
+    assert seen_inputs[0].weight_version == "5"
+
+
 async def test_eval_checkpoint_missing_marker_skips(controller_env, tmp_path):
     snapshot = tmp_path / "step_5"
     snapshot.mkdir()  # no .complete marker
