@@ -10,13 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 class EvalDispatcher:
-    """Fire-and-forget evals pinned to HF snapshots when the manager's eval fn
-    consumes checkpoints (dedicated fleet or external backend); blocking
-    shared-engine call otherwise. Failures degrade to a skipped point, never a
-    crash.
+    """Dispatches eval points without holding up the training loop.
 
-    Owns the snapshots it exports for their whole life: nothing else deletes them,
-    and every eval outcome retires exactly one.
+    Exports a snapshot per point, fires the eval, and reclaims the snapshot once the
+    point settles. Failures degrade to a skipped point, never a crash. Shared-engine
+    eval takes the plain blocking call instead.
     """
 
     def __init__(self, args, actor_model, rollout_manager):
@@ -84,7 +82,7 @@ class EvalDispatcher:
             self._retire(exported_dir)
 
     def _retire(self, exported_dir: str | None) -> None:
-        """Runs on every eval outcome, so no failure path can leak a snapshot."""
+        """Every settled point retires exactly one snapshot, whatever its outcome."""
         if exported_dir is None:
             return
         self._exported.append(exported_dir)

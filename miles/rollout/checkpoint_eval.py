@@ -1,14 +1,16 @@
-"""Eval that consumes exported HF checkpoint snapshots.
+"""Run eval on a backend of your own.
 
-Two eval postures exist: against the live training engines (shared, pinned by
-blocking call order) or against a checkpoint file (pinned by the file itself).
-``CheckpointEvalFn`` is the contract for the second posture — implement it to take
-a snapshot directory and return results, however you like. The in-job eval fleet is
-not one of these: it delivers weights and leaves generation to the eval fn (see
-``miles/ray/rollout/eval_fleet.py``).
+Subclass ``CheckpointEvalFn`` and point ``--eval-function-path`` at it. Every eval
+point hands you a finished HF checkpoint directory and takes back results; what
+happens in between is yours — an sglang server you launched, a remote scoring
+service, a black box with an HTTP API.
 
-Backends never join training weight updates; weights reach them only through a
-snapshot exported for a specific rollout_id.
+The trainer exports the snapshot, dispatches it without blocking the training loop,
+logs the result at the snapshot's step, and reclaims the directory afterwards. Raise
+``EvalSkip(reason)`` to skip a point with attribution instead of counting as a crash.
+
+Requires ``train_async.py`` and a snapshot source (``--eval-hf-dir`` or ``--save-hf``).
+``examples/fully_async/external_eval_fn.py`` is a working implementation.
 """
 
 import abc
@@ -57,19 +59,9 @@ class EvalSkip(Exception):
 class CheckpointEvalFn(abc.ABC):
     """Contract for eval backends that consume HF checkpoint snapshots.
 
-    ``__init__`` prepares everything (launch or attach to your backend); each call
-    then receives a snapshot dir + eval info and returns the eval results. The
-    trainer owns the rest: per-point snapshot export, async dispatch, overflow
-    policy, logging at the snapshot's step, and snapshot GC.
-
-    Subclass and implement ``evaluate_checkpoint``; raise ``EvalSkip(reason)`` to
-    skip a point with proper accounting. Point ``--eval-function-path`` at the
-    subclass (requires ``train_async.py`` and a snapshot source: ``--eval-hf-dir``
-    or ``--save-hf``). See ``examples/fully_async/external_eval_fn.py`` for a full
-    implementation against an external sglang server.
-
-    The in-job eval fleet is not one of these: it delivers weights and leaves
-    generation to the eval fn, so it is mutually exclusive with this contract.
+    ``__init__`` takes a ``RolloutFnConstructorInput`` and prepares the backend —
+    launch a server, attach to one, open a client. ``evaluate_checkpoint`` then runs
+    one eval point against the snapshot at ``checkpoint_dir``.
     """
 
     @abc.abstractmethod

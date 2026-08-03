@@ -21,12 +21,7 @@ EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
 
 
 class EvalFleet:
-    """The dedicated in-job eval engines (``--eval-num-gpus``).
-
-    Not a ``CheckpointEvalFn``: it delivers weights, it does not evaluate. The eval
-    fn generates against the state ``pin`` hands back, exactly as it would against
-    the training engines.
-    """
+    """The dedicated in-job eval engines (``--eval-num-gpus``)."""
 
     def __init__(self, args: Namespace, *, srv):
         self.args = args
@@ -36,8 +31,7 @@ class EvalFleet:
     async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
         """Load the snapshot onto every engine, then return the state to generate against.
 
-        Runs on the manager's event loop, so everything here awaits rather than blocks
-        — except reviving a dead engine, which blocks on its port allocation.
+        On the manager's event loop: keep everything here awaiting rather than blocking.
         """
         try:
             await self._mark_unreachable_engines()
