@@ -28,7 +28,7 @@ the miles repo:
 | `--exclude-modules` | Comma-separated names to subtract from `--target-modules`. |
 | `--lora-adapter-path` | Path to a pre-trained adapter to resume from. |
 | `--lora-sync-from-tensor` | Sync adapter weights to SGLang via in-memory tensors instead of a file round-trip. |
-| `--lora-provider-path` | Dotted module supplying a model-specific native-LoRA implementation. Defaults to the generic provider. |
+| `--lora-provider-path` | Dotted module supplying a model-specific native-LoRA implementation. Defaults to the generic `miles_plugins.lora` provider. |
 | `--debug-lora-train-only` | Train adapters in Megatron while rollout stays on the frozen base policy. Useful when the engine cannot serve the adapter yet. |
 | `--check-lora-weight-equal` | Verify the Megatron → SGLang adapter sync with a per-tensor sha256 manifest. |
 
@@ -44,10 +44,17 @@ There are two implementations, selected by `--megatron-to-hf-mode`:
 - **`bridge`** — Megatron-Bridge's PEFT integration. Use it for models the
   generic native provider cannot cover, and for the routed-expert adapter
   layouts (`--experts-shared-outer-loras`).
-- **`raw`** (default) — the *native* path in
-  `miles/backends/megatron_utils/lora_native.py`. Adapters attach directly to
-  the mcore model miles' own provider builds, before the DDP wrap, so DDP only
-  allocates grad buffers for adapter params.
+- **`raw`** (default) — the *native* path in the `miles_plugins/lora/` plugin.
+  Adapters attach directly to the mcore model miles' own provider builds,
+  before the DDP wrap, so DDP only allocates grad buffers for adapter params.
+  Which architectures it serves is an explicit registry keyed on the HF
+  `model_type` (`miles_plugins/lora/registry.py`); a checkpoint whose
+  `model_type` is not registered fails at startup with the supported list
+  rather than training unverified math. Multimodal checkpoints resolve through
+  `text_config.model_type`: adapters attach to the registered language decoder
+  only and vision weights are never adapted. A VL wrapper whose text model type
+  is not registered (e.g. `qwen3_vl`, `qwen2_5_vl`) fails closed — use
+  `--megatron-to-hf-mode bridge` for those.
 
 Native LoRA covers standard Megatron-core attention and gated MLPs:
 
@@ -72,11 +79,36 @@ Two layouts are deliberately out of scope and need
 mcore's (DeepSeek-V4-Flash's `wq_a` / `wq_b` / `wkv` / `wo_a` / `wo_b`, which
 SGLang also has no LoRA support for).
 
+### Parallelism: what each path supports
+
+Native handles TP, SP, PP/VPP and CP. Expert tensor parallelism is moot for it:
+the only MoE module it adapts, the shared expert, shards over the *attention*
+TP group.
+
+Native refuses at startup (all inert under bridge-mode LoRA too, since the
+bridge hook builds its own DDP config):
+
+- `--overlap-grad-reduce`, `--overlap-param-gather`
+- `--moe-shared-expert-overlap`
+
+Bridge-only, each with a TODO beside the native code that would change:
+
+- routed/grouped-expert LoRA, three layouts — `spec/moe.py`
+- router LoRA — `spec/moe.py`
+- expert-TP group, expert-axis export — `distributed.py`, `codec/hf.py`
+- GDN `in_proj`, MLA without `q_lora_rank` — `spec/attention.py`
+
 <Note>
 On a MoE model, list only the modules the trainer actually adapts. Naming
 `gate_proj` makes SGLang allocate adapter buffers for the routed experts too,
 and nothing fills them.
 </Note>
+
+On a MoE model without shared experts (e.g. Qwen3-MoE), the native path has no
+MLP module to adapt: `all-linear` drops its parser-added `gate_proj` /
+`up_proj` / `down_proj` with a log line and trains attention-only, while an
+explicitly listed MLP target fails at startup naming the bridge and
+provider-path escape hatches.
 
 ## MoE
 
@@ -115,6 +147,12 @@ reason.
 * **Target modules**: `--target-modules` is required whenever
   `--lora-rank > 0`. There is no auto-detection; the launcher asserts at
   startup.
+* **Native partial targets**: raw-mode native LoRA treats fused projections
+  exactly: `q_proj` does not allocate K/V adapters, and `gate_proj` does not
+  allocate an up-projection adapter. Experimental native checkpoints made
+  before this contract used a different optimizer parameter count for partial
+  targets; reload their HF adapter weights with a fresh optimizer rather than
+  resuming the old optimizer state.
 * **Single adapter per run**: only one set of `--lora-*` arguments is
   honored per training job. Training multiple LoRA adapters in parallel
   within a single `train.py` run is not implemented today — run separate
@@ -134,11 +172,16 @@ reason.
 The bridge between Megatron's LoRA path and SGLang adapter loading is in:
 
 - `miles/backends/megatron_utils/lora_utils.py` — argument parsing helpers,
-  LoRA detection (`is_lora_enabled`, `is_lora_model`), and HF ↔ Megatron
-  module-name conversion for both the `lora` and `canonical_lora` variants.
-- `miles/backends/megatron_utils/lora_native.py` — the raw-mode path: adapter
-  attachment and sharding, the fused-qkv row permutation, HF/PEFT export, and
-  adapter load.
+  LoRA detection (`is_lora_enabled`, `is_lora_model`), the provider resolver
+  (`resolve_lora_provider`), and HF ↔ Megatron module-name conversion for both
+  the `lora` and `canonical_lora` variants.
+- `miles_plugins/lora/` — the raw-mode path, and the default
+  `--lora-provider-path` provider. `lora.py` is its single lifecycle entry
+  point; `config.py` and `registry.py` resolve run configuration and
+  `model_type` → `LoRAArchSpec`; `spec/` describes attention, MLP, and future
+  MoE layouts; `modules/` owns callable adapter modules; `codec/` owns HF
+  naming/load/export and native checkpoint helpers; and `distributed.py` owns
+  the remaining TP/SP communication and replicated-gradient reduction.
 - `miles/backends/megatron_utils/bridge_lora_helpers.py` — the Megatron-Bridge
   PEFT hook that wraps the model with LoRA layers before training.
 - `miles/backends/megatron_utils/checkpoint.py` — adapter-aware save and load.

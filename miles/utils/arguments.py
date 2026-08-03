@@ -1551,9 +1551,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted module path implementing the native-LoRA provider protocol "
                     "(wrap_model_provider_with_lora / load_lora_adapter_hf / export_lora_hf_named). "
-                    "Defaults to miles.backends.megatron_utils.lora_native, which covers standard "
-                    "Megatron-core GPT models; point this at a model plugin whose module structure "
-                    "diverges from plain mcore. Only used with --megatron-to-hf-mode raw."
+                    "Defaults to miles_plugins.lora, which covers the architectures registered "
+                    "in miles_plugins.lora.registry; point this at a model plugin whose module "
+                    "structure diverges from plain mcore. Only used with --megatron-to-hf-mode raw."
                 ),
             )
             parser.add_argument(
@@ -2445,6 +2445,11 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+        assert args.lora_rank <= 0, (
+            "LoRA is not supported for the FSDP backend: it attaches no adapters, so the run would "
+            "silently full-finetune while the rollout engine is still configured to serve an adapter. "
+            "Use --train-backend megatron."
+        )
 
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
     # locates the per-test record). No CLI flag: non-CI runs always stay False.
@@ -2539,6 +2544,93 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     if args.ft_components is None:
         return list(_FT_DEFAULT_COMPONENTS)
     return list(args.ft_components)
+
+
+def parse_lora_target_modules(args) -> None:
+    """Normalize ``--target-modules`` / ``--exclude-modules`` for LoRA runs, in place.
+
+    Idempotent: re-running on already-expanded args is a no-op. Sets
+    ``args._target_modules_expanded_from_all_linear`` so specs can tell
+    ``all-linear`` expansions from explicit user requests.
+    """
+    args._target_modules_expanded_from_all_linear = bool(
+        getattr(args, "_target_modules_expanded_from_all_linear", False)
+        or (args.lora_rank > 0 and args.target_modules == "all-linear")
+    )
+    if args.lora_rank <= 0:
+        return
+    assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
+
+    if isinstance(args.target_modules, (list, tuple)):
+        modules = list(args.target_modules)
+    elif args.target_modules == "all-linear":
+        # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
+        # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
+        modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        hf_config = load_hf_config(args.hf_checkpoint)
+        if getattr(hf_config, "kv_lora_rank", None):
+            modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
+            if getattr(hf_config, "q_lora_rank", None):
+                modules += ["q_a_proj", "q_b_proj"]
+    elif "," in args.target_modules:
+        modules = [m.strip() for m in args.target_modules.split(",")]
+    else:
+        modules = [args.target_modules]
+
+    # Keep enough provenance for the built-in native provider to reject selectors
+    # whose scope cannot be represented by its architecture specs.  The shared
+    # parser still accepts them because a custom/Bridge provider may implement
+    # richer matching semantics.
+    non_leaf_selectors = {
+        str(module) for module in modules if any(token in str(module) for token in (".", "*", "?", "[", "]"))
+    }
+    non_leaf_selectors.update(getattr(args, "_lora_non_leaf_target_selectors", ()))
+    args._lora_non_leaf_target_selectors = tuple(sorted(non_leaf_selectors))
+
+    from miles.backends.megatron_utils.lora_utils import (
+        convert_target_modules_to_hf,
+        uses_builtin_native_lora_provider,
+    )
+
+    builtin_native = uses_builtin_native_lora_provider(args)
+    if args.exclude_modules:
+        exclude_modules = [module.strip() for module in args.exclude_modules.split(",")]
+        if builtin_native:
+            non_leaf_excludes = sorted(
+                name for name in exclude_modules if any(token in name for token in (".", "*", "?", "[", "]"))
+            )
+            assert not non_leaf_excludes, (
+                f"--exclude-modules does not support scoped/wildcard selectors {non_leaf_excludes}: excludes "
+                "are applied by removing canonical projection leaves from --target-modules, so scoped "
+                "matching would be silently broadened. List the exact projection leaves to drop instead."
+            )
+            assert not non_leaf_selectors, (
+                "--exclude-modules cannot be combined with scoped/wildcard --target-modules selectors "
+                f"{sorted(non_leaf_selectors)}: Miles cannot subtract projection leaves without changing "
+                "their matching scope. Shorten the target selector or use a provider-specific selection."
+            )
+        else:
+            # Keep the pre-native-plugin parser contract for Bridge and custom
+            # providers: they own their target namespace and matching rules.
+            # Miles only subtracts exact spellings here.
+            patterns = sorted(name for name in exclude_modules if "*" in name or "?" in name)
+            assert not patterns, (
+                f"--exclude-modules does not support wildcard patterns {patterns}: excludes are applied by "
+                "removing exact module names from --target-modules, so a pattern would be silently ignored."
+            )
+            exclude_set = set(exclude_modules)
+            modules = [module for module in modules if module not in exclude_set]
+
+    if builtin_native and not non_leaf_selectors:
+        # Canonicalize both sides to HF projection leaves *before* subtraction.
+        # Otherwise e.g. targets=q_proj,k_proj,v_proj + exclude=linear_qkv (or
+        # the inverse spelling) retains adapters the user explicitly excluded.
+        modules = convert_target_modules_to_hf(modules)
+        if args.exclude_modules:
+            exclude_set = set(convert_target_modules_to_hf(exclude_modules))
+            modules = [m for m in modules if m not in exclude_set]
+
+    args.target_modules = modules
 
 
 def miles_validate_args(args):
@@ -2725,37 +2817,18 @@ def miles_validate_args(args):
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
-    # Parse LoRA target modules
+    parse_lora_target_modules(args)
     if args.lora_rank > 0:
-        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
-
-        if args.target_modules == "all-linear":
-            # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
-            # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-            hf_config = load_hf_config(args.hf_checkpoint)
-            if getattr(hf_config, "kv_lora_rank", None):
-                modules += ["kv_a_proj_with_mqa", "kv_b_proj"]
-                if getattr(hf_config, "q_lora_rank", None):
-                    modules += ["q_a_proj", "q_b_proj"]
-        elif "," in args.target_modules:
-            modules = [m.strip() for m in args.target_modules.split(",")]
-        else:
-            modules = [args.target_modules]
-
-        if args.exclude_modules:
-            exclude_set = (
-                set(m.strip() for m in args.exclude_modules.split(","))
-                if "," in args.exclude_modules
-                else {args.exclude_modules}
-            )
-            modules = [m for m in modules if m not in exclude_set]
-
-        args.target_modules = modules
-
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
         if args.experts_shared_outer_loras:
+            assert args.megatron_to_hf_mode == "bridge" or args.lora_provider_path is not None, (
+                "--experts-shared-outer-loras is a Megatron-Bridge PEFT adapter layout: the native "
+                "raw-mode provider adapts only attention, dense MLPs and MoE shared experts, so the "
+                "grouped-expert buffers this flag makes SGLang allocate would never be filled. Use "
+                "--megatron-to-hf-mode bridge, or point --lora-provider-path at a provider that "
+                "implements the layout."
+            )
             args.sglang_experts_shared_outer_loras = True
         assert args.experts_shared_outer_loras == bool(
             args.sglang_experts_shared_outer_loras
@@ -2763,7 +2836,7 @@ def miles_validate_args(args):
 
         # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
         _expert_leaves = ("linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj")
-        if any(leaf in str(tm) for tm in modules for leaf in _expert_leaves):
+        if any(leaf in str(tm) for tm in args.target_modules for leaf in _expert_leaves):
             logger.warning(
                 "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",

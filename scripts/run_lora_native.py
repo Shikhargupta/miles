@@ -3,8 +3,8 @@
 Companion to ``scripts/run_qwen3_lora_native.py``, which covers the dense GQA
 reference recipe. This one drives the shipped MoE registries whose attention is
 either multi-latent (GLM / DeepSeek / Kimi) or a gated GQA hybrid (Qwen3.5), i.e.
-exactly the layouts ``miles.backends.megatron_utils.lora_native`` grew beyond the
-plain fused-qkv case for.
+exactly the layouts ``miles_plugins.lora`` grew beyond the plain fused-qkv case
+for.
 
 Coverage is attention-only on purpose. Routed-expert adapters need a serving-side
 layout contract of their own, so ``--target-modules`` lists just the attention
@@ -191,6 +191,7 @@ def _dequantize(args: ScriptArgs):
 
 
 def _convert(args: ScriptArgs):
+    _preflight(args)
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -211,7 +212,18 @@ def _prepare(args: ScriptArgs):
     _convert(args)
 
 
+def _preflight(args: ScriptArgs) -> None:
+    """Audit registry/mbridge/model-args coverage before any GPU work."""
+    try:
+        from miles_plugins.lora import preflight_native_lora
+    except ImportError:  # older plugin without the helper
+        return
+    report = preflight_native_lora(args.hf_checkpoint, args.megatron_model_type, strict=True)
+    print(report.render(), flush=True)
+
+
 def _train(args: ScriptArgs):
+    _preflight(args)
     print(
         f"[run] native LoRA: {args.model_name} (megatron_model_type={args.megatron_model_type}), "
         f"TP{args.tensor_model_parallel_size} EP{args.expert_model_parallel_size}, "

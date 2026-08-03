@@ -39,21 +39,16 @@ import sys
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-
 from megatron.core import parallel_state as ps
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
 from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
 
-from miles.backends.megatron_utils.lora_native import (
-    NativeLoRAAdapter,
-    _rmsnorm,
-    apply_native_lora,
-    export_lora_hf_named,
-    load_lora_adapter_hf,
-)
 from miles.backends.megatron_utils.lora_utils import reduce_marked_lora_grads
+from miles_plugins.lora.distributed import rmsnorm
+from miles_plugins.lora.lora import apply_native_lora, export_lora_hf_named, load_lora_adapter_hf
+from miles_plugins.lora.modules.linear import NativeLoRAAdapter
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
@@ -262,7 +257,7 @@ def main():
     ad1 = layer0.mlp.lora_fc1_adapter
     with torch.no_grad():
         got1 = fc1_mod(x_fc1)[0] - y0_fc1
-        xn = _rmsnorm(x_fc1, fc1_mod.layer_norm_weight, lora_model.config.layernorm_epsilon)
+        xn = rmsnorm(x_fc1, fc1_mod.layer_norm_weight, lora_model.config.layernorm_epsilon)
         if a.sp:
             xn = gather_cat(xn, 0)
         ref1 = scale * torch.cat(
@@ -293,7 +288,7 @@ def main():
         q_slices = 2 if a.gate else 1
         with torch.no_grad():
             delta = qkv_mod(qkv_pre["x"])[0] - qkv_pre["y0"]
-            xn = _rmsnorm(qkv_pre["x"], qkv_mod.layer_norm_weight, lora_model.config.layernorm_epsilon)
+            xn = rmsnorm(qkv_pre["x"], qkv_mod.layer_norm_weight, lora_model.config.layernorm_epsilon)
             if a.sp:
                 xn = gather_cat(xn, 0)
             hf_delta = {

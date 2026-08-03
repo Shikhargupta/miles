@@ -10,22 +10,35 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.megatron_utils.lora_native import (
-    _ADAPTER_LAYOUT,
-    SUPPORTED_TARGETS,
-    _assert_supported_architecture,
-    _build_qkv_perm,
-    _hf_naming,
-    _require_grad_on_first_activation,
-    _rmsnorm,
+from miles.backends.megatron_utils.lora_utils import (
+    _adapter_shard_name,
+    _is_canonical_shard_writer,
     convert_target_modules_to_hf,
+    reduce_marked_lora_grads,
+    resolve_lora_provider,
+)
+from miles.utils.lora import lora_rollout_enabled
+from miles_plugins.lora.distributed import rmsnorm
+from miles_plugins.lora.hf_adapter import resolve_hf_naming
+from miles_plugins.lora.lora import (
+    _require_grad_on_first_activation,
     export_lora_hf_named,
     load_lora_adapter_hf,
-    resolve_lora_provider,
     wrap_model_provider_with_lora,
 )
-from miles.backends.megatron_utils.lora_utils import _native_adapter_shard_name, reduce_marked_lora_grads
-from miles.utils.lora import lora_rollout_enabled
+from miles_plugins.lora.modules.linear import build_qkv_permutation
+from miles_plugins.lora.spec.attention import GQAAttentionSpec, MLAAttentionSpec
+from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec
+
+IMPLEMENTED_TARGETS = (
+    GQAAttentionSpec().supported_targets | MLAAttentionSpec().supported_targets | FusedGatedMLPSpec().supported_targets
+)
+
+
+def _assert_supported_architecture(config, tp_size: int = 1) -> None:
+    """Dispatch to the family's attention-spec validate the way the registry resolves it."""
+    spec = MLAAttentionSpec() if bool(getattr(config, "multi_latent_attention", False)) else GQAAttentionSpec()
+    spec.validate(config, tp_size=tp_size)
 
 
 def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, num_query_groups=8, q_lora_rank=1536):
@@ -46,40 +59,40 @@ def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, nu
 
 class TestBuildQkvPerm:
     def test_mha_single_group(self):
-        perm = _build_qkv_perm(num_q_heads=1, num_groups=1, head_dim=2, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=1, num_groups=1, head_dim=2, device="cpu")
         assert perm.tolist() == [0, 1, 2, 3, 4, 5]
 
     def test_gqa_two_groups_matches_mcore_layout(self):
-        perm = _build_qkv_perm(num_q_heads=4, num_groups=2, head_dim=1, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=4, num_groups=2, head_dim=1, device="cpu")
         assert perm.tolist() == [0, 1, 4, 6, 2, 3, 5, 7]
 
     def test_permutation_is_a_bijection(self):
         nq, ng, hd = 8, 4, 3
-        perm = _build_qkv_perm(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
         total = (nq + 2 * ng) * hd
         assert perm.numel() == total
         assert sorted(perm.tolist()) == list(range(total))
 
     def test_applied_to_delta_places_projections_per_group(self):
         nq, ng, hd = 4, 2, 1
-        perm = _build_qkv_perm(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
+        perm = build_qkv_permutation(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu")
         plain = torch.tensor([[10.0, 11.0, 12.0, 13.0, 20.0, 21.0, 30.0, 31.0]])
         out = plain.index_select(-1, perm)
         assert out.tolist() == [[10.0, 11.0, 20.0, 30.0, 12.0, 13.0, 21.0, 31.0]]
 
     def test_output_gate_deinterleaves_the_query_slices(self):
-        perm = _build_qkv_perm(num_q_heads=2, num_groups=1, head_dim=1, device="cpu", output_gate=True)
+        perm = build_qkv_permutation(num_q_heads=2, num_groups=1, head_dim=1, device="cpu", output_gate=True)
         assert perm.tolist() == [0, 2, 1, 3, 4, 5]
 
     def test_output_gate_permutation_is_a_bijection(self):
         nq, ng, hd = 8, 2, 3
-        perm = _build_qkv_perm(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu", output_gate=True)
+        perm = build_qkv_permutation(num_q_heads=nq, num_groups=ng, head_dim=hd, device="cpu", output_gate=True)
         total = (2 * nq + 2 * ng) * hd
         assert perm.numel() == total
         assert sorted(perm.tolist()) == list(range(total))
 
     def test_output_gate_applied_to_delta(self):
-        perm = _build_qkv_perm(num_q_heads=4, num_groups=2, head_dim=1, device="cpu", output_gate=True)
+        perm = build_qkv_permutation(num_q_heads=4, num_groups=2, head_dim=1, device="cpu", output_gate=True)
         plain = torch.tensor([[10.0, 40.0, 11.0, 41.0, 12.0, 42.0, 13.0, 43.0, 20.0, 21.0, 30.0, 31.0]])
         out = plain.index_select(-1, perm)
         assert out.tolist() == [[10.0, 11.0, 40.0, 41.0, 20.0, 30.0, 12.0, 13.0, 42.0, 43.0, 21.0, 31.0]]
@@ -89,7 +102,7 @@ class TestRmsNorm:
     def test_plain_gamma_scales_by_the_stored_weight(self):
         x = torch.tensor([[3.0, 4.0]])
         gamma = torch.tensor([2.0, 2.0])
-        got = _rmsnorm(x, gamma, eps=0.0)
+        got = rmsnorm(x, gamma, eps=0.0)
         assert torch.allclose(got, torch.tensor([[3.0, 4.0]]) / 3.5355339 * 2.0, atol=1e-5)
 
     def test_zero_centered_gamma_adds_the_one_back(self):
@@ -98,8 +111,8 @@ class TestRmsNorm:
         x = torch.tensor([[3.0, 4.0]])
         stored = torch.tensor([1.0, 1.0])
         assert torch.allclose(
-            _rmsnorm(x, stored, eps=0.0, zero_centered_gamma=True),
-            _rmsnorm(x, stored + 1.0, eps=0.0),
+            rmsnorm(x, stored, eps=0.0, zero_centered_gamma=True),
+            rmsnorm(x, stored + 1.0, eps=0.0),
         )
 
 
@@ -144,7 +157,7 @@ class TestHfNaming:
                 "model.layers.1.mlp.shared_experts.gate_proj.weight",
             ],
         )
-        assert _hf_naming(path) == ("model.layers.", "mlp.shared_experts.")
+        assert resolve_hf_naming(path) == ("model.layers.", "mlp.shared_experts.")
 
     def test_qwen3_5_nests_the_decoder_and_uses_singular(self, tmp_path):
         """The mtp block also has `layers.N.`; it must not win the prefix vote."""
@@ -157,11 +170,11 @@ class TestHfNaming:
                 "vision_tower.encoder.blocks.0.wo.weight",
             ],
         )
-        assert _hf_naming(path) == ("model.language_model.layers.", "mlp.shared_expert.")
+        assert resolve_hf_naming(path) == ("model.language_model.layers.", "mlp.shared_expert.")
 
     def test_missing_index_falls_back_to_the_plain_layout(self, tmp_path):
-        assert _hf_naming(str(tmp_path)) == ("model.layers.", "mlp.shared_expert.")
-        assert _hf_naming(None) == ("model.layers.", "mlp.shared_expert.")
+        assert resolve_hf_naming(str(tmp_path)) == ("model.layers.", "mlp.shared_expert.")
+        assert resolve_hf_naming(None) == ("model.layers.", "mlp.shared_expert.")
 
 
 class TestArchitectureGuards:
@@ -200,12 +213,11 @@ class TestArchitectureGuards:
 
 
 class TestShippedRegistries:
-    """Lock in which shipped model registries the generic provider serves.
+    """Lock in which shipped registries (scripts/models/*.sh) the generic provider serves.
 
-    Values mirror scripts/models/*.sh. These are not hypothetical: each is a
-    checkpoint someone will eventually point at --megatron-to-hf-mode raw, so a
-    layout the generic path cannot slice has to fail with a startup assert naming
-    --lora-provider-path rather than produce silently wrong gradients.
+    Each may run --megatron-to-hf-mode raw, so a layout the generic path cannot
+    slice must assert at startup naming --lora-provider-path rather than produce
+    silently wrong gradients.
     """
 
     @pytest.mark.parametrize(
@@ -214,11 +226,11 @@ class TestShippedRegistries:
             ("glm4.7-flash", dict(mla=True)),
             ("kimi-k25_2layer", dict(mla=True)),
             ("glm5-744B-A40B_4layer", dict(mla=True)),
-            ("deepseek-v4-flash-4layer", dict(mla=True)),
+            # deepseek-v4-flash absent: wq_a/wq_b/wkv is not mcore MLA; registry fails it closed.
         ],
     )
     def test_mla_registries_are_accepted(self, registry, kwargs):
-        """MLA is covered by _attach_mla_attention, including when TP exceeds the
+        """MLA is covered by MLAAttentionSpec.attach, including when TP exceeds the
         (meaningless for MLA) query-group count."""
         model = _fake_model(num_query_groups=2, **kwargs)
         _assert_supported_architecture(model.config, tp_size=4)
@@ -233,11 +245,10 @@ class TestShippedRegistries:
         _assert_supported_architecture(model.config, tp_size=2)
 
     def test_mla_without_q_lora_rank_is_rejected(self):
-        """DeepSeek-V2-Lite / Moonlight: the query path is uncompressed, so the export is an
-        unfused q_proj plus kv_a_proj_with_mqa, which SGLang's fused qkv_a loader cannot ingest.
-
-        Every shipped MLA registry sets --q-lora-rank (glm4.7-flash 768, kimi-k25 1536,
-        glm5-744B-A40B 2048, deepseek-v4-flash 1024), so this rejects only the uncovered layout.
+        """DeepSeek-V2-Lite / Moonlight: an uncompressed query path exports unfused
+        q_proj + kv_a_proj_with_mqa, which SGLang's fused qkv_a loader cannot ingest.
+        Every shipped MLA registry sets --q-lora-rank (scripts/models/*.sh), so only
+        this uncovered layout is rejected.
         """
         model = _fake_model(mla=True, q_lora_rank=None)
         with pytest.raises(AssertionError) as excinfo:
@@ -255,15 +266,17 @@ class TestShippedRegistries:
 
 
 class TestResolveLoraProvider:
-    def test_default_is_this_module(self):
+    def test_default_is_the_plugin(self):
         mod = resolve_lora_provider(Namespace())
         assert mod.wrap_model_provider_with_lora is wrap_model_provider_with_lora
         assert mod.export_lora_hf_named is export_lora_hf_named
         assert mod.load_lora_adapter_hf is load_lora_adapter_hf
 
-    def test_explicit_path_is_imported(self):
-        args = Namespace(lora_provider_path="miles.backends.megatron_utils.lora_native")
-        assert resolve_lora_provider(args).export_lora_hf_named is export_lora_hf_named
+    @pytest.mark.parametrize("path", ["miles_plugins.lora.lora", "miles.backends.megatron_utils.lora_native"])
+    def test_native_provider_paths_are_imported(self, path):
+        provider = resolve_lora_provider(Namespace(lora_provider_path=path))
+        assert provider.wrap_model_provider_with_lora is wrap_model_provider_with_lora
+        assert provider.export_lora_hf_named is export_lora_hf_named
 
     def test_module_without_protocol_is_rejected(self):
         args = Namespace(lora_provider_path="json")
@@ -281,7 +294,7 @@ class TestWrapModelProvider:
 
         calls = []
         wrapped = wrap_model_provider_with_lora(provider, Namespace(lora_rank=8))
-        import miles.backends.megatron_utils.lora_native as ln
+        import miles_plugins.lora.lora as ln
 
         orig = ln.apply_native_lora
         ln.apply_native_lora = lambda m, a: calls.append((m, a)) or m
@@ -294,16 +307,22 @@ class TestWrapModelProvider:
         assert out is calls[0][0]
 
 
-class TestNativeAdapterShardName:
-    def test_no_ep_keeps_legacy_name(self):
-        assert _native_adapter_shard_name(1, 2, 0) == "adapter_megatron_tp1_pp2.pt"
+class TestAdapterShardName:
+    def test_native_name_is_ep_invariant(self):
+        """Routed experts carry no native adapter and the shared expert shards over attention TP,
+        so every EP rank holds identical state for a given (tp, pp) — one file serves them all."""
+        names = {_adapter_shard_name(1, 2, ep, ep_sharded=False) for ep in range(4)}
+        assert names == {"adapter_megatron_tp1_pp2.pt"}
 
-    def test_ep_rank_is_included(self):
-        assert _native_adapter_shard_name(1, 2, 3) == "adapter_megatron_tp1_pp2_ep3.pt"
-
-    def test_ranks_sharing_tp_pp_get_distinct_names(self):
-        names = {_native_adapter_shard_name(0, 0, ep) for ep in range(4)}
+    def test_bridge_name_keys_on_ep(self):
+        """Bridge PEFT can attach genuinely expert-parallel adapters, so its shards differ per EP rank."""
+        assert _adapter_shard_name(1, 2, 0, ep_sharded=True) == "adapter_megatron_tp1_pp2.pt"
+        assert _adapter_shard_name(1, 2, 3, ep_sharded=True) == "adapter_megatron_tp1_pp2_ep3.pt"
+        names = {_adapter_shard_name(0, 0, ep, ep_sharded=True) for ep in range(4)}
         assert len(names) == 4
+
+    def test_writer_election_is_a_noop_without_distributed(self):
+        assert _is_canonical_shard_writer("adapter_megatron_tp0_pp0.pt")
 
 
 class TestReduceMarkedLoraGrads:
@@ -337,21 +356,33 @@ class TestSupportedTargets:
     attaching nothing while SGLang still set up LoRA for the full list.
     """
 
-    def test_table_and_supported_set_agree(self):
-        assert SUPPORTED_TARGETS == {proj.hf for projs in _ADAPTER_LAYOUT.values() for proj in projs}
+    def test_architecture_specs_own_the_implemented_target_names(self):
+        assert IMPLEMENTED_TARGETS == {
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "q_a_proj",
+            "q_b_proj",
+            "kv_a_proj_with_mqa",
+            "kv_b_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        }
 
     def test_megatron_names_normalise_into_the_supported_set(self):
         for megatron_name in ("linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"):
             converted = set(convert_target_modules_to_hf([megatron_name]))
             assert converted
-            assert converted <= SUPPORTED_TARGETS, (megatron_name, converted - SUPPORTED_TARGETS)
+            assert converted <= IMPLEMENTED_TARGETS, (megatron_name, converted - IMPLEMENTED_TARGETS)
 
     def test_mla_megatron_names_normalise_too(self):
-        assert set(convert_target_modules_to_hf(["linear_q_down_proj"])) <= SUPPORTED_TARGETS
+        assert set(convert_target_modules_to_hf(["linear_q_down_proj"])) <= IMPLEMENTED_TARGETS
 
     def test_hf_names_pass_through_unchanged(self):
         names = ["q_proj", "v_proj", "down_proj"]
         assert set(convert_target_modules_to_hf(names)) == set(names)
 
     def test_unimplemented_target_is_not_silently_accepted(self):
-        assert "in_proj_qkvz" not in SUPPORTED_TARGETS
+        assert "in_proj_qkvz" not in IMPLEMENTED_TARGETS

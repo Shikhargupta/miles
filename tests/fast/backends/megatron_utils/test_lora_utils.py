@@ -1,7 +1,7 @@
 """Unit tests for miles.backends.megatron_utils.lora_utils.
 
 Tests cover module name conversion, LoRA detection helpers, parameter identification,
-exclude-module parsing, and LoRA sync config building — all without GPU.
+and LoRA sync config building — all without GPU.
 """
 
 from argparse import Namespace
@@ -17,7 +17,6 @@ from miles.backends.megatron_utils.lora_utils import (
     convert_target_modules_to_megatron,
     is_lora_enabled,
     is_lora_weight_name,
-    parse_exclude_modules,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -272,36 +271,6 @@ class TestIsAdapterParamName:
 
 
 # ---------------------------------------------------------------------------
-# parse_exclude_modules
-# ---------------------------------------------------------------------------
-
-
-class TestParseExcludeModules:
-    def test_none(self):
-        args = Namespace(exclude_modules=None)
-        assert parse_exclude_modules(args) == []
-
-    def test_single_module_string(self):
-        args = Namespace(exclude_modules="o_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert result == ["linear_proj"]
-
-    def test_comma_separated(self):
-        args = Namespace(exclude_modules="o_proj, down_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
-
-    def test_list_input(self):
-        args = Namespace(exclude_modules=["o_proj", "down_proj"])
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
-
-    def test_missing_attr(self):
-        args = Namespace()
-        assert parse_exclude_modules(args) == []
-
-
-# ---------------------------------------------------------------------------
 # build_lora_sync_config
 # ---------------------------------------------------------------------------
 
@@ -342,9 +311,10 @@ class TestBuildLoraSyncConfig:
             lora_alpha=8,
             lora_dropout=0.1,
             target_modules=["linear_q", "linear_k"],
+            megatron_to_hf_mode="raw",
         )
         config = build_lora_sync_config(args)
-        assert config["target_modules"] == ["q_proj", "k_proj"]
+        assert config["target_modules"] == ["k_proj", "q_proj", "v_proj"]
         assert config["r"] == 8
 
 
