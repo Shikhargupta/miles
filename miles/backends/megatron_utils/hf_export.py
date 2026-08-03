@@ -56,6 +56,8 @@ def export_hf_model_direct(
     is_writer = torch.distributed.get_rank() == 0
     if is_writer:
         path.mkdir(parents=True, exist_ok=True)
+        # A stale marker from an earlier run would vouch for this run's half-written shards.
+        (path / HF_EXPORT_COMPLETE_MARKER).unlink(missing_ok=True)
 
     iterator = HfWeightIteratorDirect(args, model, model_name=model_name, quantization_config=quantization_config)
 
@@ -90,9 +92,6 @@ def export_hf_model_direct(
     finally:
         # In a finally: rank 0 is the only rank that can fail above.
         torch.distributed.barrier()
-
-    if is_writer:
-        (path / HF_EXPORT_COMPLETE_MARKER).touch()
 
 
 @cache
@@ -150,6 +149,8 @@ def save_hf_model(
         else:
             bridge = _get_hf_bridge(args.hf_checkpoint)
             path.mkdir(parents=True, exist_ok=True)
+            if torch.distributed.get_rank() == 0:
+                (path / HF_EXPORT_COMPLETE_MARKER).unlink(missing_ok=True)
             with patch_megatron_model(model):
                 # For LoRA models, merge_adapter_weights=True (default) merges
                 # adapter weights into base weights for a standalone HF model.
@@ -162,7 +163,6 @@ def save_hf_model(
                         f"HF export to {path} produced no weight files — the megatron "
                         f"bridge likely has no mapping for this model architecture."
                     )
-                (path / HF_EXPORT_COMPLETE_MARKER).touch()
 
         if should_log:
             logger.info(f"Successfully saved merged HuggingFace model to {path}")
@@ -171,6 +171,7 @@ def save_hf_model(
             raise
         if should_log:
             logger.error(f"Failed to save HuggingFace format: {e}")
+        return
 
     # Additionally save adapter-only checkpoint for LoRA models
     if is_lora_model(model):
@@ -186,3 +187,7 @@ def save_hf_model(
                 raise
             if should_log:
                 logger.error(f"Failed to save LoRA adapter: {e}")
+            return
+
+    if torch.distributed.get_rank() == 0:
+        (path / HF_EXPORT_COMPLETE_MARKER).touch()
