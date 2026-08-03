@@ -86,7 +86,9 @@ class NativeLoRAAdapter(nn.Module):
     ):
         super().__init__()
         projection_specs = tuple(projection_specs)
-        assert projection_specs, "a native LoRA adapter requires at least one projection"
+        assert (
+            projection_specs or type(self).export_plan is not NativeLoRAAdapter.export_plan
+        ), "a native LoRA adapter requires projections, unless it owns its IO via export_plan()"
         assert len({projection.hf for projection in projection_specs}) == len(
             projection_specs
         ), "native LoRA projection HF names must be unique"
@@ -113,6 +115,24 @@ class NativeLoRAAdapter(nn.Module):
     def exports(self) -> Iterator[ProjectionExport]:
         """Yield one public descriptor per logical projection this adapter carries."""
         raise NotImplementedError
+
+    def export_plan(self, gather) -> list | None:
+        """Custom HF export: ``[(hf_name, tensor_or_thunk), ...]`` built against a ParallelGather.
+
+        Return None (the default) to use the generic per-projection export
+        derived from :meth:`exports`. Adapters whose tensors need expert-axis
+        gathering, non-contiguous half packing, or padding trims override this.
+        """
+        del gather
+        return None
+
+    def load_plan_custom(self, take) -> list | None:
+        """Custom HF load: ``[(parameter, full_tensor_slice)]`` given ``take(hf_name)``.
+
+        Return None (the default) to use the generic TP-sliced projection load.
+        """
+        del take
+        return None
 
     def _export_projections(self, fused_group: SGLangFusedGroup | None) -> Iterator[ProjectionExport]:
         tp = self.context.tp_size
@@ -201,7 +221,7 @@ class LoRALinear(NativeLoRAAdapter):
         )
         self._validate_projection_parameters()
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         a = getattr(self, f"{self.attr}_A")
         b = getattr(self, f"{self.attr}_B")
         if self.layout == ShardLayout.COLUMN:
@@ -279,7 +299,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
     def _pack(self, delta: torch.Tensor) -> torch.Tensor:
         return delta
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         x = branch_input(x, base_module, self.context)
         rank = self.context.rank
         down = F.linear(x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0))
@@ -367,12 +387,16 @@ class LoRASplitFC1(LoRASplitAdapter):
 
 
 def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter, scale: float) -> None:
-    """Add a callable adapter module's delta while preserving ``(out, bias)``."""
+    """Add a callable adapter module's delta while preserving ``(out, bias)``.
+
+    Extra host-forward positionals (e.g. grouped GEMM's ``tokens_per_expert``)
+    are forwarded to the adapter, which may ignore them.
+    """
     original = module.forward
 
     def forward(x, *args, **kwargs):
         out, bias = original(x, *args, **kwargs)
-        return torch.add(out, adapter(x, module), alpha=scale), bias
+        return torch.add(out, adapter(x, module, *args), alpha=scale), bias
 
     module.forward = forward
 

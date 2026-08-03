@@ -140,8 +140,6 @@ def uses_builtin_native_lora_provider(args: Namespace) -> bool:
     """
     if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
         return False
-    if getattr(args, "lora_provider_path", None) is None and sglang_lora_target_all_sentinel(args):
-        return False
     return getattr(args, "lora_provider_path", None) in _NATIVE_LORA_PROVIDER_PATHS
 
 
@@ -461,16 +459,11 @@ def resolve_lora_provider(args: Namespace):
     """Return the module implementing the native-LoRA provider protocol.
 
     ``--lora-provider-path`` selects a model-specific implementation (a dotted
-    module path); the default is the ``miles_plugins.lora`` plugin. Inkling
-    checkpoints default to their model-specific provider: the built-in plugin
-    does not cover the Inkling module structure or its TML export naming.
+    module path); the default is the ``miles_plugins.lora`` plugin.
     """
     import importlib
 
-    path = getattr(args, "lora_provider_path", None)
-    if path is None and sglang_lora_target_all_sentinel(args):
-        path = "miles_plugins.models.inkling.lora"
-    path = path or _DEFAULT_LORA_PROVIDER
+    path = getattr(args, "lora_provider_path", None) or _DEFAULT_LORA_PROVIDER
     module = importlib.import_module(path)
     for entry_point in ("wrap_model_provider_with_lora", "load_lora_adapter_hf", "export_lora_hf_named"):
         assert hasattr(module, entry_point), f"--lora-provider-path {path} must define {entry_point}()"

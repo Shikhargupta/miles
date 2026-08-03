@@ -81,47 +81,69 @@ def reduce_row_parallel(partial: torch.Tensor, context: AttachContext) -> torch.
     return reduce_from_tensor_model_parallel_region(partial)
 
 
-class TensorParallelGather:
-    """Batch per-tensor TP all-gathers into one flat collective for HF export."""
+class ParallelGather:
+    """Batch per-tensor all-gathers into one flat collective per parallel group.
+
+    ``group`` selects the domain the tensor is sharded over: ``"tp"`` for the
+    attention tensor-parallel group, ``"ep"`` for the expert-parallel group
+    (expert-axis adapter tensors).
+    """
+
+    _GROUPS = ("tp", "ep")
 
     def __init__(self):
-        self._requests: list[tuple[torch.Tensor, int]] = []
-        self._resolved: list[torch.Tensor] | None = None
+        self._requests: dict[str, list[tuple[torch.Tensor, int]]] = {kind: [] for kind in self._GROUPS}
+        self._resolved: dict[str, list[torch.Tensor]] | None = None
 
-    def request(self, local: torch.Tensor, cat_dim: int) -> Callable[[], torch.Tensor]:
-        index = len(self._requests)
-        self._requests.append((local, cat_dim))
-        return lambda: self._resolve(index)
+    def request(self, local: torch.Tensor, cat_dim: int, group: str = "tp") -> Callable[[], torch.Tensor]:
+        assert group in self._GROUPS, f"unknown gather group {group!r}"
+        index = len(self._requests[group])
+        self._requests[group].append((local, cat_dim))
+        return lambda: self._resolve(group, index)
 
-    def _resolve(self, index: int) -> torch.Tensor:
-        assert self._resolved is not None, "TensorParallelGather.flush() must run before resolving requests"
-        return self._resolved[index]
+    def _resolve(self, group: str, index: int) -> torch.Tensor:
+        assert self._resolved is not None, "ParallelGather.flush() must run before resolving requests"
+        return self._resolved[group][index]
 
     def flush(self) -> None:
-        if not dist.is_initialized() or not self._requests:
-            self._resolved = [local for local, _ in self._requests]
+        self._resolved = {}
+        if not dist.is_initialized():
+            for kind in self._GROUPS:
+                self._resolved[kind] = [local for local, _ in self._requests[kind]]
             return
 
         from megatron.core import parallel_state as ps
 
-        world = ps.get_tensor_model_parallel_world_size()
-        if world == 1:
-            self._resolved = [local for local, _ in self._requests]
-            return
-        assert len({local.dtype for local, _ in self._requests}) == 1, "mixed adapter dtypes"
-        flats = [local.detach().contiguous().reshape(-1) for local, _ in self._requests]
-        sizes = [flat.numel() for flat in flats]
-        local_flat = torch.cat(flats)
-        gathered = local_flat.new_empty(world * local_flat.numel())
-        dist.all_gather_into_tensor(gathered, local_flat, group=ps.get_tensor_model_parallel_group())
-        per_rank = gathered.view(world, -1)
+        domains = {
+            "tp": (ps.get_tensor_model_parallel_group, ps.get_tensor_model_parallel_world_size),
+            "ep": (ps.get_expert_model_parallel_group, ps.get_expert_model_parallel_world_size),
+        }
+        for kind in self._GROUPS:
+            requests = self._requests[kind]
+            get_group, get_world = domains[kind]
+            world = get_world() if requests else 1
+            if not requests or world == 1:
+                self._resolved[kind] = [local for local, _ in requests]
+                continue
+            assert len({local.dtype for local, _ in requests}) == 1, "mixed adapter dtypes"
+            flats = [local.detach().contiguous().reshape(-1) for local, _ in requests]
+            sizes = [flat.numel() for flat in flats]
+            local_flat = torch.cat(flats)
+            gathered = local_flat.new_empty(world * local_flat.numel())
+            dist.all_gather_into_tensor(gathered, local_flat, group=get_group())
+            per_rank = gathered.view(world, -1)
 
-        self._resolved = []
-        offset = 0
-        for (local, cat_dim), size in zip(self._requests, sizes, strict=True):
-            shards = [per_rank[rank, offset : offset + size].view(local.shape) for rank in range(world)]
-            self._resolved.append(torch.cat(shards, dim=cat_dim))
-            offset += size
+            resolved = []
+            offset = 0
+            for (local, cat_dim), size in zip(requests, sizes, strict=True):
+                shards = [per_rank[rank, offset : offset + size].view(local.shape) for rank in range(world)]
+                resolved.append(torch.cat(shards, dim=cat_dim))
+                offset += size
+            self._resolved[kind] = resolved
+
+
+# Historical name: HF export used to gather over TP only.
+TensorParallelGather = ParallelGather
 
 
 def reduce_marked_lora_grads(model: Sequence[nn.Module]) -> None:

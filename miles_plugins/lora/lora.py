@@ -124,6 +124,10 @@ def apply_native_lora(model, args):
         parameter.requires_grad = False
     hooked_embedding = _require_grad_on_first_activation(model)
 
+    attention_prefix = getattr(getattr(arch_spec.attention, "layout", None), "hf_block_prefix", None) or "self_attn."
+    mlp_prefix = getattr(getattr(arch_spec.mlp, "layout", None), "hf_block_prefix", None) or "mlp."
+    moe_attach = getattr(arch_spec.moe, "attach", None)
+
     wrapped = 0
     mixer_only_layers = []
     moe_skipped_targets: set[str] = set()
@@ -132,7 +136,7 @@ def apply_native_lora(model, args):
         hf_layer = f"{context.layer_prefix}{layer_index}."
         attention = getattr(layer, "self_attention", None)
         if attention is not None:
-            attached = arch_spec.attention.attach(attention, hf_layer + "self_attn.", context)
+            attached = arch_spec.attention.attach(attention, hf_layer + attention_prefix, context)
             wrapped += attached
             if (
                 attached == 0
@@ -145,10 +149,15 @@ def apply_native_lora(model, args):
         moe_skipped_targets.update(arch_spec.moe.validate_layer(mlp, context))
         if hasattr(mlp, "linear_fc1"):
             assert getattr(mlp.config, "gated_linear_unit", True), "native LoRA assumes a gated (SwiGLU) MLP"
-            wrapped += arch_spec.mlp.attach(mlp, hf_layer + "mlp.", context)
+            wrapped += arch_spec.mlp.attach(mlp, hf_layer + mlp_prefix, context)
         shared = getattr(mlp, "shared_experts", None)
         if shared is not None and hasattr(shared, "linear_fc1"):
             wrapped += arch_spec.mlp.attach(shared, hf_layer + context.shared_expert, context)
+        if moe_attach is not None:
+            wrapped += moe_attach(mlp, hf_layer, context)
+
+    if arch_spec.extras is not None:
+        wrapped += arch_spec.extras.attach(model, args, context)
 
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())

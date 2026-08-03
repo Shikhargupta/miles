@@ -115,6 +115,9 @@ class ProjectionBinding:
     adapter_attr: str
     guard: GuardFn | None = None
     serving_group: ServingGroup | None = None
+    # Adapter class for this binding; subclasses override export/load packing
+    # (e.g. a fused projection whose local B stacks two TP-sharded halves).
+    adapter_class: type[LoRALinear] = LoRALinear
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,10 @@ class ModuleLayout:
     # When set, the whole layout applies only if the block has this attribute
     # (e.g. plain-GQA tables are inert on GDN mixer layers).
     present_when_attr: str | None = None
+    # HF name segment between the layer prefix and this layout's projection
+    # names; None means the orchestrator's role default ("self_attn." for
+    # attention, "mlp." for MLP layouts).
+    hf_block_prefix: str | None = None
 
     @property
     def targets(self) -> frozenset[str]:
@@ -186,7 +193,7 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, hf_prefix: str, contex
         out_features = binding.out_dim(block, context)
         if binding.guard is not None:
             binding.guard(host, context, binding.projection, out_features)
-        adapter = LoRALinear(
+        adapter = binding.adapter_class(
             hf_prefix=hf_prefix,
             projection=binding.projection,
             reference=host.weight,

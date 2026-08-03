@@ -386,3 +386,32 @@ class TestSupportedTargets:
 
     def test_unimplemented_target_is_not_silently_accepted(self):
         assert "in_proj_qkvz" not in IMPLEMENTED_TARGETS
+
+
+class TestInklingSpec:
+    """Lock the Inkling registry entry's declared shape (attach is covered e2e)."""
+
+    def _spec(self):
+        from miles_plugins.lora.registry import MODEL_SPECS
+
+        return MODEL_SPECS["inkling_mm_model"].spec
+
+    def test_targets_cover_the_tml_projection_names(self):
+        spec = self._spec()
+        assert spec.attention.supported_targets == {"wq_du", "wk_dv", "wv_dv", "wr_du", "wo_ud"}
+        assert spec.mlp.supported_targets == {"gate_up_proj", "down_proj"}
+
+    def test_any_request_normalizes_to_the_full_native_set(self):
+        spec = self._spec()
+        normalized = spec.attention.normalize_targets(frozenset({"q_proj"}), expanded_from_all_linear=True)
+        assert normalized == spec.attention.supported_targets | spec.mlp.supported_targets
+
+    def test_block_prefixes_follow_tml_naming(self):
+        spec = self._spec()
+        assert spec.attention.layout.hf_block_prefix == "attn."
+        assert spec.mlp.layout.hf_block_prefix == "mlp."
+
+    def test_moe_and_extras_hooks_exist(self):
+        spec = self._spec()
+        assert callable(getattr(spec.moe, "attach", None))
+        assert callable(getattr(spec.extras, "attach", None))

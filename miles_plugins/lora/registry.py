@@ -72,6 +72,25 @@ class ModelEntry:
         ), "an UNSTABLE registry entry must record why (the reason is shown to users verbatim)"
 
 
+def _inkling_arch_spec() -> LoRAArchSpec:
+    from miles_plugins.lora.spec.inkling import (
+        InklingAttentionSpec,
+        InklingDenseMLPSpec,
+        InklingExtrasSpec,
+        InklingMoESpec,
+    )
+
+    attention = InklingAttentionSpec()
+    return LoRAArchSpec(
+        name=attention.name,
+        model_family=attention.family,
+        attention=attention,
+        mlp=InklingDenseMLPSpec(),
+        moe=InklingMoESpec(),
+        extras=InklingExtrasSpec(),
+    )
+
+
 def _build_model_specs() -> dict[str, ModelEntry]:
     """Every entry maps to a structurally covered spec; ``status`` records how much
     end-to-end evidence exists so warnings and coverage tests key off one field
@@ -107,6 +126,7 @@ def _build_model_specs() -> dict[str, ModelEntry]:
         # CompressedTensors path with a context-free forward.
         "kimi_k25": ModelEntry(mla, SupportStatus.VALIDATED),
         "joyai_llm_flash": ModelEntry(mla),
+        "inkling_mm_model": ModelEntry(_inkling_arch_spec()),
     }
 
 

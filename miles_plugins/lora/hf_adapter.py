@@ -26,7 +26,7 @@ from collections.abc import Iterable
 import torch
 import torch.distributed as dist
 
-from miles_plugins.lora.distributed import TensorParallelGather
+from miles_plugins.lora.distributed import ParallelGather
 from miles_plugins.lora.modules.linear import NativeLoRAAdapter, iter_adapters
 from miles_plugins.lora.spec.base import ShardLayout
 
@@ -112,10 +112,14 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     later refactor.
     """
     started = time.perf_counter()
-    gather = TensorParallelGather()
+    gather = ParallelGather()
     plan: list[tuple[str, object]] = []
 
     for adapter in iter_adapters(model_chunks):
+        custom = adapter.export_plan(gather)
+        if custom is not None:
+            plan.extend(custom)
+            continue
         for export in adapter.exports():
             a: object = export.a
             b: object = export.b
@@ -182,6 +186,14 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
 
 def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """Build a fully shape-validated load plan for one native adapter."""
+    custom = adapter.load_plan_custom(take)
+    if custom is not None:
+        for parameter, tensor in custom:
+            assert tuple(parameter.shape) == tuple(tensor.shape), (
+                f"[lora-native] shape mismatch loading {adapter.hf_prefix!r}: "
+                f"checkpoint slice {tuple(tensor.shape)} != parameter {tuple(parameter.shape)}"
+            )
+        return list(custom)
     tp_size = adapter.context.tp_size
     plan: list[tuple[torch.Tensor, torch.Tensor]] = []
     for projection in adapter.projection_specs:
