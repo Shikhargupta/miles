@@ -49,12 +49,11 @@ import miles.utils.external_utils.command_utils as U
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Standard attn + MLA + MLP/MoE, EXCLUDING the DSA indexer (wq_b/wk/weights_proj):
-# on tilelang the indexer adapter gets no gradient at all, and on megatron it would
-# only get a tiny aux-loss gradient (~1e-5).
-_DEFAULT_TARGET_MODULES = (
-    "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
-)
+# Attention + MLA only, EXCLUDING the DSA indexer (wq_b/wk/weights_proj) — on
+# tilelang the indexer adapter gets no gradient at all — and EXCLUDING the MLP/MoE
+# leaves (gate_proj/up_proj/down_proj): this is the MoE-LoRA-off ablation, so all
+# experts (routed + shared) and the dense MLP stay frozen.
+_DEFAULT_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
 
 
 @dataclass
@@ -71,7 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_rollout_checkpoint: str = "/cluster-storage/models/GLM-5.2_fp8"
     # Must be shared across nodes: every rank writes its dist-checkpoint shard here,
     # and the generated sglang config is read by engine actors on every node.
-    save_dir: str = "/personal/07ec30ff_glm52_lora_tb2/"
+    save_dir: str = "/personal/07ec30ff_glm52_lora_tb2_nomoe/"
     save_traces_dir: str = ""
     prompt_data: str = "/personal/07ec30ff_stage/tb2_train_glm52.jsonl"
 
@@ -100,8 +99,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     target_modules: str = _DEFAULT_TARGET_MODULES
     # Required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-4).
     lora_base_cpu_backup: bool = True
-    # MoE-expert LoRA layout: shared-outer when True, per-expert when False.
-    experts_shared_outer_loras: bool = True
+    # Expert-LoRA layout flag; irrelevant (and left off) with no expert leaves in
+    # --target-modules.
+    experts_shared_outer_loras: bool = False
 
     # GLM-5.2 specifics. megatron is dense O(S**2) and caps near S=4096, so agentic
     # sequence lengths need tilelang; see the module docstring.
