@@ -164,6 +164,18 @@ Two fields are deliberately not inheritable: TP comes from `--eval-num-gpus-per-
 the other), and the routing/indexer replay side-channels are forced off — eval samples never
 feed training, so returning routed experts is pure overhead.
 
+Size the staging dir before pointing it at tmpfs. Snapshots are retired on every
+outcome, but the dir holds up to
+
+```
+--eval-keep-snapshots  (retired, kept for inspection)  +  --eval-max-in-flight  (exported, still evaluating)
+```
+
+model-sized directories at once — 4 by default, so ~32 GB of `/dev/shm` for a 4B model in
+bf16. Evals are serialized inside the trainer, so raising `--eval-max-in-flight` does not
+run more of them at once; it lets the trainer export further ahead, and costs one more
+snapshot on disk.
+
 Two production-oriented variants:
 
 - **Reuse mode**: with `--save-hf` set and `--eval-hf-dir` unset, eval reuses the
@@ -186,9 +198,15 @@ Two production-oriented variants:
   `examples/fully_async/run_qwen3_5_4b_fully_async_eval.py` launches either backend
   behind one flag (`--eval-backend fleet|external`).
 
-Every skipped point is attributable from the dashboard: `eval/skipped_busy`,
-`eval/skipped_ckpt_missing`, `eval/skipped_unhealthy`, `eval/skipped_export_failed`
-are logged at the affected step. `eval/{ds}/weight_version/mean == eval/step` and
+`--eval-num-gpus` and a `CheckpointEvalFn` `--eval-function-path` each pick a backend,
+so passing both is an error rather than the fleet winning and handing the work over.
+
+Every skipped point is attributable from the dashboard, logged at the affected step:
+`eval/skipped_busy` (at `--eval-max-in-flight` under `--eval-overflow-policy skip`),
+`eval/skipped_export_failed`, `eval/skipped_ckpt_missing` (no `.complete` marker),
+`eval/skipped_unhealthy` (fleet or its router unreachable), `eval/skipped_pin_violation`
+(engines did not all report the expected `weight_version`), and `eval/skipped_crashed`
+(anything else the eval raised). `eval/{ds}/weight_version/mean == eval/step` and
 `mixed_version_ratio == 0` confirm every point measured exactly the intended weights.
 
 The eval-engine `weight_version` namespace is the snapshot's `rollout_id` — deliberately
