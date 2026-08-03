@@ -9,6 +9,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
@@ -26,7 +27,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     call_rollout_fn,
 )
-from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalFleet, EvalSkip, eval_uses_snapshots
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, eval_uses_snapshots
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
