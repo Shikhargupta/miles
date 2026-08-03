@@ -13,6 +13,7 @@ from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names, compute_router_spec_name, specs_inference_engine
 from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import WorkerMetaContext
 
@@ -58,6 +59,14 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
     )
 
 
+def _make_serving_cell(info: CellInfo) -> SimpleNamespace:
+    status = CellStatus(
+        phase="Running",
+        conditions=[CellCondition.allocated(TriState.TRUE), CellCondition.healthy(TriState.TRUE)],
+    )
+    return SimpleNamespace(meta=_make_cell_meta(info), cell_status=lambda: status)
+
+
 class _RecordingServer:
     def __init__(self, server_cells: dict | None = None):
         self.server_cells = server_cells or {}
@@ -85,6 +94,7 @@ def _make_controller(servers: dict) -> InferenceController:
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
     controller._health_checker_activeness = True
+    controller._cell_status_overrides = {}
     return controller
 
 
@@ -318,6 +328,56 @@ class TestEngineMetaContract:
             update_weights=True,
             workers_hash="pseudo-hash-0",
         )
+
+
+class TestPublishedCellStatuses:
+    @pytest.mark.asyncio
+    async def test_a_cell_the_reconciler_lost_is_published_as_suspended(self):
+        """The api server has no second source, so a cell without a process must say so here."""
+        info = _make_cell_info()
+        srv = _RecordingServer({info.cell_id: _make_serving_cell(info)})
+        controller = _make_controller({"default": srv})
+
+        await controller._reconcile(info.cell_id, None)
+
+        assert controller.get_cell_statuses()[info.cell_id].phase == "Suspended"
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_cell_is_published_as_pending_until_it_is_observed(self):
+        """Until reconcile sees the new generation, the old generation's verdict must not be published for it."""
+        info = _make_cell_info()
+        srv = _RecordingServer({info.cell_id: _make_serving_cell(info)})
+        controller = _make_controller({"default": srv})
+
+        controller.notify_cell_resumed(info.cell_id)
+
+        status = controller.get_cell_statuses()[info.cell_id]
+        assert status.phase == "Pending"
+        assert [c.type for c in status.conditions] == ["Allocated"]
+
+    @pytest.mark.asyncio
+    async def test_a_suspended_cell_is_published_as_suspended_before_the_next_poll(self):
+        """A suspend the api server just performed is known to it, poll interval or not."""
+        info = _make_cell_info()
+        srv = _RecordingServer({info.cell_id: _make_serving_cell(info)})
+        controller = _make_controller({"default": srv})
+
+        controller.notify_cell_suspended(info.cell_id)
+
+        assert controller.get_cell_statuses()[info.cell_id].phase == "Suspended"
+
+    @pytest.mark.asyncio
+    async def test_observing_the_new_generation_hands_the_cell_back_to_its_own_status(self):
+        """The override is a stopgap for one poll interval, not a permanent shadow of the cell."""
+        info = _make_cell_info()
+        srv = _RecordingServer()
+        controller = _make_controller({info.meta["model_id"]: srv})
+        controller.notify_cell_resumed(info.cell_id)
+
+        await controller._reconcile(info.cell_id, info)
+        srv.server_cells[info.cell_id] = _make_serving_cell(info)
+
+        assert controller.get_cell_statuses()[info.cell_id].phase == "Running"
 
 
 class TestUpdateWeightsLockWindow:
