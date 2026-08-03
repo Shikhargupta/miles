@@ -211,10 +211,6 @@ def resolve_checkpoint_eval_fn(args: Namespace, *, eval_fn, servers) -> Checkpoi
             "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "
             "or --save-hf (reuse periodic HF checkpoints)."
         )
-        assert args.eval_keep_snapshots >= args.eval_max_in_flight, (
-            f"--eval-keep-snapshots ({args.eval_keep_snapshots}) must be >= --eval-max-in-flight "
-            f"({args.eval_max_in_flight}), otherwise a pending eval's snapshot could be GC'd."
-        )
         return eval_fn
     assert not (
         inspect.isclass(eval_fn) and issubclass(eval_fn, CheckpointEvalFn)

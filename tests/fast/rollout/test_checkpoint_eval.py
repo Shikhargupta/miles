@@ -238,7 +238,6 @@ def make_manager(args, checkpoint_fn=None):
     mgr.args = args
     mgr.rollout_id = 7
     mgr._eval_lock = asyncio.Lock()
-    mgr._eval_consumed_snapshots = []
     mgr._health_monitors = []
     mgr.use_experimental_refactor = True
     mgr._metric_checker = None
@@ -312,38 +311,6 @@ async def test_eval_checkpoint_skip_reason_propagates(controller_env, tmp_path):
 
     assert controller_env.logged["skip"] == (5, "pin_violation")
     assert "eval" not in controller_env.logged
-    assert snapshot.exists()  # a skipped snapshot is not consumed
-
-
-async def test_eval_checkpoint_gc_keeps_ring(controller_env, tmp_path):
-    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
-    mgr = make_manager(args, checkpoint_fn=CheckpointFnStub())
-
-    dirs = []
-    for rollout_id in (1, 2, 3):
-        snapshot = tmp_path / f"step_{rollout_id}"
-        snapshot.mkdir()
-        (snapshot / ".complete").touch()
-        dirs.append(snapshot)
-        await mgr.eval(rollout_id, hf_dir=str(snapshot))
-
-    assert not dirs[0].exists()  # oldest consumed snapshot beyond keep-2 is deleted
-    assert dirs[1].exists() and dirs[2].exists()
-
-
-async def test_eval_checkpoint_never_deletes_outside_staging(controller_env, tmp_path):
-    save_hf = tmp_path / "save_hf" / "step_1"
-    save_hf.mkdir(parents=True)
-    (save_hf / ".complete").touch()
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(staging), eval_keep_snapshots=2)
-    mgr = make_manager(args, checkpoint_fn=CheckpointFnStub())
-
-    await mgr.eval(1, hf_dir=str(save_hf))
-
-    assert save_hf.exists()
-    assert mgr._eval_consumed_snapshots == []
 
 
 async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
@@ -560,6 +527,76 @@ async def test_dispatcher_reuse_mode_uses_save_hf(dispatcher_env):
 
     assert actor_model.exports == []  # no extra export in reuse mode
     assert manager.eval_calls[0][:2] == (10, "/ckpt/hf/10")
+
+
+class TestSnapshotOwnership:
+    """The dispatcher exports the snapshot, so the dispatcher deletes it — on every
+    outcome, and only for dirs it exported itself."""
+
+    def _make(self, dispatcher_env, tmp_path, **overrides):
+        manager = FakeManagerActor()
+        dispatcher, _ = make_dispatcher(
+            dispatcher_env, manager, FakeActorModel(), eval_hf_dir=str(tmp_path), **overrides
+        )
+        return dispatcher, manager
+
+    async def _dispatch_and_finish(self, dispatcher, manager, rollout_id, tmp_path, *, crash=False):
+        snapshot = tmp_path / f"step_{rollout_id}"
+        snapshot.mkdir()
+        await dispatcher.dispatch(rollout_id)
+        index = len(manager._futures) - 1
+        if crash:
+            manager._futures[index].set_exception(RuntimeError("eval boom"))
+        else:
+            manager.finish(index)
+        await dispatcher.drain()
+        return snapshot
+
+    async def test_keeps_only_the_ring(self, dispatcher_env, tmp_path):
+        dispatcher, manager = self._make(dispatcher_env, tmp_path, eval_keep_snapshots=2)
+
+        dirs = [await self._dispatch_and_finish(dispatcher, manager, i, tmp_path) for i in (1, 2, 3)]
+
+        assert not dirs[0].exists()
+        assert dirs[1].exists() and dirs[2].exists()
+
+    async def test_crashed_eval_still_retires_its_snapshot(self, dispatcher_env, tmp_path):
+        """The leak this ownership move exists to prevent: a failed point used to
+        keep its snapshot forever, filling the recommended tmpfs staging dir."""
+        dispatcher, manager = self._make(dispatcher_env, tmp_path, eval_keep_snapshots=1)
+
+        first = await self._dispatch_and_finish(dispatcher, manager, 1, tmp_path, crash=True)
+        await self._dispatch_and_finish(dispatcher, manager, 2, tmp_path)
+
+        assert manager.skip_calls == [(1, "crashed")]
+        assert not first.exists()
+
+    async def test_failed_export_leaves_nothing_behind(self, dispatcher_env, tmp_path):
+        manager = FakeManagerActor()
+        dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel(fail=True), eval_hf_dir=str(tmp_path))
+        partial = tmp_path / "step_4"
+        partial.mkdir()
+
+        await dispatcher.dispatch(4)
+
+        assert manager.skip_calls == [(4, "export_failed")]
+        assert not partial.exists()
+
+    async def test_never_deletes_what_it_did_not_export(self, dispatcher_env, tmp_path):
+        """--save-hf checkpoints and --hf-checkpoint are not the dispatcher's to delete."""
+        save_hf = tmp_path / "save_hf"
+        save_hf.mkdir()
+        manager = FakeManagerActor()
+        dispatcher, _ = make_dispatcher(
+            dispatcher_env, manager, FakeActorModel(), eval_hf_dir=None, save_hf=str(save_hf), eval_keep_snapshots=0
+        )
+
+        await dispatcher.dispatch(1)
+        manager.finish()
+        await dispatcher.drain()
+
+        assert save_hf.exists()
+        assert dispatcher._exported == []
 
 
 async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):

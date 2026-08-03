@@ -1,9 +1,7 @@
 import asyncio
 import logging
-import shutil
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -100,7 +98,6 @@ class RolloutManager:
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
-        self._eval_consumed_snapshots: list[str] = []
         self._checkpoint_fn = resolve_checkpoint_eval_fn(
             args, eval_fn=self.eval_generate_rollout, servers=self.servers
         )
@@ -223,28 +220,9 @@ class RolloutManager:
             metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
             if self._metric_checker is not None:
                 self._metric_checker.on_eval(metrics)
-            self._gc_eval_snapshots(hf_dir)
 
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
-
-    def _gc_eval_snapshots(self, consumed_dir: str) -> None:
-        """Delete consumed --eval-hf-dir snapshots beyond the keep ring; nothing else
-        is ever deleted (pending evals reference unconsumed dirs)."""
-        if self.args.eval_hf_dir is None:
-            return
-        staging_root = Path(self.args.eval_hf_dir).resolve()
-        consumed = Path(consumed_dir).resolve()
-        if staging_root not in consumed.parents:
-            return
-        consumed = str(consumed)
-        if consumed in self._eval_consumed_snapshots:
-            self._eval_consumed_snapshots.remove(consumed)
-        self._eval_consumed_snapshots.append(consumed)
-        while len(self._eval_consumed_snapshots) > self.args.eval_keep_snapshots:
-            victim = self._eval_consumed_snapshots.pop(0)
-            shutil.rmtree(victim, ignore_errors=True)
-            logger.info(f"GC'd consumed eval snapshot {victim}")
 
     async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:

@@ -2774,10 +2774,6 @@ def miles_validate_args(args):
             f"eval_num_gpus ({args.eval_num_gpus}) must be divisible by "
             f"eval_num_gpus_per_engine ({args.eval_num_gpus_per_engine})."
         )
-        assert args.eval_keep_snapshots >= args.eval_max_in_flight, (
-            f"--eval-keep-snapshots ({args.eval_keep_snapshots}) must be >= --eval-max-in-flight "
-            f"({args.eval_max_in_flight}), otherwise a pending eval's snapshot could be GC'd."
-        )
         if args.eval_hf_dir is None:
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
