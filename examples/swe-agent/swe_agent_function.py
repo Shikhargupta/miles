@@ -37,9 +37,12 @@ def _get_agent_server_client() -> httpx.AsyncClient:
             (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", 6), 5),
         ]
         transport = httpx.AsyncHTTPTransport(socket_options=socket_options)
+        # Keepalive reuse is disabled: pooled connections can sit idle for the
+        # whole agent-timeout window, and reusing one the server has silently
+        # closed raises httpx.ReadError and kills the training driver.
         _agent_server_client = httpx.AsyncClient(
             transport=transport,
-            limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
+            limits=httpx.Limits(max_connections=64, max_keepalive_connections=0),
             timeout=None,
         )
     return _agent_server_client
