@@ -174,15 +174,27 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             "--expert-tensor-parallel-size 1 "
         )
 
-    if args.model_name == "Inkling-Small" and total_gpus == 56:
-        # TP4 x PP7 -> DP2; 42 = 7x6 exactly; EP8 <= TP*DP=8 -> 32 experts per rank.
-        return (
-            "--tensor-model-parallel-size 4 "
-            "--sequence-parallel "
-            "--pipeline-model-parallel-size 7 "
-            "--expert-model-parallel-size 8 "
-            "--expert-tensor-parallel-size 1 "
-        )
+    if args.model_name == "Inkling-Small" and args.actor_num_gpus_per_node == 8:
+        if total_gpus == 56:
+            # TP4 x PP7 -> DP2; 42 = 7x6 exactly; EP8 <= TP*DP=8 -> 32 experts per rank.
+            return (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 7 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
+        if total_gpus == 64:
+            # TP4 x PP8 -> DP2; 42 = 7x5 + 7 (PP7 cannot divide 64);
+            # EP8 <= TP*DP=8 -> 32 experts per rank.
+            return (
+                "--tensor-model-parallel-size 4 "
+                "--sequence-parallel "
+                "--pipeline-model-parallel-size 8 "
+                "--decoder-last-pipeline-num-layers 7 "
+                "--expert-model-parallel-size 8 "
+                "--expert-tensor-parallel-size 1 "
+            )
 
     if args.model_name in ("Inkling-4layer", "Inkling-Small-4layer") and args.actor_num_nodes == 1:
         return (
