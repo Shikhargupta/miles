@@ -61,6 +61,7 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async does not support --rollout-all-samples-process-path"
 
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
+    args.eval_uses_snapshots = args.eval_num_gpus > 0 or is_checkpoint_eval_fn(args.eval_function_path)
 
 
 def reset_arg(parser, name, **kwargs):
@@ -2585,9 +2586,6 @@ def miles_validate_args(args):
 
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
-    # The eval posture: read by the driver's dispatcher and by RolloutManager, which
-    # never import each other.
-    args.eval_uses_snapshots = args.eval_num_gpus > 0 or is_checkpoint_eval_fn(args.eval_function_path)
 
     if args.mini_ft_controller_enable and args.control_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
@@ -2758,32 +2756,7 @@ def miles_validate_args(args):
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
 
-    # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
-    if args.eval_uses_snapshots:
-        assert (
-            enable_experimental_rollout_refactor()
-        ), "Snapshot eval requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
-        assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
-        assert args.eval_hf_dir is not None or args.save_hf is not None, (
-            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
-            "or --save-hf (reuse periodic HF checkpoints)."
-        )
-        assert not args.colocate, "Snapshot eval is not supported with --colocate."
-        assert (
-            not args.debug_train_only and not args.debug_rollout_only
-        ), "Snapshot eval is not supported with debug_train_only/debug_rollout_only."
-        if args.eval_hf_dir is None:
-            assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
-                "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
-                f"multiple of save_interval (got eval_interval={args.eval_interval}, "
-                f"save_interval={args.save_interval}). Set --eval-hf-dir for independent snapshots."
-            )
-
     if args.eval_num_gpus > 0:
-        assert not is_checkpoint_eval_fn(args.eval_function_path), (
-            "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
-            "backend; the fleet would boot and then hand the work to the other one."
-        )
         assert args.eval_num_gpus % args.eval_num_gpus_per_engine == 0, (
             f"eval_num_gpus ({args.eval_num_gpus}) must be divisible by "
             f"eval_num_gpus_per_engine ({args.eval_num_gpus_per_engine})."
@@ -3109,6 +3082,32 @@ def miles_validate_args(args):
         )
 
     _resolve_rollout_functions(args)
+
+    assert not (args.eval_num_gpus > 0 and is_checkpoint_eval_fn(args.eval_function_path)), (
+        "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
+        "backend; the fleet would boot and then hand the work to the other one."
+    )
+
+    # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
+    if args.eval_uses_snapshots:
+        assert (
+            enable_experimental_rollout_refactor()
+        ), "Snapshot eval requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+        assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
+        assert args.eval_hf_dir is not None or args.save_hf is not None, (
+            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
+            "or --save-hf (reuse periodic HF checkpoints)."
+        )
+        assert not args.colocate, "Snapshot eval is not supported with --colocate."
+        assert (
+            not args.debug_train_only and not args.debug_rollout_only
+        ), "Snapshot eval is not supported with debug_train_only/debug_rollout_only."
+        if args.eval_hf_dir is None:
+            assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
+                "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
+                f"multiple of save_interval (got eval_interval={args.eval_interval}, "
+                f"save_interval={args.save_interval}). Set --eval-hf-dir for independent snapshots."
+            )
 
     if args.num_steps_per_rollout is not None:
         global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout
