@@ -1067,8 +1067,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to the eval generation function."
-                    "If not set, we will use rollout_function_path as the default. "
+                    "Path to the eval fn. Two kinds fit here. A rollout fn generates against the "
+                    "engines the framework hands it: the training engines, or the dedicated fleet "
+                    "when --eval-num-gpus is set. A CheckpointEvalFn subclass gets the snapshot "
+                    "path instead and owns the rest itself — weight delivery, endpoint, generation. "
+                    "If not set, defaults to --rollout-function-path."
                 ),
             )
 
