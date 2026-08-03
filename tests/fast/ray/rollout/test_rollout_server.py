@@ -36,11 +36,39 @@ class TestRolloutServerPureFunctions:
         [group] = eval_model.server_groups
         assert (group.num_gpus, group.num_gpus_per_engine) == (2, 2)
         # Eval samples never feed training, so the replay side-channels are forced off.
-        assert group.overrides == {"enable_return_routed_experts": False, "enable_return_indexer_topk": False}
+        assert group.overrides["enable_return_routed_experts"] is False
+        assert group.overrides["enable_return_indexer_topk"] is False
 
         # The fleet boots on --hf-checkpoint; every eval overwrites those weights anyway.
         eval_model.resolve(args)
         assert group.overrides["model_path"] == args.hf_checkpoint
+
+    def test_tp_coupled_sizes_are_not_inherited_across_a_different_eval_tp(self):
+        """SGLang ties dp/pp/ep/attn_cp to tp_size, so inheriting them across a smaller
+        eval fleet produces an engine that fails ServerArgs validation at boot."""
+        args = make_args(rollout_num_gpus_per_engine=8, eval_num_gpus=1, eval_num_gpus_per_engine=1)
+        [group] = [m for m in _resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
+
+        assert {k: group.overrides[k] for k in ("dp_size", "pp_size", "ep_size", "attn_cp_size")} == dict.fromkeys(
+            ("dp_size", "pp_size", "ep_size", "attn_cp_size"), 1
+        )
+
+    def test_tp_coupled_sizes_are_inherited_when_the_tp_matches(self):
+        args = make_args(rollout_num_gpus_per_engine=2, eval_num_gpus=2, eval_num_gpus_per_engine=2)
+        [group] = [m for m in _resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
+
+        assert "ep_size" not in group.overrides  # left to the shared --sglang-* fill-in
+
+    def test_eval_sglang_overrides_win_over_the_tp_coupled_defaults(self):
+        args = make_args(
+            rollout_num_gpus_per_engine=8,
+            eval_num_gpus=2,
+            eval_num_gpus_per_engine=2,
+            eval_sglang_ep_size=2,
+        )
+        [group] = [m for m in _resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
+
+        assert group.overrides["ep_size"] == 2
 
     def test_eval_sglang_overrides_reach_the_eval_group_only(self):
         args = make_args(eval_num_gpus=2, eval_sglang_mem_fraction_static=0.95)

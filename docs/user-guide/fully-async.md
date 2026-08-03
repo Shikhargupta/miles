@@ -159,10 +159,14 @@ field with the matching `--eval-sglang-*` flag:
 --no-eval-sglang-enable-dp-attention       # booleans take a --no- form to turn an inherited True off
 ```
 
-Two fields are deliberately not inheritable: TP comes from `--eval-num-gpus-per-engine`
-(which also places the engines, so a separate `--eval-sglang-tp-size` could move one without
-the other), and the routing/indexer replay side-channels are forced off — eval samples never
-feed training, so returning routed experts is pure overhead.
+Not everything is inheritable. TP comes from `--eval-num-gpus-per-engine`, which also places
+the engines, so a separate `--eval-sglang-tp-size` could move one without the other. SGLang
+ties `dp_size`, `pp_size`, `ep_size` and `attn_cp_size` to TP, so when the eval TP differs
+from the rollout TP those four default to 1 rather than being inherited — inheriting them
+across a different TP produces an engine that fails SGLang's own validation at boot. Set them
+explicitly with `--eval-sglang-*` if the eval fleet is large enough to want them. The
+routing/indexer replay side-channels are always off: eval samples never feed training, so
+returning routed experts is pure overhead.
 
 Size the staging dir before pointing it at tmpfs. Snapshots are retired on every
 outcome, but the dir holds up to
