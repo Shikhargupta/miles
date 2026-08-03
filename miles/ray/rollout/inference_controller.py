@@ -20,6 +20,7 @@ from miles.utils.context_lock import (
     requires_lock,
     with_lock,
 )
+from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -159,6 +160,20 @@ class InferenceController:
                 )
 
     # -------------------------- misc APIs -----------------------------
+
+    @lock_exempt
+    def get_cell_health_statuses(self) -> dict[str, TriState]:
+        """Snapshot for the api server, which serves from its own thread and event loop.
+
+        Deliberately lock-free and synchronous: taking the controller lock from there would
+        block on whatever rollout step currently holds it, and awaiting into the controller's
+        loop is not possible from the server's.
+        """
+        return {
+            cell_id: cell.health_checker.status
+            for srv in list(self.servers.values())
+            for cell_id, cell in list(srv.server_cells.items())
+        }
 
     @with_lock
     async def check_weights(

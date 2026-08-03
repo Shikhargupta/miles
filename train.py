@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 async def train(args):
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    _handle, pgs = launch_worker_manager(args)
+    worker_manager, pgs = launch_worker_manager(args)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
@@ -35,6 +35,7 @@ async def train(args):
     if args.api_server_port:
         start_api_server(
             actor_model=actor_model,
+            worker_manager=worker_manager,
             inference_controller=inference_controller,
             port=args.api_server_port,
             ft_components=args.ft_components,

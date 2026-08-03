@@ -4,8 +4,9 @@ import httpx
 import pytest
 
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.ft_utils.api_server.server import compute_engine_cell_ids
 
-from .conftest import MockHandle
+from .conftest import MockHandle, make_cell_summaries
 
 
 class TestGetHealth:
@@ -215,3 +216,24 @@ class TestPatchCell:
         assert resp.status_code == 500
         assert resp.json()["kind"] == "Status"
         assert resp.json()["reason"] == "InternalError"
+
+
+class TestComputeEngineCellIds:
+    def test_only_cells_carrying_a_model_are_registered(self) -> None:
+        """Routers and session servers are cells too, but healing them is not rollout ft."""
+        summaries = {
+            **make_cell_summaries("inference-engine-0-0-1", "inference-engine-0-0-0"),
+            **make_cell_summaries("miles-router-0", engine=False),
+        }
+
+        assert compute_engine_cell_ids(summaries) == ["inference-engine-0-0-0", "inference-engine-0-0-1"]
+
+    def test_a_suspended_engine_cell_is_still_registered(self) -> None:
+        """A suspended cell that dropped out of the registry could never be resumed."""
+        summaries = make_cell_summaries("inference-engine-0-0-0", suspended=True)
+
+        assert compute_engine_cell_ids(summaries) == ["inference-engine-0-0-0"]
+
+    def test_nothing_is_registered_without_engine_cells(self) -> None:
+        """A train-only deployment registers no rollout handles."""
+        assert compute_engine_cell_ids(make_cell_summaries("miles-router-0", engine=False)) == []

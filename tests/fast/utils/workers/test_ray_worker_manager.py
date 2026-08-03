@@ -1106,3 +1106,30 @@ class TestStartAndStopCells:
         await manager.stop_cells(["engine-0"])
 
         assert manager.get_worker_addrs("engine-1-0")["primary"] is not None
+
+
+class TestGetCellSummaries:
+    async def test_describes_every_cell_including_suspended_ones(self, fake_ray_cluster: FakeRayCluster):
+        """The api server must still list a suspended cell, or it could never be resumed."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+        await manager.stop_cells(["engine-0"])
+
+        summaries = manager.get_cell_summaries()
+
+        assert sorted(summaries) == ["engine-0", "engine-1"]
+        assert summaries["engine-0"].suspended
+        assert not summaries["engine-1"].suspended
+
+    async def test_the_meta_of_a_suspended_cell_is_still_known(self, fake_ray_cluster: FakeRayCluster):
+        """Meta comes from the spec, so suspending a cell must not make it unidentifiable."""
+        spec = _make_spec("engine").model_copy(update={"meta": lambda ctx: {"model_id": "default"}})
+        manager = await _launch([spec])
+        await manager.stop_cells(["engine-0"])
+
+        assert manager.get_cell_summaries()["engine-0"].meta == {"model_id": "default"}
+
+    async def test_a_cell_without_spec_meta_is_summarized_with_an_empty_meta(self, fake_ray_cluster: FakeRayCluster):
+        """Routers and session servers carry no meta, which is how they are told apart."""
+        manager = await _launch([_make_spec("router")])
+
+        assert manager.get_cell_summaries()["router-0"].meta == {}

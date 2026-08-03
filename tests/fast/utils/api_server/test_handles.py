@@ -6,9 +6,16 @@ import pytest
 
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
+from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.test_utils.fault_injector import FailureMode
 
-from .conftest import MockInferenceController, MockRayTrainCell, make_mock_group
+from .conftest import (
+    MockInferenceController,
+    MockRayTrainCell,
+    MockWorkerManager,
+    make_cell_summaries,
+    make_mock_group,
+)
 
 
 class TestActorCellHandle:
@@ -87,36 +94,96 @@ class TestActorCellHandle:
         group.start_cell.assert_called_once_with(1)
 
 
+def _make_rollout_handle(
+    *,
+    cell_id: str = "inference-engine-0-0-0",
+    suspended: bool = False,
+    health: TriState | None = TriState.TRUE,
+) -> tuple[_RolloutCellHandle, MockWorkerManager, MockInferenceController]:
+    manager = MockWorkerManager(make_cell_summaries(cell_id, suspended=suspended))
+    controller = MockInferenceController({cell_id: health} if health is not None else {})
+    handle = _RolloutCellHandle(
+        worker_manager=manager,
+        inference_controller=controller,
+        rollout_cell_id=cell_id,
+    )
+    return handle, manager, controller
+
+
 class TestRolloutCellHandle:
     @pytest.mark.asyncio
-    async def test_get_cell_delegates_to_controller(self) -> None:
-        controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
+    async def test_a_healthy_cell_is_reported_running(self) -> None:
+        """A serving engine that answers its probe is what the heal loop must leave alone."""
+        handle, _manager, _controller = _make_rollout_handle()
+
         cell = await handle.get_cell()
 
-        assert cell.metadata.name == "rollout-actor-0"
+        assert cell.metadata.name == "rollout-inference-engine-0-0-0"
         assert cell.metadata.labels["miles.io/cell-type"] == "rollout"
         assert cell.status.phase == "Running"
         assert cell.spec.suspend is False
+        assert [(c.type, c.status) for c in cell.status.conditions] == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.TRUE),
+        ]
 
     @pytest.mark.asyncio
-    async def test_suspend_delegates_to_controller(self) -> None:
-        controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
-        await handle.suspend()
-        assert controller.stopped_cells == ["actor-0"]
+    async def test_a_failing_probe_is_reported_unhealthy(self) -> None:
+        """This is the signal the mini ft controller heals on."""
+        handle, _manager, _controller = _make_rollout_handle(health=TriState.FALSE)
+
+        cell = await handle.get_cell()
+
+        assert cell.status.phase == "Running"
+        assert [(c.type, c.status) for c in cell.status.conditions] == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.FALSE),
+        ]
 
     @pytest.mark.asyncio
-    async def test_resume_delegates_to_controller(self) -> None:
-        controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
-        await handle.resume()
-        assert controller.started_cells == ["actor-0"]
+    async def test_suspension_comes_from_the_worker_manager(self) -> None:
+        """The manager owns the processes, so it alone knows a cell was suspended."""
+        handle, _manager, _controller = _make_rollout_handle(suspended=True)
+
+        cell = await handle.get_cell()
+
+        assert cell.spec.suspend is True
+        assert cell.status.phase == "Suspended"
+
+    @pytest.mark.asyncio
+    async def test_a_suspended_cell_reports_no_health(self) -> None:
+        """Its engine is gone, so any health the controller still remembers is stale."""
+        handle, _manager, _controller = _make_rollout_handle(suspended=True, health=TriState.TRUE)
+
+        cell = await handle.get_cell()
+
+        assert [(c.type, c.status) for c in cell.status.conditions] == [("Allocated", TriState.FALSE)]
+
+    @pytest.mark.asyncio
+    async def test_a_cell_the_controller_does_not_track_yet_is_unknown(self) -> None:
+        """A cell exists in the manager before reconcile hands it to the controller."""
+        handle, _manager, _controller = _make_rollout_handle(health=None)
+
+        cell = await handle.get_cell()
+
+        assert [(c.type, c.status) for c in cell.status.conditions] == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.UNKNOWN),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_health_is_read_without_awaiting_the_controller(self) -> None:
+        """The api server serves from its own event loop, so the controller is read synchronously."""
+        handle, _manager, controller = _make_rollout_handle()
+
+        await handle.get_cell()
+
+        assert controller.health_status_calls == 1
 
     def test_cell_type_is_rollout(self) -> None:
-        handle = _RolloutCellHandle(inference_controller=object(), rollout_cell_id="actor-0")
+        handle, _manager, _controller = _make_rollout_handle(cell_id="inference-engine-0-0-3")
         assert handle.cell_type == "rollout"
-        assert handle.cell_id == "rollout-actor-0"
+        assert handle.cell_id == "rollout-inference-engine-0-0-3"
 
 
 class _FakeRemoteMethod:

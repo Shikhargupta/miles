@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import httpx
 import pytest
 
-from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
+from miles.utils.workers.ray_worker_manager import CellSummary
 
 
 class MockHandle:
@@ -73,12 +75,15 @@ class MockHandle:
 
 
 class MockRemoteCall:
-    def __init__(self, return_value: object) -> None:
+    def __init__(self, return_value: object, effect: Callable[..., None] | None = None) -> None:
         self._return_value = return_value
+        self._effect = effect
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def remote(self, *args: object, **kwargs: object) -> asyncio.Future[object]:
         self.calls.append((args, kwargs))
+        if self._effect is not None:
+            self._effect(*args, **kwargs)
         future: asyncio.Future[object] = asyncio.get_event_loop().create_future()
         future.set_result(self._return_value)
         return future
@@ -87,35 +92,52 @@ class MockRemoteCall:
 class MockInferenceController:
     """Plain object, not a Ray actor: the controller lives in the driver process."""
 
-    def __init__(
-        self,
-        phase: str = "Running",
-        conditions: list[dict[str, str | None]] | None = None,
-        is_suspended: bool = False,
-    ) -> None:
-        self._phase = phase
-        self._conditions = conditions or [
-            {"type": "Allocated", "status": "True"},
-            {"type": "Healthy", "status": "True"},
-        ]
-        self._is_suspended = is_suspended
-        self.stopped_cells: list[str] = []
-        self.started_cells: list[str] = []
+    def __init__(self, health_statuses: dict[str, TriState] | None = None) -> None:
+        self._health_statuses = dict(health_statuses or {})
+        self.health_status_calls: int = 0
 
-    def get_cell_phase(self, cell_id: str) -> str:
-        return self._phase
+    def get_cell_health_statuses(self) -> dict[str, TriState]:
+        self.health_status_calls += 1
+        return dict(self._health_statuses)
 
-    def get_cell_conditions(self, cell_id: str) -> list[dict[str, str | None]]:
-        return self._conditions
 
-    def get_cell_is_suspended(self, cell_id: str) -> bool:
-        return self._is_suspended
+class MockWorkerManager:
+    """Stands in for the RayWorkerManager actor handle, whose methods are called remotely."""
 
-    async def stop_cell(self, cell_id: str) -> None:
-        self.stopped_cells.append(cell_id)
+    def __init__(self, summaries: dict[str, CellSummary] | None = None) -> None:
+        self._summaries = dict(summaries or {})
+        self.stopped_cells: list[list[str]] = []
+        self.started_cells: list[list[str]] = []
 
-    async def start_cell(self, cell_id: str) -> None:
-        self.started_cells.append(cell_id)
+    @property
+    def get_cell_summaries(self) -> MockRemoteCall:
+        return MockRemoteCall(dict(self._summaries))
+
+    @property
+    def stop_cells(self) -> MockRemoteCall:
+        return MockRemoteCall(None, effect=lambda ids: self._record(self.stopped_cells, ids, suspended=True))
+
+    @property
+    def start_cells(self) -> MockRemoteCall:
+        return MockRemoteCall(None, effect=lambda ids: self._record(self.started_cells, ids, suspended=False))
+
+    def _record(self, log: list[list[str]], cell_ids: list[str], *, suspended: bool) -> None:
+        log.append(list(cell_ids))
+        for cell_id in cell_ids:
+            self._summaries[cell_id] = CellSummary(
+                cell_id=cell_id, suspended=suspended, meta=self._summaries[cell_id].meta
+            )
+
+
+def make_cell_summaries(*cell_ids: str, suspended: bool = False, engine: bool = True) -> dict[str, CellSummary]:
+    return {
+        cell_id: CellSummary(
+            cell_id=cell_id,
+            suspended=suspended,
+            meta={"model_id": "default"} if engine else {},
+        )
+        for cell_id in cell_ids
+    }
 
 
 class MockRayTrainCell:

@@ -44,6 +44,13 @@ class WorkerInfo:
     actor_handle: ray.actor.ActorHandle
 
 
+@dataclass(kw_only=True)
+class CellSummary:
+    cell_id: str
+    suspended: bool
+    meta: dict
+
+
 class RayWorkerManager:
     def __init__(self):
         self.port_allocator = PortAllocator()
@@ -99,6 +106,10 @@ class RayWorkerManager:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
         infos = [c.get_info() for _, g in self._group_infos.items() for c in g.cells if c.alive and c.started]
         return {info.cell_id: info for info in infos}
+
+    def get_cell_summaries(self) -> dict[str, CellSummary]:
+        """Unlike ``get_cell_infos``, this also describes cells that are currently stopped."""
+        return {c.cell_id: c.get_summary() for c in self._all_cells()}
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:
         matches = [a for c in self._all_cells() if c.alive for a in c.actors if a.name == worker_name]
@@ -195,8 +206,15 @@ class _CellManager(Generic[SpecT]):
             cell_id=self.cell_id,
             worker_names=[a.name for a in self.actors],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
+            meta=self.meta,
         )
+
+    def get_summary(self) -> CellSummary:
+        return CellSummary(cell_id=self.cell_id, suspended=not self.alive, meta=self.meta)
+
+    @property
+    def meta(self) -> dict:
+        return f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {}
 
     @property
     def cell_id(self) -> str:
