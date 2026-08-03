@@ -37,6 +37,11 @@ async def create_rollout_servers(args) -> dict[str, "RolloutServer"]:
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
+            expected_num_cells=sum(
+                group_cfg.num_gpus // group_cfg.num_gpus_per_engine
+                for group_cfg in model_cfg.server_groups
+                if group_cfg.worker_type != "placeholder"
+            ),
         )
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
@@ -57,6 +62,7 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
+    expected_num_cells: int = 0
 
     @property
     def api_clients(self) -> list[SGLangApiClient]:
@@ -108,6 +114,17 @@ class RolloutServer:
                 for cell in self.server_cells.values()
             ]
         )
+
+    async def wait_expected_num_cells(self, timeout: float = 3600):
+        sleep_time = 2
+        for _ in range(int(timeout // sleep_time)):
+            if len(self.server_cells) == self.expected_num_cells:
+                return
+            await asyncio.sleep(sleep_time)
+            logger.info(
+                f"wait_expected_num_cells looping ({len(self.server_cells)}/{self.expected_num_cells} cells)..."
+            )
+        raise TimeoutError(f"Timed out after {timeout}s waiting for {self.expected_num_cells} cells to appear")
 
     async def wait_all_engines_alive(self, timeout: float = 600):
         # TODO: 600s default is hardcoded; make it configurable (e.g. via args) once we have a clearer
