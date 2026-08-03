@@ -144,11 +144,18 @@ through HF checkpoint snapshots — never by joining training weight updates:
 --eval-prompt-data aime /path/to/aime.jsonl
 ```
 
-Per eval-due step the trainer exports an HF snapshot (seconds to tmpfs), fires the
-eval **fire-and-forget**, and keeps training; the eval fleet pins its weights to the
-snapshot (`weight_version = str(rollout_id)`), runs the standard eval datasets, and the
-point lands at the right x-axis step even when it completes a few steps later
-(`eval/lag_steps` reports how late).
+Per eval-due step the trainer exports an HF snapshot, fires the eval
+**fire-and-forget**, and keeps training; the fleet pins its engines to the snapshot
+(`weight_version = str(rollout_id)`) and your `--eval-function-path` fn generates
+against them exactly as it would against the training engines, so custom eval fns
+work on the fleet unchanged. The point lands at the right x-axis step even when it
+completes a few steps later (`eval/lag_steps` reports how late).
+
+The export itself is not fire-and-forget: it is a collective across every train
+actor and the training loop waits for it, `eval/export_time_seconds` per point
+(~7 s for a 4B model on tmpfs, more with model size or a disk-backed
+`--eval-hf-dir`). Under `--eval-overflow-policy backpressure` a due point can also
+wait out the oldest pending eval. Reuse mode has neither cost.
 
 The fleet's engines **inherit every `--sglang-*` setting** from the rollout engines, so by
 default they are configured exactly like the engines you already tuned. Override any single

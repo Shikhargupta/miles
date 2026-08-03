@@ -66,8 +66,10 @@ class CheckpointEvalFn(abc.ABC):
     skip a point with proper accounting. Point ``--eval-function-path`` at the
     subclass (requires ``train_async.py`` and a snapshot source: ``--eval-hf-dir``
     or ``--save-hf``). See ``examples/fully_async/external_eval_fn.py`` for a full
-    implementation against an external sglang server; ``FleetEvalFn`` below is the
-    in-job flavor (constructed by ``RolloutManager``, not via the CLI flag).
+    implementation against an external sglang server.
+
+    The in-job eval fleet is not one of these: it delivers weights and leaves
+    generation to the eval fn, so it is mutually exclusive with this contract.
     """
 
     @abc.abstractmethod
