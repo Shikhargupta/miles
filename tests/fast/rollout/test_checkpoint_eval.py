@@ -15,7 +15,6 @@ from miles.rollout.checkpoint_eval import (
     CheckpointEvalFn,
     EvalSkip,
     FleetEvalFn,
-    eval_uses_snapshots,
     resolve_checkpoint_eval_fn,
     retarget_args,
 )
@@ -339,14 +338,6 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 
 
 STUB_PATH = "tests.fast.rollout.test_checkpoint_eval.CheckpointFnStub"
-
-
-def test_eval_uses_snapshots_is_a_function_of_args():
-    """The driver sizes its dispatch off this without asking the manager, so it must
-    agree with resolve_checkpoint_eval_fn from args alone."""
-    assert eval_uses_snapshots(make_args(eval_num_gpus=1, eval_function_path=None))
-    assert eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=STUB_PATH))
-    assert not eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=None))
 
 
 def test_resolve_checkpoint_eval_fn():
