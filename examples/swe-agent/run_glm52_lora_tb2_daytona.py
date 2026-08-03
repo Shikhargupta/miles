@@ -411,7 +411,11 @@ def execute(args: ScriptArgs):
         # The full-model step OOMs by a few hundred MiB while ~6 GiB sits reserved but
         # unallocated, so make the allocator reclaim cached blocks before growing the
         # pool. expandable_segments:True, the usual answer, breaks torch_memory_saver.
-        "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8",
+        # gc_threshold alone was not enough: variable-length agentic batches fragmented
+        # the pool until 112 GiB sat reserved against 57 GiB allocated and NCCL's own
+        # cudaMalloc during the backward LoRA grad all-reduce found 0 bytes free.
+        # max_split_size_mb keeps big blocks intact so gc can actually return them.
+        "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8,max_split_size_mb:512",
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
