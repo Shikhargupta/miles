@@ -664,7 +664,7 @@ def make_external_fn(external_fn_env, **env):
 
     for var, value in env.items():
         external_fn_env.monkeypatch.setenv(f"MILES_EXTERNAL_EVAL_{var}", value)
-    args = make_args(hf_checkpoint="/base", eval_model_path=None)
+    args = make_args(hf_checkpoint="/base")
     return external_fn_env.mod.ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
 
 

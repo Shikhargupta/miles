@@ -1150,12 +1150,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--eval-model-path",
-                type=str,
-                default=None,
-                help="Boot checkpoint for eval engines. Defaults to --hf-checkpoint.",
-            )
-            parser.add_argument(
                 "--eval-max-in-flight",
                 type=int,
                 default=2,
@@ -2780,8 +2774,6 @@ def miles_validate_args(args):
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "
                 f"save_interval={args.save_interval}). Set --eval-hf-dir for independent snapshots."
             )
-        if args.eval_model_path is None:
-            args.eval_model_path = args.hf_checkpoint
     else:
         overrides = collect_eval_sglang_overrides(args)
         assert not overrides, (

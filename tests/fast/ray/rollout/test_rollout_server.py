@@ -28,16 +28,19 @@ class TestRolloutServerPureFunctions:
 
     def test_eval_fleet_inherits_rollout_engine_settings(self):
         """The eval model carries only what makes it an eval fleet; the rest is inherited."""
-        args = make_args(eval_num_gpus=2, eval_num_gpus_per_engine=2, eval_model_path="/fake/eval-model")
+        args = make_args(eval_num_gpus=2, eval_num_gpus_per_engine=2)
         config = _resolve_sglang_config(args)
 
         [eval_model] = [m for m in config.models if m.name == "eval"]
-        assert eval_model.model_path == "/fake/eval-model"
         assert eval_model.update_weights is False
         [group] = eval_model.server_groups
         assert (group.num_gpus, group.num_gpus_per_engine) == (2, 2)
         # Eval samples never feed training, so the replay side-channels are forced off.
         assert group.overrides == {"enable_return_routed_experts": False, "enable_return_indexer_topk": False}
+
+        # The fleet boots on --hf-checkpoint; every eval overwrites those weights anyway.
+        eval_model.resolve(args)
+        assert group.overrides["model_path"] == args.hf_checkpoint
 
     def test_eval_sglang_overrides_reach_the_eval_group_only(self):
         args = make_args(eval_num_gpus=2, eval_sglang_mem_fraction_static=0.95)
@@ -67,13 +70,11 @@ class TestRolloutServerPureFunctions:
             rollout_num_gpus=8,
             eval_num_gpus=2,
             eval_num_gpus_per_engine=2,
-            eval_model_path="/fake/eval-model",
             eval_sglang_mem_fraction_static=0.95,
         )
         config = _resolve_sglang_config(args)
 
         [eval_model] = [m for m in config.models if m.name == "eval"]
-        assert eval_model.model_path == "/fake/eval-model"
         # Auto-inference would give True here and put the fleet in the broadcast group.
         assert eval_model.update_weights is False
         [group] = eval_model.server_groups

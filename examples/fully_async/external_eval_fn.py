@@ -56,7 +56,7 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
                 "-m",
                 "sglang.launch_server",
                 "--model-path",
-                args.eval_model_path or args.hf_checkpoint,
+                args.hf_checkpoint,
                 "--tp",
                 str(num_gpus),
                 "--host",

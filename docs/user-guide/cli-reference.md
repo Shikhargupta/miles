@@ -204,7 +204,6 @@ Sections mirror the launch-script argument groups.
 | `--eval-num-gpus` | int | `0` | Dedicated eval fleet size. `0` = shared-engine eval. |
 | `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
 | `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |
-| `--eval-model-path` | str | – | Boot checkpoint for eval engines. Defaults to `--hf-checkpoint`. |
 | `--eval-max-in-flight` | int | `2` | Max concurrently pending async evals. |
 | `--eval-overflow-policy` | str | `backpressure` | At the cap: await the oldest eval, or `skip` the new point (logged as `eval/skipped_busy`). |
 | `--eval-keep-snapshots` | int | `2` | GC ring for `--eval-hf-dir`; `--save-hf` output is never deleted. |

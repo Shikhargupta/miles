@@ -115,8 +115,6 @@ def _eval_sglang_overrides(args) -> dict:
 
 def _apply_eval_model_config(model_cfg: ModelConfig, args) -> None:
     """Fill the eval model from the ``--eval-*`` args: YAML > ``--eval-sglang-*`` > ``--sglang-*``."""
-    if model_cfg.model_path is None:
-        model_cfg.model_path = args.eval_model_path
     if model_cfg.update_weights is None:
         # Never joins the training broadcast group; the fleet is synced by snapshot only.
         model_cfg.update_weights = False
