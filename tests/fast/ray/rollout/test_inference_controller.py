@@ -43,6 +43,7 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
 class _RecordingServer:
     def __init__(self, server_cells: dict | None = None):
         self.server_cells = server_cells or {}
+        self.update_weights = False
         self.calls: list[tuple] = []
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
@@ -53,10 +54,19 @@ class _RecordingServer:
         self.calls.append(("remove", cell_id))
         del self.server_cells[cell_id]
 
+    def health_checking_pause(self):
+        self.calls.append(("health_checking_pause",))
+
+    def health_checking_resume(self):
+        self.calls.append(("health_checking_resume",))
+
+    async def offload(self, tags=None):
+        self.calls.append(("offload",))
+
 
 def _make_controller(servers: dict) -> InferenceController:
     controller = InferenceController.__new__(InferenceController)
-    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False)
+    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False)
     controller.servers = servers
     controller.rollout_engine_lock = None
     controller.context_lock = ContextLock("InferenceController")
@@ -164,6 +174,59 @@ class TestUpdateWeightsLockWindow:
         controller = _make_controller({})
         await controller.prepare_eval()
         assert not controller.context_lock.locked
+
+
+class TestHealthMonitoringPauseWindow:
+    @pytest.mark.asyncio
+    async def test_offload_pauses_probing_before_putting_engines_to_sleep(self):
+        """A slept engine cannot answer /health_generate, so probing must stop first."""
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+
+        await controller.offload()
+
+        assert srv.calls == [("health_checking_pause",), ("offload",)]
+
+    @pytest.mark.asyncio
+    async def test_starting_a_weight_update_pauses_probing(self):
+        """Engines are unusable while their weights are being replaced."""
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert srv.calls[0] == ("health_checking_pause",)
+
+    @pytest.mark.asyncio
+    async def test_preparing_a_rollout_resumes_probing(self):
+        """Probing comes back exactly when the engines start serving traffic again."""
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+
+        await controller.prepare_rollout(rollout_id=0)
+
+        assert srv.calls == [("health_checking_resume",)]
+
+    @pytest.mark.asyncio
+    async def test_preparing_an_eval_resumes_probing(self):
+        """Eval drives the same engines as a rollout does."""
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+
+        await controller.prepare_eval()
+
+        assert srv.calls == [("health_checking_resume",)]
+
+    @pytest.mark.asyncio
+    async def test_every_model_server_is_paused(self):
+        """Probing state is global: a second model's engines offload at the same time."""
+        servers = {name: _RecordingServer() for name in ("default", "frozen")}
+        controller = _make_controller(servers)
+
+        await controller.offload()
+
+        assert all(srv.calls[0] == ("health_checking_pause",) for srv in servers.values())
 
 
 class TestServersShareTheControllerLock:

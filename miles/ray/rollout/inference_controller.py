@@ -207,19 +207,13 @@ class InferenceController:
 
     @requires_lock
     async def _health_monitoring_pause(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
+        for srv in self.servers.values():
+            srv.health_checking_pause()
 
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
-
-    @requires_lock
-    def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
-            raise NotImplementedError(
-                "rollout fault tolerance is being rebuilt; health monitoring must pause before "
-                "get_updatable_engines_and_lock snapshots the engines"
-            )
+        for srv in self.servers.values():
+            srv.health_checking_resume()
 
     @property
     @requires_lock

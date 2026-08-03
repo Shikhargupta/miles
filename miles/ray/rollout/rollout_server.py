@@ -6,9 +6,11 @@ from typing import Any
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
+from miles.ray.rollout.cell_monitor import create_rollout_cell_health_checker
 from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
+from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,11 @@ async def create_rollout_servers(args, context_lock: ContextLock) -> dict[str, "
     )
 
     config = resolve_sglang_config(args)
+    health_checker_config = (
+        SimpleHealthCheckerConfig.from_args(args, prefix="rollout_health_check")
+        if "rollout" in args.ft_components
+        else None
+    )
 
     servers: dict[str, RolloutServer] = {}
 
@@ -39,6 +46,7 @@ async def create_rollout_servers(args, context_lock: ContextLock) -> dict[str, "
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
+            health_checker_config=health_checker_config,
             expected_num_cells=sum(
                 group_cfg.num_gpus // group_cfg.num_gpus_per_engine
                 for group_cfg in model_cfg.server_groups
@@ -66,6 +74,8 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
+    health_checker_config: SimpleHealthCheckerConfig | None = None
+    health_checking_paused: bool = False
     expected_num_cells: int = 0
 
     @property
@@ -94,7 +104,11 @@ class RolloutServer:
         cell_id = cell_meta.cell_id
         assert cell_id not in self.server_cells
         cell = ServerCell(args=self.args, router_api_client=self._router_api_client, meta=cell_meta)
+        if (config := self.health_checker_config) is not None:
+            cell.health_checker = create_rollout_cell_health_checker(cell=cell, config=config)
         await cell.add()
+        if self.health_checking_paused:
+            cell.health_checker.pause()
         self.server_cells[cell_id] = cell
 
     @requires_lock
@@ -102,6 +116,18 @@ class RolloutServer:
         logger.info(f"Killing server {cell_id=}...")
         await self.server_cells[cell_id].dispose()
         del self.server_cells[cell_id]
+
+    @requires_lock
+    def health_checking_pause(self) -> None:
+        self.health_checking_paused = True
+        for cell in self.server_cells.values():
+            cell.health_checker.pause()
+
+    @requires_lock
+    def health_checking_resume(self) -> None:
+        self.health_checking_paused = False
+        for cell in self.server_cells.values():
+            cell.health_checker.resume()
 
     @requires_lock
     async def offload(self, tags: list[str] | None = None):

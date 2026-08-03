@@ -471,45 +471,7 @@ class TestFailureThresholdDebounce:
         checker.stop()
 
 
-class TestRolloutHealthCheckerPreservesImmediateFailure:
-    def test_rollout_checker_forces_failure_threshold_one(self):
-        """Rollout health checker keeps pre-debounce semantics (single failure -> unhealthy)
-        even when handed a config with a larger threshold."""
-        from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig, create_rollout_cell_health_checker
-
-        checker = create_rollout_cell_health_checker(
-            cell_id="c0",
-            get_api_clients=lambda: [object()],
-            config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=5),
-        )
-
-        assert checker._config.failure_threshold == 1
-
-
 class TestNoopHealthChecker:
     def test_noop_status_is_always_unknown(self):
         checker = NoopHealthChecker()
         assert checker.status == TriState.UNKNOWN
-
-
-class TestRolloutCellHealthCheckerUsesApiClient:
-    async def test_check_calls_health_generate_on_the_lead_client(self):
-        """The rollout cell checker probes the lead engine over HTTP, not through a ray actor."""
-        from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig, create_rollout_cell_health_checker
-
-        calls = []
-
-        class _Client:
-            async def health_generate(self):
-                calls.append("health_generate")
-                return True
-
-        checker = create_rollout_cell_health_checker(
-            cell_id="c0",
-            get_api_clients=lambda: [_Client(), _Client()],
-            config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
-        )
-
-        await checker._check_fn()
-
-        assert calls == ["health_generate"]

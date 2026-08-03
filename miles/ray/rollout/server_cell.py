@@ -10,6 +10,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import CellState, StatePendingWeights, StateServing, StateUnknown
+from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -36,6 +37,7 @@ class ServerCell:
     args: Any
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
+    health_checker: BaseHealthChecker = dataclasses.field(default_factory=NoopHealthChecker)
     _state: CellState = dataclasses.field(default_factory=StateUnknown)
 
     @property
@@ -74,6 +76,8 @@ class ServerCell:
 
         self._mark_pending_weights(server_url=server_url, bootstrap_port=bootstrap_port)
 
+        await self.health_checker.start()
+
         if not self.meta.update_weights or self.args.debug_rollout_only:
             await self.mark_weights_ready()
 
@@ -90,6 +94,8 @@ class ServerCell:
         self._mark_serving()
 
     async def dispose(self) -> None:
+        self.health_checker.stop()
+
         if isinstance(self._state, StateServing):
             try:
                 await asyncio.wait_for(
