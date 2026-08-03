@@ -2,6 +2,7 @@
 requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
 
 import logging
+import math
 from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -154,6 +155,35 @@ def zero_adapter_slot_grads(model, slot: int) -> None:
             main_param.grad = None
 
 
+def report_nonfinite_adapter_grads(model, slot: int, limit: int = 12) -> None:
+    """Name the adapter tensors behind a non-finite slot norm.
+
+    Worth the walk: clipping scales every grad by ``clip/(norm + eps)``, so one NaN grad
+    turns the whole adapter to NaN in ``step_with_ready_grads`` with no other symptom.
+    """
+    from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
+
+    bad: list[str] = []
+    total = 0
+    for model_chunk in model if isinstance(model, (list, tuple)) else [model]:
+        for module_name, module in model_chunk.named_modules():
+            if not isinstance(module, MultiLoRALinear):
+                continue
+            for param_name, param in module.adapters[slot].named_parameters():
+                grad = getattr(param, "main_grad", None)
+                if grad is None:
+                    grad = param.grad
+                if grad is None:
+                    continue
+                total += 1
+                if not torch.isfinite(grad).all():
+                    bad.append(f"{module_name}.{param_name}")
+    logger.error(
+        f"[multi-LoRA] slot {slot} grad norm is non-finite: {len(bad)}/{total} adapter grads "
+        f"are non-finite; first {limit}: {bad[:limit]}"
+    )
+
+
 def step_adapter_slots(
     optimizer,
     model,
@@ -180,9 +210,18 @@ def step_adapter_slots(
             grads_for_norm += child.get_main_grads_for_grad_norm()
             slot_params += child.get_parameters()
         slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
+        grad_norms[slot] = float(slot_norm)
+
+        # Megatron's found_inf gate, which the multi-LoRA path otherwise bypasses. Without it
+        # clipping scales by clip/(nan + eps) and step_with_ready_grads writes NaN into every
+        # tensor of the slot, so one bad microbatch permanently destroys the adapter.
+        if not math.isfinite(grad_norms[slot]):
+            report_nonfinite_adapter_grads(model, slot)
+            zero_adapter_slot_grads(model, slot)
+            continue
+
         if clip_grad > 0.0 and slot_params:
             clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
-        grad_norms[slot] = float(slot_norm)
 
         for child in children:
             child.step_with_ready_grads()
