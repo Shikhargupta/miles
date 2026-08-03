@@ -1,4 +1,4 @@
-"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, and future GDN.
+"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, Inkling, and future GDN.
 
 Each family is a class: its projections live once, inline in its ``layout``
 class attribute, and everything else (supported targets, canonical target
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import LoRASplitQKV
+from miles_plugins.lora.modules.linear import LoRASplitAdapter, LoRASplitQKV
 from miles_plugins.lora.spec import layout as L
 from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec, ShardLayout
 from miles_plugins.lora.spec.layout import (
@@ -240,6 +240,90 @@ class HybridGQAGDNAttentionSpec(GQAAttentionSpec):
         if hasattr(block, "linear_qkv"):
             return super().attach(block, hf_prefix, context)
         return GDNAttentionSpec().attach(block, hf_prefix, context)
+
+
+class _InklingSplitQKVR(LoRASplitAdapter):
+    """Four independent adapters over Inkling's plain-concat fused [q;k;v;r]."""
+
+    _group_name = "qkvr"
+
+
+def _build_split_qkvr(
+    attention: nn.Module,
+    hf_prefix: str,
+    context: AttachContext,
+    active: tuple[ProjectionSpec, ...],
+    members: tuple[ProjectionSpec, ...],
+) -> _InklingSplitQKVR:
+    return _InklingSplitQKVR(
+        hf_prefix=hf_prefix,
+        reference=attention.linear_qkv.weight,
+        context=context,
+        projections=active,
+        member_projections=members,
+        rows={
+            "q": attention.nh_l * attention.hd,
+            "k": attention.nkv_l * attention.hd,
+            "v": attention.nkv_l * attention.hd,
+            "r": attention.nh_l * attention.d_rel,
+        },
+    )
+
+
+class InklingAttentionSpec(AttentionSpecBase):
+    """GQA-with-relative-projection: fused [q;k;v;r], plain concat (no group permute).
+
+    Exports carry Inkling's TML names (``attn.wq_du/wk_dv/wv_dv/wr_du/wo_ud``),
+    which SGLang auto-detects, so serving passes ``lora_target_modules=["all"]``.
+    """
+
+    name = "inkling"
+    family = AttentionFamily.GQA
+    layout = ModuleLayout(
+        name="inkling_attention",
+        present_when_attr="linear_qkv",
+        hf_block_prefix="attn.",
+        fused=(
+            FusedAttach(
+                module_attr="linear_qkv",
+                projections=(
+                    ProjectionSpec("wq_du", "q", ShardLayout.COLUMN),
+                    ProjectionSpec("wk_dv", "k", ShardLayout.COLUMN),
+                    ProjectionSpec("wv_dv", "v", ShardLayout.COLUMN),
+                    ProjectionSpec("wr_du", "r", ShardLayout.COLUMN),
+                ),
+                adapter_attr="lora_qkv_adapter",
+                build=_build_split_qkvr,
+            ),
+        ),
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("wo_ud", "o", ShardLayout.ROW),
+                module_attr="linear_proj",
+                in_dim=L.inkling_o_in_local,
+                out_dim=L.hidden,
+                adapter_attr="lora_o_adapter",
+            ),
+        ),
+    )
+
+    def normalize_targets(
+        self,
+        targets: frozenset[str],
+        *,
+        expanded_from_all_linear: bool,
+    ) -> frozenset[str]:
+        """Every request maps to the full native set.
+
+        Inkling's TML projection names are disjoint from the HF families the
+        parser knows, so a passthrough would fail validation on all-linear and
+        on plain q_proj-style requests alike. LoRA covers every projection,
+        matching the model-specific provider this spec replaces.
+        """
+        from miles_plugins.lora.spec.mlp import InklingDenseMLPSpec
+
+        del targets, expanded_from_all_linear
+        return self.layout.targets | InklingDenseMLPSpec.layout.targets
 
 
 def _is_replicated_linear(module: nn.Module, full_out: int) -> bool:

@@ -9,11 +9,17 @@ import os
 from dataclasses import dataclass, field
 
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.spec.attention import GQAAttentionSpec, HybridGQAGDNAttentionSpec, MLAAttentionSpec
+from miles_plugins.lora.spec.attention import (
+    GQAAttentionSpec,
+    HybridGQAGDNAttentionSpec,
+    InklingAttentionSpec,
+    MLAAttentionSpec,
+)
 from miles_plugins.lora.spec.base import AttentionFamily, LoRAArchSpec
+from miles_plugins.lora.spec.extras import InklingExtrasSpec
 from miles_plugins.lora.spec.layout import AttentionSpecBase
-from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec
-from miles_plugins.lora.spec.moe import SharedOuterExpertMoESpec
+from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec, InklingDenseMLPSpec
+from miles_plugins.lora.spec.moe import InklingMoESpec, SharedOuterExpertMoESpec
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +79,6 @@ class ModelEntry:
 
 
 def _inkling_arch_spec() -> LoRAArchSpec:
-    from miles_plugins.lora.spec.inkling import (
-        InklingAttentionSpec,
-        InklingDenseMLPSpec,
-        InklingExtrasSpec,
-        InklingMoESpec,
-    )
-
     attention = InklingAttentionSpec()
     return LoRAArchSpec(
         name=attention.name,

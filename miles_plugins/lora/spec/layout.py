@@ -68,6 +68,11 @@ def mla_o_in_local(module: nn.Module, context: AttachContext) -> int:
     return module.num_attention_heads_per_partition * context.transformer_config.v_head_dim
 
 
+def inkling_o_in_local(module: nn.Module, _context: AttachContext) -> int:
+    """Row-parallel Inkling wo_ud input: this rank's query heads times head dim."""
+    return module.nh_l * module.hd
+
+
 # ---------------------------------------------------------------------------
 # Layout declarations and the attach walk.
 # ---------------------------------------------------------------------------
