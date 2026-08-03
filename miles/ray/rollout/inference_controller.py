@@ -1,6 +1,8 @@
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import ray
@@ -71,7 +73,6 @@ class InferenceController:
         self.args = args
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
-        self.rollout_id = -1
         self._watcher_disposers: list[StopWatchFn] = []
         self._health_checker_activeness: bool = True
         self._ticker: SimpleTicker | None = None
@@ -81,7 +82,6 @@ class InferenceController:
 
     @with_lock
     async def prepare_rollout(self, rollout_id):
-        self.rollout_id = rollout_id
         await self._health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             await self._try_ci_fault_injection()
@@ -155,6 +155,10 @@ class InferenceController:
         )
 
     @releases_lock
+    async def abort_update_weights(self) -> None:
+        logger.warning("Aborting the weight update window; no cell is marked weights-ready")
+
+    @releases_lock
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
         await asyncio.gather(
             *[
@@ -185,10 +189,6 @@ class InferenceController:
             logger.info(f"Waiting for {len(pending)}/{len(cells)} cells to become ready...")
             async with self.context_lock.with_released():
                 await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
-
-    @with_lock
-    async def recover_updatable_engines(self) -> None:
-        raise NotImplementedError("new ft to be implemented")
 
     @requires_lock
     def _get_updatable_server(self) -> RolloutServer | None:
@@ -308,6 +308,17 @@ class InferenceController:
     @requires_lock
     async def _try_ci_fault_injection(self):
         raise NotImplementedError("rollout fault injection is being rebuilt with rollout fault tolerance")
+
+
+@contextlib.asynccontextmanager
+async def update_weights_window(controller: InferenceController) -> AsyncIterator["UpdatableEngines"]:
+    info: UpdatableEngines = await controller.start_update_weights()
+    try:
+        yield info
+    except BaseException:
+        await controller.abort_update_weights()
+        raise
+    await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
 
 @dataclass(frozen=True)

@@ -9,6 +9,7 @@ import ray
 from ray.util.placement_group import PlacementGroup
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.ray.rollout.inference_controller import update_weights_window
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
@@ -272,13 +273,12 @@ class RayTrainGroup:
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set.
-        info = await self._inference_controller.start_update_weights()
-        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
-        )
-        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        async with update_weights_window(self._inference_controller) as info:
+            # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+            await retry(
+                lambda _: self._execute_first_alive("update_weights", info=info),
+                max_attempts=_RETRY_MAX_ATTEMPTS,
+            )
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
