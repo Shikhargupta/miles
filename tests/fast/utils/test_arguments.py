@@ -13,6 +13,7 @@ from miles.utils.arguments import (
     _resolve_ft_components,
     get_miles_extra_args_provider,
     miles_validate_args,
+    resolve_rollout_function_paths,
     validate_async_off_policy_correction,
 )
 from miles.utils.misc import function_registry
@@ -141,6 +142,17 @@ class TestMaybeApplyDumperOverrides:
         _maybe_apply_dumper_overrides(args)
 
         assert args.num_rollout == 6
+
+
+def test_fully_async_eval_resolves_to_the_producer_itself():
+    """Only the producer's own instance pauses on eval, and RolloutManager reuses one
+    instance only when both paths match."""
+    path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    default = SimpleNamespace(rollout_function_path=None, eval_function_path=None, fully_async=True)
+    assert resolve_rollout_function_paths(default) == (path, path)
+
+    override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
+    assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():

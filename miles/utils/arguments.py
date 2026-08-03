@@ -32,10 +32,10 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     else:
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
     rollout_path = args.rollout_function_path or standard_path
-    # Resolved before the fully-async override: fully async does not serve eval.
-    eval_path = args.eval_function_path or rollout_path
     if args.fully_async:
         rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    # Resolved after the override: shared-engine eval must reach the producer it pauses.
+    eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
