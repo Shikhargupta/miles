@@ -222,6 +222,54 @@ class TestRolloutCellHandler:
         assert len(cells) == 3
         assert controller.health_status_calls == 1
 
+    @pytest.mark.asyncio
+    async def test_suspend_stops_the_cell_in_the_worker_manager(self) -> None:
+        """The manager owns the processes, so healing goes through it, not the controller."""
+        handler, manager, _controller = _make_rollout_handler()
+
+        await handler.suspend(ENGINE_CELL_ID)
+
+        assert manager.stopped_cells == [[ENGINE_CELL_ID]]
+
+    @pytest.mark.asyncio
+    async def test_resume_starts_the_cell_in_the_worker_manager(self) -> None:
+        """Resume relaunches the cell, which reconcile then observes as a new generation."""
+        handler, manager, _controller = _make_rollout_handler(suspended=True)
+
+        await handler.resume(ENGINE_CELL_ID)
+
+        assert manager.started_cells == [[ENGINE_CELL_ID]]
+
+    @pytest.mark.asyncio
+    async def test_suspending_only_touches_the_named_cell(self) -> None:
+        """Healing one engine must leave its siblings serving."""
+        manager = MockWorkerManager(make_cell_summaries("engine-a", "engine-b"))
+        handler = _RolloutCellHandler(worker_manager=manager, inference_controller=MockInferenceController())
+
+        await handler.suspend("engine-a")
+
+        assert manager.stopped_cells == [["engine-a"]]
+
+    @pytest.mark.asyncio
+    async def test_a_suspended_cell_reports_suspended_afterwards(self) -> None:
+        """The heal loop reads back the status it just asked for."""
+        handler, _manager, _controller = _make_rollout_handler()
+
+        await handler.suspend(ENGINE_CELL_ID)
+        cell = await handler.get_cell(ENGINE_CELL_ID)
+
+        assert cell.status.phase == "Suspended"
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_cell_reports_running_afterwards(self) -> None:
+        """A resumed cell must leave the state the heal loop is waiting on."""
+        handler, _manager, _controller = _make_rollout_handler(suspended=True)
+
+        await handler.resume(ENGINE_CELL_ID)
+        cell = await handler.get_cell(ENGINE_CELL_ID)
+
+        assert cell.status.phase == "Running"
+
 
 class TestComputeEngineCellIds:
     def test_only_cells_carrying_a_model_are_engine_cells(self) -> None:

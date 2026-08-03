@@ -137,12 +137,11 @@ class _RolloutCellHandler(_CellHandler):
             ),
         )
 
-    # TODO the write path lands in the next op, on the worker manager verbs it needs
     async def suspend(self, cell_key: str) -> None:
-        raise NotImplementedError("rollout cell suspend is being rebuilt on the worker manager")
+        await self._worker_manager.stop_cells.remote([cell_key])
 
     async def resume(self, cell_key: str) -> None:
-        raise NotImplementedError("rollout cell resume is being rebuilt on the worker manager")
+        await self._worker_manager.start_cells.remote([cell_key])
 
 
 def compute_engine_cell_ids(summaries: dict) -> list[str]:
