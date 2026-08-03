@@ -11,13 +11,7 @@ import pytest
 import miles.ray.rollout.rollout_manager as rollout_manager_mod
 import miles.rollout.checkpoint_eval as checkpoint_eval_mod
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
-from miles.rollout.checkpoint_eval import (
-    CheckpointEvalFn,
-    EvalSkip,
-    FleetEvalFn,
-    resolve_checkpoint_eval_fn,
-    retarget_args,
-)
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalFleet, EvalSkip, eval_uses_snapshots, retarget_args
 
 
 def make_args(**overrides) -> Namespace:
@@ -49,7 +43,7 @@ def test_retarget_args_swaps_router_and_sizing():
     assert args.rollout_num_gpus == 4
 
 
-# ---------------- FleetEvalFn (the dedicated fleet as a checkpoint backend) ----------------
+# ---------------- EvalFleet (weight delivery for the dedicated fleet) ----------------
 
 
 class FakeRemoteMethod:
@@ -128,7 +122,7 @@ def fleet_env(monkeypatch):
     async def noop_router_ready(self, timeout=180.0):
         return None
 
-    monkeypatch.setattr(checkpoint_eval_mod.FleetEvalFn, "_wait_router_ready", noop_router_ready)
+    monkeypatch.setattr(checkpoint_eval_mod.EvalFleet, "_wait_router_ready", noop_router_ready)
     # ray.kill on a fake handle would auto-init a real (GPU-less) Ray cluster,
     # which session-wide ray_local_mode then reuses, deadlocking real_ray suites
     # on CPU-only CI runners.
@@ -142,41 +136,24 @@ def fleet_env(monkeypatch):
     return SimpleNamespace(state_builds=state_builds)
 
 
-def make_fleet_fn(args, engines, inner=None):
-    inner = inner or (lambda input: RolloutFnEvalOutput(data={}))
-    return FleetEvalFn(args, srv=FakeEvalServer(engines), inner=inner)
+def make_fleet(args, engines):
+    return EvalFleet(args, srv=FakeEvalServer(engines))
 
 
-def eval_input(rollout_id, hf_dir):
-    return RolloutFnEvalInput(rollout_id=rollout_id, weight_version=str(rollout_id), hf_dir=hf_dir)
-
-
-async def test_fleet_pins_all_engines_then_delegates(fleet_env):
+async def test_fleet_pins_every_engine_before_returning_the_state(fleet_env):
     log = []
-    engines = [FakeEngine(log), FakeEngine(log)]
-    seen_inputs = []
+    fleet = make_fleet(make_args(), [FakeEngine(log), FakeEngine(log)])
 
-    def inner(input):
-        log.append(("generate", input.rollout_id))
-        seen_inputs.append(input)
-        return RolloutFnEvalOutput(data={"ds": {"rewards": [1.0]}})
-
-    fn = make_fleet_fn(make_args(), engines, inner=inner)
-
-    await fn.evaluate_checkpoint("/snap/step_5", eval_input(5, "/snap/step_5"))
+    state = await fleet.pin("/snap/step_5", "5")
 
     load_events = [e for e in log if e[0] == "update_weights_from_disk"]
     assert len(load_events) == 2
     assert all(e[2]["weight_version"] == "5" for e in load_events)
-    # Every load strictly precedes delegation to the inner fn.
-    assert log.index(("generate", 5)) > max(i for i, e in enumerate(log) if e[0] == "update_weights_from_disk")
-    # The inner fn gets the fleet's state; RolloutFn classes stay unaware of the fleet.
-    assert seen_inputs[0].generate_state == "fake-fleet-state"
-    assert seen_inputs[0].weight_version == "5"
-    assert seen_inputs[0].hf_dir == "/snap/step_5"
-
-    # The fleet state is built lazily on first use, then cached.
-    await fn.evaluate_checkpoint("/snap/step_6", eval_input(6, "/snap/step_6"))
+    # The caller cannot generate before the pin: the state only exists as pin's return.
+    assert state == "fake-fleet-state"
+    # Built once at construction, not per eval.
+    assert len(fleet_env.state_builds) == 1
+    await fleet.pin("/snap/step_6", "6")
     assert len(fleet_env.state_builds) == 1
 
 
@@ -187,10 +164,10 @@ async def test_fleet_pin_requires_all_match_and_retries(fleet_env):
     log = []
     good, stale = FakeEngine(log), FakeEngine(log)
     stale.responses["get_weight_version"] = lambda: "999"
-    fn = make_fleet_fn(make_args(), [good, stale])
+    fleet = make_fleet(make_args(), [good, stale])
 
     with pytest.raises(EvalSkip) as exc:
-        await fn.evaluate_checkpoint("/snap/step_5", eval_input(5, "/snap/step_5"))
+        await fleet.pin("/snap/step_5", "5")
 
     assert exc.value.reason == "pin_violation"
     assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 4  # 2 engines x 2 attempts
@@ -205,13 +182,13 @@ async def test_fleet_marks_dead_engine_for_recovery(fleet_env):
         raise RuntimeError("actor died")
 
     engine.responses["get_weight_version"] = dead
-    fn = make_fleet_fn(make_args(), [engine])
+    fleet = make_fleet(make_args(), [engine])
 
     with pytest.raises(EvalSkip):
-        await fn.evaluate_checkpoint("/snap/step_5", eval_input(5, "/snap/step_5"))
+        await fleet.pin("/snap/step_5", "5")
 
-    assert fn._srv.wrappers[0].stopped  # probed, found unreachable, marked for revival
-    assert fn._srv.recover_calls == 1
+    assert fleet._srv.wrappers[0].stopped  # probed, found unreachable, marked for revival
+    assert fleet._srv.recover_calls == 1
 
 
 # ---------------- RolloutManager._eval_checkpoint (the single snapshot path) ----------------
@@ -233,7 +210,7 @@ class CheckpointFnStub(CheckpointEvalFn):
         self.disposed = True
 
 
-def make_manager(args, checkpoint_fn=None):
+def make_manager(args, eval_fn=None, fleet=None):
     mgr = object.__new__(rollout_manager_mod.RolloutManager.__ray_actor_class__)
     mgr.args = args
     mgr.rollout_id = 7
@@ -241,7 +218,9 @@ def make_manager(args, checkpoint_fn=None):
     mgr._health_monitors = []
     mgr.use_experimental_refactor = True
     mgr._metric_checker = None
-    mgr._checkpoint_fn = checkpoint_fn
+    mgr.eval_generate_rollout = eval_fn
+    mgr._eval_fleet = fleet
+    mgr._uses_snapshots = eval_fn is not None and (fleet is not None or isinstance(eval_fn, CheckpointEvalFn))
     return mgr
 
 
@@ -269,7 +248,7 @@ async def test_eval_checkpoint_threads_input_and_logs(controller_env, tmp_path):
 
     fn = CheckpointFnStub()
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
-    mgr = make_manager(args, checkpoint_fn=fn)
+    mgr = make_manager(args, eval_fn=fn)
 
     await mgr.eval(5, hf_dir=str(snapshot), export_time_seconds=1.5)
 
@@ -289,7 +268,7 @@ async def test_eval_checkpoint_missing_marker_skips(controller_env, tmp_path):
 
     fn = CheckpointFnStub()
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
-    mgr = make_manager(args, checkpoint_fn=fn)
+    mgr = make_manager(args, eval_fn=fn)
 
     await mgr.eval(5, hf_dir=str(snapshot))
 
@@ -305,7 +284,7 @@ async def test_eval_checkpoint_skip_reason_propagates(controller_env, tmp_path):
 
     fn = CheckpointFnStub(skip_reason="pin_violation")
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
-    mgr = make_manager(args, checkpoint_fn=fn)
+    mgr = make_manager(args, eval_fn=fn)
 
     await mgr.eval(5, hf_dir=str(snapshot))
 
@@ -314,8 +293,8 @@ async def test_eval_checkpoint_skip_reason_propagates(controller_env, tmp_path):
 
 
 async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
-    """No checkpoint fn resolved must keep today's shared-engine call shape: no
-    snapshot fields threaded, no lag/duration metrics added."""
+    """No snapshot posture must keep today's shared-engine call shape: no snapshot
+    fields threaded, no lag/duration metrics added."""
     seen_inputs = []
 
     def eval_generate_rollout(input):
@@ -324,8 +303,7 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 
     monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_num_gpus=0)
-    mgr = make_manager(args, checkpoint_fn=None)
-    mgr.eval_generate_rollout = eval_generate_rollout
+    mgr = make_manager(args, eval_fn=eval_generate_rollout)
 
     await mgr.eval(5)
 
@@ -340,33 +318,11 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 STUB_PATH = "tests.fast.rollout.test_checkpoint_eval.CheckpointFnStub"
 
 
-def test_resolve_checkpoint_eval_fn():
-    """The single discrimination point: fleet flag wins, then CheckpointEvalFn
-    instances (validated), else shared."""
-    plain_fn = lambda input: None  # noqa: E731
-
-    fleet = resolve_checkpoint_eval_fn(make_args(eval_num_gpus=1), eval_fn=plain_fn, servers={"eval": "srv-handle"})
-    assert isinstance(fleet, FleetEvalFn)
-    assert fleet._inner is plain_fn
-
-    external = CheckpointFnStub()
-    args = make_args(eval_num_gpus=0, eval_function_path=STUB_PATH, eval_hf_dir="/staging", save_hf=None)
-    assert resolve_checkpoint_eval_fn(args, eval_fn=external, servers={}) is external
-
-    with pytest.raises(AssertionError, match="snapshot source"):
-        resolve_checkpoint_eval_fn(
-            make_args(eval_num_gpus=0, eval_function_path=STUB_PATH, eval_hf_dir=None, save_hf=None),
-            eval_fn=external,
-            servers={},
-        )
-
-    assert resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0), eval_fn=plain_fn, servers={}) is None
-
-    with pytest.raises(AssertionError, match="class-based"):
-        # Legacy (non-class) loading leaves the class unconstructed.
-        resolve_checkpoint_eval_fn(
-            make_args(eval_num_gpus=0, eval_function_path=STUB_PATH), eval_fn=CheckpointFnStub, servers={}
-        )
+def test_eval_uses_snapshots():
+    """The one posture predicate: the fleet flag, or a black-box eval fn, else shared."""
+    assert eval_uses_snapshots(make_args(eval_num_gpus=1, eval_function_path=None))
+    assert eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=STUB_PATH))
+    assert not eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=None))
 
 
 # ---------------- driver (train_async.EvalDispatcher) ----------------

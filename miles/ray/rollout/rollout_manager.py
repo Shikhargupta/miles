@@ -26,7 +26,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     call_rollout_fn,
 )
-from miles.rollout.checkpoint_eval import EvalSkip, resolve_checkpoint_eval_fn
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalFleet, EvalSkip, eval_uses_snapshots
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -98,9 +98,8 @@ class RolloutManager:
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
-        self._checkpoint_fn = resolve_checkpoint_eval_fn(
-            args, eval_fn=self.eval_generate_rollout, servers=self.servers
-        )
+        self._uses_snapshots = eval_uses_snapshots(args)
+        self._eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -126,8 +125,8 @@ class RolloutManager:
         event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
-        if self._checkpoint_fn is not None:
-            self._checkpoint_fn.dispose()
+        if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
+            self.eval_generate_rollout.dispose()
         for monitor in self._health_monitors:
             monitor.stop()
 
@@ -166,7 +165,7 @@ class RolloutManager:
             return
         self._health_monitoring_resume()
 
-        if self._checkpoint_fn is not None:
+        if self._uses_snapshots:
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds)
 
         with timer("eval_rollout"):
@@ -200,9 +199,13 @@ class RolloutManager:
                 logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
                 return self.report_eval_skip(rollout_id, "ckpt_missing")
 
-            eval_input = RolloutFnEvalInput(rollout_id=rollout_id, weight_version=str(rollout_id), hf_dir=hf_dir)
+            version = str(rollout_id)
             try:
-                result = await asyncio.to_thread(call_rollout_function, self._checkpoint_fn, eval_input)
+                state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                eval_input = RolloutFnEvalInput(
+                    rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
+                )
+                result = await asyncio.to_thread(call_rollout_function, self.eval_generate_rollout, eval_input)
             except EvalSkip as e:
                 return self.report_eval_skip(rollout_id, e.reason)
 

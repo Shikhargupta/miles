@@ -26,9 +26,9 @@ __all__ = [
     "retarget_args",
     "EvalSkip",
     "CheckpointEvalFn",
-    "FleetEvalFn",
+    "EvalFleet",
+    "is_checkpoint_eval_fn",
     "eval_uses_snapshots",
-    "resolve_checkpoint_eval_fn",
 ]
 
 logger = logging.getLogger(__name__)
@@ -91,54 +91,43 @@ class CheckpointEvalFn(abc.ABC):
         """Tear down anything launched in ``__init__``. Called by RolloutManager.dispose()."""
 
 
-class FleetEvalFn(CheckpointEvalFn):
-    """The dedicated in-job eval fleet (``--eval-num-gpus``) as a checkpoint backend.
+class EvalFleet:
+    """The dedicated in-job eval engines (``--eval-num-gpus``).
 
-    Pins every fleet engine to the snapshot (probing and reviving dead engines
-    first), then delegates generation to the inner eval fn with the fleet's
-    ``GenerateState`` — so custom eval fns work on the fleet unchanged. Privileged:
-    constructed by ``RolloutManager`` with the fleet's server handle, not via
-    ``--eval-function-path``.
+    Not a ``CheckpointEvalFn``: it delivers weights, it does not evaluate. The eval
+    fn generates against the state ``pin`` hands back, exactly as it would against
+    the training engines.
     """
 
-    def __init__(self, args: Namespace, *, srv, inner):
+    def __init__(self, args: Namespace, *, srv):
         self.args = args
         self._srv = srv
-        self._inner = inner
-        # Lazy: the eval router only exists once the servers are up.
-        self._state: GenerateState | None = None
+        self._state = GenerateState(self._fleet_args())
 
-    async def evaluate_checkpoint(self, checkpoint_dir: str, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
+    async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
+        """Load the snapshot onto every engine, then return the state to generate against.
+
+        Runs on the manager's event loop, so everything here awaits rather than blocks
+        — except reviving a dead engine, which blocks on its port allocation.
+        """
         try:
             await self._mark_unreachable_engines()
             await self._srv.recover()
             await self._srv.wait_all_engines_alive()
         except Exception as e:
-            logger.warning(f"Eval fleet unhealthy at rollout {input.rollout_id}: {e}")
+            logger.warning(f"Eval fleet unhealthy: {e}")
             raise EvalSkip("unhealthy") from e
 
-        if not await self._pin_fleet(checkpoint_dir, input.weight_version):
+        if not await self._pin_fleet(checkpoint_dir, weight_version):
             raise EvalSkip("pin_violation")
 
         try:
             await self._wait_router_ready()
         except Exception as e:
-            logger.warning(f"Eval router not ready at rollout {input.rollout_id}: {e}")
+            logger.warning(f"Eval router not ready: {e}")
             raise EvalSkip("unhealthy") from e
 
-        if self._state is None:
-            self._state = GenerateState(self._fleet_args())
-        output = self._inner(
-            RolloutFnEvalInput(
-                rollout_id=input.rollout_id,
-                generate_state=self._state,
-                weight_version=input.weight_version,
-                hf_dir=checkpoint_dir,
-            )
-        )
-        if inspect.iscoroutine(output):
-            output = await output
-        return output
+        return self._state
 
     def _fleet_args(self) -> Namespace:
         router_ip, router_port = self.args.sglang_model_routers["eval"]
@@ -203,27 +192,13 @@ class FleetEvalFn(CheckpointEvalFn):
                     engine.mark_stopped()
 
 
-def eval_uses_snapshots(args: Namespace) -> bool:
-    """Whether eval consumes HF snapshots. A function of ``args`` alone, so the driver
-    can size its dispatch without asking the manager."""
-    if args.eval_num_gpus > 0:
-        return True
-    eval_fn = load_function(args.eval_function_path)
+def is_checkpoint_eval_fn(eval_function_path: str | None) -> bool:
+    """Whether ``--eval-function-path`` points at a black-box checkpoint backend."""
+    eval_fn = load_function(eval_function_path)
     return inspect.isclass(eval_fn) and issubclass(eval_fn, CheckpointEvalFn)
 
 
-def resolve_checkpoint_eval_fn(args: Namespace, *, eval_fn, servers) -> CheckpointEvalFn | None:
-    """Build the backend for the posture ``eval_uses_snapshots`` picked.
-    None = shared-engine eval (the fn runs on its own state)."""
-    if not eval_uses_snapshots(args):
-        return None
-    if args.eval_num_gpus > 0:
-        return FleetEvalFn(args, srv=servers["eval"], inner=eval_fn)
-    assert isinstance(
-        eval_fn, CheckpointEvalFn
-    ), "checkpoint eval fns require the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
-    assert args.eval_hf_dir is not None or args.save_hf is not None, (
-        "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "
-        "or --save-hf (reuse periodic HF checkpoints)."
-    )
-    return eval_fn
+def eval_uses_snapshots(args: Namespace) -> bool:
+    """Whether eval consumes HF snapshots. A function of ``args`` alone, so the driver
+    can size its dispatch without asking the manager."""
+    return args.eval_num_gpus > 0 or is_checkpoint_eval_fn(args.eval_function_path)

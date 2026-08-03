@@ -10,6 +10,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
@@ -2779,6 +2780,16 @@ def miles_validate_args(args):
         assert not overrides, (
             f"--eval-sglang-* configures the dedicated eval fleet, which needs --eval-num-gpus > 0. "
             f"Got {sorted(overrides)} with --eval-num-gpus 0."
+        )
+
+    if is_checkpoint_eval_fn(args.eval_function_path):
+        assert args.eval_num_gpus == 0, (
+            "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
+            "backend; the fleet would boot and then hand the work to the other one."
+        )
+        assert args.eval_hf_dir is not None or args.save_hf is not None, (
+            "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "
+            "or --save-hf (reuse periodic HF checkpoints)."
         )
 
     if args.save_interval is not None:
