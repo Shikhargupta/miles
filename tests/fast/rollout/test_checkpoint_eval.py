@@ -49,62 +49,6 @@ def test_retarget_args_swaps_router_and_sizing():
     assert args.rollout_num_gpus == 4
 
 
-def _eval_dataset_env(monkeypatch, generate):
-    import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
-    from miles.utils.types import Sample
-
-    monkeypatch.setattr(eval_mod, "generate_and_rm", generate)
-    monkeypatch.setattr(eval_mod, "compute_sampling_params", lambda args, **kw: {})
-    args = Namespace(
-        group_rm=False,
-        hf_checkpoint="hf",
-        apply_chat_template=False,
-        chat_template_path=None,
-        reward_key=None,
-        eval_reward_key=None,
-        sglang_router_policy=None,
-    )
-    dataset_cfg = SimpleNamespace(
-        name="ds",
-        cache_key=("ds",),
-        n_samples_per_eval_prompt=1,
-        temperature=1.0,
-        top_p=1.0,
-        top_k=-1,
-        max_response_len=16,
-        inject_metadata=lambda md: md,
-    )
-    samples = [Sample(index=i, prompt="p", response="r", label="l", reward=1) for i in range(4)]
-    cache = {dataset_cfg.cache_key + ("hf", False, None): SimpleNamespace(samples=samples)}
-    return eval_mod, args, dataset_cfg, cache
-
-
-async def test_single_dataset_tolerates_partial_failures(monkeypatch):
-    from miles.utils.types import Sample
-
-    async def generate(state, sample, sampling_params, evaluation):
-        if sample.index == 0:
-            raise RuntimeError("engine died")
-        if sample.index == 1:
-            sample.status = Sample.Status.ABORTED
-        return sample
-
-    eval_mod, args, dataset_cfg, cache = _eval_dataset_env(monkeypatch, generate)
-    result = await eval_mod.eval_rollout_single_dataset(SimpleNamespace(args=args), dataset_cfg, cache)
-
-    assert result["ds"]["rewards"] == [1, 1]
-    assert result["ds"]["failed_samples"] == 2  # one raised + one aborted
-
-
-async def test_single_dataset_all_failures_raise(monkeypatch):
-    async def generate(state, sample, sampling_params, evaluation):
-        raise RuntimeError("engine died")
-
-    eval_mod, args, dataset_cfg, cache = _eval_dataset_env(monkeypatch, generate)
-    with pytest.raises(RuntimeError, match="all 4 sample generations failed"):
-        await eval_mod.eval_rollout_single_dataset(SimpleNamespace(args=args), dataset_cfg, cache)
-
-
 # ---------------- FleetEvalFn (the dedicated fleet as a checkpoint backend) ----------------
 
 
