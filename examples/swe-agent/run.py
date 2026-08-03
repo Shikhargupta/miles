@@ -213,6 +213,9 @@ def execute(args: ScriptArgs):
     if args.train_async:
         assert args.num_nodes >= 2, "async mode needs >=1 node for actor and 1 for rollout"
         placement_args = f"--offload-train --actor-num-nodes {args.num_nodes - 1} "
+        # engines snapshot at boot and verify the first distributed weight
+        # transfer bit-for-bit; catches silent broadcast corruption at startup
+        placement_args += "--check-weight-update-equal "
     else:
         placement_args = f"--colocate --actor-num-nodes {args.num_nodes} "
 
