@@ -8,11 +8,12 @@ from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 
 logger = logging.getLogger(__name__)
 
 
-async def create_rollout_servers(args) -> dict[str, "RolloutServer"]:
+async def create_rollout_servers(args, context_lock: ContextLock) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
     assert args.sglang_router_ip is None and args.sglang_router_port is None, (
         "external router mode was removed: miles always starts its own routers "
@@ -33,6 +34,7 @@ async def create_rollout_servers(args) -> dict[str, "RolloutServer"]:
         servers[model_cfg.name] = RolloutServer(
             server_cells={},
             args=args,
+            context_lock=context_lock,
             router_ip=router_addr.host,
             router_port=router_addr.port,
             model_name=model_cfg.name,
@@ -50,6 +52,7 @@ async def create_rollout_servers(args) -> dict[str, "RolloutServer"]:
 
 
 @dataclasses.dataclass
+@enforce_lock_discipline
 class RolloutServer:
     """A model served behind a shared router, as a dict of cell id -> cell.
 
@@ -58,6 +61,7 @@ class RolloutServer:
 
     server_cells: dict[str, ServerCell]
     args: Any
+    context_lock: ContextLock
     router_ip: str | None = None
     router_port: int | None = None
     model_name: str = "default"
@@ -65,22 +69,27 @@ class RolloutServer:
     expected_num_cells: int = 0
 
     @property
+    @requires_lock
     def api_clients(self) -> list[SGLangApiClient]:
         """One client per cell, talking to its primary (node-0) engine."""
         return [cell.api_client for cell in self._cells_by_gpu_offset()]
 
     @property
+    @requires_lock
     def engine_gpu_counts(self) -> list[int]:
         """Per-engine GPU count for all node-0 engines, parallel to ``engines``."""
         return [cell.meta.num_gpus_per_engine for cell in self._cells_by_gpu_offset()]
 
     @property
+    @requires_lock
     def engine_gpu_offsets(self) -> list[int]:
         return [cell.meta.gpu_offset for cell in self._cells_by_gpu_offset()]
 
+    @requires_lock
     def _cells_by_gpu_offset(self) -> list[ServerCell]:
         return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
+    @requires_lock
     async def add_cell(self, cell_meta: ServerCellMetadata):
         cell_id = cell_meta.cell_id
         assert cell_id not in self.server_cells
@@ -88,21 +97,25 @@ class RolloutServer:
         await cell.add()
         self.server_cells[cell_id] = cell
 
+    @requires_lock
     async def remove_cell(self, cell_id: str):
         logger.info(f"Killing server {cell_id=}...")
         await self.server_cells[cell_id].dispose()
         del self.server_cells[cell_id]
 
+    @requires_lock
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
             *[cell.offload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
         )
 
+    @requires_lock
     async def onload(self, tags: list[str] | None = None):
         return await asyncio.gather(
             *[cell.onload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
         )
 
+    @requires_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
@@ -115,6 +128,7 @@ class RolloutServer:
             ]
         )
 
+    @lock_exempt
     async def wait_expected_num_cells(self, timeout: float = 3600):
         sleep_time = 2
         for _ in range(int(timeout // sleep_time)):
@@ -126,6 +140,7 @@ class RolloutServer:
             )
         raise TimeoutError(f"Timed out after {timeout}s waiting for {self.expected_num_cells} cells to appear")
 
+    @requires_lock
     async def wait_all_engines_alive(self, timeout: float = 600):
         # TODO: 600s default is hardcoded; make it configurable (e.g. via args) once we have a clearer
         # picture of init/recovery upper bounds across model sizes
@@ -138,5 +153,6 @@ class RolloutServer:
         raise TimeoutError(f"Timed out after {timeout}s waiting for engines to become ready")
 
     @property
+    @requires_lock
     def _router_api_client(self) -> SGLangRouterApiClient:
         return SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")

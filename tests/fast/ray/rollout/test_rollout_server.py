@@ -14,6 +14,7 @@ from miles.backends.sglang_utils.sglang_config import (
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils.context_lock import ContextLock
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -100,30 +101,48 @@ class TestRolloutServerPureFunctions:
     "_mark_allocated_uninitialized/_mark_addressing target the removed constructor and state API"
 )
 class TestRolloutServerCrossCellProperties:
-    def test_api_clients_expose_one_client_per_cell(self):
+    @pytest.mark.asyncio
+    async def test_api_clients_expose_one_client_per_cell(self):
         """Each cell is addressed through its primary (node-0) endpoint."""
         cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
         for index, cell in enumerate(cells):
             cell._mark_allocated_uninitialized()
             cell._mark_addressing(server_url=f"http://10.0.0.{index + 1}:30000")
-        srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)})
-        assert [client.server_url for client in srv.api_clients] == [
-            f"http://10.0.0.{index + 1}:30000" for index in range(4)
-        ]
+        srv = RolloutServer(
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
+            args=SimpleNamespace(),
+            context_lock=_make_lock(),
+        )
+        async with srv.context_lock:
+            assert [client.server_url for client in srv.api_clients] == [
+                f"http://10.0.0.{index + 1}:30000" for index in range(4)
+            ]
 
-    def test_engine_gpu_counts_parallel_to_engines(self):
+    @pytest.mark.asyncio
+    async def test_engine_gpu_counts_parallel_to_engines(self):
         cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
             num_cells=2, num_gpus_per_engine=2
         )
-        srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)})
-        assert srv.engine_gpu_counts == [1, 1, 2, 2]
+        srv = RolloutServer(
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
+            args=SimpleNamespace(),
+            context_lock=_make_lock(),
+        )
+        async with srv.context_lock:
+            assert srv.engine_gpu_counts == [1, 1, 2, 2]
 
-    def test_engine_gpu_offsets_consistent_across_cells(self):
+    @pytest.mark.asyncio
+    async def test_engine_gpu_offsets_consistent_across_cells(self):
         cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1, gpu_offset=0) + make_dataclass_cells(
             num_cells=2, num_gpus_per_engine=2, gpu_offset=4
         )
-        srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)})
-        assert srv.engine_gpu_offsets == [0, 1, 4, 6]
+        srv = RolloutServer(
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
+            args=SimpleNamespace(),
+            context_lock=_make_lock(),
+        )
+        async with srv.context_lock:
+            assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
 
 class TestStartRolloutServersCellChunking:
@@ -148,7 +167,8 @@ class TestStartRolloutServersCellChunking:
             )
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
-        return list(asyncio.run(create_rollout_servers(args))["default"].server_cells.values())
+        servers = asyncio.run(create_rollout_servers(args, context_lock=_make_lock()))
+        return list(servers["default"].server_cells.values())
 
     def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
         """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
@@ -177,14 +197,16 @@ class TestEngineListOrdering:
         for index in sorted(range(num_cells), key=lambda i: f"inference-engine-0-0-{i}"):
             meta = SimpleNamespace(num_gpus_per_engine=index + 1, gpu_offset=index)
             cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(meta=meta, api_client=f"client-{index}")
-        return RolloutServer(server_cells=cells, args=SimpleNamespace())
+        return RolloutServer(server_cells=cells, args=SimpleNamespace(), context_lock=_make_lock())
 
-    def test_engine_lists_are_ordered_by_gpu_offset_not_insertion(self):
+    @pytest.mark.asyncio
+    async def test_engine_lists_are_ordered_by_gpu_offset_not_insertion(self):
         """With 12 cells inserted in string-sorted id order all three derived lists come out offset-ordered."""
         srv = self._server_with_cells(12)
-        assert srv.engine_gpu_offsets == list(range(12))
-        assert srv.api_clients == [f"client-{i}" for i in range(12)]
-        assert srv.engine_gpu_counts == [i + 1 for i in range(12)]
+        async with srv.context_lock:
+            assert srv.engine_gpu_offsets == list(range(12))
+            assert srv.api_clients == [f"client-{i}" for i in range(12)]
+            assert srv.engine_gpu_counts == [i + 1 for i in range(12)]
 
 
 class TestAddCellRollback:
@@ -204,23 +226,29 @@ class TestAddCellRollback:
     @pytest.mark.asyncio
     async def test_a_failed_add_leaves_no_bookkeeping_so_the_next_reconcile_retries(self, monkeypatch):
         """A cell whose startup fails must not be committed, otherwise the hash no-op blocks any retry."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(), context_lock=_make_lock())
         monkeypatch.setattr(ServerCell, "add", _raise_async)
 
-        with pytest.raises(RuntimeError, match="injected add failure"):
-            await srv.add_cell(self._make_meta())
+        async with srv.context_lock:
+            with pytest.raises(RuntimeError, match="injected add failure"):
+                await srv.add_cell(self._make_meta())
 
         assert srv.server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(), context_lock=_make_lock())
         monkeypatch.setattr(ServerCell, "add", _noop_async)
 
-        await srv.add_cell(self._make_meta())
+        async with srv.context_lock:
+            await srv.add_cell(self._make_meta())
 
         assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+
+
+def _make_lock() -> ContextLock:
+    return ContextLock("InferenceController")
 
 
 async def _raise_async(self):
