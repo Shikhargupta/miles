@@ -202,7 +202,6 @@ def execute(args: ScriptArgs):
         "--custom-agent-function-path swe_agent_function.run "
         "--custom-rm-path generate.reward_func "
         "--rollout-function-path generate.RolloutFn "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
