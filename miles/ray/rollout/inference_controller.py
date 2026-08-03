@@ -53,14 +53,12 @@ class InferenceController:
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
-        self.rollout_id = -1
         self._watcher_disposers: list[StopWatchFn] = []
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
     @with_lock
     async def prepare_rollout(self, rollout_id):
-        self.rollout_id = rollout_id
         await self._health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             await self._try_ci_fault_injection()
@@ -119,7 +117,6 @@ class InferenceController:
                 snapshot_cell_id_to_hashes={},
             )
 
-        await srv.wait_all_engines_alive()
         return EnginesAndLock(
             rollout_engines=srv.api_clients,
             rollout_engine_lock=self.rollout_engine_lock,
@@ -140,10 +137,6 @@ class InferenceController:
                 and cell.is_pending_weights
             ]
         )
-
-    @with_lock
-    async def recover_updatable_engines(self) -> None:
-        raise NotImplementedError("new ft to be implemented")
 
     @requires_lock
     def _get_updatable_server(self) -> RolloutServer | None:

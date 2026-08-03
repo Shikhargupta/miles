@@ -37,7 +37,6 @@ class TestRolloutServerLockDiscipline:
         async with srv.context_lock:
             await srv.offload()
             await srv.onload()
-            await srv.wait_all_engines_alive()
             assert srv.api_clients == []
             assert srv.engine_gpu_counts == []
             assert srv.engine_gpu_offsets == []
