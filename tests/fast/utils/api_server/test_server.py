@@ -76,6 +76,7 @@ class TestGetCells:
                                 "lastTransitionTime": None,
                             },
                         ],
+                        "observedWorkersHash": None,
                     },
                 },
                 {
@@ -104,6 +105,7 @@ class TestGetCells:
                                 "lastTransitionTime": None,
                             },
                         ],
+                        "observedWorkersHash": None,
                     },
                 },
             ],
@@ -138,6 +140,7 @@ class TestGetCell:
                     },
                     {"type": "Healthy", "status": "True", "reason": None, "message": None, "lastTransitionTime": None},
                 ],
+                "observedWorkersHash": None,
             },
         }
 

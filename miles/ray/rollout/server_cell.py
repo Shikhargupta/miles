@@ -19,6 +19,7 @@ from miles.ray.rollout.cell_state import (
     StateServing,
     StateUninitialized,
 )
+from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     ActivenessState,
     ActivenessTracker,
@@ -86,6 +87,32 @@ class ServerCell:
     @property
     def _health_checker_activeness(self) -> bool:
         return isinstance(self._state, (StatePendingWeights, StateServing)) and self.global_health_checker_activeness()
+
+    def cell_status(self) -> CellStatus:
+        workers_hash = self.meta.workers_hash
+        match self._state:
+            case StateUninitialized() | StateInitializing():
+                return compute_pending_rollout_cell_status(workers_hash=workers_hash)
+
+            case StatePendingWeights() | StateServing():
+                return CellStatus(
+                    phase="Running",
+                    conditions=[
+                        CellCondition.allocated(TriState.TRUE),
+                        CellCondition.from_health_checker_status(self._health_checker.status),
+                    ],
+                    observedWorkersHash=workers_hash,
+                )
+
+            case StateDisposed():
+                return CellStatus(
+                    phase="Suspended",
+                    conditions=[CellCondition.allocated(TriState.FALSE)],
+                    observedWorkersHash=workers_hash,
+                )
+
+            case _:
+                raise NotImplementedError(f"Unknown state: {self._state}")
 
     @property
     def is_uninitialized(self) -> bool:
@@ -267,3 +294,11 @@ def create_rollout_cell_health_checker(
         await get_api_client().health_generate(timeout=config.timeout)
 
     return SimpleHealthChecker(name=name, check_fn=_check, get_activeness=get_activeness, config=config)
+
+
+def compute_pending_rollout_cell_status(*, workers_hash: str | None = None) -> CellStatus:
+    return CellStatus(
+        phase="Pending",
+        conditions=[CellCondition.allocated(TriState.TRUE)],
+        observedWorkersHash=workers_hash,
+    )

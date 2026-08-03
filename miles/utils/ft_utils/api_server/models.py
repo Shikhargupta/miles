@@ -51,6 +51,7 @@ class CellCondition(StrictBaseModel):
 class CellStatus(StrictBaseModel):
     phase: Literal["Pending", "Running", "Suspended"]
     conditions: list[CellCondition]
+    observedWorkersHash: str | None = None
 
 
 class CellSpec(StrictBaseModel):
