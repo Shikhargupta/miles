@@ -172,7 +172,9 @@ class TestAddCellRollback:
     @pytest.mark.asyncio
     async def test_a_failed_add_leaves_no_bookkeeping_so_the_next_reconcile_retries(self, monkeypatch):
         """A cell whose startup fails must not be committed, otherwise the hash no-op blocks any retry."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False), context_lock=_make_lock())
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _raise_async)
 
         async with srv.context_lock:
@@ -184,7 +186,9 @@ class TestAddCellRollback:
     @pytest.mark.asyncio
     async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False), context_lock=_make_lock())
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _noop_async)
 
         async with srv.context_lock:
@@ -202,7 +206,9 @@ class TestAddCellInitTiming:
         async def _record(self) -> None:
             initialized.append(self.meta.cell_id)
 
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False), context_lock=_make_lock())
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _record)
 
         async with srv.context_lock:
@@ -218,7 +224,9 @@ class TestAddCellInitTiming:
         async def _record(self) -> None:
             initialized.append(self.meta.cell_id)
 
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=True), context_lock=_make_lock())
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _record)
 
         async with srv.context_lock:
