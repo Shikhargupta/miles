@@ -6,8 +6,6 @@ from collections import deque
 
 import ray
 
-from miles.rollout.checkpoint_eval import eval_uses_snapshots
-
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +25,7 @@ class EvalDispatcher:
         self.rollout_manager = rollout_manager
         self.pending: deque[tuple[int, ray.ObjectRef, str | None]] = deque()
         self._exported: list[str] = []
-        self._snapshot_eval = eval_uses_snapshots(args)
+        self._snapshot_eval = args.eval_uses_snapshots
 
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
         if not self._snapshot_eval:

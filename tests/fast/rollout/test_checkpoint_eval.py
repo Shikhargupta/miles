@@ -10,7 +10,7 @@ import pytest
 
 import miles.ray.rollout.rollout_manager as rollout_manager_mod
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
-from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, eval_uses_snapshots, retarget_args
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, retarget_args
 
 
 def make_args(**overrides) -> Namespace:
@@ -200,16 +200,6 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
     assert extra is None
 
 
-STUB_PATH = "tests.fast.rollout.test_checkpoint_eval.CheckpointFnStub"
-
-
-def test_eval_uses_snapshots():
-    """The one posture predicate: the fleet flag, or a black-box eval fn, else shared."""
-    assert eval_uses_snapshots(make_args(eval_num_gpus=1, eval_function_path=None))
-    assert eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=STUB_PATH))
-    assert not eval_uses_snapshots(make_args(eval_num_gpus=0, eval_function_path=None))
-
-
 # ---------------- driver (train_async.EvalDispatcher) ----------------
 
 
@@ -267,7 +257,7 @@ def dispatcher_env(monkeypatch):
 
 def make_dispatcher(eval_dispatch, manager, actor_model, **arg_overrides):
     dispatcher_defaults = dict(
-        eval_num_gpus=1,
+        eval_uses_snapshots=True,
         eval_hf_dir="/dev/shm/eval_hf",
         eval_max_in_flight=2,
         eval_overflow_policy="backpressure",
@@ -454,9 +444,7 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
             return fut
 
     manager.eval = _LegacyEval()
-    dispatcher, _ = make_dispatcher(
-        dispatcher_env, manager, FakeActorModel(), eval_num_gpus=0, eval_function_path=None
-    )
+    dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel(), eval_uses_snapshots=False)
 
     await dispatcher.dispatch(3)
     assert manager.eval.calls == [3]

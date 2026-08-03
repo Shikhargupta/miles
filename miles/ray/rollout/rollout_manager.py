@@ -27,7 +27,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     call_rollout_fn,
 )
-from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, eval_uses_snapshots
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -99,7 +99,7 @@ class RolloutManager:
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
-        self._uses_snapshots = eval_uses_snapshots(args)
+        self._uses_snapshots = args.eval_uses_snapshots
         self._eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
 
         self._metric_checker = MetricChecker.maybe_create(args)

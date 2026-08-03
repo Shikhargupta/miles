@@ -25,7 +25,6 @@ __all__ = [
     "EvalSkip",
     "CheckpointEvalFn",
     "is_checkpoint_eval_fn",
-    "eval_uses_snapshots",
 ]
 
 logger = logging.getLogger(__name__)
@@ -90,9 +89,3 @@ def is_checkpoint_eval_fn(eval_function_path: str | None) -> bool:
     """Whether ``--eval-function-path`` points at a black-box checkpoint backend."""
     eval_fn = load_function(eval_function_path)
     return inspect.isclass(eval_fn) and issubclass(eval_fn, CheckpointEvalFn)
-
-
-def eval_uses_snapshots(args: Namespace) -> bool:
-    """Whether eval consumes HF snapshots. A function of ``args`` alone, so the driver
-    can size its dispatch without asking the manager."""
-    return args.eval_num_gpus > 0 or is_checkpoint_eval_fn(args.eval_function_path)

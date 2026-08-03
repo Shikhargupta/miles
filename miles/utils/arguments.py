@@ -2585,6 +2585,9 @@ def miles_validate_args(args):
 
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
+    # The eval posture: read by the driver's dispatcher and by RolloutManager, which
+    # never import each other.
+    args.eval_uses_snapshots = args.eval_num_gpus > 0 or is_checkpoint_eval_fn(args.eval_function_path)
 
     if args.mini_ft_controller_enable and args.control_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
