@@ -51,66 +51,83 @@ class RecoveryGate:
         return [c for c in cells if cell_is_alive(c) and c["metadata"]["name"] not in self._state_of_cell_name]
 
 
-@dataclasses.dataclass(frozen=True)
-class InjectionOutcome:
-    cell_name: str
-    injection_index: int
-    recovered: bool
-    still_down: bool
+class ObservedCellState(enum.Enum):
+    SUSPENDED = "Suspended"  # torn down, holding no gpu
+    PENDING = "Pending"  # allocated but gated: no engine serving yet
+    RUNNING_NOT_SERVING = "RunningNotServing"  # engine is up but not registered in the router
+    SERVING = "Serving"  # registered in the router, i.e. actually able to answer requests
 
 
-def _find_healing_end(phases: list[str], start: int) -> int | None:
-    remaining = ["Running", "Pending", "Running"]
-    for index in range(start, len(phases)):
-        if phases[index] == remaining[0]:
-            remaining.pop(0)
-            if not remaining:
-                return index
-    return None
+_RELAUNCH_STATES: tuple[ObservedCellState, ...] = (ObservedCellState.SUSPENDED, ObservedCellState.PENDING)
 
 
-class PhaseHistory:
+def compute_observed_cell_state(cell: dict) -> ObservedCellState:
+    phase = cell["status"]["phase"]
+    if phase == "Suspended":
+        return ObservedCellState.SUSPENDED
+    if phase == "Pending":
+        return ObservedCellState.PENDING
+    serving = any(cond["type"] == "Serving" and cond["status"] == "True" for cond in cell["status"]["conditions"])
+    return ObservedCellState.SERVING if serving else ObservedCellState.RUNNING_NOT_SERVING
+
+
+class _RecoveryStage(enum.Enum):
+    AWAITING_RELAUNCH = enum.auto()
+    AWAITING_SERVING = enum.auto()
+
+
+class RecoveryWitness:
+    """Pairs every accepted injection with one completed relaunch-and-serve cycle of the same cell."""
+
     def __init__(self) -> None:
-        self.phases_of_cell_name: dict[str, list[str]] = {}
+        self.states_of_cell_name: dict[str, list[ObservedCellState]] = {}
         self._cell_type_of_name: dict[str, str] = {}
-        self._injection_marks_of_cell_name: dict[str, list[int]] = {}
+        self._num_injections_of_cell_name: dict[str, int] = {}
+        self._num_recoveries_of_cell_name: dict[str, int] = {}
+        self._stages_of_cell_name: dict[str, list[_RecoveryStage]] = {}
+
+    def note_injected(self, cell_name: str) -> None:
+        self._num_injections_of_cell_name[cell_name] = self._num_injections_of_cell_name.get(cell_name, 0) + 1
+        self._stages_of_cell_name.setdefault(cell_name, []).append(_RecoveryStage.AWAITING_RELAUNCH)
 
     def observe(self, cells: list[dict]) -> None:
         for cell in cells:
             name = cell["metadata"]["name"]
             self._cell_type_of_name[name] = _cell_type_of(cell)
-            phases = self.phases_of_cell_name.setdefault(name, [])
-            phase = cell["status"]["phase"]
-            if not phases or phases[-1] != phase:
-                phases.append(phase)
+            state = compute_observed_cell_state(cell)
+            states = self.states_of_cell_name.setdefault(name, [])
+            if not states or states[-1] != state:
+                states.append(state)
+            self._advance(cell_name=name, state=state)
 
-    def note_injected(self, cell_name: str) -> None:
-        phases = self.phases_of_cell_name.setdefault(cell_name, [])
-        marks = self._injection_marks_of_cell_name.setdefault(cell_name, [])
-        marks.append(max(len(phases) - 1, 0))
+    def num_injections(self, *, cell_type: str | None = None) -> int:
+        return self._total(self._num_injections_of_cell_name, cell_type=cell_type)
 
-    def injection_outcomes(self, *, cell_type: str | None = None) -> list[InjectionOutcome]:
-        outcomes: list[InjectionOutcome] = []
-        for name, marks in sorted(self._injection_marks_of_cell_name.items()):
-            if cell_type is not None and self._cell_type_of_name.get(name) != cell_type:
-                continue
+    def num_completed_recoveries(self, *, cell_type: str | None = None) -> int:
+        return self._total(self._num_recoveries_of_cell_name, cell_type=cell_type)
 
-            phases = self.phases_of_cell_name[name]
-            next_search_start = 0
-            for injection_index, mark in enumerate(marks):
-                healing_end = _find_healing_end(phases, max(mark, next_search_start))
-                if healing_end is not None:
-                    next_search_start = healing_end
-                outcomes.append(
-                    InjectionOutcome(
-                        cell_name=name,
-                        injection_index=injection_index,
-                        recovered=healing_end is not None,
-                        still_down=healing_end is None and bool(phases) and phases[-1] != "Running",
-                    )
-                )
+    def cells_with_unfinished_recovery(self, *, cell_type: str | None = None) -> dict[str, int]:
+        return {
+            name: len(stages)
+            for name, stages in self._stages_of_cell_name.items()
+            if stages and self._matches(name, cell_type)
+        }
 
-        return outcomes
+    def _advance(self, *, cell_name: str, state: ObservedCellState) -> None:
+        stages = self._stages_of_cell_name.get(cell_name)
+        if not stages:
+            return
+        if stages[0] is _RecoveryStage.AWAITING_RELAUNCH and state in _RELAUNCH_STATES:
+            stages[0] = _RecoveryStage.AWAITING_SERVING
+        elif stages[0] is _RecoveryStage.AWAITING_SERVING and state is ObservedCellState.SERVING:
+            stages.pop(0)
+            self._num_recoveries_of_cell_name[cell_name] = self._num_recoveries_of_cell_name.get(cell_name, 0) + 1
+
+    def _total(self, counts_of_cell_name: dict[str, int], *, cell_type: str | None) -> int:
+        return sum(count for name, count in counts_of_cell_name.items() if self._matches(name, cell_type))
+
+    def _matches(self, cell_name: str, cell_type: str | None) -> bool:
+        return cell_type is None or self._cell_type_of_name.get(cell_name) == cell_type
 
 
 def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
@@ -125,7 +142,7 @@ def run_fault_injection_loop(
     stop_event: threading.Event,
     on_successful_injection: Callable[[], None],
     cell_type: str | None,
-    phase_history: PhaseHistory,
+    recovery_witness: RecoveryWitness,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     rng = random.Random(seed)
@@ -143,7 +160,7 @@ def run_fault_injection_loop(
         # Track recovery on every poll so a crash->detect->heal cycle that completes between two
         # sparse injections is seen, not missed (which would exclude the cell from the live set forever).
         gate.observe({c["metadata"]["name"]: c for c in cells})
-        phase_history.observe(cells)
+        recovery_witness.observe(cells)
 
         if time.monotonic() < next_injection_time:
             continue
@@ -172,7 +189,7 @@ def run_fault_injection_loop(
             )
             resp.raise_for_status()
             gate.note_injected(cell_name)
-            phase_history.note_injected(cell_name)
+            recovery_witness.note_injected(cell_name)
             on_successful_injection()
             next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
         except Exception:
@@ -200,7 +217,7 @@ def _matches_cell_type(cell: dict, cell_type: str | None) -> bool:
 class FaultInjectorHandle:
     def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float, cell_type: str | None) -> None:
         self.num_successful_injections: int = 0
-        self.phase_history = PhaseHistory()
+        self.recovery_witness = RecoveryWitness()
         self._base_url = base_url
         self._cell_type = cell_type
         self._stop_event = threading.Event()
@@ -213,7 +230,7 @@ class FaultInjectorHandle:
                 "stop_event": self._stop_event,
                 "on_successful_injection": self._on_successful_injection,
                 "cell_type": cell_type,
-                "phase_history": self.phase_history,
+                "recovery_witness": self.recovery_witness,
             },
             daemon=True,
             name="ft-random-fault-injector",
@@ -231,7 +248,7 @@ class FaultInjectorHandle:
         cells = list_cells(base_url=self._base_url, cell_type=self._cell_type)
         if cells is None:
             return
-        self.phase_history.observe(cells)
+        self.recovery_witness.observe(cells)
 
     def _on_successful_injection(self) -> None:
         self.num_successful_injections += 1

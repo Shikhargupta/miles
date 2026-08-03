@@ -3,7 +3,7 @@
 ## Layout
 
 - Scenario logic lives in `conftest_ft/scenario_<name>.py`.
-- CI runs it via thin per-mode entry files `test_trainer_ft_<scenario>_<mode>.py`, each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft-short"])` (comparison scenarios) or `labels=["ft-long"]` (soak scenarios).
+- CI runs it via thin per-mode entry files `test_<component>_ft_<scenario>_<mode>.py` (`<component>` is `trainer` or `rollout`, after the components the mode enables ft on), each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft-short"])` (comparison scenarios) or `labels=["ft-long"]` (soak scenarios).
 - The CUDA CI runner executes each entry as bare `python3 <file>` (exit code = pass/fail); the entry just calls the scenario's `run_ci(mode)`.
 
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
@@ -32,12 +32,15 @@
 - All scenarios use `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` (256 samples/rollout), which divides evenly across both 2 and 4 cells. Uneven sample distribution across replicas is **not** exercised.
 - 1-node modes use the 5-layer MoE (`Qwen3-30B-A3B-5layer`), except `dp2_cp2_real_rollout_dense` and `colocate_dp2_cp2_rollout_ft` (dense `Qwen3-0.6B` — see `scenario_with_failure` for why).
 - Authorized CI skips (no entry file): `6node_dp4_cp2_tp2_pp2_ep2_etp2` (multi-node), `with_failure × dp4_cp2`.
+- `colocate_dp2_cp2_rollout_ft` has one entry, `test_rollout_ft_random_colocate_dp2_cp2.py` (`scenario_ft_random`); it is the only mode that crashes engines rather than trainer cells.
 
 ## Running
 
 ### In CI
 
 - Gated on the `run-ci-ft-short` / `run-ci-ft-long` PR labels (FT is expensive — not run on every PR). `ft-short` covers the comparison scenarios (no_failure / deterministic / with_failure, minutes each); `ft-long` covers the soak scenarios (random-crash survival, realistic-gsm8k convergence — tens of minutes to hours). With a label set, the matching entries run on `stage-c-8-gpu-h200`.
+- **Every `ft-long` entry is currently registered `disabled="FT soak tests pending CI infra support"`, so `run_suite.py` classifies it as skipped and the lane is green without running anything.** Nothing in those tests is known broken; the unblock condition is an `ft-long` capable `stage-c-8-gpu-h200` lane, after which the `disabled=` argument is simply dropped. The specific infra gap is not recorded anywhere in the repo.
+- While that holds, `test_rollout_ft_random_colocate_dp2_cp2.py` — the only entry that crashes rollout engines — has a fast-layer stand-in, `tests/fast/e2e/ft/test_rollout_ft_gated_recovery.py`: a fake worker manager drives a colocated 2-engine deployment through crash → suspend → gated relaunch → weight-update window → Serving, and feeds the resulting api-server snapshots through the soak's own `RecoveryWitness`. It covers the state sequence, not the real engines, GPUs, weight transfer or timing.
 - Add a `(scenario, mode)` to CI: copy an entry file, change `run_ci(...)`'s mode.
 - Add a new label: edit `tests/ci/labels.py` and create the matching `run-ci-<label>` GitHub label.
 
@@ -267,16 +270,17 @@ Architecture (external fault injection, not inside training loop):
      --crash-probability is set high enough that the soak reliably clears this floor. Faults are
      random, so neither an exact sequence nor the end-state membership is asserted — the
      witness only proves repeated faults were injected and healing actually ran.
-  8. Rollout healing witness: every accepted rollout injection is paired with a Running -> Pending ->
-     Running of the cell it targeted, taken from that cell's phase history at or after the injection
-     and consumed by at most one injection, proving its engine was replaced and came back serving.
+  8. Rollout recovery witness: EVERY accepted rollout injection must be paired, per cell and in
+     order, with one completed Serving -> (Suspended|Pending) -> Serving cycle; an injection still
+     unpaired when training ends fails the soak. Existence of one healing is not enough: a second
+     fault accepted shortly before the last rollout would otherwise ride on the first heal.
+     The terminal state is Serving, not Running: the api server renders StatePendingWeights and
+     StateServing alike as phase Running, so a replacement that got weights but was never registered
+     in the router (e.g. end_update_weights silently skipping its mark_weights_ready) would satisfy
+     a Running-based witness while never serving again. The Serving condition on the cell status is
+     set exactly when the cell entered the router's worker list, so it is the signal used here.
      Suspended is not required in between — it lasts only --mini-ft-controller-resume-delay (10s),
-     which a 2s poll can miss. Pending alone does not prove the replacement was gated: a disaggregated
-     relaunch also passes through it. An unpaired injection fails the witness unless the cell is still
-     not back in Running when training ends (its recovery simply had no time to finish); >= 2 paired
-     recoveries are required, so a single heal cannot vouch for many injections. The injector takes one
-     last cell snapshot after stopping its poll thread, so a recovery that completed between the final
-     poll and the end of training is still counted.
+     which a 2s poll can miss; Pending alone is accepted as the relaunch half.
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.5)
 ```
