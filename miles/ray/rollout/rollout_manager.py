@@ -99,7 +99,6 @@ class RolloutManager:
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
-        self._uses_snapshots = args.eval_uses_snapshots
         self._eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
 
         self._metric_checker = MetricChecker.maybe_create(args)
@@ -160,14 +159,20 @@ class RolloutManager:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
-    async def eval(self, rollout_id, hf_dir: str | None = None, export_time_seconds: float | None = None):
+    async def eval(
+        self,
+        rollout_id,
+        hf_dir: str | None = None,
+        export_time_seconds: float | None = None,
+        require_marker: bool = True,
+    ):
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
         self._health_monitoring_resume()
 
-        if self._uses_snapshots:
-            return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds)
+        if self.args.eval_uses_snapshots:
+            return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
         with timer("eval_rollout"):
             if self.use_experimental_refactor:
@@ -189,14 +194,16 @@ class RolloutManager:
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
-    async def _eval_checkpoint(self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None):
+    async def _eval_checkpoint(
+        self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None, require_marker: bool
+    ):
         """Evaluate a snapshot through the checkpoint eval fn (fleet or external
         backend) and log at ``rollout_id``. Every failure degrades to a skipped
         point; the lock serializes pins against a single backend."""
         assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
         start_time = time.time()
         async with self._eval_lock:
-            if hf_dir != self.args.hf_checkpoint and not is_complete_hf_export(hf_dir):
+            if require_marker and not is_complete_hf_export(hf_dir):
                 logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
                 return self.report_eval_skip(rollout_id, "ckpt_missing")
 
