@@ -103,10 +103,6 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     return servers
 
 
-# Inheriting these across a different tp gives an engine SGLang refuses to boot.
-_TP_COUPLED_SERVER_ARGS = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
-
-
 def _eval_sglang_overrides(args) -> dict:
     """Eval-fleet engine settings; anything absent is inherited from the rollout engines."""
     overrides = {
@@ -115,10 +111,12 @@ def _eval_sglang_overrides(args) -> dict:
         "enable_return_indexer_topk": False,
     }
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
-        overrides |= dict.fromkeys(_TP_COUPLED_SERVER_ARGS, 1)
+        # Inheriting these across a different tp gives an engine SGLang refuses to boot.
+        tp_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
+        overrides |= dict.fromkeys(tp_coupled, 1)
         logger.info(
             f"Eval tp={args.eval_num_gpus_per_engine} != rollout tp={args.rollout_num_gpus_per_engine}; "
-            f"{', '.join(_TP_COUPLED_SERVER_ARGS)} default to 1. Override with --eval-sglang-*."
+            f"{', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
         )
     return overrides | collect_eval_sglang_overrides(args)
 
