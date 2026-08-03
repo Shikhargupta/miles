@@ -411,7 +411,7 @@ class TestInklingSpec:
         assert spec.attention.layout.hf_block_prefix == "attn."
         assert spec.mlp.layout.hf_block_prefix == "mlp."
 
-    def test_moe_and_extras_hooks_exist(self):
+    def test_moe_and_lm_head_hooks_exist(self):
         spec = self._spec()
         assert callable(getattr(spec.moe, "attach", None))
-        assert callable(getattr(spec.extras, "attach", None))
+        assert callable(getattr(spec.lm_head, "attach", None))

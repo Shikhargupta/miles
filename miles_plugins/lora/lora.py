@@ -156,8 +156,8 @@ def apply_native_lora(model, args):
         if moe_attach is not None:
             wrapped += moe_attach(mlp, hf_layer, context)
 
-    if arch_spec.extras is not None:
-        wrapped += arch_spec.extras.attach(model, args, context)
+    if arch_spec.lm_head is not None:
+        wrapped += arch_spec.lm_head.attach(model, args, context)
 
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())

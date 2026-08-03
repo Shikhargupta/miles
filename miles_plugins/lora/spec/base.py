@@ -146,9 +146,8 @@ class LoRAArchSpec:
     attention: AttentionLoRASpec
     mlp: MLPLoRASpec
     moe: MoELoRASpec
-    # Optional model-level attachment (e.g. an lm_head adapter); duck-typed
-    # with attach(model, args, context) -> int.
-    extras: Any = None
+    # Optional lm_head attachment; duck-typed with attach(model, args, context) -> int.
+    lm_head: Any = None
     allows_mixer_only_adapter_chunks: bool = False
 
     @property
