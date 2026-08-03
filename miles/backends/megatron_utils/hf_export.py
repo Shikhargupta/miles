@@ -75,19 +75,23 @@ def export_hf_model_direct(
         safetensors.torch.save_file(shard_tensors, path / shard_name)
         del shard_tensors
 
-    if is_writer:
-        assert weight_map, f"HF export to {path} produced no weights"
-        base_checkpoint = Path(args.hf_checkpoint)
-        if base_checkpoint.is_dir():
-            for meta_file in base_checkpoint.iterdir():
-                if _is_hf_metadata_file(meta_file):
-                    shutil.copy2(meta_file, path / meta_file.name)
-        else:
-            logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
-        index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
-        (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
+    try:
+        if is_writer:
+            assert weight_map, f"HF export to {path} produced no weights"
+            base_checkpoint = Path(args.hf_checkpoint)
+            if base_checkpoint.is_dir():
+                for meta_file in base_checkpoint.iterdir():
+                    if _is_hf_metadata_file(meta_file):
+                        shutil.copy2(meta_file, path / meta_file.name)
+            else:
+                logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
+            index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+            (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
+    finally:
+        # Rank 0 is the only one that can fail above; without this the others would
+        # sit in the barrier until the NCCL watchdog kills them.
+        torch.distributed.barrier()
 
-    torch.distributed.barrier()
     if is_writer:
         (path / HF_EXPORT_COMPLETE_MARKER).touch()
 
