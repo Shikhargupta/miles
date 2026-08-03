@@ -3,7 +3,7 @@ import dataclasses
 
 import pytest
 
-from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, with_lock
+from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock, with_lock
 
 
 class _ConcurrencyTracker:
@@ -25,6 +25,7 @@ class _Guarded:
     def __init__(self, tracker: _ConcurrencyTracker | None = None) -> None:
         self.context_lock = ContextLock("guarded")
         self.tracker = tracker if tracker is not None else _ConcurrencyTracker()
+        self.async_private_method_calls = 0
 
     @with_lock
     async def locked_method(self, delay: float = 0) -> bool:
@@ -40,6 +41,28 @@ class _Guarded:
     @with_lock
     async def locked_method_returning(self, value: int) -> int:
         return value
+
+    @with_lock
+    async def locked_method_calling_private(self) -> bool:
+        return self._private_method()
+
+    @with_lock
+    async def locked_method_fanning_out(self) -> list[bool]:
+        return await asyncio.gather(self.async_private_method(), self.async_private_method())
+
+    @requires_lock
+    async def async_private_method(self) -> bool:
+        self.async_private_method_calls += 1
+        return True
+
+    @requires_lock
+    def _private_method(self) -> bool:
+        return True
+
+    @property
+    @requires_lock
+    def guarded_value(self) -> int:
+        return 42
 
 
 class _HolderTask:
@@ -270,6 +293,152 @@ class TestWithLock:
 
 async def _read_held(lock: ContextLock) -> bool:
     return lock.held_in_current_context
+
+
+class TestRequiresLock:
+    @pytest.mark.asyncio
+    async def test_passes_when_called_from_a_lock_holding_method(self):
+        """Private helpers run fine inside a with_lock caller."""
+        guarded = _Guarded()
+        assert await guarded.locked_method_calling_private() is True
+
+    @pytest.mark.asyncio
+    async def test_passes_inside_an_explicit_lock_context(self):
+        """Holding the lock via async with also satisfies the requirement."""
+        guarded = _Guarded()
+        async with guarded.context_lock:
+            assert await guarded.async_private_method() is True
+            assert guarded._private_method() is True
+            assert guarded.guarded_value == 42
+
+    @pytest.mark.asyncio
+    async def test_passes_in_tasks_fanned_out_from_inside_the_lock(self):
+        """asyncio.gather from a locked method must not trip the check in its children."""
+        guarded = _Guarded()
+        assert await guarded.locked_method_fanning_out() == [True, True]
+
+    @pytest.mark.asyncio
+    async def test_raises_when_no_lock_is_held(self):
+        """Calling a lock-requiring method outside the lock is rejected."""
+        guarded = _Guarded()
+        with pytest.raises(AssertionError, match="must be called with the 'guarded' context lock held"):
+            guarded._private_method()
+
+    @pytest.mark.asyncio
+    async def test_raises_for_async_methods_before_running_the_body(self):
+        """The decorator asserts before awaiting async bodies too, so the body leaves no trace."""
+        guarded = _Guarded()
+        with pytest.raises(AssertionError, match="must be called with"):
+            await guarded.async_private_method()
+        assert guarded.async_private_method_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_raises_for_property_access_outside_the_lock(self):
+        """Guarded snapshots must not be readable without the lock."""
+        guarded = _Guarded()
+        with pytest.raises(AssertionError, match="must be called with"):
+            _ = guarded.guarded_value
+
+    @pytest.mark.asyncio
+    async def test_raises_when_a_different_lock_is_held(self):
+        """Holding some unrelated lock does not authorize touching this object."""
+        guarded = _Guarded()
+        async with ContextLock("unrelated"):
+            with pytest.raises(AssertionError, match="must be called with the 'guarded' context lock held"):
+                guarded._private_method()
+
+    @pytest.mark.asyncio
+    async def test_passes_when_a_collaborator_shares_the_very_same_lock(self):
+        """Collaborators guarded by one controller are handed that controller's lock object."""
+        controller = _Guarded()
+        collaborator = _Guarded()
+        collaborator.context_lock = controller.context_lock
+
+        async with controller.context_lock:
+            assert collaborator._private_method() is True
+
+    @pytest.mark.asyncio
+    async def test_raises_when_a_collaborator_holds_a_look_alike_lock(self):
+        """A separate lock object with the same name is still the wrong lock."""
+        controller = _Guarded()
+        collaborator = _Guarded()
+
+        async with controller.context_lock:
+            with pytest.raises(AssertionError, match="must be called with"):
+                collaborator._private_method()
+
+    @pytest.mark.asyncio
+    async def test_raises_when_the_lock_is_held_by_another_task(self):
+        """held-by matters: someone else holding the lock does not authorize this context."""
+        guarded = _Guarded()
+        holder = _HolderTask(guarded.context_lock)
+        await holder.start()
+        with pytest.raises(AssertionError, match="must be called with"):
+            guarded._private_method()
+        await holder.finish()
+
+    @pytest.mark.asyncio
+    async def test_the_requirement_lapses_again_after_the_holder_returns(self):
+        """The requirement is scoped to the critical section, not sticky afterwards."""
+        guarded = _Guarded()
+        assert await guarded.locked_method_calling_private() is True
+        with pytest.raises(AssertionError, match="must be called with"):
+            guarded._private_method()
+
+    @pytest.mark.asyncio
+    async def test_raises_in_a_child_task_that_outlives_the_critical_section(self):
+        """A task spawned inside the section loses its authorization once the holder releases and someone else acquires."""
+        guarded = _Guarded()
+        resume = asyncio.Event()
+        child_saw_held: list[bool] = []
+
+        async def child() -> None:
+            await resume.wait()
+            child_saw_held.append(guarded.context_lock.held_in_current_context)
+            guarded._private_method()
+
+        async with guarded.context_lock:
+            child_task = asyncio.create_task(child())
+            await asyncio.sleep(0)
+
+        holder = _HolderTask(guarded.context_lock)
+        await holder.start()
+        resume.set()
+        with pytest.raises(AssertionError, match="must be called with the 'guarded' context lock held"):
+            await child_task
+        assert child_saw_held == [False]
+        await holder.finish()
+
+    @pytest.mark.asyncio
+    async def test_a_child_task_that_outlives_the_section_can_still_acquire_the_lock(self):
+        """A stale authorization must not be mistaken for a live one and block a fresh acquire."""
+        guarded = _Guarded()
+        resume = asyncio.Event()
+
+        async def child() -> None:
+            await resume.wait()
+            async with guarded.context_lock:
+                assert guarded._private_method() is True
+
+        async with guarded.context_lock:
+            child_task = asyncio.create_task(child())
+            await asyncio.sleep(0)
+
+        resume.set()
+        await child_task
+        assert not guarded.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_reports_a_missing_lock_attribute(self):
+        """A collaborator that never got handed the lock fails loudly."""
+
+        class _NoLock:
+            @requires_lock
+            def method(self) -> None:
+                pass
+
+        with pytest.raises(AttributeError, match="context_lock"):
+            _NoLock().method()
 
 
 class TestEnforceLockDiscipline:

@@ -4,7 +4,7 @@ import functools
 import inspect
 from collections.abc import Callable
 from types import TracebackType
-from typing import Any
+from typing import Any, NamedTuple
 
 LOCK_ATTRIBUTE_NAME: str = "context_lock"
 
@@ -13,13 +13,20 @@ _DISCIPLINE_MARKER_ATTRIBUTE_NAME: str = "_context_lock_discipline"
 # the annotation machinery (PEP 649) plants these in the class dict; they are not methods of the class
 _ANNOTATION_MEMBER_NAMES: frozenset[str] = frozenset({"__annotate__", "__annotate_func__"})
 
-_held_lock: contextvars.ContextVar["ContextLock | None"] = contextvars.ContextVar("held_context_lock", default=None)
+class _LockGrant(NamedTuple):
+    lock: "ContextLock"
+    generation: int
+
+
+_held_lock: contextvars.ContextVar["_LockGrant | None"] = contextvars.ContextVar("held_context_lock", default=None)
 
 
 class ContextLock:
     def __init__(self, name: str) -> None:
         self._name = name
         self._lock = asyncio.Lock()
+        self._generation_counter: int = 0
+        self._active_generation: int | None = None
 
     @property
     def name(self) -> str:
@@ -31,7 +38,8 @@ class ContextLock:
 
     @property
     def held_in_current_context(self) -> bool:
-        return _held_lock.get() is self
+        grant = _held_lock.get()
+        return grant is not None and grant.lock is self and grant.generation == self._active_generation
 
     async def __aenter__(self) -> "ContextLock":
         await self.acquire()
@@ -46,12 +54,16 @@ class ContextLock:
         self.release()
 
     async def acquire(self) -> None:
-        assert _held_lock.get() is None, f"Cannot acquire lock {self._name!r}: a context lock is already held"
+        grant = _held_lock.get()
+        assert grant is None or not grant.lock.held_in_current_context, f"Cannot acquire lock {self._name!r}: a context lock is already held"
         await self._lock.acquire()
-        _held_lock.set(self)
+        self._generation_counter += 1
+        self._active_generation = self._generation_counter
+        _held_lock.set(_LockGrant(lock=self, generation=self._generation_counter))
 
     def release(self) -> None:
-        assert _held_lock.get() is self, f"Lock {self._name!r} must be held by the current context"
+        assert self.held_in_current_context, f"Lock {self._name!r} must be held by the current context"
+        self._active_generation = None
         _held_lock.set(None)
         self._lock.release()
 
@@ -79,6 +91,27 @@ def with_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
     return _mark(wrapper, "with_lock")
 
 
+def requires_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def assert_precondition(self: Any) -> None:
+        _assert_own_lock_held(fn, self)
+
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            assert_precondition(self)
+            return await fn(self, *args, **kwargs)
+
+    else:
+
+        @functools.wraps(fn)
+        def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            assert_precondition(self)
+            return fn(self, *args, **kwargs)
+
+    return _mark(wrapper, "requires_lock")
+
+
 def lock_exempt(fn: Callable[..., Any]) -> Callable[..., Any]:
     return _mark(fn, "lock_exempt")
 
@@ -102,3 +135,10 @@ def _get_lock(obj: Any) -> ContextLock:
 def _mark(fn: Callable[..., Any], discipline: str) -> Callable[..., Any]:
     setattr(fn, _DISCIPLINE_MARKER_ATTRIBUTE_NAME, discipline)
     return fn
+
+
+def _assert_own_lock_held(fn: Callable[..., Any], obj: Any) -> None:
+    lock = _get_lock(obj)
+    assert (
+        lock.held_in_current_context
+    ), f"{fn.__qualname__} must be called with the {lock.name!r} context lock held by the current context"
