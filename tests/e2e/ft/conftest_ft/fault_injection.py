@@ -61,6 +61,7 @@ def run_fault_injection_loop(
     mean_interval_seconds: float,
     stop_event: threading.Event,
     on_successful_injection: Callable[[], None],
+    cell_type: str | None = None,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     rng = random.Random(seed)
@@ -74,7 +75,7 @@ def run_fault_injection_loop(
         try:
             resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
             resp.raise_for_status()
-            cells = resp.json()["items"]
+            cells = [c for c in resp.json()["items"] if _matches_cell_type(c, cell_type)]
         except Exception:
             logger.info("Failed to list cells from api server", exc_info=True)
             continue
@@ -110,8 +111,14 @@ def run_fault_injection_loop(
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
 
+def _matches_cell_type(cell: dict, cell_type: str | None) -> bool:
+    return cell_type is None or cell["metadata"]["labels"]["miles.io/cell-type"] == cell_type
+
+
 class FaultInjectorHandle:
-    def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float) -> None:
+    def __init__(
+        self, *, base_url: str, seed: int, mean_interval_seconds: float, cell_type: str | None = None
+    ) -> None:
         self.num_successful_injections: int = 0
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -122,6 +129,7 @@ class FaultInjectorHandle:
                 "mean_interval_seconds": mean_interval_seconds,
                 "stop_event": self._stop_event,
                 "on_successful_injection": self._on_successful_injection,
+                "cell_type": cell_type,
             },
             daemon=True,
             name="ft-random-fault-injector",
@@ -138,8 +146,12 @@ class FaultInjectorHandle:
         self.num_successful_injections += 1
 
 
-def spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> FaultInjectorHandle:
+def spawn_fault_injector(
+    *, seed: int, mean_interval_seconds: float, cell_type: str | None = None
+) -> FaultInjectorHandle:
     base_url = f"http://localhost:{API_SERVER_PORT}"
-    handle = FaultInjectorHandle(base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds)
+    handle = FaultInjectorHandle(
+        base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds, cell_type=cell_type
+    )
     handle.start()
     return handle

@@ -161,3 +161,77 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
         )
 
     assert len(injected) >= 2, f"expected a second injection after recovery, got {injected}"
+
+
+def _typed_cell(name: str, cell_type: str, *, healthy: bool = True) -> dict:
+    cell = _cell(name, healthy=healthy)
+    cell["metadata"]["labels"] = {"miles.io/cell-type": cell_type}
+    return cell
+
+
+def _run_typed_injection_loop(cells: list[dict], *, cell_type: str) -> list[str]:
+    injected: list[str] = []
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 6:
+            stop_event.set()
+        return _mock_response({"items": cells})
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+        return _mock_response({})
+
+    with patch.object(fi, "requests") as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        mock_requests.post.side_effect = fake_post
+        fi.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-6,
+            stop_event=stop_event,
+            on_successful_injection=lambda: None,
+            cell_type=cell_type,
+            poll_interval_seconds=1e-6,
+        )
+
+    return injected
+
+
+def test_injection_can_be_restricted_to_one_kind_of_cell() -> None:
+    """Rollout and trainer cells share one api server, so a run targets one kind at a time."""
+    injected = _run_typed_injection_loop(
+        [
+            _typed_cell("actor-0", "actor"),
+            _typed_cell("actor-1", "actor"),
+            _typed_cell("rollout-engine-0", "rollout"),
+            _typed_cell("rollout-engine-1", "rollout"),
+        ],
+        cell_type="rollout",
+    )
+
+    assert injected
+    assert all(name.startswith("rollout-") for name in injected), injected
+
+
+def test_the_live_replica_count_only_considers_the_targeted_kind() -> None:
+    """A single rollout cell must not be killed just because trainer cells are also alive."""
+    injected = _run_typed_injection_loop(
+        [
+            _typed_cell("actor-0", "actor"),
+            _typed_cell("actor-1", "actor"),
+            _typed_cell("rollout-engine-0", "rollout"),
+        ],
+        cell_type="rollout",
+    )
+
+    assert injected == []
+
+
+def test_untyped_runs_still_see_every_cell() -> None:
+    """Existing trainer ft runs do not pass a cell type and must be unaffected."""
+    assert fi._matches_cell_type(_typed_cell("actor-0", "actor"), None)
+    assert fi._matches_cell_type(_typed_cell("rollout-0", "rollout"), "rollout")
+    assert not fi._matches_cell_type(_typed_cell("actor-0", "actor"), "rollout")
