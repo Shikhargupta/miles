@@ -1,10 +1,11 @@
 import asyncio
+import contextlib
 import contextvars
 import functools
 import inspect
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from types import TracebackType
 from typing import Any, NamedTuple
 
@@ -78,6 +79,14 @@ class ContextLock:
         self._active_generation = None
         _held_lock.set(None)
         self._lock.release()
+
+    @contextlib.asynccontextmanager
+    async def with_released(self) -> AsyncIterator[None]:
+        self.release()
+        try:
+            yield
+        finally:
+            await self.acquire()
 
     def detach(self) -> None:
         self._assert_held_in_current_context()
