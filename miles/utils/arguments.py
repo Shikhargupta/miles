@@ -2758,44 +2758,41 @@ def miles_validate_args(args):
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
 
-    if args.eval_num_gpus > 0:
+    # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
+    if args.eval_uses_snapshots:
         assert (
             enable_experimental_rollout_refactor()
-        ), "--eval-num-gpus requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
-        assert args.eval_interval is not None, "--eval-num-gpus requires --eval-interval."
+        ), "Snapshot eval requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+        assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
         assert args.eval_hf_dir is not None or args.save_hf is not None, (
-            "--eval-num-gpus requires a snapshot source: set --eval-hf-dir (staging exports) "
+            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
             "or --save-hf (reuse periodic HF checkpoints)."
         )
-        assert not args.colocate, "--eval-num-gpus is not supported with --colocate."
+        assert not args.colocate, "Snapshot eval is not supported with --colocate."
         assert (
             not args.debug_train_only and not args.debug_rollout_only
-        ), "--eval-num-gpus is not supported with debug_train_only/debug_rollout_only."
-        assert args.eval_num_gpus % args.eval_num_gpus_per_engine == 0, (
-            f"eval_num_gpus ({args.eval_num_gpus}) must be divisible by "
-            f"eval_num_gpus_per_engine ({args.eval_num_gpus_per_engine})."
-        )
+        ), "Snapshot eval is not supported with debug_train_only/debug_rollout_only."
         if args.eval_hf_dir is None:
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "
                 f"save_interval={args.save_interval}). Set --eval-hf-dir for independent snapshots."
             )
+
+    if args.eval_num_gpus > 0:
+        assert not is_checkpoint_eval_fn(args.eval_function_path), (
+            "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
+            "backend; the fleet would boot and then hand the work to the other one."
+        )
+        assert args.eval_num_gpus % args.eval_num_gpus_per_engine == 0, (
+            f"eval_num_gpus ({args.eval_num_gpus}) must be divisible by "
+            f"eval_num_gpus_per_engine ({args.eval_num_gpus_per_engine})."
+        )
     else:
         overrides = collect_eval_sglang_overrides(args)
         assert not overrides, (
             f"--eval-sglang-* configures the dedicated eval fleet, which needs --eval-num-gpus > 0. "
             f"Got {sorted(overrides)} with --eval-num-gpus 0."
-        )
-
-    if is_checkpoint_eval_fn(args.eval_function_path):
-        assert args.eval_num_gpus == 0, (
-            "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
-            "backend; the fleet would boot and then hand the work to the other one."
-        )
-        assert args.eval_hf_dir is not None or args.save_hf is not None, (
-            "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "
-            "or --save-hf (reuse periodic HF checkpoints)."
         )
 
     if args.save_interval is not None:
