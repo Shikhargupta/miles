@@ -17,6 +17,7 @@ from miles.utils.test_utils.fault_injector import FailureMode
 from .conftest import (
     MockInferenceController,
     MockRayTrainCell,
+    MockRemoteCall,
     MockWorkerManager,
     make_cell_summaries,
     make_mock_group,
@@ -392,3 +393,18 @@ class TestBaseCellHandlerInjectFault:
 
         with pytest.raises(NotImplementedError, match="_ConcreteCellHandler does not support fault injection"):
             await handler.inject_fault("0", mode=FailureMode.SIGKILL, sub_index=0)
+
+
+class TestRolloutCellHandlerInjectFault:
+    @pytest.mark.asyncio
+    async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
+        """The manager owns the actors, so it is the one that can crash them."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        manager.inject_fault = MockRemoteCall(None)
+        handler = _RolloutCellHandler(worker_manager=manager, inference_controller=MockInferenceController())
+
+        await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
+
+        assert manager.inject_fault.calls == [
+            ((ENGINE_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1}),
+        ]

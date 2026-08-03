@@ -143,6 +143,9 @@ class _RolloutCellHandler(_CellHandler):
     async def resume(self, cell_key: str) -> None:
         await self._worker_manager.start_cells.remote([cell_key])
 
+    async def inject_fault(self, cell_key: str, *, mode: FailureMode, sub_index: int) -> None:
+        await self._worker_manager.inject_fault.remote(cell_key, mode=mode.value, worker_in_cell_index=sub_index)
+
 
 def compute_engine_cell_ids(summaries: dict) -> list[str]:
     """Engine cells are the ones carrying a model, unlike routers and session servers."""
