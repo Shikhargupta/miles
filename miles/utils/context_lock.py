@@ -14,6 +14,8 @@ WAIT_LOG_INTERVAL_SECONDS: float = 5.0
 LOCK_ATTRIBUTE_NAME: str = "context_lock"
 
 _DISCIPLINE_MARKER_ATTRIBUTE_NAME: str = "_context_lock_discipline"
+_DISCIPLINE_ENFORCED_ATTRIBUTE_NAME: str = "_context_lock_discipline_enforced"
+_DISCIPLINE_OWNER_ATTRIBUTE_NAME: str = "_context_lock_discipline_owner"
 
 # the annotation machinery (PEP 649) plants these in the class dict; they are not methods of the class
 _ANNOTATION_MEMBER_NAMES: frozenset[str] = frozenset({"__annotate__", "__annotate_func__"})
@@ -107,6 +109,8 @@ def enforce_lock_discipline(cls: type) -> type:
                 f"{cls.__name__}.{member_name} must be decorated with one of the context-lock decorators "
                 f"(e.g. with_lock or lock_exempt)"
             )
+            _propagate_discipline_owner(fn=fn, owner_name=cls.__name__)
+    setattr(cls, _DISCIPLINE_ENFORCED_ATTRIBUTE_NAME, True)
     return cls
 
 
@@ -115,6 +119,7 @@ def with_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(fn)
     async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        _assert_owner_enforces_discipline(wrapper, self)
         async with _get_lock(self):
             return await fn(self, *args, **kwargs)
 
@@ -126,6 +131,7 @@ def acquires_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(fn)
     async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        _assert_owner_enforces_discipline(wrapper, self)
         lock = _get_lock(self)
         await lock.acquire()
         try:
@@ -144,6 +150,7 @@ def releases_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(fn)
     async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        _assert_owner_enforces_discipline(wrapper, self)
         lock = _get_lock(self)
         lock.reattach()
         try:
@@ -156,6 +163,7 @@ def releases_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 def requires_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
     def assert_precondition(self: Any) -> None:
+        _assert_owner_enforces_discipline(wrapper, self)
         _assert_own_lock_held(fn, self)
 
     if inspect.iscoroutinefunction(fn):
@@ -189,6 +197,16 @@ def _extract_checkable_functions(member: Any) -> list[Callable[..., Any]]:
     return []
 
 
+def _propagate_discipline_owner(fn: Callable[..., Any], owner_name: str) -> None:
+    target: Any = fn
+    seen: set[int] = set()
+    while target is not None and id(target) not in seen:
+        seen.add(id(target))
+        if inspect.isfunction(target) or inspect.ismethod(target):
+            setattr(target, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, owner_name)
+        target = getattr(target, "__wrapped__", None)
+
+
 def _get_lock(obj: Any) -> ContextLock:
     lock = getattr(obj, LOCK_ATTRIBUTE_NAME)
     assert isinstance(lock, ContextLock), f"{type(obj).__name__}.{LOCK_ATTRIBUTE_NAME} must be a ContextLock"
@@ -205,3 +223,10 @@ def _assert_own_lock_held(fn: Callable[..., Any], obj: Any) -> None:
     assert (
         lock.held_in_current_context
     ), f"{fn.__qualname__} must be called with the {lock.name!r} context lock held by the current context"
+
+
+def _assert_owner_enforces_discipline(wrapper: Callable[..., Any], obj: Any) -> None:
+    assert getattr(wrapper, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, None) is not None, (
+        f"{wrapper.__qualname__} uses a context-lock decorator, but its class is not decorated "
+        f"with @enforce_lock_discipline"
+    )
