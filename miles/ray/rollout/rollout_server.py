@@ -241,6 +241,25 @@ class RolloutServer:
             raise ValueError(f"Heterogeneous nodes_per_engine across groups: {values}")
         return values.pop()
 
+    async def probe_and_mark_dead(self):
+        """Mark unreachable engines stopped so ``recover`` restarts them.
+
+        For servers without a ``RolloutHealthMonitor``, which does the same job.
+        """
+        for group in self.server_groups:
+            for engine in group.all_engines:
+                if not engine.is_allocated:
+                    continue
+                try:
+                    await asyncio.wait_for(engine.actor_handle.get_weight_version.remote(), timeout=60)
+                except Exception as e:
+                    logger.warning(f"Engine unreachable ({e!r}); marking stopped for recovery")
+                    try:
+                        ray.kill(engine.actor_handle)
+                    except Exception:
+                        pass
+                    engine.mark_stopped()
+
     async def recover(self):
         """Recover dead engines across all active groups, overlapping init."""
         port_cursors = PortCursors.empty()

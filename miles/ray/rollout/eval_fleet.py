@@ -9,8 +9,6 @@ import asyncio
 import logging
 from argparse import Namespace
 
-import ray
-
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.http_utils import wait_http_ok
@@ -34,7 +32,9 @@ class EvalFleet:
         On the manager's event loop: keep everything here awaiting rather than blocking.
         """
         try:
-            await self._mark_unreachable_engines()
+            if not self.args.use_fault_tolerance:
+                # Otherwise RolloutHealthMonitor owns the probing for these engines.
+                await self._srv.probe_and_mark_dead()
             await self._srv.recover()
             await self._srv.wait_all_engines_alive()
         except Exception as e:
@@ -96,20 +96,3 @@ class EvalFleet:
             json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
             timeout=timeout,
         )
-
-    async def _mark_unreachable_engines(self) -> None:
-        """Without fault tolerance nothing records an engine death (recover() only
-        restarts engines already marked stopped), so the fleet probes itself."""
-        for group in self._srv.server_groups:
-            for engine in group.all_engines:
-                if not engine.is_allocated:
-                    continue
-                try:
-                    await asyncio.wait_for(engine.actor_handle.get_weight_version.remote(), timeout=60)
-                except Exception as e:
-                    logger.warning(f"Eval engine unreachable ({e!r}); marking stopped for recovery")
-                    try:
-                        ray.kill(engine.actor_handle)
-                    except Exception:
-                        pass
-                    engine.mark_stopped()

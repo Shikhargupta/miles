@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group
 
@@ -131,6 +133,34 @@ class TestRolloutServerPureFunctions:
 
         [eval_model] = [m for m in config.models if m.name == "eval"]
         assert eval_model.server_groups[0].overrides["mem_fraction_static"] == 0.5
+
+    async def test_probe_and_mark_dead(self, monkeypatch):
+        """recover() only restarts engines already marked stopped, so something has to mark them."""
+        import miles.ray.rollout.rollout_server as rollout_server_mod
+
+        monkeypatch.setattr(rollout_server_mod.ray, "kill", lambda handle: None)
+
+        class _Engine:
+            def __init__(self, alive):
+                self.is_allocated, self._alive = True, alive
+
+            @property
+            def actor_handle(self):
+                async def probe():
+                    if not self._alive:
+                        raise RuntimeError("actor died")
+
+                return SimpleNamespace(get_weight_version=SimpleNamespace(remote=probe))
+
+            def mark_stopped(self):
+                self.is_allocated = False
+
+        alive, dead = _Engine(True), _Engine(False)
+        srv = RolloutServer(server_groups=[SimpleNamespace(all_engines=[alive, dead])])
+
+        await srv.probe_and_mark_dead()
+
+        assert alive.is_allocated and not dead.is_allocated
 
     def test_compute_rollout_offset_colocate_returns_zero(self):
         args = make_args(

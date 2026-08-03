@@ -17,6 +17,7 @@ def make_args(**overrides):
     defaults = dict(
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
+        use_fault_tolerance=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
@@ -72,10 +73,14 @@ class FakeServerEngineWrapper:
 
 
 class FakeEvalServer:
+    async def probe_and_mark_dead(self):
+        self.probe_calls += 1
+
     def __init__(self, engines):
         self._engines = engines
         self.wrappers = [FakeServerEngineWrapper(e) for e in engines]
         self.recover_calls = 0
+        self.probe_calls = 0
 
     @property
     def server_groups(self):
@@ -100,11 +105,6 @@ def fleet_env(monkeypatch):
         return None
 
     monkeypatch.setattr(eval_fleet_mod.EvalFleet, "_wait_router_ready", noop_router_ready)
-    # ray.kill on a fake handle would auto-init a real (GPU-less) Ray cluster,
-    # which session-wide ray_local_mode then reuses, deadlocking real_ray suites
-    # on CPU-only CI runners.
-    ray_kills = []
-    monkeypatch.setattr(eval_fleet_mod.ray, "kill", ray_kills.append)
     monkeypatch.setattr(
         eval_fleet_mod,
         "GenerateState",
@@ -150,19 +150,34 @@ async def test_fleet_pin_requires_all_match_and_retries(fleet_env):
     assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 4  # 2 engines x 2 attempts
 
 
-async def test_fleet_marks_dead_engine_for_recovery(fleet_env):
-    """A dead actor is marked stopped for revival; the eval degrades to a skip."""
-    log = []
-    engine = FakeEngine(log)
+async def test_fleet_recovers_before_pinning(fleet_env):
+    """A revived engine must be up before the load: pin runs the health sequence first."""
+    fleet = make_fleet(make_args(), [FakeEngine([])])
 
-    def dead(*args, **kwargs):
-        raise RuntimeError("actor died")
+    await fleet.pin("/snap/step_5", "5")
 
-    engine.responses["get_weight_version"] = dead
-    fleet = make_fleet(make_args(), [engine])
+    assert (fleet._srv.probe_calls, fleet._srv.recover_calls) == (1, 1)
 
-    with pytest.raises(EvalSkip):
+
+async def test_fleet_leaves_probing_to_the_health_monitor(fleet_env):
+    """With --use-fault-tolerance a RolloutHealthMonitor already probes these engines."""
+    fleet = make_fleet(make_args(use_fault_tolerance=True), [FakeEngine([])])
+
+    await fleet.pin("/snap/step_5", "5")
+
+    assert fleet._srv.probe_calls == 0
+    assert fleet._srv.recover_calls == 1
+
+
+async def test_fleet_skips_when_the_fleet_stays_unhealthy(fleet_env):
+    fleet = make_fleet(make_args(), [FakeEngine([])])
+
+    async def never_alive():
+        raise TimeoutError("engines never came up")
+
+    fleet._srv.wait_all_engines_alive = never_alive
+
+    with pytest.raises(EvalSkip) as exc:
         await fleet.pin("/snap/step_5", "5")
 
-    assert fleet._srv.wrappers[0].stopped  # probed, found unreachable, marked for revival
-    assert fleet._srv.recover_calls == 1
+    assert exc.value.reason == "unhealthy"
