@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -17,6 +18,14 @@ from miles.ray.rollout.cell_state import (
     StatePendingWeights,
     StateServing,
     StateUninitialized,
+)
+from miles.utils.ft_utils.health_checker import (
+    ActivenessState,
+    ActivenessTracker,
+    BaseHealthChecker,
+    NoopHealthChecker,
+    SimpleHealthChecker,
+    SimpleHealthCheckerConfig,
 )
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.launch_gate import GATE_PORT_NAME, activate_launch_gate
@@ -46,7 +55,37 @@ class ServerCell:
     args: Any
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
+    global_health_checker_activeness: Callable[[], bool] = lambda: True
+    _health_checker: BaseHealthChecker = dataclasses.field(init=False)
+    _activeness_tracker: ActivenessTracker = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
+
+    def __post_init__(self) -> None:
+        self._activeness_tracker = ActivenessTracker(active=self._health_checker_activeness)
+        self._health_checker = create_rollout_cell_health_checker(
+            args=self.args,
+            name=f"rollout-cell-{self.meta.cell_id}",
+            get_api_client=lambda: self.api_client,
+            get_activeness=self._get_health_checker_activeness_state,
+        )
+        self._health_checker.start()
+
+    def _get_health_checker_activeness_state(self) -> ActivenessState:
+        self._activeness_tracker.set_active(self._health_checker_activeness)
+        return self._activeness_tracker.get()
+
+    def __del__(self) -> None:
+        assert isinstance(self._state, StateDisposed), (
+            f"ServerCell {self.meta.cell_id} was garbage collected without dispose() ({self._state=}); "
+            "every cell must be disposed so its health checker task is stopped"
+        )
+
+    async def cancel_inflight_health_probe(self) -> None:
+        await self._health_checker.cancel_inflight_probe()
+
+    @property
+    def _health_checker_activeness(self) -> bool:
+        return isinstance(self._state, (StatePendingWeights, StateServing)) and self.global_health_checker_activeness()
 
     @property
     def is_uninitialized(self) -> bool:
@@ -142,6 +181,8 @@ class ServerCell:
         )
 
     async def dispose(self) -> None:
+        self._health_checker.stop()
+
         match self._state:
             case StateServing():
                 await self._unregister_from_router()
@@ -208,3 +249,21 @@ class ServerCell:
 
 def compute_nodes_per_engine(*, num_gpus_per_engine: int, num_gpus_per_node: int) -> int:
     return max(1, num_gpus_per_engine // num_gpus_per_node)
+
+
+def create_rollout_cell_health_checker(
+    *,
+    args: Any,
+    name: str,
+    get_api_client: Callable[[], SGLangApiClient],
+    get_activeness: Callable[[], ActivenessState],
+) -> BaseHealthChecker:
+    if "rollout" not in args.ft_components:
+        return NoopHealthChecker()
+
+    config = SimpleHealthCheckerConfig.from_args(args, prefix="rollout_health_check")
+
+    async def _check() -> None:
+        await get_api_client().health_generate(timeout=config.timeout)
+
+    return SimpleHealthChecker(name=name, check_fn=_check, get_activeness=get_activeness, config=config)
