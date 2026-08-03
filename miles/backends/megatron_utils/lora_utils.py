@@ -125,12 +125,24 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
+def sglang_lora_target_all_sentinel(args) -> bool:
+    """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
+    from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
+
+    return is_inkling_checkpoint(getattr(args, "hf_checkpoint", None) or "")
+
+
 def uses_builtin_native_lora_provider(args: Namespace) -> bool:
-    """Whether this run uses the built-in native provider contract."""
-    return (
-        getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
-        and getattr(args, "lora_provider_path", None) in _NATIVE_LORA_PROVIDER_PATHS
-    )
+    """Whether this run uses the built-in native provider contract.
+
+    Must agree with :func:`resolve_lora_provider`: Inkling checkpoints dispatch
+    to their model-specific provider even when ``--lora-provider-path`` is unset.
+    """
+    if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
+        return False
+    if getattr(args, "lora_provider_path", None) is None and sglang_lora_target_all_sentinel(args):
+        return False
+    return getattr(args, "lora_provider_path", None) in _NATIVE_LORA_PROVIDER_PATHS
 
 
 def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
@@ -449,11 +461,16 @@ def resolve_lora_provider(args: Namespace):
     """Return the module implementing the native-LoRA provider protocol.
 
     ``--lora-provider-path`` selects a model-specific implementation (a dotted
-    module path); the default is the ``miles_plugins.lora`` plugin.
+    module path); the default is the ``miles_plugins.lora`` plugin. Inkling
+    checkpoints default to their model-specific provider: the built-in plugin
+    does not cover the Inkling module structure or its TML export naming.
     """
     import importlib
 
-    path = getattr(args, "lora_provider_path", None) or _DEFAULT_LORA_PROVIDER
+    path = getattr(args, "lora_provider_path", None)
+    if path is None and sglang_lora_target_all_sentinel(args):
+        path = "miles_plugins.models.inkling.lora"
+    path = path or _DEFAULT_LORA_PROVIDER
     module = importlib.import_module(path)
     for entry_point in ("wrap_model_provider_with_lora", "load_lora_adapter_hf", "export_lora_hf_named"):
         assert hasattr(module, entry_point), f"--lora-provider-path {path} must define {entry_point}()"
@@ -932,11 +949,14 @@ def _apply_training_state(
 
 def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
     """Build LoRA config dict for syncing weights to SGLang engines."""
-    target_modules_hf = (
-        target_modules_hf_for_sglang_rollout(args)
-        if args.target_modules
-        else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-    )
+    if sglang_lora_target_all_sentinel(args):
+        target_modules_hf: Any = "all-linear"
+    else:
+        target_modules_hf = (
+            target_modules_hf_for_sglang_rollout(args)
+            if args.target_modules
+            else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        )
     return {
         "peft_type": "LORA",
         "r": args.lora_rank,

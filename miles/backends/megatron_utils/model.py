@@ -57,6 +57,11 @@ from .parallel import get_packed_seq_params
 logger = logging.getLogger(__name__)
 
 
+def _has_loadable_ckpt(load_dir: str | None) -> bool:
+    """Whether ``--load`` holds anything; ``load_checkpoint`` dispatches dist vs HF itself."""
+    return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
+
+
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
 from .lora_utils import save_lora_checkpoint
 
@@ -170,6 +175,12 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+            if is_first_replica_megatron_main_rank():
+                logger.info(
+                    "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
+                )
+            config.muon_split_qkv = False
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
@@ -965,8 +976,7 @@ def initialize_model_and_optimizer(
     model[0].role = role
     clear_memory()
 
-    multi_lora = is_multi_lora_enabled(args)
-    if multi_lora:
+    if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
         from megatron.bridge.peft.multi_lora_layers import hide_adapters
@@ -975,14 +985,22 @@ def initialize_model_and_optimizer(
     else:
         load_ctx = nullcontext()
 
-    with load_ctx:
-        iteration, _ = load_checkpoint(
-            model,
-            optimizer,
-            opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=False,
-        )
+    load_dir = getattr(args, "load", None)
+    # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
+    if load_dir is None or _has_loadable_ckpt(load_dir):
+        with load_ctx:
+            iteration, _ = load_checkpoint(
+                model,
+                optimizer,
+                opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=False,
+            )
+    else:
+        if is_first_replica_megatron_main_rank():
+            logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
+        iteration = 0
+
     if (
         is_lora_enabled(args)
         and role == "actor"

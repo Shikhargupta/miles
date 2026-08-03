@@ -125,7 +125,7 @@ def get_routed_experts_from_response(args, output, sample):
     info = output["meta_info"].get("routed_experts")
     if info is None:
         return None
-    return _decode_topk_buffer(info, len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
+    return _decode_topk_buffer(info, len(sample.tokens) - 1, args.num_layers, -1)
 
 
 def get_indexer_topk_from_response(args, output, sample):

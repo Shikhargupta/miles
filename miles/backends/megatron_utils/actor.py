@@ -70,6 +70,12 @@ logger = logging.getLogger(__name__)
 
 
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
+    """Wipe this rank's train disk-offload dir on startup and re-arm the atexit wipe.
+
+    torch_memory_saver unlinks each backup file as its allocation is freed on a
+    graceful teardown, but a SIGKILL'd run leaves stale files behind. The dir is
+    per-rank (see actor_factory), so clearing it wholesale touches nobody else.
+    """
     if not disk_dir:
         return
     shutil.rmtree(disk_dir, ignore_errors=True)
