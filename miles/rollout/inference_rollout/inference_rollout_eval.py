@@ -29,7 +29,7 @@ async def run_eval_datasets(
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
-    for dataset_cfg in getattr(args, "eval_datasets", []) or []:
+    for dataset_cfg in args.eval_datasets:
         coros.append(eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache))
     results_list = await asyncio.gather(*coros)
     return {k: v for r in results_list for k, v in r.items()}

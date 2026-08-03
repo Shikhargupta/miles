@@ -7,16 +7,23 @@ coverage; ``save_hf_model`` picks between it and the Megatron-Bridge exporter
 Everything here is collective: all ranks must call it, global rank 0 writes.
 """
 
+import json
 import logging
+import shutil
 from collections.abc import Sequence
+from functools import cache
 from pathlib import Path
 
+import safetensors.torch
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora_utils import is_lora_model, save_lora_checkpoint
+from miles.backends.megatron_utils.update_weight.common import named_params_and_buffers
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER, load_hf_config
+from miles.utils.megatron_bridge_utils import patch_megatron_model
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +52,6 @@ def export_hf_model_direct(
     weight-sync coverage (the bridge silently exports zero weights for specs it has
     no mapping for, e.g. qwen3.5). Collective — all ranks must call it; rank 0 writes.
     """
-    import json
-    import shutil
-
-    import safetensors.torch
-
-    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
-
     path = Path(path)
     is_writer = torch.distributed.get_rank() == 0
     if is_writer:
@@ -92,15 +92,12 @@ def export_hf_model_direct(
         (path / HF_EXPORT_COMPLETE_MARKER).touch()
 
 
-_hf_bridge_cache: dict = {}
-
-
+@cache
 def _get_hf_bridge(hf_checkpoint: str):
+    # Local: megatron.bridge is only needed on the bridge export path.
     from megatron.bridge import AutoBridge
 
-    if hf_checkpoint not in _hf_bridge_cache:
-        _hf_bridge_cache[hf_checkpoint] = AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
-    return _hf_bridge_cache[hf_checkpoint]
+    return AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
 
 
 def save_hf_model(
@@ -138,8 +135,6 @@ def save_hf_model(
 
         if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
             # LoRA keeps the bridge (adapter merging).
-            from .update_weight.common import named_params_and_buffers
-
             hf_config = load_hf_config(args.hf_checkpoint)
             export_hf_model_direct(
                 args,
@@ -150,8 +145,6 @@ def save_hf_model(
                 megatron_local_weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
             )
         else:
-            from miles.utils.megatron_bridge_utils import patch_megatron_model
-
             bridge = _get_hf_bridge(args.hf_checkpoint)
             path.mkdir(parents=True, exist_ok=True)
             with patch_megatron_model(model):

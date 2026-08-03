@@ -101,7 +101,9 @@ class RolloutManager:
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
         self._eval_consumed_snapshots: list[str] = []
-        self._checkpoint_fn = resolve_checkpoint_eval_fn(args, self.eval_generate_rollout, self.servers)
+        self._checkpoint_fn = resolve_checkpoint_eval_fn(
+            args, eval_fn=self.eval_generate_rollout, servers=self.servers
+        )
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -229,10 +231,9 @@ class RolloutManager:
     def _gc_eval_snapshots(self, consumed_dir: str) -> None:
         """Delete consumed --eval-hf-dir snapshots beyond the keep ring; nothing else
         is ever deleted (pending evals reference unconsumed dirs)."""
-        staging = getattr(self.args, "eval_hf_dir", None)
-        if staging is None:
+        if self.args.eval_hf_dir is None:
             return
-        staging_root = Path(staging).resolve()
+        staging_root = Path(self.args.eval_hf_dir).resolve()
         consumed = Path(consumed_dir).resolve()
         if staging_root not in consumed.parents:
             return

@@ -116,11 +116,3 @@ HF_EXPORT_COMPLETE_MARKER = ".complete"
 
 def is_complete_hf_export(path: str | Path) -> bool:
     return (Path(path) / HF_EXPORT_COMPLETE_MARKER).exists()
-
-
-def looks_like_hf_checkpoint(path: str | Path) -> bool:
-    """Fallback for checkpoints written before the marker existed."""
-    path = Path(path)
-    if not (path / "config.json").exists():
-        return False
-    return any(path.glob("*.safetensors")) or any(path.glob("*.bin"))

@@ -19,6 +19,7 @@ import ray
 
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.http_utils import wait_http_ok
 
 __all__ = [
     "retarget_args",
@@ -98,7 +99,7 @@ class FleetEvalFn(CheckpointEvalFn):
     ``--eval-function-path``.
     """
 
-    def __init__(self, args: Namespace, srv, inner):
+    def __init__(self, args: Namespace, *, srv, inner):
         self.args = args
         self._srv = srv
         self._inner = inner
@@ -176,8 +177,6 @@ class FleetEvalFn(CheckpointEvalFn):
     async def _wait_router_ready(self, timeout: float = 180.0) -> None:
         """After a revival the router 503s until its health cycle evicts the dead
         worker; a retried one-token probe proves the route is usable before dispatch."""
-        from miles.utils.http_utils import wait_http_ok
-
         await wait_http_ok(
             f"http://{self._srv.router_ip}:{self._srv.router_port}/generate",
             json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
@@ -202,11 +201,11 @@ class FleetEvalFn(CheckpointEvalFn):
                     engine.mark_stopped()
 
 
-def resolve_checkpoint_eval_fn(args: Namespace, eval_fn, servers) -> CheckpointEvalFn | None:
+def resolve_checkpoint_eval_fn(args: Namespace, *, eval_fn, servers) -> CheckpointEvalFn | None:
     """The single place that decides whether eval consumes snapshots, and with
     which backend. None = shared-engine eval (the fn runs on its own state)."""
     if args.eval_num_gpus > 0:
-        return FleetEvalFn(args, servers["eval"], inner=eval_fn)
+        return FleetEvalFn(args, srv=servers["eval"], inner=eval_fn)
     if isinstance(eval_fn, CheckpointEvalFn):
         assert args.eval_hf_dir is not None or args.save_hf is not None, (
             "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "

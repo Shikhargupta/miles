@@ -144,7 +144,7 @@ def fleet_env(monkeypatch):
 
 def make_fleet_fn(args, engines, inner=None):
     inner = inner or (lambda input: RolloutFnEvalOutput(data={}))
-    return FleetEvalFn(args, FakeEvalServer(engines), inner=inner)
+    return FleetEvalFn(args, srv=FakeEvalServer(engines), inner=inner)
 
 
 def eval_input(rollout_id, hf_dir):
@@ -375,7 +375,7 @@ def test_resolve_checkpoint_eval_fn():
     instances (validated), else shared."""
     plain_fn = lambda input: None  # noqa: E731
 
-    fleet = resolve_checkpoint_eval_fn(make_args(eval_num_gpus=1), plain_fn, {"eval": "srv-handle"})
+    fleet = resolve_checkpoint_eval_fn(make_args(eval_num_gpus=1), eval_fn=plain_fn, servers={"eval": "srv-handle"})
     assert isinstance(fleet, FleetEvalFn)
     assert fleet._inner is plain_fn
 
@@ -383,16 +383,18 @@ def test_resolve_checkpoint_eval_fn():
     args = make_args(
         eval_num_gpus=0, eval_hf_dir="/staging", save_hf=None, eval_keep_snapshots=2, eval_max_in_flight=2
     )
-    assert resolve_checkpoint_eval_fn(args, external, {}) is external
+    assert resolve_checkpoint_eval_fn(args, eval_fn=external, servers={}) is external
 
     with pytest.raises(AssertionError, match="snapshot source"):
-        resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0, eval_hf_dir=None, save_hf=None), external, {})
+        resolve_checkpoint_eval_fn(
+            make_args(eval_num_gpus=0, eval_hf_dir=None, save_hf=None), eval_fn=external, servers={}
+        )
 
-    assert resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0), plain_fn, {}) is None
+    assert resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0), eval_fn=plain_fn, servers={}) is None
 
     with pytest.raises(AssertionError, match="class-based"):
         # Legacy (non-class) loading leaves the class unconstructed.
-        resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0), CheckpointFnStub, {})
+        resolve_checkpoint_eval_fn(make_args(eval_num_gpus=0), eval_fn=CheckpointFnStub, servers={})
 
 
 # ---------------- driver (train_async.EvalDispatcher) ----------------

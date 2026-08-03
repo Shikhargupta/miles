@@ -197,6 +197,7 @@ class InferenceRolloutFn:
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
+        # Local: inference_rollout_eval imports GenerateState from this module.
         from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
         state = input.generate_state or self.state
