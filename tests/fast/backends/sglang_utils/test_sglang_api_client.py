@@ -312,6 +312,57 @@ async def test_every_public_method_is_a_coroutine_function():
     assert non_async == []
 
 
+class TestCheckServerStartupComplete:
+    """``check_server_startup_complete`` is a single-shot probe: health first, then a drained queue."""
+
+    async def test_a_started_server_answers_health_then_flush_cache(self, monkeypatch):
+        """Startup completion means both the health endpoint and a drained working queue."""
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse(), _FakeResponse()])
+
+        result = await sglang_api_client.check_server_startup_complete(server_url=SERVER_URL, api_key="k")
+
+        assert result is True
+        assert [url for _verb, url, _kwargs in rec.calls] == [
+            f"{SERVER_URL}/health_generate",
+            f"{SERVER_URL}/flush_cache",
+        ]
+        assert rec.calls[0][2]["headers"]["Authorization"] == "Bearer k"
+
+    async def test_an_unhealthy_server_is_reported_without_flushing(self, monkeypatch):
+        """A failing health check short-circuits: flushing an unhealthy server makes no sense."""
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse(status_code=503)])
+
+        result = await sglang_api_client.check_server_startup_complete(server_url=SERVER_URL, api_key="k")
+
+        assert result is False
+        assert len(rec.calls) == 1
+
+    async def test_a_failing_flush_means_startup_is_not_complete(self, monkeypatch):
+        """A healthy server whose queue cannot be flushed is not ready for offload yet."""
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse(), _FakeResponse(status_code=503)])
+
+        result = await sglang_api_client.check_server_startup_complete(server_url=SERVER_URL, api_key="k")
+
+        assert result is False
+        assert len(rec.calls) == 2
+
+    async def test_a_connection_error_means_startup_is_not_complete(self, monkeypatch):
+        """A server that is not accepting connections yet reads as not-started, not as an error."""
+
+        class _Refusing:
+            async def get(self, url, **kwargs):
+                raise httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Refusing())
+
+        result = await sglang_api_client.check_server_startup_complete(server_url=SERVER_URL, api_key="k")
+
+        assert result is False
+
+
 class TestWaitServerHealthy:
     """``wait_server_healthy`` polls until the server answers, and gives up if the process dies."""
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -21,6 +21,7 @@ from miles.utils.workers.worker_spec import (
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
+    StartupProbeContext,
     WorkerMetaContext,
 )
 
@@ -130,6 +131,7 @@ class _CellManager(Generic[SpecT]):
     spec: SpecT
     actors: list[_BaseActorManager] | None
     generation: int = 0
+    startup_prober: _CellManagerStartupProber | None = None
 
     async def launch_actors(self):
         assert self.actors is None
@@ -160,8 +162,12 @@ class _CellManager(Generic[SpecT]):
 
     async def post_setup(self) -> None:
         await self._for_all_actors(lambda a: a.post_setup())
+        self.startup_prober = _CellManagerStartupProber.start(cell=self)
 
     async def stop(self) -> None:
+        if self.startup_prober is not None:
+            self.startup_prober.cancel()
+            self.startup_prober = None
         await self._for_all_actors(lambda a: a.stop())
         self.actors = None
 
@@ -184,8 +190,55 @@ class _CellManager(Generic[SpecT]):
     def alive(self) -> bool:
         return self.actors is not None
 
+    @property
+    def started(self) -> bool:
+        return self.startup_prober.started
+
+
+@dataclass(kw_only=True)
+class _CellManagerStartupProber:
+    cell: _CellManager
+    started: bool = False
+    _task: asyncio.Task | None = None
+
+    @classmethod
+    def start(cls, cell: _CellManager) -> _CellManagerStartupProber:
+        prober = cls(cell=cell)
+        prober._task = asyncio.create_task(prober._poll())
+        return prober
+
+    def cancel(self) -> None:
+        self._task.cancel()
+
+    async def _poll(self) -> None:
+        probe = self.cell.spec.startup_probe or _always_started_probe
+        ctx = StartupProbeContext(addrs=self.cell.actors[0].self_addrs)
+        attempt = 0
+        while not await self._check_once(probe, ctx):
+            attempt += 1
+            if attempt % _STARTUP_PROBE_LOG_EVERY_ATTEMPTS == 0:
+                logger.info(f"Cell {self.cell.cell_id} is still waiting for its startup probe ({attempt=})")
+            await asyncio.sleep(_STARTUP_PROBE_INTERVAL_SECONDS)
+        self.started = True
+        logger.info(f"Cell {self.cell.cell_id} completed its startup probe")
+
+    async def _check_once(
+        self, probe: Callable[[StartupProbeContext], Awaitable[bool]], ctx: StartupProbeContext
+    ) -> bool:
+        try:
+            return await probe(ctx)
+        except Exception:
+            logger.exception(f"Startup probe of cell {self.cell.cell_id} raised; treating as not started")
+            return False
+
+
+async def _always_started_probe(ctx: StartupProbeContext) -> bool:
+    return True
+
 
 _SHUTDOWN_TIMEOUT = 30
+_STARTUP_PROBE_INTERVAL_SECONDS = 2
+_STARTUP_PROBE_LOG_EVERY_ATTEMPTS = 15
 
 
 @dataclass(kw_only=True)

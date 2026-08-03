@@ -65,6 +65,11 @@ class TestBaseWorkerSpec:
         assert spec.port_infos[0].static_port == 8000
         assert spec.scheduling.num_cells == 2
 
+    def test_startup_probe_defaults_to_none(self):
+        """A spec without a startup probe means the worker is treated as started right after launch."""
+        spec = BaseWorkerSpec(**_make_base_kwargs())
+        assert spec.startup_probe is None
+
     def test_env_var_is_stored_uncalled(self):
         """The env_var callable is stored as-is and only evaluated on demand."""
         calls = []

@@ -4,14 +4,21 @@ import shlex
 import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
+from miles.backends.sglang_utils.sglang_api_client import check_server_startup_complete
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import (
+    CommandWorkerSpec,
+    LaunchCommandContext,
+    PortInfo,
+    SchedulingSpec,
+    StartupProbeContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +153,13 @@ def _compute_spec_inference_engine(
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
         )
 
+    async def _startup_probe(ctx: StartupProbeContext) -> bool:
+        primary = ctx.addrs["primary"]
+        return await check_server_startup_complete(
+            server_url=build_server_url(host=primary.host, port=primary.port),
+            api_key=server_group_config.overrides.get("api_key", args.sglang_api_key),
+        )
+
     envs = compute_inference_engine_env_vars(args)
     scheduling = SchedulingSpec(
         num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
@@ -186,6 +200,7 @@ def _compute_spec_inference_engine(
         env_var=lambda: envs,
         scheduling=scheduling,
         launch_command=_compute_launch_command,
+        startup_probe=_startup_probe,
         # TODO: reduce complexity around passing around configs later during arguments refactor
         meta=lambda ctx: dict(
             model_id=model_cfg.name,

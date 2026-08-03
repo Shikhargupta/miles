@@ -16,7 +16,7 @@ from miles.ray.specs.inference import (
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
-from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerMetaContext
+from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, StartupProbeContext, WorkerMetaContext
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
@@ -260,6 +260,56 @@ class TestEngineMetaApiKey:
             sglang_api_key="from-args",
         )
         assert meta["sglang_api_key"] == ""
+
+
+class TestEngineStartupProbe:
+    def _engine_spec(self, tmp_path, *, overrides_yaml: str = "", **args_overrides):
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            "sglang:\n"
+            "  - name: default\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 1\n" + overrides_yaml
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=8, **args_overrides)
+        (spec,) = specs_inference_engine(args)
+        return spec
+
+    async def test_the_probe_checks_the_primary_addr_with_the_resolved_api_key(self, tmp_path, monkeypatch):
+        """The engine's startup probe asks the node-0 server whether startup completed, using the group's key."""
+        spec = self._engine_spec(tmp_path, sglang_api_key="from-args")
+        recorded: dict = {}
+
+        async def _fake_check(*, server_url: str, api_key) -> bool:
+            recorded.update(server_url=server_url, api_key=api_key)
+            return True
+
+        monkeypatch.setattr("miles.ray.specs.inference.check_server_startup_complete", _fake_check)
+        ctx = StartupProbeContext(addrs={"primary": HostAndPort(host="10.0.0.5", port=31000)})
+
+        assert await spec.startup_probe(ctx) is True
+        assert recorded == {"server_url": "http://10.0.0.5:31000", "api_key": "from-args"}
+
+    async def test_a_group_api_key_override_reaches_the_probe(self, tmp_path, monkeypatch):
+        """The probe must authenticate with the same key the engine was launched with."""
+        spec = self._engine_spec(
+            tmp_path,
+            overrides_yaml="        overrides:\n          api_key: from-override\n",
+            sglang_api_key="from-args",
+        )
+        recorded: dict = {}
+
+        async def _fake_check(*, server_url: str, api_key) -> bool:
+            recorded.update(api_key=api_key)
+            return False
+
+        monkeypatch.setattr("miles.ray.specs.inference.check_server_startup_complete", _fake_check)
+        ctx = StartupProbeContext(addrs={"primary": HostAndPort(host="10.0.0.5", port=31000)})
+
+        assert await spec.startup_probe(ctx) is False
+        assert recorded == {"api_key": "from-override"}
 
 
 class TestTrailingPartialEngineRejection:

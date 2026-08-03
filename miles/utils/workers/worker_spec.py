@@ -1,4 +1,6 @@
-from collections.abc import Callable
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from pydantic import model_validator
@@ -9,7 +11,7 @@ RPC_PORT_NAME = "rpc"
 DEFAULT_RPC_PORT = 8000
 
 
-def _port_info_name(port_info: "PortInfo | dict") -> str:
+def _port_info_name(port_info: PortInfo | dict) -> str:
     return port_info["name"] if isinstance(port_info, dict) else port_info.name
 
 
@@ -31,7 +33,7 @@ class SchedulingSpec(FrozenStrictBaseModel):
     pin_to_head: bool = False
 
     @classmethod
-    def single(cls, num_gpus_per_worker: float, pin_to_head: bool = False) -> "SchedulingSpec":
+    def single(cls, num_gpus_per_worker: float, pin_to_head: bool = False) -> SchedulingSpec:
         return SchedulingSpec(
             num_cells=1,
             num_workers_per_cell=1,
@@ -45,12 +47,17 @@ class WorkerMetaContext(FrozenStrictBaseModel):
     cell_index: int
 
 
+class StartupProbeContext(FrozenStrictBaseModel):
+    addrs: NamedHostAndPorts
+
+
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
     port_infos: list[PortInfo]
     env_var: Callable[[], dict[str, str]]
     scheduling: SchedulingSpec
     meta: Callable[[WorkerMetaContext], dict[str, Any]] | None = None
+    startup_probe: Callable[[StartupProbeContext], Awaitable[bool]] | None = None
 
 
 class HostAndPort(FrozenStrictBaseModel):

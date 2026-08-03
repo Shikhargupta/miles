@@ -9,6 +9,25 @@ from miles.utils.http_utils import GeneralHttpClientProvider
 logger = logging.getLogger(__name__)
 
 
+async def check_server_startup_complete(server_url: str, api_key: str | None) -> bool:
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    http_client = GeneralHttpClientProvider.client()
+    # use flush_cache to make sure the working queue is empty, so that we can do offload
+    for endpoint in ["health_generate", "flush_cache"]:
+        try:
+            response = await http_client.get(f"{server_url}/{endpoint}", headers=headers)
+        except httpx.HTTPError:
+            return False
+        if response.status_code != 200:
+            return False
+
+    return True
+
+
 async def wait_server_healthy(server_url, api_key):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
