@@ -361,7 +361,9 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
 def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
     """HF target_modules for SGLang LoRA init/sync (minus _SGLANG_UNSUPPORTED_HF_TARGETS, currently empty)."""
     raw = list(args.target_modules) if args.target_modules else []
-    if uses_builtin_native_lora_provider(args):
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    checkpoint_readable = not hf_checkpoint or os.path.exists(os.path.join(hf_checkpoint, "config.json"))
+    if uses_builtin_native_lora_provider(args) and checkpoint_readable:
         from miles_plugins.lora.sglang_adapter import sglang_target_modules
 
         hf = sglang_target_modules(args)
