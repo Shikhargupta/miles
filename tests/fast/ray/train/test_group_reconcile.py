@@ -68,3 +68,20 @@ class TestReconcile:
             await group._reconcile(f"{_SPEC_NAME}-{cell_index}", _make_cell_info(cell_index))
 
         assert [cell.cell_index for cell in group._cells] == [0, 1, 2]
+
+
+class TestWaitExpectedNumCells:
+    async def test_waiting_returns_once_every_cell_is_observed(self):
+        """Training must not start against half a fleet."""
+        group = _make_group(num_cells=2)
+        for cell_index in range(2):
+            await group._reconcile(f"{_SPEC_NAME}-{cell_index}", _make_cell_info(cell_index))
+
+        await group._wait_expected_num_cells(timeout=1.0)
+
+    async def test_waiting_gives_up_when_cells_never_appear(self):
+        """A silent hang here would look like a stuck first step."""
+        group = _make_group(num_cells=2)
+
+        with pytest.raises(TimeoutError):
+            await group._wait_expected_num_cells(timeout=1.0)
