@@ -49,6 +49,9 @@ class DummyTrainActor:
         self._record("train", args, kwargs)
         return self._train_return_value
 
+    def reconcile_adapters(self) -> None:
+        self._record("reconcile_adapters", (), {})
+
     def set_rollout_executor(self, *args: Any, **kwargs: Any) -> None:
         self._record("set_rollout_executor", args, kwargs)
 
