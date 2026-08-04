@@ -21,12 +21,12 @@ ReconcileFn = Callable[[ParentKey], Awaitable[None]]
 class ReconcileLoop:
     """A source stream feeds a store; every changed parent key is reconciled once, level-triggered.
 
-    The contract for `source` is to open every stream with a `ReplaceEvent` carrying the whole world,
-    and to be restartable, since a stream that ends or fails is reopened.
-
-    The contract for `reconcile` is to take a parent key only and re-derive from `get_by_parent()`,
-    treating those objects as read-only; to be idempotent, since delivery is at-least-once; and not
-    to block on I/O, since one worker serves every parent key.
+    Args:
+        source: Opens every stream with a `ReplaceEvent` carrying the whole world, and is
+            restartable: a stream that ends or fails is reopened.
+        reconcile: Takes a parent key only and re-derives from `get_by_parent()`, whose objects
+            are read-only. Must be idempotent, since delivery is at-least-once, and must not block
+            on I/O, since one worker serves every parent key.
     """
 
     def __init__(
