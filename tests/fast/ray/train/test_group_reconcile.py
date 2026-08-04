@@ -30,13 +30,13 @@ def _make_group(*, num_cells: int = 2) -> RayTrainGroup:
     return group
 
 
-def _make_cell_info(cell_index: int) -> CellInfo:
+def _make_cell_info(cell_index: int, *, workers_hash: str = "pseudo-hash-1") -> CellInfo:
     return CellInfo(
         cell_id=f"{_SPEC_NAME}-{cell_index}",
         spec_name=_SPEC_NAME,
         alive=True,
         worker_names=[f"{_SPEC_NAME}-{cell_index}-0"],
-        workers_hash="pseudo-hash-1",
+        workers_hash=workers_hash,
         meta={"role": "actor", "cell_index": cell_index},
     )
 
@@ -50,6 +50,15 @@ class TestReconcile:
 
         assert [cell.cell_index for cell in group._cells] == [0]
 
+    async def test_a_disappeared_cell_is_dropped(self):
+        """A cell the manager no longer reports must stop being trained."""
+        group = _make_group()
+        await group._reconcile(f"{_SPEC_NAME}-1", _make_cell_info(1))
+
+        await group._reconcile(f"{_SPEC_NAME}-1", None)
+
+        assert group._cells == []
+
     async def test_reobserving_a_known_cell_keeps_the_same_object(self):
         """Recreating the cell would throw away its state machine and health checker."""
         group = _make_group()
@@ -59,6 +68,17 @@ class TestReconcile:
         await group._reconcile(f"{_SPEC_NAME}-0", _make_cell_info(0))
 
         assert group._cells[0] is first
+
+    async def test_a_relaunched_cell_is_replaced(self):
+        """A new generation hands out new actor handles, so keeping the old object would use dead ones."""
+        group = _make_group()
+        await group._reconcile(f"{_SPEC_NAME}-0", _make_cell_info(0))
+        first = group._cells[0]
+
+        await group._reconcile(f"{_SPEC_NAME}-0", _make_cell_info(0, workers_hash="pseudo-hash-2"))
+
+        assert group._cells[0] is not first
+        assert group._cells[0].workers_hash == "pseudo-hash-2"
 
     async def test_cells_are_ordered_by_index_whatever_the_arrival_order(self):
         """Independent DP ranks are derived from position, so order must be stable."""

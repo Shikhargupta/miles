@@ -3,7 +3,6 @@ import logging
 import time
 from dataclasses import dataclass
 
-import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -25,6 +24,7 @@ from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.misc import SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
 
@@ -226,10 +226,6 @@ class InferenceController:
 
     @with_lock
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
-        observed_cell_meta: ServerCellMetadata | None = (
-            _compute_server_cell_meta_from_info(observed) if observed is not None else None
-        )
-
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
         for srv in self.servers.values():
@@ -237,17 +233,20 @@ class InferenceController:
                 actual_srv, actual_cell = srv, c
                 break
 
-        if observed is not None and actual_srv is None:
+        async def _add(_cell_id: str, observed_info: CellInfo) -> None:
+            observed_cell_meta = _compute_server_cell_meta_from_info(observed_info)
             await self.servers[observed_cell_meta.model_id].add_cell(observed_cell_meta)
-        elif observed is None and actual_srv is not None:
-            await actual_srv.remove_cell(cell_id)
-        elif (
-            observed is not None
-            and actual_srv is not None
-            and observed_cell_meta.workers_hash != actual_cell.meta.workers_hash
-        ):
-            await actual_srv.remove_cell(cell_id)
-            await actual_srv.add_cell(observed_cell_meta)
+
+        async def _remove(remove_cell_id: str) -> None:
+            await actual_srv.remove_cell(remove_cell_id)
+
+        await apply_cell_observation(
+            cell_id=cell_id,
+            observed=observed,
+            actual_workers_hash=actual_cell.meta.workers_hash if actual_cell is not None else None,
+            add=_add,
+            remove=_remove,
+        )
 
     # -------------------------- utils -----------------------------
 
