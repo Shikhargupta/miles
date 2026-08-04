@@ -70,7 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     fp8_rollout_checkpoint: str = "/cluster-storage/models/GLM-5.2_fp8"
     # Must be shared across nodes: every rank writes its dist-checkpoint shard here,
     # and the generated sglang config is read by engine actors on every node.
-    save_dir: str = "/personal/07ec30ff_glm52_lora_tb2_nomoe/"
+    save_dir: str = "/personal/07ec30ff_glm52_lora_tb2_nomoe_lr3x/"
     save_traces_dir: str = ""
     prompt_data: str = "/personal/07ec30ff_stage/tb2_train_glm52.jsonl"
 
@@ -90,7 +90,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     n_samples_per_prompt: int = 8
     global_batch_size: int = 32
     save_interval: int = 10
-    lr: str = "1e-5"
+    lr: str = "3e-5"
 
     # LoRA
     lora_rank: int = 16
