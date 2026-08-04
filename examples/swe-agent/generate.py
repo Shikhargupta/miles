@@ -8,15 +8,14 @@ with --custom-agent-function-path pointing to swe_agent_function.run
 Task-type agnostic — reward is pre-computed by the Harbor environment
 and stored in sample.metadata["reward"] regardless of task type.
 
-Dynamic filter uses the general-purpose ``check_no_aborted`` from
-``miles.rollout.filter_hub.dynamic_sampling_filters``.
-
 Components:
   - reward_func: reads pre-computed reward from sample metadata
+  - sanitize_aborted_samples: makes aborted trials safe to train
   - aggregate_agent_metrics: aggregates agent timing/count metrics
-  - RolloutFn: InferenceRolloutFn subclass that logs agent metrics
+  - RolloutFn: InferenceRolloutFn subclass that sanitizes samples and logs agent metrics
 """
 
+import copy
 import logging
 
 from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
@@ -38,6 +37,48 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
     if isinstance(samples, list):
         return [s.metadata.get("reward", 0.0) for s in samples]
     return samples.metadata.get("reward", 0.0)
+
+
+# -- Aborted-sample sanitation --
+
+
+def _is_trainable(sample: Sample) -> bool:
+    return sample.response_length > 0 and sample.rollout_log_probs is not None
+
+
+def sanitize_aborted_samples(groups: list[list[Sample]]) -> dict[str, int]:
+    """Make aborted trials safe to train (no dynamic-sampling filter drops them).
+
+    Aborted trials that still produced tokens train with reward 0. Trials that
+    never recorded a model call (e.g. the sandbox failed to boot) have no
+    tokens and ``rollout_log_probs=None``, which crashes the trainer, so each
+    is replaced by a copy of a healthy sibling with ``remove_sample=True``:
+    the batch keeps its shape while the copy's loss mask is zeroed out.
+    """
+    stats = {"reward_zero_filled": 0, "empty_replaced": 0, "empty_unreplaceable": 0}
+    batch_donors = [s for group in groups for s in group if _is_trainable(s)]
+    for group in groups:
+        donors = [s for s in group if _is_trainable(s)] or batch_donors
+        for i, sample in enumerate(group):
+            if _is_trainable(sample):
+                if sample.reward is None:
+                    sample.reward = 0.0
+                    stats["reward_zero_filled"] += 1
+                continue
+            if not donors:
+                stats["empty_unreplaceable"] += 1
+                continue
+            replacement = copy.deepcopy(donors[0])
+            replacement.group_index = sample.group_index
+            replacement.index = sample.index
+            replacement.prompt = sample.prompt
+            replacement.label = sample.label
+            replacement.metadata = sample.metadata
+            replacement.reward = 0.0
+            replacement.remove_sample = True
+            group[i] = replacement
+            stats["empty_replaced"] += 1
+    return {key: count for key, count in stats.items() if count}
 
 
 # -- Agent Metrics Aggregation --
@@ -93,6 +134,10 @@ class RolloutFn(InferenceRolloutFn):
 
     async def _call_train(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         output = await super()._call_train(input)
+
+        sanitize_stats = sanitize_aborted_samples(output.samples)
+        if sanitize_stats:
+            logger.info(f"Sanitized aborted samples for rollout {input.rollout_id}: {sanitize_stats}")
 
         all_samples = []
         for group in output.samples:
