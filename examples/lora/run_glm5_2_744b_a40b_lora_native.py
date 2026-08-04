@@ -4,7 +4,7 @@ Native-path companion to ``scripts/run_glm5_2_744b_a40b_lora.py`` (bridge). The
 model is built by miles' own glm5 provider (``--spec miles_plugins.models.glm5``)
 and ``miles_plugins.lora`` attaches the adapters (model_type ``glm_moe_dsa`` ->
 MLA arch spec). Coverage is attention-only, matching the other MLA registries in
-``scripts/run_lora_native.py``: routed-expert adapters stay out of scope for the
+``examples/lora/run_lora_native.py``: routed-expert adapters stay out of scope for the
 native provider.
 
 DSA notes carried over from the bridge script: the kernel backend dictates the
@@ -13,9 +13,9 @@ query layout (tilelang => thd, megatron => bshd), both forbid
 flashmla_sparse kernels.
 
 Usage:
-  python scripts/run_glm5_2_744b_a40b_lora_native.py prepare    --model-name GLM-5.2_5layer
-  python scripts/run_glm5_2_744b_a40b_lora_native.py train      --model-name GLM-5.2_5layer --num-rollout 20
-  python scripts/run_glm5_2_744b_a40b_lora_native.py full-train --model-name GLM-5.2_5layer
+  python examples/lora/run_glm5_2_744b_a40b_lora_native.py prepare    --model-name GLM-5.2_5layer
+  python examples/lora/run_glm5_2_744b_a40b_lora_native.py train      --model-name GLM-5.2_5layer --num-rollout 20
+  python examples/lora/run_glm5_2_744b_a40b_lora_native.py full-train --model-name GLM-5.2_5layer
 """
 
 from dataclasses import dataclass

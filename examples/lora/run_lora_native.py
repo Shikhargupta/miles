@@ -1,6 +1,6 @@
 """GRPO LoRA training through the native (raw-mode) path for MoE registries.
 
-Companion to ``scripts/run_qwen3_lora_native.py``, which covers the dense GQA
+Companion to ``examples/lora/run_qwen3_lora_native.py``, which covers the dense GQA
 reference recipe. This one drives the shipped MoE registries whose attention is
 either multi-latent (GLM / DeepSeek / Kimi) or a gated GQA hybrid (Qwen3.5), i.e.
 exactly the layouts ``miles_plugins.lora`` grew beyond the plain fused-qkv case
@@ -31,9 +31,9 @@ because at 8 prompts nearly every gsm8k group comes out all-correct, GRPO's
 advantage is zero, and the adapter never moves.
 
 Usage:
-  python scripts/run_lora_native.py prepare    --model-name GLM-4.7-Flash
-  python scripts/run_lora_native.py train      --model-name GLM-4.7-Flash
-  python scripts/run_lora_native.py full-train --model-name Qwen3.5-35B-A3B
+  python examples/lora/run_lora_native.py prepare    --model-name GLM-4.7-Flash
+  python examples/lora/run_lora_native.py train      --model-name GLM-4.7-Flash
+  python examples/lora/run_lora_native.py full-train --model-name Qwen3.5-35B-A3B
 """
 
 from dataclasses import dataclass, field

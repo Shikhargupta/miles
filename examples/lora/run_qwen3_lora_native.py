@@ -20,14 +20,14 @@ provider -- pass ``--target-modules "q_proj,k_proj,v_proj,o_proj"`` so the train
 the engine agree on exactly which modules carry an adapter.
 
 Note on Qwen3.5: the gated ``linear_qkv`` and the GDN hybrid layout are covered by
-``scripts/run_lora_native.py``, which drives the MoE registries. Bridge mode
+``examples/lora/run_lora_native.py``, which drives the MoE registries. Bridge mode
 (``scripts/run_qwen3_5_35b_a3b_lora.py``) remains the recommended path for Qwen3.5 for
 now: raw mode's GDN layers produce an unstable backward once the base is frozen.
 
 Usage:
-  python scripts/run_qwen3_lora_native.py prepare    --model-name Qwen3-8B
-  python scripts/run_qwen3_lora_native.py full-train --model-name Qwen3-8B --task gsm8k
-  python scripts/run_qwen3_lora_native.py train      --model-name Qwen3-4B --task dapo-math
+  python examples/lora/run_qwen3_lora_native.py prepare    --model-name Qwen3-8B
+  python examples/lora/run_qwen3_lora_native.py full-train --model-name Qwen3-8B --task gsm8k
+  python examples/lora/run_qwen3_lora_native.py train      --model-name Qwen3-4B --task dapo-math
 """
 
 from dataclasses import dataclass

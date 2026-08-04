@@ -14,7 +14,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from tests.ci.ci_register import register_cuda_ci
-from tests.fast.miles_plugins.lora.test_native_dist_checkpoint import _build_chunk, _fill_chunk
+from tests.fast.miles_plugins.lora.test_checkpointing import _build_chunk, _fill_chunk
 
 from miles_plugins.lora import checkpointing
 

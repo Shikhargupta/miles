@@ -1,6 +1,6 @@
 import os
 
-from scripts.run_lora_native import ScriptArgs, _prepare, _train
+from examples.lora.run_lora_native import ScriptArgs, _prepare, _train
 from tests.ci.ci_register import register_cuda_ci
 
 # Native (raw-mode) LoRA on the 2-layer Kimi-K2.5 prune: MLA adapters on the

@@ -1,6 +1,6 @@
 import os
 
-from scripts.run_qwen3_lora_native import ScriptArgs, _prepare_download, _train
+from examples.lora.run_qwen3_lora_native import ScriptArgs, _prepare_download, _train
 from tests.ci.ci_register import register_cuda_ci
 
 # Smoke test for the native (raw-mode) LoRA plugin on the dense-GQA reference

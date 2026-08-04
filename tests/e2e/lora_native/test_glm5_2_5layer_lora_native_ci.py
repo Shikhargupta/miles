@@ -1,6 +1,6 @@
 import os
 
-from scripts.run_glm5_2_744b_a40b_lora_native import ScriptArgs, _prepare, _train
+from examples.lora.run_glm5_2_744b_a40b_lora_native import ScriptArgs, _prepare, _train
 from tests.ci.ci_register import register_cuda_ci
 
 # Native (raw-mode) LoRA on the 5-layer GLM-5.2 prune (3 dense + 2 MoE): MLA
