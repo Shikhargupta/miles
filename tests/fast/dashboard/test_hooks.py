@@ -1,4 +1,5 @@
 import logging
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -153,7 +154,7 @@ class FakeManagerHandle:
     """Duck-typed RayWorkerManager handle serving per-cell worker infos."""
 
     def __init__(self, infos_by_cell):
-        self.get_worker_infos = _FakeProbe(lambda *, spec_name, cell_index: infos_by_cell[(spec_name, cell_index)])
+        self.get_worker_infos = _FakeProbe(lambda *, cell_id: infos_by_cell[cell_id])
 
 
 class FakeCell:
@@ -166,6 +167,7 @@ class FakeCell:
         self.server_url = url
         self.worker_type = "regular"
         self.is_pending_weights_or_serving = alive
+        self.meta = SimpleNamespace(cell_id=f"inference-engine-0-0-{cell_index}", worker_type="regular")
 
 
 def _worker_info(name, node, gpus, generation=1):
@@ -188,11 +190,11 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
     infos_by_cell = {
-        ("inference-engine-0-0", 0): [
+        "inference-engine-0-0-0": [
             _worker_info("inference-engine-0-0-0", "node-a", [0, 1]),
             _worker_info("inference-engine-0-0-1", "node-b", [0, 1]),
         ],
-        ("inference-engine-0-0", 1): [_worker_info("inference-engine-0-1-0", "node-a", [2, 3])],
+        "inference-engine-0-0-1": [_worker_info("inference-engine-0-1-0", "node-a", [2, 3])],
     }
     monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(lambda: FakeManagerHandle(infos_by_cell)))
     servers = _servers([FakeCell("http://a:1", cell_index=0), FakeCell("http://b:1", cell_index=1)])
@@ -208,9 +210,7 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     hooks.register_engines(servers)  # steady state: fingerprint unchanged
     assert len(handle.update_topology.calls) == 1
 
-    infos_by_cell[("inference-engine-0-0", 1)] = [
-        _worker_info("inference-engine-0-1-0", "node-a", [2, 3], generation=2)
-    ]
+    infos_by_cell["inference-engine-0-0-1"] = [_worker_info("inference-engine-0-1-0", "node-a", [2, 3], generation=2)]
     hooks.register_engines(servers)  # recovery: same worker, new generation
     assert len(handle.update_topology.calls) == 2
 
@@ -219,7 +219,7 @@ def test_register_engines_skips_dead_cells(monkeypatch):
     """Cells that are not alive are left out of the snapshot and never queried."""
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
-    infos_by_cell = {("inference-engine-0-0", 0): [_worker_info("inference-engine-0-0-0", "n", [0])]}
+    infos_by_cell = {"inference-engine-0-0-0": [_worker_info("inference-engine-0-0-0", "n", [0])]}
     monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(lambda: FakeManagerHandle(infos_by_cell)))
 
     hooks.register_engines(

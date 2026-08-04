@@ -90,42 +90,45 @@ def test_resolve_cell_index_keeps_explicit_index() -> None:
 from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
 
 
+_CELL_IDS = ["trainer-actor-0", "trainer-actor-1", "trainer-actor-2"]
+
+
 class FakeGroup:
     def __init__(self, num_cells: int) -> None:
-        self.num_cells = num_cells
-        self.stopped: list[int] = []
-        self.started: list[int] = []
+        self.cell_ids = _CELL_IDS[:num_cells]
+        self.stopped: list[str] = []
+        self.started: list[str] = []
 
-    async def stop_cell(self, cell_index: int) -> None:
-        self.stopped.append(cell_index)
+    async def stop_cell(self, cell_id: str) -> None:
+        self.stopped.append(cell_id)
 
-    def start_cell(self, cell_index: int) -> None:
-        self.started.append(cell_index)
+    def start_cell(self, cell_id: str) -> None:
+        self.started.append(cell_id)
 
 
-class TestResolveCellIndex:
-    def test_non_negative_index_returned_as_is(self):
-        """resolve_cell_index returns the explicit index when it is non-negative."""
+class TestResolveCellId:
+    def test_non_negative_index_selects_that_cell(self):
+        """resolve_cell_id indexes the controller's cell ids when the index is explicit."""
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        assert action.resolve_cell_index(num_cells=3) == 1
+        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-1"
 
     def test_negative_index_resolves_to_last_cell(self):
-        """resolve_cell_index maps the default -1 to the last cell (num_cells - 1)."""
+        """resolve_cell_id maps the default -1 to the last cell."""
         action = FTTestAction(at_rollout=5, action="start_cell_at_end", cell_index=-1)
-        assert action.resolve_cell_index(num_cells=3) == 2
+        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-2"
 
 
 class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end triggers group.stop_cell with the resolved cell index on its rollout."""
+        """stop_cell_at_end triggers group.stop_cell with the resolved cell id on its rollout."""
         group = FakeGroup(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionGroupExecutor(actions=[action], group=group)
 
         await executor.run_after_step(5)
 
-        assert group.stopped == [1]
+        assert group.stopped == ["trainer-actor-1"]
         assert group.started == []
 
     @pytest.mark.asyncio
@@ -149,7 +152,7 @@ class TestRunAfterStep:
 
         await executor.run_after_step(2)
 
-        assert group.started == [2]
+        assert group.started == ["trainer-actor-2"]
         assert group.stopped == []
 
     @pytest.mark.asyncio
@@ -162,8 +165,8 @@ class TestRunAfterStep:
 
         await executor.run_after_step(7)
 
-        assert group.stopped == [0]
-        assert group.started == [2]
+        assert group.stopped == ["trainer-actor-0"]
+        assert group.started == ["trainer-actor-2"]
 
     @pytest.mark.asyncio
     async def test_empty_actions_is_noop(self):

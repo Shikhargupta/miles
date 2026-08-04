@@ -68,7 +68,8 @@ def _make_group(
         rollout_executor=rollout_executor,
     )
     for cell_index in range(num_cells):
-        group._cells_by_index[cell_index] = group._create_cell(cell_index)
+        cell = group._create_cell(f"{group._spec_name}-{cell_index}", cell_index=cell_index)
+        group._cells_by_id[cell.cell_id] = cell
     return group
 
 
