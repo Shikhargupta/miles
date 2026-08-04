@@ -693,7 +693,7 @@ class TestFailureBackoff:
         loop, _, recorder, clock = await make_loop(
             initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"}, failure_base_delay=1.0, failure_max_delay=2.0
         )
-        loop._retry._failures["cell-a"] = 5000
+        loop._retry._infos["cell-a"].failures = 5000
 
         await clock.elapse(2.0)
         await settle()
@@ -833,13 +833,13 @@ class TestResync:
         await clock.elapse(4.0)
         await settle()
         assert recorder.counts() == {"cell-a": 2}
-        assert loop._retry._failures["cell-a"] == 2
+        assert loop._retry._infos["cell-a"].failures == 2
 
         recorder.fail_parent_keys = set()
         await clock.elapse(5.0)
         await settle()
         assert recorder.counts() == {"cell-a": 3}
-        assert "cell-a" not in loop._retry._failures
+        assert "cell-a" not in loop._retry._infos
         assert clock.pending_count == 1
         await loop.stop()
 

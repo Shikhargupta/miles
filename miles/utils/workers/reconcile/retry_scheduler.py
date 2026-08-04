@@ -4,11 +4,20 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Callable, Hashable
+from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from miles.utils.test_utils.clock import Clock
 
 KeyT = TypeVar("KeyT", bound=Hashable)
+
+POLL_INTERVAL = 1.0
+
+
+@dataclass
+class _RetryInfo:
+    failures: int
+    retry_at: float | None
 
 
 class RetryScheduler(Generic[KeyT]):
@@ -29,41 +38,43 @@ class RetryScheduler(Generic[KeyT]):
         self._max_backoff_exponent = max(0, math.ceil(math.log2(failure_max_delay / failure_base_delay)))
         self._clock = clock
 
-        self._failures: dict[KeyT, int] = {}
-        self._timers: dict[KeyT, asyncio.Task[None]] = {}
+        self._infos: dict[KeyT, _RetryInfo] = {}
+        self._pending = asyncio.Event()
+        self._poller = asyncio.create_task(self._poll())
         self._shutdown = False
 
     def note_failure(self, key: KeyT) -> None:
         if self._shutdown:
             return
-        failures = self._failures.get(key, 0) + 1
-        self._failures[key] = failures
+
+        info = self._infos.get(key)
+        failures = 1 if info is None else info.failures + 1
         exponent = min(failures - 1, self._max_backoff_exponent)
         delay = min(self._failure_base_delay * 2**exponent, self._failure_max_delay)
 
-        self._cancel_timer(key)
-        self._timers[key] = asyncio.create_task(self._fire_after(key=key, delay=delay))
+        self._infos[key] = _RetryInfo(failures=failures, retry_at=self._clock.time() + delay)
+        self._pending.set()
 
     def note_success(self, key: KeyT) -> None:
-        self._failures.pop(key, None)
-        self._cancel_timer(key)
+        self._infos.pop(key, None)
 
     async def shutdown(self) -> None:
         self._shutdown = True
+        self._infos = {}
 
-        timers = list(self._timers.values())
-        self._timers = {}
-        for timer in timers:
-            timer.cancel()
-        await asyncio.gather(*timers, return_exceptions=True)
+        self._poller.cancel()
+        await asyncio.gather(self._poller, return_exceptions=True)
 
-    def _cancel_timer(self, key: KeyT) -> None:
-        pending = self._timers.pop(key, None)
-        if pending is not None:
-            pending.cancel()
+    async def _poll(self) -> None:
+        while True:
+            await self._pending.wait()
+            await self._clock.sleep(POLL_INTERVAL)
 
-    async def _fire_after(self, *, key: KeyT, delay: float) -> None:
-        await self._clock.sleep(delay)
-        if self._timers.get(key) is asyncio.current_task():
-            del self._timers[key]
-        self._on_retry(key)
+            now = self._clock.time()
+            due = [key for key, info in self._infos.items() if info.retry_at is not None and info.retry_at <= now]
+            for key in due:
+                self._infos[key].retry_at = None
+                self._on_retry(key)
+
+            if all(info.retry_at is None for info in self._infos.values()):
+                self._pending.clear()
