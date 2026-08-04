@@ -16,13 +16,11 @@ from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LORA_PROVIDER = "miles_plugins.lora"
-# Provider paths that resolve to the built-in native plugin; the pre-#2017 module
-# path keeps working for explicit --lora-provider-path pins.
+# Provider paths that resolve to the built-in native plugin.
 _NATIVE_LORA_PROVIDER_PATHS = (
     None,
     "miles_plugins.lora",
     "miles_plugins.lora.lora",
-    "miles.backends.megatron_utils.lora_native",
 )
 
 # ---------------------------------------------------------------------------
@@ -133,11 +131,7 @@ def sglang_lora_target_all_sentinel(args) -> bool:
 
 
 def uses_builtin_native_lora_provider(args: Namespace) -> bool:
-    """Whether this run uses the built-in native provider contract.
-
-    Must agree with :func:`resolve_lora_provider`: Inkling checkpoints dispatch
-    to their model-specific provider even when ``--lora-provider-path`` is unset.
-    """
+    """Whether this run uses the built-in native provider contract."""
     if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
         return False
     return getattr(args, "lora_provider_path", None) in _NATIVE_LORA_PROVIDER_PATHS
