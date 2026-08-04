@@ -97,19 +97,18 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 | kubebuilder / Operator SDK | One resource type, hand-written |
 | Thread-safe store / DeltaFIFO / workqueue | Under asyncio state mutates only between `await` points. Removes the data-race class, not the interleaving class: "check, await, mutate" still needs FSM discipline |
 
-## Invariants
-
-The contract for a `reconcile` function lives on `ReconcileLoop`'s docstring, where its callers will read it. One rule has no other home: never guard an `except Exception` with `except asyncio.CancelledError: raise`. `CancelledError` is a `BaseException` and cannot be swallowed by the handler below, so the guard is dead code implying a special case that is not there.
-
 ## Test layers
 
-| Layer | Where | Proves |
-| --- | --- | --- |
-| Fakes + fake clock | `tests/fast/utils/workers/reconcile/` | Control flow, timing, shutdown |
-| Real apiserver, no kubelet | `tests/e2e/k8s_apiserver/` | API semantics: cursors, watch timeouts, real 410, relist |
-| kind cluster | `tests/e2e/k8s_kind/` | What only a kubelet produces: Running, restarts, graceful deletion, bookmarks |
+All three run on every PR. `pytest tests/e2e/k8s_apiserver tests/e2e/k8s_kind` self-provisions everything below from a Docker daemon, and neither environment directory imports Miles code, so it can be verified before anything uses it.
 
-All three run on every PR. Neither environment directory imports Miles code, so it can be verified before anything uses it.
+| Layer | Where | Proves | Provisions |
+| --- | --- | --- | --- |
+| Fakes + fake clock | `tests/fast/utils/workers/reconcile/` | Control flow, timing, shutdown | Nothing |
+| Real apiserver, no kubelet | `tests/e2e/k8s_apiserver/` | API semantics: cursors, watch timeouts, real 410, relist | etcd and the apiserver as containers, plus a second apiserver with `--watch-cache=false` — with the cache on, a compacted `resourceVersion` is still served, so nothing can invalidate a live cursor |
+| kind cluster | `tests/e2e/k8s_kind/` | What only a kubelet produces: Running, restarts, graceful deletion, bookmarks | A pinned kind binary, downloaded on demand |
 
-- `pytest tests/e2e/k8s_apiserver tests/e2e/k8s_kind` self-provisions from a Docker daemon: etcd and the apiserver as containers, a pinned kind binary on demand. `MILES_K8S_KEEP=1` leaves the environment up, `MILES_K8S_KUBECONFIG=<path>` reuses a cluster, `MILES_K8S_REQUIRE=1` (default in CI) turns missing Docker into a failure.
-- Cursor expiry needs a second apiserver with `--watch-cache=false`: with the cache on, a compacted `resourceVersion` is still served, so nothing can invalidate a live cursor.
+| Env var | Effect |
+| --- | --- |
+| `MILES_K8S_KEEP=1` | Leaves the environment up |
+| `MILES_K8S_KUBECONFIG=<path>` | Reuses an existing cluster |
+| `MILES_K8S_REQUIRE=1` | Default in CI; missing Docker becomes a failure |
