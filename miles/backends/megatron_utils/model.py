@@ -28,6 +28,7 @@ from megatron.training.training import get_model
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
+from miles.backends.megatron_utils.misc_utils import report_nonfinite_grads
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -402,38 +403,14 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
-def _report_nonfinite_grads(model: Sequence[DDP], rollout_id: int, step_id: int, limit: int = 12) -> None:
-    """Name the trainable tensors behind a non-finite grad norm.
-
-    Worth the walk: a non-finite norm is otherwise reported as a bare ``train/grad_norm = nan``
-    alongside a perfectly finite loss, which says nothing about where it came from.
-    """
-    bad: list[str] = []
-    good: list[str] = []
-    n_nan = 0
-    for model_chunk in model:
-        for name, param in model_chunk.named_parameters():
-            if not param.requires_grad:
-                continue
-            grad = getattr(param, "main_grad", None)
-            if grad is None:
-                grad = param.grad
-            if grad is None:
-                continue
-            if torch.isfinite(grad).all():
-                good.append(name)
-                continue
-            bad.append(name)
-            n_nan += int(torch.isnan(grad).any())
-    total = len(bad) + len(good)
-    # The finite minority is what localises the fault: gradients flow from the loss down, so
-    # the shallowest clean tensor sits just above the layer that first went non-finite.
-    logger.error(
-        f"rollout {rollout_id} step {step_id}: grad norm is non-finite; {len(bad)}/{total} "
-        f"trainable grads are non-finite, {n_nan} of them NaN; "
-        f"first {limit} non-finite: {bad[:limit]}; "
-        f"all {len(good)} finite: {good[:64]}"
+def _report_nonfinite_grads(model: Sequence[DDP], rollout_id: int, step_id: int) -> None:
+    named = (
+        (name, param)
+        for model_chunk in model
+        for name, param in model_chunk.named_parameters()
+        if param.requires_grad
     )
+    report_nonfinite_grads(named, header=f"rollout {rollout_id} step {step_id}: grad norm is non-finite")
 
 
 def train_one_step(
