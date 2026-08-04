@@ -69,19 +69,19 @@ class _RecordingWorkerProvider(BaseWorkerProvider):
         return _stop_watch
 
 
-async def _fake_init(self: RayTrainGroup) -> list[int]:
+async def _fake_init(self: TrainerController) -> list[int]:
     return [0]
 
 
-async def _fake_set_rollout_executor(self: RayTrainGroup) -> None:
+async def _fake_set_rollout_executor(self: TrainerController) -> None:
     return None
 
 
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
     """Both training groups go through the real create(), and only the critic args are rewritten."""
     provider = _RecordingWorkerProvider()
-    monkeypatch.setattr(RayTrainGroup, "init", _fake_init)
-    monkeypatch.setattr(RayTrainGroup, "set_rollout_executor", _fake_set_rollout_executor)
+    monkeypatch.setattr(TrainerController, "init", _fake_init)
+    monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
 
     args = Namespace(
         actor_num_nodes=1,
