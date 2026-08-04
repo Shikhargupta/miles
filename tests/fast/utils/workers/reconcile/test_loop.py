@@ -685,7 +685,7 @@ class TestFailureBackoff:
         await clock.elapse(100.0)
         await settle()
         assert recorder.counts() == {"cell-a": 2}
-        assert clock.pending_count == 0
+        assert loop._retry._infos == {}
         await loop.stop()
 
     async def test_endless_failures_do_not_kill_the_worker(self):
@@ -840,7 +840,6 @@ class TestResync:
         await settle()
         assert recorder.counts() == {"cell-a": 3}
         assert "cell-a" not in loop._retry._infos
-        assert clock.pending_count == 1
         await loop.stop()
 
     async def test_resync_skips_deleted_keys(self):

@@ -39,7 +39,6 @@ class RetryScheduler(Generic[KeyT]):
         self._clock = clock
 
         self._infos: dict[KeyT, _RetryInfo] = {}
-        self._pending = asyncio.Event()
         self._poller = asyncio.create_task(self._poll())
         self._shutdown = False
 
@@ -53,7 +52,6 @@ class RetryScheduler(Generic[KeyT]):
         delay = min(self._failure_base_delay * 2**exponent, self._failure_max_delay)
 
         self._infos[key] = _RetryInfo(failures=failures, retry_at=self._clock.time() + delay)
-        self._pending.set()
 
     def note_success(self, key: KeyT) -> None:
         self._infos.pop(key, None)
@@ -67,7 +65,6 @@ class RetryScheduler(Generic[KeyT]):
 
     async def _poll(self) -> None:
         while True:
-            await self._pending.wait()
             await self._clock.sleep(POLL_INTERVAL)
 
             now = self._clock.time()
@@ -75,6 +72,3 @@ class RetryScheduler(Generic[KeyT]):
             for key in due:
                 self._infos[key].retry_at = None
                 self._on_retry(key)
-
-            if all(info.retry_at is None for info in self._infos.values()):
-                self._pending.clear()

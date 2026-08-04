@@ -78,16 +78,18 @@ class TestBackoff:
         await settle()
         assert retried == ["cell-a"]
 
-    async def test_an_idle_scheduler_holds_no_wakeup(self):
-        """With nothing due, the poller parks on its event rather than on the clock."""
+    async def test_a_fired_retry_does_not_fire_again(self):
+        """The sweep clears the deadline it just served, so one failure yields one retry."""
         scheduler, retried, clock = make_scheduler(failure_base_delay=1.0, failure_max_delay=64.0)
         scheduler.note_failure("cell-a")
 
         await clock.elapse(1.0)
         await settle()
-
         assert retried == ["cell-a"]
-        assert clock.pending_count == 0
+
+        await clock.elapse(10.0)
+        await settle()
+        assert retried == ["cell-a"]
 
     async def test_failure_counts_are_per_key(self):
         """One key's failures never inflate another key's delay."""
