@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,7 @@ _TOKEN = "miles-k8s-test-token"
 
 @dataclass(frozen=True)
 class ApiserverEnvironment:
+    host_port: int
     token: str
     network_name: str
     etcd_name: str
@@ -28,13 +30,14 @@ class ApiserverEnvironment:
 
     @property
     def endpoint(self) -> str:
-        return f"https://127.0.0.1:{_published_port(self.apiserver_name)}"
+        return f"https://127.0.0.1:{self.host_port}"
 
 
 def start_apiserver(*, run_id: str, work_dir: Path, watch_cache: bool = True) -> ApiserverEnvironment:
     network_name = f"{run_id}-net"
     etcd_name = f"{run_id}-etcd"
     apiserver_name = f"{run_id}-apiserver"
+    host_port = _free_host_port()
 
     try:
         exec_command(f"openssl genrsa -out {work_dir / _SERVICE_ACCOUNT_KEY} 2048")
@@ -47,11 +50,12 @@ def start_apiserver(*, run_id: str, work_dir: Path, watch_cache: bool = True) ->
         )
         exec_command(
             f"docker run --detach --name {apiserver_name} --network {network_name} "
-            f"--publish 127.0.0.1::{_SECURE_PORT} --volume {work_dir}:{_KEY_MOUNT_DIR}:ro "
+            f"--publish 127.0.0.1:{host_port}:{_SECURE_PORT} --volume {work_dir}:{_KEY_MOUNT_DIR}:ro "
             f"{_APISERVER_IMAGE} kube-apiserver {_apiserver_flags(etcd_name=etcd_name, watch_cache=watch_cache)}"
         )
 
         return ApiserverEnvironment(
+            host_port=host_port,
             token=_TOKEN,
             network_name=network_name,
             etcd_name=etcd_name,
@@ -119,7 +123,7 @@ def _apiserver_flags(*, etcd_name: str, watch_cache: bool) -> str:
     return " ".join(flags)
 
 
-def _published_port(container_name: str) -> int:
-    published = exec_command(f"docker port {container_name} {_SECURE_PORT}", capture_output=True)
-    assert published is not None, f"docker port returned nothing for {container_name=}"
-    return int(published.splitlines()[0].rsplit(":", 1)[1])
+def _free_host_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
