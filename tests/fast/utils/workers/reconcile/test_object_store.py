@@ -63,6 +63,15 @@ class TestIncrementalEvents:
         assert affected == {"cell-a"}
         assert "pod-0" not in store
 
+    def test_an_unmappable_upsert_of_an_unknown_object_affects_nobody(self):
+        """Nothing was stored under a parent, so there is no departure to report either."""
+        store = make_store()
+
+        affected = store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell=None)))
+
+        assert affected == set()
+        assert "pod-0" not in store
+
 
 class TestReplace:
     def test_replace_swaps_the_whole_store_and_reports_both_sides(self):

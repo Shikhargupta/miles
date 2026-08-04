@@ -51,7 +51,7 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 | Store | Read without hitting the apiserver | **Kept**, a plain `dict` | Single-threaded asyncio: no locks |
 | `Replace()` on relist | Deletions missed while disconnected | **Kept**, store-side | Ghost cells are forever. Store-side also survives a whole stream reopening, which a reflector-side diff cannot remember across. Costs one event type (`ReplaceEvent`) |
 | Indexer | Large-scale reverse lookup | **Dropped**; `dict[ObjectKey, ParentKey]` scanned | The parent map is already the index |
-| `EnqueueRequestForOwner` | Child event to parent key | **Kept** as `key_map`; unmappable objects dropped with an error | Cells are not Kubernetes objects, so the parent comes from labels. One bad pod must not stall the fleet |
+| `EnqueueRequestForOwner` | Child event to parent key | **Kept** as `key_map`; an object it cannot map is evicted with an error, not stored | Cells are not Kubernetes objects, so the parent comes from labels, and one bad pod must not stall the fleet. Go caches an object it cannot attribute and merely enqueues nothing, but this store is indexed by parent, so an object whose labels stop mapping leaves and re-drives the parent it left. Ignoring the update instead would serve it under that parent forever |
 | DeltaFIFO | Delta coalescing | **Dropped** | Reconcile reads a snapshot, so the queue needs parent-key dedup, never a delta chain |
 
 ### `work_queue.py`

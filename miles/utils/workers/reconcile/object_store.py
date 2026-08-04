@@ -64,9 +64,11 @@ class ObjectStore:
 
     def _handle_upsert(self, event: UpsertEvent) -> set[ParentKey]:
         parent = self._parent_key_or_none(key=event.key, obj=event.obj)
-        if parent is None:
-            return self._apply_delete(key=event.key, last_obj=None)
-        return self._apply_upsert(key=event.key, obj=event.obj, parent=parent)
+        if parent is not None:
+            return self._apply_upsert(key=event.key, obj=event.obj, parent=parent)
+        if event.key not in self._cache:
+            return set()
+        return self._apply_delete(key=event.key, last_obj=None)
 
     def _handle_delete(self, event: DeleteEvent) -> set[ParentKey]:
         return self._apply_delete(key=event.key, last_obj=event.last_obj)
