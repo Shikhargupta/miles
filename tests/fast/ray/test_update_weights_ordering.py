@@ -109,7 +109,7 @@ async def test_start_update_weights_initializes_colocated_cells_before_snapshott
 
 
 def _make_group(order: list[str]):
-    from miles.ray.train.group import RayTrainGroup as FaultTolerantTrainGroup
+    from miles.ray.train.group import TrainerController as FaultTolerantTrainGroup
 
     group = FaultTolerantTrainGroup.__new__(FaultTolerantTrainGroup)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
@@ -157,7 +157,7 @@ async def test_the_trainer_aborts_the_window_when_the_broadcast_raises(monkeypat
     monkeypatch.setattr(train_group_module, "retry", _retry_once)
 
     order: list[str] = []
-    group = train_group_module.RayTrainGroup.__new__(train_group_module.RayTrainGroup)
+    group = train_group_module.TrainerController.__new__(train_group_module.TrainerController)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
     group._inference_controller = _OrderRecordingInferenceController(order)
     group._execute_first_alive = AsyncMock(side_effect=RuntimeError("weight transfer died"))
