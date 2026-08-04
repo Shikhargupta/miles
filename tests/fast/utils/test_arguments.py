@@ -441,13 +441,12 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="requires --optimizer adam"):
             miles_validate_args(args)
 
-    def test_rejects_experimental_ft_trainer(self, monkeypatch):
-        # The v2 train group has no reconcile_adapters.
+    def test_accepts_experimental_ft_trainer(self, monkeypatch):
+        """The v2 train group implements reconcile_adapters, so multi-LoRA may use it."""
         monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
         args = self._parse([])
 
-        with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
-            miles_validate_args(args)
+        miles_validate_args(args)
 
     def test_rejects_pipeline_parallelism(self):
         # Adapter routing is not recompute-safe under a pipelined schedule.
@@ -607,6 +606,8 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
 class TestRunUuidResolution:
     def _parse(self, extra: list[str]):
         parser = argparse.ArgumentParser()
