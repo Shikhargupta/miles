@@ -206,13 +206,15 @@ class MockRayTrainCell:
         )
 
 
-def make_mock_group(cells: list[MockRayTrainCell]) -> object:
+def make_mock_group(cells: list[MockRayTrainCell], *, spec_name: str = "trainer-actor") -> object:
     from miles.ray.train.group import RayTrainGroup
 
     group = object.__new__(RayTrainGroup)
     group._cells_by_index = dict(enumerate(cells))
+    group._spec_name = spec_name
     group._indep_dp_quorum_id = 0
-    group._alive_cell_ids = frozenset()
+    for cell_index, cell in enumerate(cells):
+        cell.cell_index = cell_index
     return group
 
 
