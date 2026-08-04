@@ -402,6 +402,40 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def _report_nonfinite_grads(model: Sequence[DDP], rollout_id: int, step_id: int, limit: int = 12) -> None:
+    """Name the trainable tensors behind a non-finite grad norm.
+
+    Worth the walk: a non-finite norm is otherwise reported as a bare ``train/grad_norm = nan``
+    alongside a perfectly finite loss, which says nothing about where it came from.
+    """
+    bad: list[str] = []
+    good: list[str] = []
+    n_nan = 0
+    for model_chunk in model:
+        for name, param in model_chunk.named_parameters():
+            if not param.requires_grad:
+                continue
+            grad = getattr(param, "main_grad", None)
+            if grad is None:
+                grad = param.grad
+            if grad is None:
+                continue
+            if torch.isfinite(grad).all():
+                good.append(name)
+                continue
+            bad.append(name)
+            n_nan += int(torch.isnan(grad).any())
+    total = len(bad) + len(good)
+    # The finite minority is what localises the fault: gradients flow from the loss down, so
+    # the shallowest clean tensor sits just above the layer that first went non-finite.
+    logger.error(
+        f"rollout {rollout_id} step {step_id}: grad norm is non-finite; {len(bad)}/{total} "
+        f"trainable grads are non-finite, {n_nan} of them NaN; "
+        f"first {limit} non-finite: {bad[:limit]}; "
+        f"all {len(good)} finite: {good[:64]}"
+    )
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -587,6 +621,8 @@ def train_one_step(
                 valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
                 valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+            if not valid_step:
+                _report_nonfinite_grads(model, rollout_id=rollout_id, step_id=step_id)
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
