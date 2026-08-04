@@ -74,6 +74,29 @@ class RayTrainCell:
         await asyncio.sleep(0)
         return results
 
+    async def train(
+        self,
+        *,
+        rollout_id: int,
+        rollout_data_ref,
+        witness_info,
+        attempt: int,
+        external_data: list | None = None,
+    ) -> list:
+        if external_data is not None and len(external_data) != len(self._get_actor_handles()):
+            raise ValueError("external_data must contain one payload per train worker")
+
+        return await self._execute_raw(
+            "train",
+            compute_kwargs=lambda i: dict(
+                rollout_id=rollout_id,
+                rollout_data_ref=rollout_data_ref,
+                witness_info=witness_info,
+                attempt=attempt,
+                **({} if external_data is None else dict(external_data=external_data[i])),
+            ),
+        )
+
     async def set_rollout_executor(self):
         if (executor := self.rollout_executor) is not None:
             return await self.execute("set_rollout_executor", rollout_executor=executor)
