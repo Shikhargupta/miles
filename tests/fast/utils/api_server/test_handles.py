@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.ft_utils.api_server.handles import _ActorCellHandler, _CellHandler, _RolloutCellHandler
+from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
 
@@ -33,10 +33,10 @@ def _make_actor_handler(
     *,
     cells: list[MockRayTrainCell] | None = None,
     suspended: bool = False,
-) -> tuple[_ActorCellHandler, object, MockWorkerManager]:
+) -> tuple[_CellHandler, object, MockWorkerManager]:
     group = make_mock_group(cells if cells is not None else [MockRayTrainCell()])
     manager = MockWorkerManager(make_cell_summaries(ACTOR_CELL_ID, suspended=suspended))
-    handler = _ActorCellHandler(worker_manager=manager, group=group, trainer_spec_names=["trainer-actor"])
+    handler = _CellHandler(cell_type="actor", worker_manager=manager, controller=group, spec_names=["trainer-actor"])
     return handler, group, manager
 
 
@@ -129,14 +129,15 @@ def _make_rollout_handler(
     suspended: bool = False,
     health: TriState | None = TriState.TRUE,
     status: CellStatus | None = None,
-) -> _RolloutCellHandler:
+) -> _CellHandler:
     manager = MockWorkerManager(make_cell_summaries(cell_id, suspended=suspended))
     resolved = status if status is not None else (_running_status(health) if health is not None else None)
     controller = MockInferenceController({cell_id: resolved} if resolved is not None else {})
-    return _RolloutCellHandler(
+    return _CellHandler(
+        cell_type="rollout",
         worker_manager=manager,
-        inference_controller=controller,
-        engine_spec_names=[cell_id.rsplit("-", 1)[0]],
+        controller=controller,
+        spec_names=[cell_id.rsplit("-", 1)[0]],
     )
 
 
@@ -213,8 +214,8 @@ class TestRolloutCellHandler:
         """The api server serves from its own event loop, so the controller is read synchronously."""
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
         controller = MockInferenceController()
-        handler = _RolloutCellHandler(
-            worker_manager=manager, inference_controller=controller, engine_spec_names=_spec_names_of(manager)
+        handler = _CellHandler(
+            cell_type="rollout", worker_manager=manager, controller=controller, spec_names=_spec_names_of(manager)
         )
 
         await handler.get_cell(ENGINE_CELL_ID)
@@ -225,10 +226,11 @@ class TestRolloutCellHandler:
     async def test_suspend_stops_the_cell_in_the_worker_manager(self) -> None:
         """The manager owns the processes, so healing goes through it, not the controller."""
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
-        handler = _RolloutCellHandler(
+        handler = _CellHandler(
+            cell_type="rollout",
             worker_manager=manager,
-            inference_controller=MockInferenceController(),
-            engine_spec_names=_spec_names_of(manager),
+            controller=MockInferenceController(),
+            spec_names=_spec_names_of(manager),
         )
 
         await handler.suspend(ENGINE_CELL_ID)
@@ -239,10 +241,11 @@ class TestRolloutCellHandler:
     async def test_resume_starts_the_cell_in_the_worker_manager(self) -> None:
         """Resume relaunches the cell, which reconcile then observes as a new generation."""
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID, suspended=True))
-        handler = _RolloutCellHandler(
+        handler = _CellHandler(
+            cell_type="rollout",
             worker_manager=manager,
-            inference_controller=MockInferenceController(),
-            engine_spec_names=_spec_names_of(manager),
+            controller=MockInferenceController(),
+            spec_names=_spec_names_of(manager),
         )
 
         await handler.resume(ENGINE_CELL_ID)
@@ -279,10 +282,11 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(
             {**make_cell_summaries("inference-engine-0-0-0"), **make_cell_summaries("miles-router-0")}
         )
-        handler = _RolloutCellHandler(
+        handler = _CellHandler(
+            cell_type="rollout",
             worker_manager=manager,
-            inference_controller=MockInferenceController(),
-            engine_spec_names=["inference-engine-0-0"],
+            controller=MockInferenceController(),
+            spec_names=["inference-engine-0-0"],
         )
 
         assert await handler.list_cell_ids() == ["inference-engine-0-0-0"]
@@ -297,8 +301,8 @@ class TestRolloutCellHandler:
         """This listing is polled for the life of the run, so it must not scale in round trips."""
         manager = MockWorkerManager(make_cell_summaries("engine-a", "engine-b", "engine-c"))
         controller = MockInferenceController()
-        handler = _RolloutCellHandler(
-            worker_manager=manager, inference_controller=controller, engine_spec_names=_spec_names_of(manager)
+        handler = _CellHandler(
+            cell_type="rollout", worker_manager=manager, controller=controller, spec_names=_spec_names_of(manager)
         )
 
         cells = await handler.list_cells()
@@ -307,34 +311,17 @@ class TestRolloutCellHandler:
         assert controller.status_calls == 1
 
 
-class _ConcreteCellHandler(_CellHandler):
-    @property
-    def cell_type(self) -> str:
-        return "fake"
-
-    async def list_cell_ids(self) -> list[str]:
-        return ["0"]
-
-    async def get_cell(self, cell_id: str) -> object:
-        raise NotImplementedError
-
-    async def suspend(self, cell_id: str) -> None:
-        raise NotImplementedError
-
-    async def resume(self, cell_id: str) -> None:
-        raise NotImplementedError
-
-
 class TestRolloutCellHandlerInjectFault:
     @pytest.mark.asyncio
     async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
         """The manager owns the actors, so it is the one that can crash them."""
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
         manager.inject_fault = MockRemoteCall(None)
-        handler = _RolloutCellHandler(
+        handler = _CellHandler(
+            cell_type="rollout",
             worker_manager=manager,
-            inference_controller=MockInferenceController(),
-            engine_spec_names=_spec_names_of(manager),
+            controller=MockInferenceController(),
+            spec_names=_spec_names_of(manager),
         )
 
         await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
