@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import enum
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch.nn as nn
 
@@ -38,47 +37,6 @@ def _arch_spec(attention: AttentionSpecBase, *, allows_mixer_only_adapter_chunks
         moe=SharedOuterExpertMoESpec(mlp.supported_targets),
         allows_mixer_only_adapter_chunks=allows_mixer_only_adapter_chunks,
     )
-
-
-class SupportStatus(enum.Enum):
-    """How much end-to-end evidence backs a registry entry.
-
-    VALIDATED  — a full train -> export -> serve loop ran green for this
-                 model_type (train/rollout logprob_abs_diff at the ~1e-2 noise
-                 floor). Silent at attach.
-    STRUCTURAL — the architecture layout is covered by a shipped spec, but no
-                 end-to-end run is on record. One info line at attach.
-    UNSTABLE   — the adapter side is verified but a known model-path defect
-                 makes raw-mode training unreliable; ``reason`` is surfaced
-                 verbatim as a warning at attach.
-    """
-
-    VALIDATED = "validated"
-    STRUCTURAL = "structural"
-    UNSTABLE = "unstable"
-
-
-_GDN_RAW_BACKWARD_NOTE = (
-    "adapter attachment is verified, but raw mode's own backward is known to diverge on this "
-    "family once the base is frozen (grad_norm 1e7-1e10 with recompute, NaN without it, NaN at "
-    "CP=2), while bridge mode stays stable on the identical batch. This is a model-path issue "
-    "rather than a LoRA one; prefer --megatron-to-hf-mode bridge until it is fixed, and watch "
-    "grad_norm from step 1 if you continue."
-)
-
-
-@dataclass(frozen=True)
-class ModelEntry:
-    """One registered model_type: its architecture spec plus its support status."""
-
-    spec: LoRAArchSpec
-    status: SupportStatus = SupportStatus.STRUCTURAL
-    reason: str = field(default="", compare=False)
-
-    def __post_init__(self):
-        assert (
-            self.status is not SupportStatus.UNSTABLE or self.reason
-        ), "an UNSTABLE registry entry must record why (the reason is shown to users verbatim)"
 
 
 class InklingLMHeadSpec:
@@ -126,46 +84,43 @@ def _inkling_arch_spec() -> LoRAArchSpec:
     )
 
 
-def _build_model_specs() -> dict[str, ModelEntry]:
-    """Every entry maps to a structurally covered spec; ``status`` records how much
-    end-to-end evidence exists so warnings and coverage tests key off one field
-    instead of comments."""
+def _build_model_specs() -> dict[str, LoRAArchSpec]:
     gqa = _arch_spec(GQAAttentionSpec())
     mla = _arch_spec(MLAAttentionSpec())
     # A PP/VPP chunk may contain only GDN mixer layers. Native GDN adapters are
     # intentionally absent, while GQA layers in another chunk still carry LoRA.
     hybrid = _arch_spec(HybridGQAGDNAttentionSpec(), allows_mixer_only_adapter_chunks=True)
     return {
-        "llama": ModelEntry(gqa),
-        "qwen2": ModelEntry(gqa, SupportStatus.VALIDATED),
-        "qwen2_moe": ModelEntry(gqa),
-        "qwen3": ModelEntry(gqa, SupportStatus.VALIDATED),
-        "qwen3_moe": ModelEntry(gqa, SupportStatus.VALIDATED),
-        "mimo": ModelEntry(gqa),
-        "glm4": ModelEntry(gqa),
-        "glm4_moe": ModelEntry(gqa),
-        "qwen3_5": ModelEntry(hybrid, SupportStatus.VALIDATED),
-        "qwen3_5_moe": ModelEntry(hybrid, SupportStatus.VALIDATED),
-        "qwen3_6": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-        "qwen3_6_moe": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-        "qwen3_next": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-        "deepseek_v3": ModelEntry(mla),
-        "deepseek_v32": ModelEntry(mla),
+        "llama": gqa,
+        "qwen2": gqa,
+        "qwen2_moe": gqa,
+        "qwen3": gqa,
+        "qwen3_moe": gqa,
+        "mimo": gqa,
+        "glm4": gqa,
+        "glm4_moe": gqa,
+        "qwen3_5": hybrid,
+        "qwen3_5_moe": hybrid,
+        "qwen3_6": hybrid,
+        "qwen3_6_moe": hybrid,
+        "qwen3_next": hybrid,
+        "deepseek_v3": mla,
+        "deepseek_v32": mla,
         # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
         # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
-        "glm4_moe_lite": ModelEntry(mla, SupportStatus.VALIDATED),
-        "glm_moe_dsa": ModelEntry(mla, SupportStatus.VALIDATED),
-        "kimi_k2": ModelEntry(mla),
+        "glm4_moe_lite": mla,
+        "glm_moe_dsa": mla,
+        "kimi_k2": mla,
         # kimi_k25 needs the dequantized BF16 base to carry no quantization_config
         # (convert_kimi_int4_to_bf16.py strips it), or SGLang serves it through the
         # CompressedTensors path with a context-free forward.
-        "kimi_k25": ModelEntry(mla, SupportStatus.VALIDATED),
-        "joyai_llm_flash": ModelEntry(mla),
-        "inkling_mm_model": ModelEntry(_inkling_arch_spec()),
+        "kimi_k25": mla,
+        "joyai_llm_flash": mla,
+        "inkling_mm_model": _inkling_arch_spec(),
     }
 
 
-MODEL_SPECS: dict[str, ModelEntry] = _build_model_specs()
+MODEL_SPECS: dict[str, LoRAArchSpec] = _build_model_specs()
 
 
 def _model_type_candidates(hf_checkpoint: str | None) -> list[str]:
@@ -188,8 +143,8 @@ def _structural_spec(config) -> LoRAArchSpec:
     return _arch_spec(GQAAttentionSpec())
 
 
-def _resolve_registered_entry(hf_checkpoint: str | None) -> tuple[str, ModelEntry]:
-    """Resolve a registered entry from checkpoint metadata without a built model.
+def _resolve_registered_spec(hf_checkpoint: str | None) -> tuple[str, LoRAArchSpec]:
+    """Resolve a registered spec from checkpoint metadata without a built model.
 
     No structural fallback: serving/configuration callers run before model
     construction and must fail closed when checkpoint metadata is absent or
@@ -232,9 +187,9 @@ def resolve_native_lora_config(args) -> LoRAConfig:
     allocates buffers for the same effective projection set the native model
     will attach (notably MLA ``all-linear`` normalization).
     """
-    _model_type, entry = _resolve_registered_entry(getattr(args, "hf_checkpoint", None))
-    config = entry.spec.normalize_config(LoRAConfig.from_args(args))
-    entry.spec.validate_targets(config.target_modules)
+    _model_type, spec = _resolve_registered_spec(getattr(args, "hf_checkpoint", None))
+    config = spec.normalize_config(LoRAConfig.from_args(args))
+    spec.validate_targets(config.target_modules)
     return config
 
 
@@ -256,24 +211,13 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
         )
         return None, spec
 
-    model_type, entry = _resolve_registered_entry(hf_checkpoint)
-    if entry.status is SupportStatus.UNSTABLE:
-        logger.warning("[lora-native] %s: %s", model_type, entry.reason)
-    elif entry.status is SupportStatus.STRUCTURAL:
-        logger.info(
-            "[lora-native] %s is structurally covered by the %s spec but has no end-to-end validation "
-            "on record%s; watch train_rollout_logprob_abs_diff on the first rollouts.",
-            model_type,
-            entry.spec.name,
-            f" ({entry.reason})" if entry.reason else "",
-        )
-
+    model_type, spec = _resolve_registered_spec(hf_checkpoint)
     built = AttentionFamily.MLA if bool(getattr(config, "multi_latent_attention", False)) else AttentionFamily.GQA
-    assert entry.spec.model_family == built, (
-        f"registry entry for model_type {model_type!r} says {entry.spec.model_family} attention but the "
+    assert spec.model_family == built, (
+        f"registry entry for model_type {model_type!r} says {spec.model_family} attention but the "
         f"built model uses {built}; the registry and the checkpoint disagree."
     )
-    return model_type, entry.spec
+    return model_type, spec
 
 
 # --------------------------------------------------------------------------
@@ -289,8 +233,8 @@ def default_target_modules(hf_checkpoint: str) -> str:
     order (routed/grouped-expert adapters are out of scope; shared-expert/dense
     MLP targets remain an explicit opt-in).
     """
-    _model_type, entry = _resolve_registered_entry(hf_checkpoint)
-    return entry.spec.attention.canonical_targets_csv
+    _model_type, spec = _resolve_registered_spec(hf_checkpoint)
+    return spec.attention.canonical_targets_csv
 
 
 def serving_fused_families() -> list[frozenset[str]]:
@@ -301,8 +245,8 @@ def serving_fused_families() -> list[frozenset[str]]:
     """
     families: list[frozenset[str]] = []
     seen: set[frozenset[str]] = set()
-    for entry in MODEL_SPECS.values():
-        for spec in (entry.spec.attention, entry.spec.mlp):
+    for arch_spec in MODEL_SPECS.values():
+        for spec in (arch_spec.attention, arch_spec.mlp):
             collect = getattr(spec, "serving_fused_families", None)
             if collect is None:
                 continue
@@ -319,8 +263,6 @@ class PreflightReport:
 
     model_type: str
     spec_name: str
-    status: SupportStatus
-    reason: str
     mbridge_registered: bool
     model_args_script: str | None  # path when megatron_model_type was given and found
 
@@ -330,8 +272,7 @@ class PreflightReport:
 
     def render(self) -> str:
         lines = [
-            f"model_type={self.model_type} spec={self.spec_name} status={self.status.value}"
-            + (f" ({self.reason})" if self.reason else ""),
+            f"model_type={self.model_type} spec={self.spec_name}",
             "mbridge bridge: "
             + ("registered" if self.mbridge_registered else "MISSING (convert_hf_to_torch_dist will fail)"),
         ]
@@ -348,12 +289,12 @@ def preflight_native_lora(
 ) -> PreflightReport:
     """Audit native-LoRA support for a checkpoint before touching any GPU.
 
-    Checks the plugin registry (with status), the mbridge conversion bridge,
-    and — when ``megatron_model_type`` is given — the ``scripts/models`` model
-    args file the launch tooling will source. ``strict=True`` raises on any gap
-    a run cannot survive; the default returns the report for the caller to log.
+    Checks the plugin registry, the mbridge conversion bridge, and — when
+    ``megatron_model_type`` is given — the ``scripts/models`` model args file
+    the launch tooling will source. ``strict=True`` raises on any gap a run
+    cannot survive; the default returns the report for the caller to log.
     """
-    model_type, entry = _resolve_registered_entry(hf_checkpoint)
+    model_type, spec = _resolve_registered_spec(hf_checkpoint)
 
     try:
         import miles_plugins.mbridge  # noqa: F401  (registers Miles bridge subclasses)
@@ -380,9 +321,7 @@ def preflight_native_lora(
 
     report = PreflightReport(
         model_type=model_type,
-        spec_name=entry.spec.name,
-        status=entry.status,
-        reason=entry.reason,
+        spec_name=spec.name,
         mbridge_registered=mbridge_registered,
         model_args_script=model_args_script,
     )

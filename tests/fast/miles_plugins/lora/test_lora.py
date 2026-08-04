@@ -394,7 +394,7 @@ class TestInklingSpec:
     def _spec(self):
         from miles_plugins.lora.registry import MODEL_SPECS
 
-        return MODEL_SPECS["inkling_mm_model"].spec
+        return MODEL_SPECS["inkling_mm_model"]
 
     def test_targets_cover_the_tml_projection_names(self):
         spec = self._spec()
