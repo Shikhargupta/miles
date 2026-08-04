@@ -405,10 +405,7 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
 
 def _report_nonfinite_grads(model: Sequence[DDP], rollout_id: int, step_id: int) -> None:
     named = (
-        (name, param)
-        for model_chunk in model
-        for name, param in model_chunk.named_parameters()
-        if param.requires_grad
+        (name, param) for model_chunk in model for name, param in model_chunk.named_parameters() if param.requires_grad
     )
     report_nonfinite_grads(named, header=f"rollout {rollout_id} step {step_id}: grad norm is non-finite")
 
