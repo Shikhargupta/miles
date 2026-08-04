@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 import pytest
+
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 import ray
 from tests.fast.ray.train.conftest import make_alive_cell
 
@@ -18,7 +20,7 @@ def _make_group(cells: list) -> RayTrainGroup:
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
     group._witness_allocator = None
     group._indep_dp_quorum_id = 0
-    group._health_checker_activeness = True
+    group._health_checker_activeness = ActivenessTracker(active=True)
     group._test_action_executor = SimpleNamespace(run_after_step=lambda **kwargs: None)
     return group
 
