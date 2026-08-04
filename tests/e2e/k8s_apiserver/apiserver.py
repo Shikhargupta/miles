@@ -21,11 +21,14 @@ _TOKEN = "miles-k8s-test-token"
 
 @dataclass(frozen=True)
 class ApiserverEnvironment:
-    endpoint: str
     token: str
     network_name: str
     etcd_name: str
     apiserver_name: str
+
+    @property
+    def endpoint(self) -> str:
+        return f"https://127.0.0.1:{_published_port(self.apiserver_name)}"
 
 
 def start_apiserver(*, run_id: str, work_dir: Path, watch_cache: bool = True) -> ApiserverEnvironment:
@@ -49,7 +52,6 @@ def start_apiserver(*, run_id: str, work_dir: Path, watch_cache: bool = True) ->
         )
 
         return ApiserverEnvironment(
-            endpoint=f"https://127.0.0.1:{_published_port(apiserver_name)}",
             token=_TOKEN,
             network_name=network_name,
             etcd_name=etcd_name,
@@ -91,7 +93,7 @@ def compact_etcd_to_head(environment: ApiserverEnvironment) -> int:
         f"docker exec {environment.etcd_name} etcdctl endpoint status --write-out=json", capture_output=True
     )
     assert status is not None, f"etcdctl returned nothing for {environment.etcd_name=}"
-    revision = json.loads(status)[0]["Header"]["revision"]
+    revision = json.loads(status)[0]["Status"]["header"]["revision"]
     exec_command(f"docker exec {environment.etcd_name} etcdctl compact {revision} --physical")
     return revision
 
