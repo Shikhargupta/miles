@@ -14,7 +14,7 @@ from .conftest import (
     MockInferenceController,
     MockWorkerManager,
     make_cell_summaries,
-    make_mock_group,
+    make_mock_controller,
 )
 
 
@@ -238,7 +238,7 @@ class TestStartApiServerRegistration:
 
         server.start_api_server(
             args=SimpleNamespace(),
-            actor_model=make_mock_group([]),
+            actor_model=make_mock_controller([]),
             inference_controller=MockInferenceController(),
             port=0,
             ft_components=ft_components,

@@ -5,7 +5,7 @@ import pytest
 import ray
 from tests.fast.ray.train.fake_worker_manager import FakeWorkerManager
 
-from miles.ray.train.cell import RayTrainCell
+from miles.ray.train.cell import TrainerCell
 from miles.utils.ft_utils.health_checker import NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -48,7 +48,7 @@ def ray_env():
     ray.shutdown()
 
 
-def get_raw_actor_handles(cell: RayTrainCell) -> list[ray.actor.ActorHandle]:
+def get_raw_actor_handles(cell: TrainerCell) -> list[ray.actor.ActorHandle]:
     return [handle._actor_handle for handle in cell._get_worker_handles()]
 
 
@@ -75,9 +75,9 @@ def make_cell(
     *,
     actor_count: int = 2,
     rollout_executor: object | None = None,
-) -> RayTrainCell:
+) -> TrainerCell:
     fake_worker_manager.actor_count_per_cell = actor_count
-    return RayTrainCell(
+    return TrainerCell(
         args=MagicMock(),
         role="actor",
         with_ref=False,
@@ -89,7 +89,7 @@ def make_cell(
     )
 
 
-def make_alive_cell(cell_index: int, *, alive_cell_indices: list[int], quorum_id: int = 0) -> RayTrainCell:
+def make_alive_cell(cell_index: int, *, alive_cell_indices: list[int], quorum_id: int = 0) -> TrainerCell:
     """Create a cell and transition it to Alive state."""
     cell = make_cell(cell_index)
     cell._mark_as_alive(

@@ -63,7 +63,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         async def set_rollout_executor(self):
             return None
 
-    monkeypatch.setattr(placement_group_module, "RayTrainGroup", _Group)
+    monkeypatch.setattr(placement_group_module, "TrainerController", _Group)
     args = Namespace(
         actor_num_nodes=1,
         actor_num_gpus_per_node=2,

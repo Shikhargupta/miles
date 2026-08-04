@@ -8,7 +8,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 if TYPE_CHECKING:
-    from miles.ray.train.group import RayTrainGroup
+    from miles.ray.train.group import TrainerController
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +42,12 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
 
 
 class FTTestActionGroupExecutor:
-    def __init__(self, *, actions: list[FTTestAction], group: "RayTrainGroup") -> None:
+    def __init__(self, *, actions: list[FTTestAction], group: "TrainerController") -> None:
         self._actions = actions
         self._group = group
 
     @staticmethod
-    def from_args(args: object, *, group: "RayTrainGroup") -> "FTTestActionGroupExecutor":
+    def from_args(args: object, *, group: "TrainerController") -> "FTTestActionGroupExecutor":
         return FTTestActionGroupExecutor(actions=_load_actions(args, _GROUP_ACTIONS), group=group)
 
     async def run_after_step(self, rollout_id: int) -> None:

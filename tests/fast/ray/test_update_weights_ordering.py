@@ -21,7 +21,7 @@ class _OrderRecordingInferenceController:
 
 
 @pytest.mark.asyncio
-async def test_controller_pauses_health_checks_before_snapshotting_the_engines():
+async def test_group_pauses_health_checks_before_snapshotting_the_engines():
     """``start_update_weights`` pauses the health monitor before it reads the engine set."""
     order: list[str] = []
     controller = InferenceController.__new__(InferenceController)
@@ -44,10 +44,10 @@ async def test_controller_pauses_health_checks_before_snapshotting_the_engines()
 @pytest.mark.asyncio
 async def test_the_trainer_brackets_the_broadcast_with_start_and_end_update_weights():
     """The engine snapshot is taken before, and released after, the trainer broadcast."""
-    from miles.ray.train.group import RayTrainGroup
+    from miles.ray.train.group import TrainerController
 
     order: list[str] = []
-    group = RayTrainGroup.__new__(RayTrainGroup)
+    group = TrainerController.__new__(TrainerController)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
     group._inference_controller = _OrderRecordingInferenceController(order)
     group._execute_first_alive = AsyncMock()

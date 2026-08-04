@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from miles.ray.specs.train import compute_trainer_spec_name
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.workers.worker_provider.base import CellInfo
 
 pytestmark = pytest.mark.asyncio
@@ -11,8 +11,8 @@ pytestmark = pytest.mark.asyncio
 _SPEC_NAME = compute_trainer_spec_name("actor")
 
 
-def _make_group(*, num_cells: int = 2) -> RayTrainGroup:
-    group = object.__new__(RayTrainGroup)
+def _make_group(*, num_cells: int = 2) -> TrainerController:
+    group = object.__new__(TrainerController)
     group.args = SimpleNamespace(
         indep_dp=False,
         actor_num_nodes=1,

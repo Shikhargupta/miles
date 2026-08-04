@@ -22,7 +22,7 @@ from miles.utils.workers.worker_spec import HostAndPort
 logger = logging.getLogger(__name__)
 
 
-class RayTrainCell:
+class TrainerCell:
     def __init__(
         self,
         *,
