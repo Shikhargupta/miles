@@ -15,7 +15,6 @@ from urllib3.exceptions import NewConnectionError
 
 from miles.backends.megatron_utils.lora_utils import (
     lora_base_cpu_backup_enabled,
-    sglang_lora_target_all_sentinel,
     target_modules_hf_for_sglang_rollout,
 )
 from miles.ray.ray_actor import RayActor
@@ -771,18 +770,12 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        if sglang_lora_target_all_sentinel(args):
-            kwargs["lora_target_modules"] = ["all"]
-        else:
-            kwargs["lora_target_modules"] = target_modules_hf_for_sglang_rollout(args)
+        kwargs["lora_target_modules"] = target_modules_hf_for_sglang_rollout(args)
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        if sglang_lora_target_all_sentinel(args):
-            kwargs["lora_target_modules"] = ["all"]
-        else:
-            kwargs["lora_target_modules"] = target_modules_hf_for_sglang_rollout(args)
+        kwargs["lora_target_modules"] = target_modules_hf_for_sglang_rollout(args)
 
         if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}

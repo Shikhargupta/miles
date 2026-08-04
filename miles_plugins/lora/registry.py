@@ -81,6 +81,7 @@ def _inkling_arch_spec() -> LoRAArchSpec:
         mlp=InklingDenseMLPSpec(),
         moe=InklingMoESpec(),
         lm_head=InklingLMHeadSpec(),
+        sglang_lora_target_modules=("all",),
     )
 
 

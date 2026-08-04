@@ -39,6 +39,29 @@ def expand_sglang_target_modules(target_modules: Iterable[str]) -> list[str]:
     return targets
 
 
+def sglang_target_modules(args) -> list[str]:
+    """The ``lora_target_modules`` SGLang should be launched and synced with.
+
+    A spec that declares ``sglang_lora_target_modules`` hands the engine that
+    literal list (Inkling's TML names are engine-detected via ``["all"]``);
+    everyone else expands the run's effective targets to SGLang's fused
+    families.
+    """
+    from miles_plugins.lora.config import LoRAConfig
+    from miles_plugins.lora.registry import _resolve_registered_spec, resolve_native_lora_config
+
+    if getattr(args, "hf_checkpoint", None):
+        _model_type, spec = _resolve_registered_spec(args.hf_checkpoint)
+        if spec.sglang_lora_target_modules is not None:
+            return list(spec.sglang_lora_target_modules)
+        effective_targets = resolve_native_lora_config(args).target_modules
+    else:
+        # Numerical/unit harnesses have no checkpoint metadata. Production
+        # native runs fail closed in resolve_model_spec during model build.
+        effective_targets = LoRAConfig.from_args(args).target_modules
+    return expand_sglang_target_modules(sorted(effective_targets))
+
+
 def export_lora_sglang_named(model_chunks: Sequence[nn.Module]) -> list[tuple[str, torch.Tensor]]:
     """Export native adapter weights in a form every fused SGLang path accepts.
 
@@ -70,4 +93,4 @@ def export_lora_sglang_named(model_chunks: Sequence[nn.Module]) -> list[tuple[st
     return list(exported.items())
 
 
-__all__ = ["expand_sglang_target_modules", "export_lora_sglang_named"]
+__all__ = ["expand_sglang_target_modules", "export_lora_sglang_named", "sglang_target_modules"]

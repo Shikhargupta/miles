@@ -123,13 +123,6 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
-def sglang_lora_target_all_sentinel(args) -> bool:
-    """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
-    from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
-
-    return is_inkling_checkpoint(getattr(args, "hf_checkpoint", None) or "")
-
-
 def uses_builtin_native_lora_provider(args: Namespace) -> bool:
     """Whether this run uses the built-in native provider contract."""
     if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
@@ -370,19 +363,9 @@ def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
     """HF target_modules for SGLang LoRA init/sync (minus _SGLANG_UNSUPPORTED_HF_TARGETS, currently empty)."""
     raw = list(args.target_modules) if args.target_modules else []
     if uses_builtin_native_lora_provider(args):
-        from miles_plugins.lora.config import LoRAConfig
-        from miles_plugins.lora.serving import expand_sglang_target_modules
+        from miles_plugins.lora.serving import sglang_target_modules
 
-        hf_checkpoint = getattr(args, "hf_checkpoint", None)
-        if hf_checkpoint:
-            from miles_plugins.lora.registry import resolve_native_lora_config
-
-            effective_targets = resolve_native_lora_config(args).target_modules
-        else:
-            # Numerical/unit harnesses have no checkpoint metadata. Production
-            # native runs fail closed in resolve_model_spec during model build.
-            effective_targets = LoRAConfig.from_args(args).target_modules
-        hf = expand_sglang_target_modules(sorted(effective_targets))
+        hf = sglang_target_modules(args)
     else:
         hf = convert_target_modules_to_hf(raw)
     out = [m for m in hf if m not in _SGLANG_UNSUPPORTED_HF_TARGETS]
@@ -936,14 +919,14 @@ def _apply_training_state(
 
 def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
     """Build LoRA config dict for syncing weights to SGLang engines."""
-    if sglang_lora_target_all_sentinel(args):
-        target_modules_hf: Any = "all-linear"
-    else:
-        target_modules_hf = (
-            target_modules_hf_for_sglang_rollout(args)
-            if args.target_modules
-            else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        )
+    target_modules_hf: Any = (
+        target_modules_hf_for_sglang_rollout(args)
+        if args.target_modules
+        else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
+    if target_modules_hf == ["all"]:
+        # SGLang's PEFT-config normalizer spells the engine-detected set "all-linear".
+        target_modules_hf = "all-linear"
     return {
         "peft_type": "LORA",
         "r": args.lora_rank,
