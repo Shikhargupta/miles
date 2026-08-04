@@ -15,25 +15,32 @@ from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer.optimizer_config import OptimizerConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
 
+from miles.backends.megatron_utils.misc_utils import report_nonfinite_grads
+
 logger = logging.getLogger(__name__)
+
+
+def adapter_slot_named_parameters(model, slot: int) -> list[tuple[str, torch.nn.Parameter]]:
+    """One adapter slot's parameters with their qualified names, across model chunks."""
+    from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
+
+    named_parameters = []
+    seen = set()
+    model_chunks = model if isinstance(model, (list, tuple)) else [model]
+    for model_chunk in model_chunks:
+        for module_name, module in model_chunk.named_modules():
+            if not isinstance(module, MultiLoRALinear):
+                continue
+            for param_name, param in module.adapters[slot].named_parameters():
+                if id(param) not in seen:
+                    named_parameters.append((f"{module_name}.{param_name}", param))
+                    seen.add(id(param))
+    return named_parameters
 
 
 def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
     """All parameters belonging to one adapter slot, across model chunks."""
-    from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
-
-    parameters = []
-    seen = set()
-    model_chunks = model if isinstance(model, (list, tuple)) else [model]
-    for model_chunk in model_chunks:
-        for module in model_chunk.modules():
-            if not isinstance(module, MultiLoRALinear):
-                continue
-            for param in module.adapters[slot].parameters():
-                if id(param) not in seen:
-                    parameters.append(param)
-                    seen.add(id(param))
-    return parameters
+    return [param for _, param in adapter_slot_named_parameters(model, slot)]
 
 
 def _adam_init_state_fn(opt, config=None):
@@ -155,35 +162,6 @@ def zero_adapter_slot_grads(model, slot: int) -> None:
             main_param.grad = None
 
 
-def report_nonfinite_adapter_grads(model, slot: int, limit: int = 12) -> None:
-    """Name the adapter tensors behind a non-finite slot norm.
-
-    Worth the walk: clipping scales every grad by ``clip/(norm + eps)``, so one NaN grad
-    turns the whole adapter to NaN in ``step_with_ready_grads`` with no other symptom.
-    """
-    from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
-
-    bad: list[str] = []
-    total = 0
-    for model_chunk in model if isinstance(model, (list, tuple)) else [model]:
-        for module_name, module in model_chunk.named_modules():
-            if not isinstance(module, MultiLoRALinear):
-                continue
-            for param_name, param in module.adapters[slot].named_parameters():
-                grad = getattr(param, "main_grad", None)
-                if grad is None:
-                    grad = param.grad
-                if grad is None:
-                    continue
-                total += 1
-                if not torch.isfinite(grad).all():
-                    bad.append(f"{module_name}.{param_name}")
-    logger.error(
-        f"[multi-LoRA] slot {slot} grad norm is non-finite: {len(bad)}/{total} adapter grads "
-        f"are non-finite; first {limit}: {bad[:limit]}"
-    )
-
-
 def step_adapter_slots(
     optimizer,
     model,
@@ -216,7 +194,10 @@ def step_adapter_slots(
         # clipping scales by clip/(nan + eps) and step_with_ready_grads writes NaN into every
         # tensor of the slot, so one bad microbatch permanently destroys the adapter.
         if not math.isfinite(grad_norms[slot]):
-            report_nonfinite_adapter_grads(model, slot)
+            report_nonfinite_grads(
+                adapter_slot_named_parameters(model, slot),
+                header=f"[multi-LoRA] slot {slot} grad norm is non-finite",
+            )
             zero_adapter_slot_grads(model, slot)
             continue
 
