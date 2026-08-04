@@ -15,7 +15,7 @@ from miles_plugins.lora.lora import (
     wrap_model_provider_with_lora,
 )
 from miles_plugins.lora.registry import default_target_modules, preflight_native_lora
-from miles_plugins.lora.serving import export_lora_sglang_named
+from miles_plugins.lora.sglang_adapter import export_lora_sglang_named
 
 __all__ = [
     "apply_native_lora",
