@@ -144,7 +144,7 @@ def _build_model_specs() -> dict[str, ModelEntry]:
         "mimo": ModelEntry(gqa),
         "glm4": ModelEntry(gqa),
         "glm4_moe": ModelEntry(gqa),
-        "qwen3_5": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
+        "qwen3_5": ModelEntry(hybrid, SupportStatus.VALIDATED),
         "qwen3_5_moe": ModelEntry(hybrid, SupportStatus.VALIDATED),
         "qwen3_6": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
         "qwen3_6_moe": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),

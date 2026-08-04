@@ -15,12 +15,9 @@ projections and the trainer and the engine agree on which modules carry an adapt
 * Qwen3.5: ``q_proj,k_proj,v_proj,o_proj``, where ``q_proj`` carries the output-gate
   slice. Its linear-attention (GDN) layers have no fused qkv and get no adapter.
 
-Caveat for Qwen3.5: the adapter side is correct here -- it attaches to the 10 full-attention
-layers, exports 80 tensors, and SGLang accepts every one -- but raw mode's own backward blows
-up once the base is frozen (grad_norm 1e7-1e10 with recompute, NaN without it and NaN at
-CP=2), while bridge mode on the identical batch and bit-identical loss stays at 0.11. That is
-a model-path problem rather than a LoRA one, so use
-``scripts/run_qwen3_5_35b_a3b_lora.py`` (bridge) for Qwen3.5 until it is fixed.
+A raw-mode Qwen3.5 backward divergence (grad_norm 1e7-1e10 with recompute, NaN without)
+was once on record here; it no longer reproduces — 20-rollout runs of both Qwen3.5-35B-A3B
+and Qwen3.5-9B hold train/rollout logprob_abs_diff at ~1e-2 with grad_norm ~1e-2 throughout.
 
 Every registry here needs a raw-mode torch-dist checkpoint of the BF16 base; the
 ``prepare`` command builds one, dequantizing first when the published checkpoint is
