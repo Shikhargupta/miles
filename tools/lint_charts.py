@@ -11,7 +11,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHARTS_DIR = REPO_ROOT / "charts"
 
-VARIANTS: dict[str, list[list[str]]] = {}
+BASE_VALUES: dict[str, list[str]] = {
+    "miles-workbench": ["--set", "objectName=lint-miles-workbench"],
+}
+
+VARIANTS: dict[str, list[list[str]]] = {
+    "miles-workbench": [
+        ["--set", "sharedStorage.type=pvc", "--set", "sharedStorage.pvcClaimName=shared"],
+        ["--set", "sharedStorage.type=none"],
+        ["--set", "rbac.create=false", "--set", "serviceAccount.name=preexisting"],
+        ["--set", "rbac.leaderWorkerSets=false"],
+    ],
+}
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess:
@@ -31,8 +42,9 @@ def lint_chart(chart: Path) -> bool:
             return False
 
     ok = True
+    base = BASE_VALUES.get(chart.name, [])
     for extra in [[], *VARIANTS.get(chart.name, [])]:
-        result = run(["helm", "lint", str(chart), *extra])
+        result = run(["helm", "lint", str(chart), *base, *extra])
         if result.returncode != 0:
             print(result.stdout + result.stderr, file=sys.stderr)
             ok = False
