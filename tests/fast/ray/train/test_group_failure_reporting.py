@@ -84,5 +84,5 @@ class TestMultipleCellsStillTolerateFailures:
 
         await group.offload()
 
-        assert cells[0].is_stopped
+        assert not cells[0].is_alive
         assert cells[1].is_alive
