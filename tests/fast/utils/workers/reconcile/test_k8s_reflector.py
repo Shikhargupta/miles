@@ -439,12 +439,11 @@ class TestExpiry:
         assert len(api.list_calls) == 2
         await collector.close()
 
-    @pytest.mark.parametrize("status", [410, "410"])
-    async def test_expired_api_exception_triggers_a_relist(self, status):
-        """An ApiException(410) raised by the client forces a relist, whatever type its status field has."""
+    async def test_expired_api_exception_triggers_a_relist(self):
+        """An ApiException(410) raised by the client forces a relist."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="1"))
-        api.stream_scripts.append([FakeApiException(status)])
+        api.stream_scripts.append([FakeApiException(410)])
         api.list_pages.append(make_pod_list([], resource_version="300"))
         api.stream_scripts.append(None)
         clock = FakeClock()

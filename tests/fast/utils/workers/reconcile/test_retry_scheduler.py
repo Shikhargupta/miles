@@ -4,7 +4,7 @@ import pytest
 from tests.fast.utils.workers.reconcile.utils import settle
 
 from miles.utils.test_utils.clock import FakeClock
-from miles.utils.workers.reconcile.retry_scheduler import RetryScheduler
+from miles.utils.workers.reconcile.retry_scheduler import POLL_INTERVAL, RetryScheduler
 
 
 def make_scheduler(
@@ -33,13 +33,15 @@ class TestValidation:
 
 class TestBackoff:
     async def test_consecutive_failures_double_the_delay_up_to_the_max(self):
-        """The timer fires at base*2^(n-1), capped."""
+        """Never before base*2^(n-1), capped, and never later than one sweep after it."""
         scheduler, retried, clock = make_scheduler(failure_base_delay=1.0, failure_max_delay=4.0)
         for expected_delay in (1.0, 2.0, 4.0, 4.0):
             scheduler.note_failure("cell-a")
             await clock.elapse(expected_delay - 0.5)
+            await settle()
             assert retried == []
-            await clock.elapse(0.5)
+
+            await clock.elapse(0.5 + POLL_INTERVAL)
             await settle()
             assert retried == ["cell-a"]
             retried.clear()
@@ -82,8 +84,9 @@ class TestBackoff:
         """The sweep clears the deadline it just served, so one failure yields one retry."""
         scheduler, retried, clock = make_scheduler(failure_base_delay=1.0, failure_max_delay=64.0)
         scheduler.note_failure("cell-a")
+        await settle()
 
-        await clock.elapse(1.0)
+        await clock.elapse(1.0 + POLL_INTERVAL)
         await settle()
         assert retried == ["cell-a"]
 
@@ -94,11 +97,12 @@ class TestBackoff:
     async def test_failure_counts_are_per_key(self):
         """One key's failures never inflate another key's delay."""
         scheduler, retried, clock = make_scheduler(failure_base_delay=1.0, failure_max_delay=64.0)
-        scheduler.note_failure("cell-a")
-        scheduler.note_failure("cell-a")
+        for _ in range(3):
+            scheduler.note_failure("cell-a")
         scheduler.note_failure("cell-b")
+        await settle()
 
-        await clock.elapse(1.0)
+        await clock.elapse(1.0 + POLL_INTERVAL)
         await settle()
         assert retried == ["cell-b"]
 

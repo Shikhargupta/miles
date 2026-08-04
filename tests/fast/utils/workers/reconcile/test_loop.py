@@ -16,6 +16,7 @@ from tests.fast.utils.workers.reconcile.utils import (
 
 from miles.utils.test_utils.clock import FakeClock
 from miles.utils.workers.reconcile.loop import ReconcileLoop
+from miles.utils.workers.reconcile.retry_scheduler import POLL_INTERVAL
 from miles.utils.workers.reconcile.source_event import DeleteEvent, UpsertEvent
 
 
@@ -722,7 +723,7 @@ class TestFailureBackoff:
         await settle()
         assert recorder.counts()["cell-a"] == 2
 
-        await clock.elapse(0.1)
+        await clock.elapse(0.1 + POLL_INTERVAL)
         await settle()
         assert recorder.counts()["cell-a"] == 3
         await loop.stop()
