@@ -56,7 +56,7 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
             PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
         ],
-        env_var=lambda: {},
+        env_var=lambda _ctx: {},
         scheduling=SchedulingSpec.single(
             num_gpus_per_worker=0,
             # TODO: refactor the flag
@@ -86,7 +86,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
         port_infos=[
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
         ],
-        env_var=lambda: {},
+        env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
             num_cells=args.num_session_servers if args.use_session_server else 0,
             num_workers_per_cell=1,
@@ -190,7 +190,7 @@ def _compute_spec_inference_engine(
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
-        env_var=lambda: envs,
+        env_var=lambda _ctx: envs,
         scheduling=scheduling,
         launch_command=_compute_launch_command,
         # TODO: reduce complexity around passing around configs later during arguments refactor
