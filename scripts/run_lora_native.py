@@ -102,6 +102,14 @@ _REGISTRIES = {
         expert_model_parallel_size=4,
         rollout_num_gpus_per_engine=2,
     ),
+    "Qwen3.5-9B": _Registry(
+        megatron_model_type="qwen3.5-9B",
+        hf_repo="Qwen/Qwen3.5-9B",
+        target_modules=_GQA_TARGET_MODULES,
+        tensor_model_parallel_size=2,
+        expert_model_parallel_size=1,
+        rollout_num_gpus_per_engine=2,
+    ),
 }
 
 
