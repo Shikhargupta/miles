@@ -2574,7 +2574,6 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
-<<<<<<< HEAD
 _FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
 
 
@@ -2586,7 +2585,8 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     if args.ft_components is None:
         return list(_FT_DEFAULT_COMPONENTS)
     return list(args.ft_components)
-=======
+
+
 def _validate_rematerialize_param_from_master_weight(args):
     if not args.rematerialize_param_from_master_weight:
         return
@@ -2601,6 +2601,11 @@ def _validate_rematerialize_param_from_master_weight(args):
 
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
     assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
+    assert not args.indep_dp, (
+        "--rematerialize-param-from-master-weight pauses param_buffer inside update_weights, which only the "
+        "first alive cell runs, while sleep runs on all of them; every other cell would keep the bf16 shard "
+        "resident for the whole run. Lift this once all cells update weights (see RayTrainGroup.update_weights)"
+    )
     assert args.colocate and args.offload_train
     assert args.use_distributed_optimizer
     assert args.enable_weights_backuper
@@ -2621,7 +2626,6 @@ def _validate_rematerialize_param_from_master_weight(args):
         args.num_critic_only_steps == 0
     ), "critic-only steps run update_weights repeatedly without an intervening actor wake_up"
     args.disable_param_buffers_cpu_backup = True
->>>>>>> c7f138df9 (Add unit tests for main-cast backuper and arg validation)
 
 
 def miles_validate_args(args):
