@@ -285,6 +285,9 @@ class SimpleHealthChecker(BaseHealthChecker):
 
 
 class NoopHealthChecker(BaseHealthChecker):
+    def __init__(self) -> None:
+        self.stopped: bool = False
+
     @property
     def status(self) -> TriState:
         return TriState.UNKNOWN
@@ -293,7 +296,7 @@ class NoopHealthChecker(BaseHealthChecker):
         pass
 
     def stop(self) -> None:
-        pass
+        self.stopped = True
 
     async def cancel_inflight_probe(self) -> None:
         pass
