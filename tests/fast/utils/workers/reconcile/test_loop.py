@@ -1042,6 +1042,7 @@ class TestStop:
 
         start_task.cancel()
         await asyncio.gather(start_task, return_exceptions=True)
+        assert source.closed_count == 1
         await settle()
 
         assert start_task.cancelled()
