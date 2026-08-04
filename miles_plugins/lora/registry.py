@@ -88,7 +88,6 @@ def _inkling_arch_spec() -> LoRAArchSpec:
 def _build_model_specs() -> dict[str, LoRAArchSpec]:
     gqa = _arch_spec(GQAAttentionSpec())
     mla = _arch_spec(MLAAttentionSpec())
-    # a PP/VPP chunk may contain only GDN mixer layers
     hybrid = _arch_spec(HybridGQAGDNAttentionSpec(), allows_mixer_only_adapter_chunks=True)
     return {
         "llama": gqa,
@@ -106,11 +105,9 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
-        # deepseek_v4 stays unregistered: its wq_a/wq_b/wkv attention is not mcore MLA
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
         "kimi_k2": mla,
-        # kimi_k25's BF16 base must carry no quantization_config (SGLang would serve it degenerately)
         "kimi_k25": mla,
         "joyai_llm_flash": mla,
         "inkling_mm_model": _inkling_arch_spec(),
@@ -215,9 +212,6 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
         f"built model uses {built}; the registry and the checkpoint disagree."
     )
     return model_type, spec
-
-
-# Launcher-facing helpers.
 
 
 def default_target_modules(hf_checkpoint: str) -> str:

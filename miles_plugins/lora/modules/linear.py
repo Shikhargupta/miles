@@ -12,7 +12,6 @@ import torch.nn.functional as F
 from miles_plugins.lora.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
 from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
-# Opt-in: adapters stay invisible to default sharded_state_dict walks.
 NATIVE_LORA_SHARDED_STATE_FLAG = "include_miles_native_lora_adapters"
 
 

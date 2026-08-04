@@ -16,7 +16,6 @@ from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LORA_PROVIDER = "miles_plugins.lora"
-# Provider paths that resolve to the built-in native plugin.
 _NATIVE_LORA_PROVIDER_PATHS = (
     None,
     "miles_plugins.lora",
@@ -549,15 +548,8 @@ def save_lora_checkpoint(
     if dist.is_initialized():
         dist.barrier()
 
-    # Use the attached module type as the single source of truth on both save
-    # and load. In particular, a custom provider may deliberately reuse the
-    # built-in native modules; classifying it from --lora-provider-path on save
-    # but from the model on load produced different EP filenames.
     ep_sharded_provider = _adapter_shards_are_ep_sharded(model)
     if ep_sharded_provider:
-        # Keep Bridge/custom checkpoint behavior unchanged in this
-        # native-only refactor. Its VPP/EP format will be redesigned with
-        # the Bridge implementation later.
         shard_name = _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=True)
         if _is_canonical_shard_writer(shard_name):
             adapter_state = {}
@@ -571,9 +563,6 @@ def save_lora_checkpoint(
     else:
         from miles_plugins.lora.checkpointing import NATIVE_DIST_CKPT_DIRNAME, save_native_adapter_dist_checkpoint
 
-        # Native adapters (and their optimizer/scheduler state) go into one
-        # MCore dist checkpoint, reshardable across TP/PP/DP layout changes.
-        # Collective: every rank participates in the save.
         save_native_adapter_dist_checkpoint(
             model,
             save_path / NATIVE_DIST_CKPT_DIRNAME,
@@ -631,8 +620,6 @@ def save_lora_checkpoint(
         os.sync()
         logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
 
-    # ---- Training state (optimizer + scheduler) for legacy-format resume ----
-    # Native providers already saved it inside the dist checkpoint above.
     if optimizer is not None and ep_sharded_provider:
         rank = dist.get_rank() if dist.is_initialized() else 0
         torch.save(
@@ -696,11 +683,9 @@ def load_lora_adapter(
     pp_rank = get_parallel_state().pp.rank
     ep_rank = get_parallel_state().ep.rank
 
-    # Shard key follows the provider: only bridge/custom adapters are EP-sharded.
     ep_sharded_provider = _adapter_shards_are_ep_sharded(model)
     native_adapters = not ep_sharded_provider
 
-    # ---- Native providers: MCore dist checkpoint first (reshards on load) ----
     if native_adapters:
         from miles_plugins.lora.checkpointing import (
             NATIVE_DIST_CKPT_DIRNAME,
@@ -717,7 +702,6 @@ def load_lora_adapter(
                 chunk._miles_lora_native_checkpoint_loaded = True
             return True, iteration
 
-    # ---- Legacy per-rank shard format (exact-layout resume) ----
     from miles_plugins.lora.checkpointing import native_adapter_load_plan
 
     native_path = adapter_dir / _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=ep_sharded_provider)
@@ -779,9 +763,6 @@ def load_lora_adapter(
             )
         return False, None
 
-    # Parse optimizer/scheduler state and agree on one iteration before model
-    # mutation as well. A corrupt rank-local file or mismatched iteration makes
-    # every rank take the same fresh-optimizer fallback.
     assert plan is not None
     training_state = None
     training_state_error: Exception | None = None
@@ -794,9 +775,6 @@ def load_lora_adapter(
         local_iteration = training_state.get("iteration") if training_state is not None else None
         restore_training_state = _all_ranks_agree_on_training_state(local_training_ok, local_iteration)
 
-    # No model parameter is touched until every rank has successfully parsed
-    # and validated its complete adapter shard and reached the training-state
-    # decision above.
     loaded = plan.apply()
     for chunk in model:
         chunk._miles_lora_native_checkpoint_loaded = True
@@ -816,9 +794,6 @@ def load_lora_adapter(
             "training-state file or a different iteration; all ranks resume with fresh training "
             "state for consistency."
         )
-        # Megatron's BF16/FP16 optimizer owns FP32 main parameters created from
-        # the freshly initialized adapters. Keep those masters aligned with the
-        # adapter values just loaded from the native shard.
         reload_model_params = getattr(optimizer, "reload_model_params", None)
         if callable(reload_model_params):
             reload_model_params()
@@ -875,8 +850,6 @@ def _read_training_state(state_path: Path) -> tuple[dict[str, Any] | None, Excep
     if not state_path.exists():
         return None, FileNotFoundError(f"training-state file is missing: {state_path}")
     try:
-        # Optimizer state dicts may contain non-tensor objects (e.g. step
-        # counts and param-group metadata), so full unpickling is required.
         state = torch.load(state_path, map_location="cpu", weights_only=False)
         if not isinstance(state, dict):
             raise TypeError(f"training-state root is {type(state).__name__}, expected dict")
@@ -925,7 +898,6 @@ def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
         else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     if target_modules_hf == ["all"]:
-        # SGLang's PEFT-config normalizer spells the engine-detected set "all-linear".
         target_modules_hf = "all-linear"
     return {
         "peft_type": "LORA",

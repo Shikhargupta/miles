@@ -18,11 +18,7 @@ logger = logging.getLogger(__name__)
 
 NATIVE_DIST_CKPT_DIRNAME = "torch_dist"
 
-# Reshard optimizer state over TP/PP/EP, not just DP.
 _OPTIMIZER_SHARDING_METADATA = {"distrib_optim_sharding_type": "fully_reshardable"}
-
-
-# --- MCore distributed checkpoint (the write format) ---
 
 
 def _unwrap_model_chunk(chunk: nn.Module) -> nn.Module:
@@ -161,7 +157,6 @@ def load_native_adapter_dist_checkpoint(
             "Dist adapter checkpoint at %s has no optimizer state; resuming with fresh training state.",
             checkpoint_dir,
         )
-        # realign the optimizer's FP32 masters with the loaded adapters
         reload_model_params = getattr(optimizer, "reload_model_params", None)
         if callable(reload_model_params):
             reload_model_params()
@@ -176,9 +171,6 @@ def is_native_adapter_dist_checkpoint(checkpoint_dir: str | Path) -> bool:
     from megatron.core.dist_checkpointing import check_is_distributed_checkpoint
 
     return check_is_distributed_checkpoint(str(path))
-
-
-# --- legacy per-rank shard format (read-only compatibility) ---
 
 
 @dataclass
@@ -206,7 +198,6 @@ class AdapterLoadPlan:
         return len(self.assignments)
 
 
-# shard key prefix from earlier revisions; kept readable
 _LEGACY_MODEL_CHUNK_PREFIX = "_miles_model_chunks."
 
 

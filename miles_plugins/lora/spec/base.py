@@ -146,10 +146,8 @@ class LoRAArchSpec:
     attention: AttentionLoRASpec
     mlp: MLPLoRASpec
     moe: MoELoRASpec
-    # Optional lm_head attachment; duck-typed with attach(model, args, context) -> int.
     lm_head: Any = None
     allows_mixer_only_adapter_chunks: bool = False
-    # literal lora_target_modules for SGLang when export names are engine-detected
     sglang_lora_target_modules: tuple[str, ...] | None = None
 
     @property

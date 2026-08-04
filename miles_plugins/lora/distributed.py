@@ -126,7 +126,6 @@ class ParallelGather:
             self._resolved[kind] = resolved
 
 
-# Historical name: HF export used to gather over TP only.
 TensorParallelGather = ParallelGather
 
 
@@ -136,7 +135,6 @@ def reduce_marked_lora_grads(model: Sequence[nn.Module]) -> None:
 
     if not model:
         return
-    # cache on the chunk itself: an id()-keyed module-global can outlive rebuilt models
     marked = getattr(model[0], "_miles_lora_marked_grad_params", None)
     if marked is None:
         marked = []

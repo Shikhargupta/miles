@@ -2604,8 +2604,6 @@ def parse_lora_target_modules(args) -> None:
     if isinstance(args.target_modules, (list, tuple)):
         modules = list(args.target_modules)
     elif args.target_modules == "all-linear":
-        # MLA projections are HF-config-gated (SGLang sizes LoRA buffers per module name;
-        # listing them on a dense model crashes the engine). The DSA indexer stays excluded.
         modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         hf_config = load_hf_config(args.hf_checkpoint)
         if getattr(hf_config, "kv_lora_rank", None):
@@ -2617,10 +2615,6 @@ def parse_lora_target_modules(args) -> None:
     else:
         modules = [args.target_modules]
 
-    # Keep enough provenance for the built-in native provider to reject selectors
-    # whose scope cannot be represented by its architecture specs.  The shared
-    # parser still accepts them because a custom/Bridge provider may implement
-    # richer matching semantics.
     non_leaf_selectors = {
         str(module) for module in modules if any(token in str(module) for token in (".", "*", "?", "[", "]"))
     }
@@ -2650,9 +2644,6 @@ def parse_lora_target_modules(args) -> None:
                 "their matching scope. Shorten the target selector or use a provider-specific selection."
             )
         else:
-            # Keep the pre-native-plugin parser contract for Bridge and custom
-            # providers: they own their target namespace and matching rules.
-            # Miles only subtracts exact spellings here.
             patterns = sorted(name for name in exclude_modules if "*" in name or "?" in name)
             assert not patterns, (
                 f"--exclude-modules does not support wildcard patterns {patterns}: excludes are applied by "
@@ -2662,9 +2653,6 @@ def parse_lora_target_modules(args) -> None:
             modules = [module for module in modules if module not in exclude_set]
 
     if builtin_native and not non_leaf_selectors:
-        # Canonicalize both sides to HF projection leaves *before* subtraction.
-        # Otherwise e.g. targets=q_proj,k_proj,v_proj + exclude=linear_qkv (or
-        # the inverse spelling) retains adapters the user explicitly excluded.
         modules = convert_target_modules_to_hf(modules)
         if args.exclude_modules:
             exclude_set = set(convert_target_modules_to_hf(exclude_modules))

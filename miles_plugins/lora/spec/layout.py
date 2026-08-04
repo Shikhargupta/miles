@@ -10,8 +10,6 @@ import torch.nn as nn
 from miles_plugins.lora.modules.linear import LoRALinear, NativeLoRAAdapter, SGLangFusedGroup, attach_adapter_forward
 from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec
 
-# Dimension resolvers: the only spec-side code allowed to read MCore attribute names.
-
 DimFn = Callable[[nn.Module, AttachContext], int]
 
 
@@ -62,10 +60,7 @@ def inkling_o_in_local(module: nn.Module, _context: AttachContext) -> int:
     return module.nh_l * module.hd
 
 
-# --- layout declarations and the attach walk ---
-
 GuardFn = Callable[[nn.Module, AttachContext, ProjectionSpec, int], None]
-# (block, hf_prefix, context, active_projections, all_member_projections) -> adapter
 FusedBuildFn = Callable[
     [nn.Module, str, AttachContext, tuple[ProjectionSpec, ...], tuple[ProjectionSpec, ...]], NativeLoRAAdapter
 ]
@@ -107,7 +102,6 @@ class ProjectionBinding:
     adapter_attr: str
     guard: GuardFn | None = None
     serving_group: ServingGroup | None = None
-    # subclasses override export/load packing
     adapter_class: type[LoRALinear] = LoRALinear
 
 
@@ -138,9 +132,7 @@ class ModuleLayout:
     name: str
     fused: tuple[FusedAttach, ...] = ()
     singles: tuple[ProjectionBinding, ...] = ()
-    # the layout applies only if the block has this attribute
     present_when_attr: str | None = None
-    # HF segment between layer prefix and projection names; None = role default
     hf_block_prefix: str | None = None
 
     @property

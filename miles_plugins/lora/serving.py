@@ -48,7 +48,6 @@ def sglang_target_modules(args) -> list[str]:
             return list(spec.sglang_lora_target_modules)
         effective_targets = resolve_native_lora_config(args).target_modules
     else:
-        # bare numerical harnesses have no checkpoint metadata
         effective_targets = LoRAConfig.from_args(args).target_modules
     return expand_sglang_target_modules(sorted(effective_targets))
 

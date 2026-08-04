@@ -90,10 +90,8 @@ class MLAAttentionSpec(AttentionSpecBase):
     name = "mla"
     family = AttentionFamily.MLA
 
-    # all-linear expansion adds GQA names that MLA checkpoints do not carry
     _GENERIC_QKV_TARGETS = GQAAttentionSpec.layout.fused_targets
 
-    # SGLang fuses both MLA down projections into one buffer; widths come from the config
     _MLA_A_SERVING_GROUP = ServingGroup(
         name="mla_a",
         member_rows=(
