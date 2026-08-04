@@ -9,6 +9,11 @@ from tests.fast.ray.train.conftest import make_alive_cell
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.retry_utils import NonRetryableError
 
+
+async def _noop_run_after_step(**kwargs) -> None:
+    return None
+
+
 pytestmark = pytest.mark.asyncio
 
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
@@ -21,7 +26,7 @@ def _make_group(cells: list) -> RayTrainGroup:
     group._witness_allocator = None
     group._indep_dp_quorum_id = 0
     group._health_checker_activeness = ActivenessTracker(active=True)
-    group._test_action_executor = SimpleNamespace(run_after_step=lambda **kwargs: None)
+    group._test_action_executor = SimpleNamespace(run_after_step=_noop_run_after_step)
     return group
 
 
