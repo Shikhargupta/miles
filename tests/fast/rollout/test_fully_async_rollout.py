@@ -11,12 +11,7 @@ import httpx
 import pytest
 
 import miles.rollout.fully_async_rollout as fully_async
-from miles.rollout.base_types import (
-    BaseRolloutFn,
-    RolloutFnConstructorInput,
-    RolloutFnEvalInput,
-    RolloutFnTrainInput,
-)
+from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
