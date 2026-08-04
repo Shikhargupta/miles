@@ -88,20 +88,15 @@ def exception_rejects_cursor(exception: BaseException) -> bool:
 
 
 def _read_resource_version(obj: Any) -> str | None:
-    if isinstance(obj, dict):
-        metadata = obj.get("metadata")
-        if not isinstance(metadata, dict):
-            return None
-        return metadata.get("resourceVersion") or metadata.get("resource_version")
-    metadata = getattr(obj, "metadata", None)
-    if metadata is None:
-        return None
+    metadata = _field(obj, "metadata")
+    if isinstance(metadata, dict):
+        return metadata.get("resourceVersion")
     return getattr(metadata, "resource_version", None)
 
 
 def _status_rejects_cursor(obj: Any) -> bool:
-    if isinstance(obj, dict):
-        return obj.get("code") in _CURSOR_REJECTED_CODES or obj.get("reason") in _CURSOR_REJECTED_REASONS
-    return getattr(obj, "code", None) in _CURSOR_REJECTED_CODES or (
-        getattr(obj, "reason", None) in _CURSOR_REJECTED_REASONS
-    )
+    return _field(obj, "code") in _CURSOR_REJECTED_CODES or _field(obj, "reason") in _CURSOR_REJECTED_REASONS
+
+
+def _field(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)

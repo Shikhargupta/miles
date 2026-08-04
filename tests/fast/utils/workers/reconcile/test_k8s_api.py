@@ -21,11 +21,10 @@ class TestResourceVersionParsing:
         [
             (SimpleNamespace(metadata=SimpleNamespace(resource_version="7")), "7"),
             (dict(metadata=dict(resourceVersion="7")), "7"),
-            (dict(metadata=dict(resource_version="7")), "7"),
         ],
     )
-    def test_both_wire_shapes_and_both_spellings_are_read(self, obj: Any, expected: str) -> None:
-        """The client hands back deserialized models or raw dicts, camelCase or snake_case."""
+    def test_both_wire_shapes_are_read(self, obj: Any, expected: str) -> None:
+        """A deserialized model spells it as an attribute, a raw dict as a camelCase key."""
         assert PodWatchEvent.from_frame(event_type="ADDED", obj=obj).resource_version == expected
 
     @pytest.mark.parametrize(
