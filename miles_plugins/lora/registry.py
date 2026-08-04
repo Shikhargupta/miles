@@ -161,7 +161,7 @@ def _build_model_specs() -> dict[str, ModelEntry]:
         # CompressedTensors path with a context-free forward.
         "kimi_k25": ModelEntry(mla, SupportStatus.VALIDATED),
         "joyai_llm_flash": ModelEntry(mla),
-        "inkling_mm_model": ModelEntry(_inkling_arch_spec(), SupportStatus.VALIDATED),
+        "inkling_mm_model": ModelEntry(_inkling_arch_spec()),
     }
 
 
