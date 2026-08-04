@@ -1,3 +1,4 @@
+import hashlib
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -149,8 +150,6 @@ class _TensorBackuperMainCast(TensorBackuper):
         return out
 
     def _compute_hashes(self) -> dict[str, str]:
-        from miles.backends.megatron_utils.ci_utils import _hash_tensor_sha256
-
         return {name: _hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
 
     def _verify_hashes(self) -> None:
@@ -197,6 +196,13 @@ class _TensorBackuperNoop(TensorBackuper):
         assert tag == self._single_tag
         assert _compute_hash_dict(dict(self._source_getter())) == self._backup_hash_dict
         torch.cuda.synchronize()
+
+
+def _hash_tensor_sha256(x: torch.Tensor) -> str:
+    """Real hash, unlike _compute_hash_tensor: the rematerialize check has to be
+    able to call a mismatch a bug."""
+    data = x.detach().cpu().contiguous()
+    return hashlib.sha256(data.view(torch.uint8).numpy().tobytes()).hexdigest()
 
 
 def _compute_hash_dict(tensors: dict[str, torch.Tensor]):

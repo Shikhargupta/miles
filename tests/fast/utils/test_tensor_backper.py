@@ -139,7 +139,6 @@ def test_get_returns_pinned_backup_for_extras_and_live_tensors_for_params():
 
 
 def test_check_verifies_first_cycles_and_raises_on_corruption():
-    pytest.importorskip("megatron.core")
     setup = _Setup(check=True)
     setup.backuper.backup("actor")
     setup.mains["p0"][0] += 1.0
@@ -148,7 +147,6 @@ def test_check_verifies_first_cycles_and_raises_on_corruption():
 
 
 def test_check_stops_after_check_num_cycles():
-    pytest.importorskip("megatron.core")
     setup = _Setup(check=True)
     for _ in range(setup.backuper._check_num_cycles):
         setup.backuper.backup("actor")
@@ -168,7 +166,6 @@ def test_no_check_computes_no_hashes():
 
 
 def test_check_detects_tensor_set_change():
-    pytest.importorskip("megatron.core")
     setup = _Setup(check=True)
     setup.backuper.backup("actor")
     setup.params["p_new"] = torch.zeros(4, dtype=torch.bfloat16)
