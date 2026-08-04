@@ -593,6 +593,10 @@ class TestValidateRematerializeParamFromMasterWeight:
     def _make_args(self, **overrides) -> SimpleNamespace:
         args = SimpleNamespace(
             rematerialize_param_from_master_weight=True,
+            train_backend="megatron",
+            lora_rank=0,
+            lora_adapter_path=None,
+            debug_disable_optimizer=False,
             colocate=True,
             offload_train=True,
             use_distributed_optimizer=True,
@@ -631,6 +635,10 @@ class TestValidateRematerializeParamFromMasterWeight:
     @pytest.mark.parametrize(
         "overrides",
         [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"lora_adapter_path": "/path/to/adapter"},
+            {"debug_disable_optimizer": True},
             {"colocate": False},
             {"offload_train": False},
             {"use_distributed_optimizer": False},
@@ -648,3 +656,13 @@ class TestValidateRematerializeParamFromMasterWeight:
     def test_rejects_unsupported_config(self, overrides):
         with pytest.raises(AssertionError):
             _validate_rematerialize_param_from_master_weight(self._make_args(**overrides))
+
+    def test_backend_is_checked_before_megatron_only_args(self):
+        # An fsdp Namespace has none of the megatron args the later asserts read.
+        args = SimpleNamespace(
+            rematerialize_param_from_master_weight=True,
+            train_backend="fsdp",
+            debug_train_only=False,
+        )
+        with pytest.raises(AssertionError, match="Megatron"):
+            _validate_rematerialize_param_from_master_weight(args)

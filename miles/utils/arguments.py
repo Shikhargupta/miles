@@ -2591,6 +2591,13 @@ def _validate_rematerialize_param_from_master_weight(args):
         # update_weights never runs, so the param buffer would never be paused.
         args.rematerialize_param_from_master_weight = False
         return
+    assert (
+        args.train_backend == "megatron"
+    ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
+    from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+
+    assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
+    assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
     assert args.colocate and args.offload_train
     assert args.use_distributed_optimizer
     assert args.enable_weights_backuper
