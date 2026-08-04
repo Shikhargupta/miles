@@ -1,12 +1,4 @@
-"""SGLang-specific adapter export compatibility.
-
-Native LoRA keeps the exact projection set requested by the user.  SGLang,
-however, stores fused-family adapters (Q/K/V, gate/up, and the two MLA down
-projections) in single fused buffers, and its normalizer only accepts some
-partial member combinations.  Weight sync therefore expands a split adapter
-with zero-valued siblings, sized from the ``SGLangFusedGroup`` metadata each
-adapter publishes — the ordinary HF checkpoint export remains exact.
-"""
+"""SGLang serving export: fused-buffer zero-fill siblings and target expansion."""
 
 from __future__ import annotations
 
@@ -56,8 +48,7 @@ def sglang_target_modules(args) -> list[str]:
             return list(spec.sglang_lora_target_modules)
         effective_targets = resolve_native_lora_config(args).target_modules
     else:
-        # Numerical/unit harnesses have no checkpoint metadata. Production
-        # native runs fail closed in resolve_model_spec during model build.
+        # bare numerical harnesses have no checkpoint metadata
         effective_targets = LoRAConfig.from_args(args).target_modules
     return expand_sglang_target_modules(sorted(effective_targets))
 

@@ -1,11 +1,4 @@
-"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, Inkling, and future GDN.
-
-Each family is a class: its projections live once, inline in its ``layout``
-class attribute, and everything else (supported targets, canonical target
-order, SGLang fused families, the attach walk) derives from that declaration
-through :class:`AttentionSpecBase`. Only genuinely per-family logic (fused-QKV
-construction, replicated-layout guards, hybrid dispatch) remains as methods.
-"""
+"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, Inkling, and future GDN."""
 
 from __future__ import annotations
 
@@ -92,27 +85,15 @@ class GQAAttentionSpec(AttentionSpecBase):
 
 
 class MLAAttentionSpec(AttentionSpecBase):
-    """Compressed query and key/value projection layout used by DeepSeek/GLM/Kimi.
-
-    Unsupported:
-
-    - MLA without ``q_lora_rank``; SGLang expects the fused qkv_a layout.
-
-    TODO:
-
-    - Add a COLUMN ``linear_q_proj`` -> ``q_proj`` branch.
-    """
+    """Compressed query and key/value projection layout used by DeepSeek/GLM/Kimi."""
 
     name = "mla"
     family = AttentionFamily.MLA
 
-    # Miles' all-linear expansion adds the GQA split-QKV names; MLA checkpoints
-    # with q_lora_rank carry a/b projections instead.
+    # all-linear expansion adds GQA names that MLA checkpoints do not carry
     _GENERIC_QKV_TARGETS = GQAAttentionSpec.layout.fused_targets
 
-    # SGLang packs the two replicated MLA down projections into one
-    # fused_qkv_a_proj_with_mqa buffer; each member's true output width comes
-    # from the architecture config, not from its sibling's shape.
+    # SGLang fuses both MLA down projections into one buffer; widths come from the config
     _MLA_A_SERVING_GROUP = ServingGroup(
         name="mla_a",
         member_rows=(
@@ -194,15 +175,7 @@ class MLAAttentionSpec(AttentionSpecBase):
 
 
 class GDNAttentionSpec(AttentionSpecBase):
-    """Explicit future boundary for GDN/linear-attention LoRA projections.
-
-    No layout yet: the target names are declared so requests fail with intent,
-    and ``validate``/``attach`` reject any attempt to use them.
-
-    TODO:
-
-    - Split the fused ``in_proj`` four ways in ``hf_adapter.py``.
-    """
+    """Future boundary for GDN LoRA: targets are declared so requests fail with intent."""
 
     name = "gdn"
     family = AttentionFamily.GQA

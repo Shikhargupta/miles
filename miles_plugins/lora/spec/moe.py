@@ -1,15 +1,4 @@
-"""MoE architecture specifications for Miles-native LoRA.
-
-The MoE spec's job is per-layer policy: decide what happens when MLP targets
-meet an expert layer. The MLP target names are injected at construction from
-the arch spec's MLP spec, so there is a single source of truth for them.
-
-Routed/grouped expert adapters attach only where a family declares them
-(Inkling); for the generic specs they remain unsupported:
-
-- Sequential per-expert and router LoRA.
-- Expert-axis HF/SGLang export for the generic families.
-"""
+"""MoE per-layer policy specs: what happens when MLP targets meet an expert layer."""
 
 from __future__ import annotations
 

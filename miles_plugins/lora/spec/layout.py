@@ -1,11 +1,4 @@
-"""Declarative native-LoRA layouts: dimension resolvers, bindings, and the attach walk.
-
-A layout is a table of bindings; this module owns everything that turns the
-table into attached adapter modules — the dimension resolvers the tables
-reference, the binding/group dataclasses, the single implementation of the
-"existence check -> target filter -> guard -> build -> setattr -> patch
-forward" ritual, and the spec base classes everything derives from.
-"""
+"""Declarative native-LoRA layouts: dimension resolvers, bindings, and the attach walk."""
 
 from __future__ import annotations
 
@@ -17,11 +10,7 @@ import torch.nn as nn
 from miles_plugins.lora.modules.linear import LoRALinear, NativeLoRAAdapter, SGLangFusedGroup, attach_adapter_forward
 from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec
 
-# ---------------------------------------------------------------------------
-# Dimension resolvers: (module, context) -> int, where ``module`` is the
-# attention/MLP block owning the physical linears. This section is the only
-# spec-side code allowed to read MCore attribute names.
-# ---------------------------------------------------------------------------
+# Dimension resolvers: the only spec-side code allowed to read MCore attribute names.
 
 DimFn = Callable[[nn.Module, AttachContext], int]
 
@@ -73,9 +62,7 @@ def inkling_o_in_local(module: nn.Module, _context: AttachContext) -> int:
     return module.nh_l * module.hd
 
 
-# ---------------------------------------------------------------------------
-# Layout declarations and the attach walk.
-# ---------------------------------------------------------------------------
+# --- layout declarations and the attach walk ---
 
 GuardFn = Callable[[nn.Module, AttachContext, ProjectionSpec, int], None]
 # (block, hf_prefix, context, active_projections, all_member_projections) -> adapter
@@ -120,8 +107,7 @@ class ProjectionBinding:
     adapter_attr: str
     guard: GuardFn | None = None
     serving_group: ServingGroup | None = None
-    # Adapter class for this binding; subclasses override export/load packing
-    # (e.g. a fused projection whose local B stacks two TP-sharded halves).
+    # subclasses override export/load packing
     adapter_class: type[LoRALinear] = LoRALinear
 
 
@@ -152,12 +138,9 @@ class ModuleLayout:
     name: str
     fused: tuple[FusedAttach, ...] = ()
     singles: tuple[ProjectionBinding, ...] = ()
-    # When set, the whole layout applies only if the block has this attribute
-    # (e.g. plain-GQA tables are inert on GDN mixer layers).
+    # the layout applies only if the block has this attribute
     present_when_attr: str | None = None
-    # HF name segment between the layer prefix and this layout's projection
-    # names; None means the orchestrator's role default ("self_attn." for
-    # attention, "mlp." for MLP layouts).
+    # HF segment between layer prefix and projection names; None = role default
     hf_block_prefix: str | None = None
 
     @property

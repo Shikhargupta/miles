@@ -149,9 +149,7 @@ class LoRAArchSpec:
     # Optional lm_head attachment; duck-typed with attach(model, args, context) -> int.
     lm_head: Any = None
     allows_mixer_only_adapter_chunks: bool = False
-    # Literal lora_target_modules to launch SGLang with, when the family's export
-    # names are engine-detected rather than per-projection (Inkling's TML names
-    # use the ["all"] shorthand). None means expand from the effective targets.
+    # literal lora_target_modules for SGLang when export names are engine-detected
     sglang_lora_target_modules: tuple[str, ...] | None = None
 
     @property

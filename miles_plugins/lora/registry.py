@@ -88,8 +88,7 @@ def _inkling_arch_spec() -> LoRAArchSpec:
 def _build_model_specs() -> dict[str, LoRAArchSpec]:
     gqa = _arch_spec(GQAAttentionSpec())
     mla = _arch_spec(MLAAttentionSpec())
-    # A PP/VPP chunk may contain only GDN mixer layers. Native GDN adapters are
-    # intentionally absent, while GQA layers in another chunk still carry LoRA.
+    # a PP/VPP chunk may contain only GDN mixer layers
     hybrid = _arch_spec(HybridGQAGDNAttentionSpec(), allows_mixer_only_adapter_chunks=True)
     return {
         "llama": gqa,
@@ -107,14 +106,11 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
-        # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
-        # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
+        # deepseek_v4 stays unregistered: its wq_a/wq_b/wkv attention is not mcore MLA
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
         "kimi_k2": mla,
-        # kimi_k25 needs the dequantized BF16 base to carry no quantization_config
-        # (convert_kimi_int4_to_bf16.py strips it), or SGLang serves it through the
-        # CompressedTensors path with a context-free forward.
+        # kimi_k25's BF16 base must carry no quantization_config (SGLang would serve it degenerately)
         "kimi_k25": mla,
         "joyai_llm_flash": mla,
         "inkling_mm_model": _inkling_arch_spec(),
@@ -221,10 +217,7 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
     return model_type, spec
 
 
-# --------------------------------------------------------------------------
-# Launcher-facing helpers: scripts should ask the plugin instead of
-# re-declaring per-family facts (target sets, support gaps).
-# --------------------------------------------------------------------------
+# Launcher-facing helpers.
 
 
 def default_target_modules(hf_checkpoint: str) -> str:

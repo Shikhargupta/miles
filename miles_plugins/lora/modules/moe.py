@@ -1,19 +1,4 @@
-"""Expert-axis and model-level adapter modules.
-
-These adapters own their IO (``export_plan`` / ``load_plan_custom``): their
-tensors need expert-parallel gathering, 3D per-expert stacking, or vocab-pad
-trims that the generic per-projection exporter does not model.
-
-Layout (shared-A / per-expert-B, matching serving-side grouped LoRA):
-
-- ``LoRAGroupedFC1`` / ``LoRAGroupedFC2``: routed experts under EP; ``w1``/``w3``
-  share one A over the token buffer, B is stacked per local expert (grouped
-  GEMM); ``w2`` is the mirror image.
-- ``LoRASharedExpertsAdapter``: N always-on sub-experts sharing A, with
-  per-sub-expert B stacked on dim 0 and TP-sharded rows.
-- ``LoRAOutputHead``: the lm_head projection, with optional muP input scaling
-  and unpadded-vocab trimming on export.
-"""
+"""Expert-axis and lm_head adapter modules; each owns its export/load plan."""
 
 from __future__ import annotations
 

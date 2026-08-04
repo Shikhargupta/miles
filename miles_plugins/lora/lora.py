@@ -1,9 +1,4 @@
-"""Single public entry point and lifecycle orchestration for native LoRA.
-
-This provider is selected by ``--lora-provider-path`` in raw conversion mode.
-Megatron-Bridge PEFT remains a separate path and is intentionally not imported
-or transformed here.
-"""
+"""Single public entry point and lifecycle orchestration for native LoRA."""
 
 from __future__ import annotations
 
@@ -215,8 +210,7 @@ def apply_native_lora(model, args):
             f"native LoRA matched no modules for --target-modules {sorted(context.targets)}; "
             f"the {arch_spec.name} spec supports {sorted(arch_spec.supported_targets)}"
         )
-    # Checkpoint classification cannot infer the provider from adapter modules
-    # when a legal PP/VPP chunk carries zero local adapters.
+    # a legal PP/VPP chunk may hold zero adapters, so classification needs the flag
     model._miles_native_lora_provider = True
     return model
 

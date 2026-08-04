@@ -1,12 +1,4 @@
-"""Callable linear adapter branches used by the Miles-native LoRA specs.
-
-Each adapter is a sibling module of the physical MCore/TE linear;
-``attach_adapter_forward`` patches that linear's forward to add the delta. Base
-parameter names are unchanged, so checkpoint, weight-sync, and quantizer naming
-contracts hold. Adapters are self-describing: :meth:`NativeLoRAAdapter.exports`
-yields one :class:`ProjectionExport` per logical projection so exporters consume a
-public descriptor instead of module internals.
-"""
+"""Callable linear adapter branches used by the Miles-native LoRA specs."""
 
 from __future__ import annotations
 
@@ -20,10 +12,7 @@ import torch.nn.functional as F
 from miles_plugins.lora.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
 from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
-# Opt-in flag for MCore ``sharded_state_dict`` walks. Adapters are invisible by
-# default so base-model distributed checkpoints keep loading with strict key
-# checks; the adapter checkpoint walk in ``miles_plugins.lora.checkpointing``
-# passes ``metadata={NATIVE_LORA_SHARDED_STATE_FLAG: True}`` to collect them.
+# Opt-in: adapters stay invisible to default sharded_state_dict walks.
 NATIVE_LORA_SHARDED_STATE_FLAG = "include_miles_native_lora_adapters"
 
 

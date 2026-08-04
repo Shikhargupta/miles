@@ -1,20 +1,4 @@
-"""Distributed abstractions for Miles-native LoRA.
-
-This module owns TP/SP input mapping, row-parallel reduction, TP gathering for
-HF export, and gradient reduction for marked adapter parameters.
-
-Unsupported:
-
-- Expert-TP groups for routed/grouped-expert adapters.
-- Native routed/grouped-expert LoRA across EP ranks.
-- ``overlap_grad_reduce`` and ``overlap_param_gather``.
-
-TODO:
-
-- Pass the process group through ``AttachContext`` for routed experts.
-- Integrate adapters with MCore parallel linears and DDP hooks before enabling
-  overlap.
-"""
+"""TP/EP/SP communication and gradient handling for Miles-native LoRA."""
 
 from __future__ import annotations
 
@@ -152,9 +136,7 @@ def reduce_marked_lora_grads(model: Sequence[nn.Module]) -> None:
 
     if not model:
         return
-    # Cache the marked-parameter scan on the leading chunk so the entry's
-    # lifetime is the model's lifetime (an id()-keyed module-global here would
-    # outlive rebuilt models and can collide with recycled ids).
+    # cache on the chunk itself: an id()-keyed module-global can outlive rebuilt models
     marked = getattr(model[0], "_miles_lora_marked_grad_params", None)
     if marked is None:
         marked = []

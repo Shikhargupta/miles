@@ -1,17 +1,4 @@
-"""Exact HF naming, loading, and export for native LoRA.
-
-Every adapter tensor is 2D with one sharded axis, gathered over one group.
-
-Unsupported:
-
-- Expert-axis tensors for routed/grouped-expert adapters.
-
-TODO:
-
-- Add EP gathering, 3D stacking, and per-expert HF names.
-- Select the expert-TP group and slice on load by ``ep_rank``.
-- Then drop the shard name's EP-invariance in ``checkpointing.py``.
-"""
+"""Exact HF naming, loading, and export for native LoRA."""
 
 from __future__ import annotations
 

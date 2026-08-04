@@ -1,30 +1,4 @@
-"""Native-specific adapter checkpoint helpers.
-
-Two on-disk formats:
-
-- **MCore distributed checkpoint** (``torch_dist/``, the write format): one
-  collective ``dist_checkpointing.save`` holding adapter weights plus
-  optimizer/scheduler state, keyed by the standard MCore sharded-state-dict
-  names (global layer indices, TP axes from each parameter's
-  ``partition_dim``). Loads under a different TP/PP/DP layout via MCore
-  resharding; optimizer state uses the ``fully_reshardable`` format.
-- **Legacy per-rank shards** (``adapter_megatron_tp{tp}_pp{pp}.pt``):
-  read-only compatibility with checkpoints written before the dist-ckpt
-  migration; loading requires the exact saved parallel layout.
-
-Shared save/load orchestration and PP assembly live in
-``miles.backends.megatron_utils.lora_utils``, still serving Megatron-Bridge too.
-
-Unsupported:
-
-- Writing the legacy shard format (loading stays supported).
-- Loading a dist checkpoint saved with a different ``--target-modules`` set
-  (missing adapter tensors fail the load; extra ones are ignored).
-
-TODO:
-
-- Revisit this split once the bridge refactor lands.
-"""
+"""Native adapter checkpointing: the MCore dist-checkpoint write format plus read-only legacy shards."""
 
 from __future__ import annotations
 
@@ -44,15 +18,11 @@ logger = logging.getLogger(__name__)
 
 NATIVE_DIST_CKPT_DIRNAME = "torch_dist"
 
-# Distributed-optimizer state in the TP/PP/EP-reshardable checkpoint format;
-# the default formats reshard over DP only. Non-distributed Megatron optimizers
-# ignore this key.
+# Reshard optimizer state over TP/PP/EP, not just DP.
 _OPTIMIZER_SHARDING_METADATA = {"distrib_optim_sharding_type": "fully_reshardable"}
 
 
-# ---------------------------------------------------------------------------
-# MCore distributed checkpoint (the write format)
-# ---------------------------------------------------------------------------
+# --- MCore distributed checkpoint (the write format) ---
 
 
 def _unwrap_model_chunk(chunk: nn.Module) -> nn.Module:
@@ -191,9 +161,7 @@ def load_native_adapter_dist_checkpoint(
             "Dist adapter checkpoint at %s has no optimizer state; resuming with fresh training state.",
             checkpoint_dir,
         )
-        # Megatron's BF16/FP16 optimizer owns FP32 main parameters created from
-        # the freshly initialized adapters. Keep those masters aligned with the
-        # adapter values just loaded.
+        # realign the optimizer's FP32 masters with the loaded adapters
         reload_model_params = getattr(optimizer, "reload_model_params", None)
         if callable(reload_model_params):
             reload_model_params()
@@ -210,9 +178,7 @@ def is_native_adapter_dist_checkpoint(checkpoint_dir: str | Path) -> bool:
     return check_is_distributed_checkpoint(str(path))
 
 
-# ---------------------------------------------------------------------------
-# Legacy per-rank shard format (read-only compatibility)
-# ---------------------------------------------------------------------------
+# --- legacy per-rank shard format (read-only compatibility) ---
 
 
 @dataclass
@@ -240,8 +206,7 @@ class AdapterLoadPlan:
         return len(self.assignments)
 
 
-# Key prefix of adapter shards written by earlier revisions of this branch
-# (superseded by the dist checkpoint; kept readable).
+# shard key prefix from earlier revisions; kept readable
 _LEGACY_MODEL_CHUNK_PREFIX = "_miles_model_chunks."
 
 
