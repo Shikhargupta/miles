@@ -336,7 +336,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Colocate only: drop the pinned CPU weight copy. update_weights reads live GPU "
                     "weights (param buffer stays resident until then), and the next train step "
                     "rematerializes them from the optimizer's fp32 master weights, bit-identical "
-                    "to the step-end cast."
+                    "to the step-end cast. The param buffer now coexists with the resumed engine "
+                    "for the length of the update, so the GPU peak there grows by the per-rank "
+                    "bf16 shard: --sglang-mem-fraction-static tuned for the pinned-copy flow may "
+                    "need lowering."
                 ),
             )
             parser.add_argument(
