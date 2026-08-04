@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import ray
@@ -19,7 +20,7 @@ def _make_group(cells: list) -> RayTrainGroup:
     group._witness_allocator = None
     group._indep_dp_quorum_id = 0
     group._health_checker_activeness = True
-    group._test_action_executor = SimpleNamespace(run_after_step=lambda **kwargs: None)
+    group._test_action_executor = SimpleNamespace(run_after_step=AsyncMock())
     return group
 
 
