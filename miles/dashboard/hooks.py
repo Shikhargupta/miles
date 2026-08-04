@@ -10,6 +10,7 @@ rate-limited warnings — a deliberate exception to fail-loud (design doc
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -393,12 +394,12 @@ def _collect_worker_infos(cells) -> list[list]:
 
 
 def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
-    uuid_refs = [
-        info.actor_handle._get_gpu_uuids.remote(info.gpu_ids)
-        for worker_infos in worker_infos_per_cell
-        for info in worker_infos
-    ]
-    probed_uuids = iter(_ray_get(uuid_refs))
+    flat_infos = [info for worker_infos in worker_infos_per_cell for info in worker_infos]
+
+    async def _probe_gpu_uuids() -> list:
+        return await asyncio.gather(*[info.handle._get_gpu_uuids(gpu_ids=info.gpu_ids) for info in flat_infos])
+
+    probed_uuids = iter(asyncio.run(_probe_gpu_uuids()))
 
     engines = []
     for engine_rank, (cell, worker_infos) in enumerate(zip(cells, worker_infos_per_cell, strict=True)):

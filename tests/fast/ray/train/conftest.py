@@ -48,6 +48,10 @@ def ray_env():
     ray.shutdown()
 
 
+def get_raw_actor_handles(cell: RayTrainCell) -> list[ray.actor.ActorHandle]:
+    return [handle._actor_handle for handle in cell._get_worker_handles()]
+
+
 def make_indep_dp_info(
     *,
     cell_index: int = 0,

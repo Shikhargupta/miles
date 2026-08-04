@@ -9,6 +9,7 @@ from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
 from miles.utils.timer import Timer
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, WorkerInfo
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -145,9 +146,15 @@ class _FakeProbe:
         return self._value_fn(*args, **kwargs)  # hooks._ray_get is patched to the identity function
 
 
-class FakeEngineHandle:
-    def __init__(self):
-        self._get_gpu_uuids = _FakeProbe(lambda gpu_ids: [None] * len(gpu_ids))
+class FakeWorkerHandle(BaseWorkerHandle):
+    async def _get_gpu_uuids(self, *, gpu_ids):
+        return [None] * len(gpu_ids)
+
+    async def wait_ready(self, *, timeout):
+        return None
+
+    async def wait_dead(self, *, timeout):
+        return None
 
 
 class FakeManagerHandle:
@@ -176,7 +183,7 @@ def _worker_info(name, node, gpus, generation=1):
         generation=generation,
         self_addrs={"primary": HostAndPort(host=node, port=30001)},
         gpu_ids=gpus,
-        actor_handle=FakeEngineHandle(),
+        handle=FakeWorkerHandle(),
     )
 
 

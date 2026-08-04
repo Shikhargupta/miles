@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.retry_utils import NonRetryableError
@@ -30,7 +30,7 @@ def _make_group(cells: list) -> RayTrainGroup:
 
 def _make_failing_group(fn_name: str) -> RayTrainGroup:
     cell = make_alive_cell(0, alive_cell_indices=[0])
-    for handle in cell._get_actor_handles():
+    for handle in get_raw_actor_handles(cell):
         ray.get(handle.set_fail_methods.remote([fn_name]))
     return _make_group([cell])
 
@@ -79,7 +79,7 @@ class TestMultipleCellsStillTolerateFailures:
     async def test_one_dead_cell_does_not_stop_the_lifecycle_call(self):
         """Fault tolerance depends on surviving cells carrying on without the dead one."""
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
-        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["sleep"]))
+        ray.get(get_raw_actor_handles(cells[0])[0].set_fail_methods.remote(["sleep"]))
         group = _make_group(cells)
 
         await group.offload()

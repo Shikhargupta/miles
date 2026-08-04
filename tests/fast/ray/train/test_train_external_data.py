@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.ray.train.group import RayTrainGroup
 
@@ -29,7 +29,7 @@ def _make_group(cells: list) -> RayTrainGroup:
 def _train_calls_of(cell) -> list[tuple]:
     return [
         [call for call in ray.get(handle.get_calls.remote()) if call[0] == "train"]
-        for handle in cell._get_actor_handles()
+        for handle in get_raw_actor_handles(cell)
     ]
 
 

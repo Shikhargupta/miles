@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.train.group import RayTrainGroup
@@ -28,7 +28,7 @@ class TestTrainReturnValue:
     async def test_one_result_per_worker_reaches_the_caller(self):
         """The critic values leave the group per worker so the driver can feed them to the actor."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_value.remote({"train_step_outcome": TrainStepOutcome.NORMAL}))
         group = _make_group([cell])
 
@@ -40,7 +40,7 @@ class TestTrainReturnValue:
         """Independent DP ranks are positional, so a reordered result list misroutes values."""
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
         for index, cell in enumerate(cells):
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 ray.get(handle.set_train_return_value.remote(index))
         group = _make_group(cells)
 
@@ -51,8 +51,8 @@ class TestTrainReturnValue:
     async def test_a_failed_cell_contributes_no_result(self):
         """A raw exception object in the returned list would be fed straight into the next train call."""
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
-        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["train"]))
-        for handle in cells[1]._get_actor_handles():
+        ray.get(get_raw_actor_handles(cells[0])[0].set_fail_methods.remote(["train"]))
+        for handle in get_raw_actor_handles(cells[1]):
             ray.get(handle.set_train_return_value.remote("ok"))
         group = _make_group(cells)
 
@@ -85,7 +85,7 @@ class TestWorkerResultShape:
     async def test_a_critic_dict_does_not_break_the_discarded_check(self):
         """The critic returns a dict per worker, which is not comparable to a TrainStepOutcome."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_value.remote({"train_step_outcome": TrainStepOutcome.NORMAL}))
         group = _make_group([cell])
 
