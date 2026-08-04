@@ -24,7 +24,10 @@ class ReconcileLoop:
     - `source` returns an async iterator of `SourceEvent`.
     - A stream opens with `ReplaceEvent`, a whole-store replace that synthesizes deletions.
     - Later `UpsertEvent` and `DeleteEvent` apply immediately; a relist sends another `ReplaceEvent`.
-    - Reconcile receives a key only and re-derives everything from `get_by_parent()`.
+    - `reconcile` receives a key only and re-derives everything from `get_by_parent()`.
+    - `reconcile` must not block on I/O: one worker serves every parent key.
+    - `reconcile` must be idempotent: delivery is at-least-once.
+    - Objects handed out are the source's own, so treat them as read-only.
     """
 
     def __init__(

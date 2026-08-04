@@ -13,23 +13,18 @@ description: "A minimal, level-triggered controller runtime for Miles, and how i
 
 All under `miles/utils/workers/reconcile/`.
 
-| Ours | Does | Go |
-| --- | --- | --- |
-| `k8s_api.py` | LIST/WATCH calls; the only module importing `kubernetes_asyncio` | [typed client `List` / `Watch`](https://github.com/kubernetes/client-go/blob/master/kubernetes/typed/core/v1/pod.go) |
-| `k8s_reflector.py` | Cursor bookkeeping, relist on cursor rejection | [`cache.Reflector`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go) |
-| `source_event.py` | Reflector-to-loop wire format: `UpsertEvent`, `DeleteEvent`, and a whole-world `ReplaceEvent` | [`watch.Event`](https://github.com/kubernetes/apimachinery/blob/master/pkg/watch/watch.go) + [`Store`'s write methods](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) |
-| `object_store.py` | Cache, parent index, replace with deletion synthesis | [`cache.Store`](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) + [`DeltaFIFO.Replace()`](https://github.com/kubernetes/client-go/blob/master/tools/cache/delta_fifo.go) |
-| `work_queue.py` | Insertion-ordered dedup with a wakeup, generic over the key type | [`workqueue`](https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go) |
-| `retry_scheduler.py` | Per-key exponential backoff, latest-wins timers, generic over the key type | [rate limiter](https://github.com/kubernetes/client-go/blob/master/util/workqueue/default_rate_limiters.go) + [delaying queue](https://github.com/kubernetes/client-go/blob/master/util/workqueue/delaying_queue.go) |
-| `source_stream_driver.py` | Open, sync, reopen the stream; pump events into the store | [informer `Run` / `processLoop`](https://github.com/kubernetes/client-go/blob/master/tools/cache/controller.go) |
-| `loop.py` | Lifecycle, the single worker, resync | [controller-runtime `Controller`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/internal/controller/controller.go) |
+| Ours | Does | Go | Not 1:1 |
+| --- | --- | --- | --- |
+| `k8s_api.py` | LIST/WATCH calls; the only module importing `kubernetes_asyncio`, lazily so the loop stays importable without a Kubernetes backend | [typed client `List` / `Watch`](https://github.com/kubernetes/client-go/blob/master/kubernetes/typed/core/v1/pod.go) | |
+| `k8s_reflector.py` | Cursor bookkeeping, relist on cursor rejection | [`cache.Reflector`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go) | |
+| `source_event.py` | Reflector-to-loop wire format: `UpsertEvent`, `DeleteEvent`, and a whole-world `ReplaceEvent` | [`watch.Event`](https://github.com/kubernetes/apimachinery/blob/master/pkg/watch/watch.go) + [`Store`'s write methods](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) | Go writes to a store by method call; we send the same operations as values |
+| `object_store.py` | Cache, parent index, replace with deletion synthesis | [`cache.Store`](https://github.com/kubernetes/client-go/blob/master/tools/cache/store.go) + [`DeltaFIFO.Replace()`](https://github.com/kubernetes/client-go/blob/master/tools/cache/delta_fifo.go) | Absorbs `Replace()`, the only part of `DeltaFIFO` we keep |
+| `work_queue.py` | Insertion-ordered dedup with a wakeup, generic over the key type | [`workqueue`](https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go) | |
+| `retry_scheduler.py` | Per-key exponential backoff, latest-wins timers, generic over the key type | [rate limiter](https://github.com/kubernetes/client-go/blob/master/util/workqueue/default_rate_limiters.go) + [delaying queue](https://github.com/kubernetes/client-go/blob/master/util/workqueue/delaying_queue.go) | Absorbs both, because latest-wins is one mechanism, not two |
+| `source_stream_driver.py` | Open, sync, reopen the stream; pump events into the store | [informer `Run` / `processLoop`](https://github.com/kubernetes/client-go/blob/master/tools/cache/controller.go) | |
+| `loop.py` | Lifecycle, the single worker, resync | [controller-runtime `Controller`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/internal/controller/controller.go) | |
 
-Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row below — the class died with its feature, the remainder landed on a neighbor:
-
-- **`ObjectStore` absorbed `DeltaFIFO.Replace()`** — Go's split needs `KnownObjects: indexer`, a pointer back to the store, because deletion synthesis must know what is cached. Splitting recreates that back-pointer to buy a name.
-- **No `DeltaFIFO`** — without delta coalescing it has no FIFO, no `Pop`, no delta chain.
-- **`RetryScheduler` absorbed both retry pieces** — ours is latest-wins, not a `readyAt` heap, so splitting yields Go names over non-Go semantics.
-- **`SourceEvent` is Go's `Store` write API as values** — Go pushes into a `Store` by method call: `Add` / `Update` / `Delete`, and `Replace(list, rv)` for a whole listing. We send the same operations as events instead, so a source is an ordinary generator, which gives teardown and cancellation for free. `ReplaceEvent` carries the entire listing in one event, matching `Store.Replace`'s signature; a listing is never spread over several events.
+An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Replaced** row below — the Go class died with its feature and the remainder landed on a neighbor — so the reason lives with that row.
 
 ## Decisions per module
 
@@ -40,10 +35,10 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | Reflector | Move remote changes into a local cache reliably | **Kept**, Kubernetes only | Ray / external-URL backends emit in-process: no cursor, no replay window |
 | `watchHandler` per-event metadata failure | One malformed frame must not stop the watch | **Kept**: log, skip, advance past it | Tearing down reconnects at the same cursor, replays the same frame, wedges the watch until expiry |
 | Bookmarks | Keep an idle cursor fresh | **Kept** | Free server-side, avoids relists |
-| `BackoffManager` around reconnects | Survive a watch that keeps dropping | **Kept**, ours only | Passing `timeout_seconds` is load-bearing beyond server-side hygiene: `kubernetes_asyncio` computes `watch_forever = "timeout_seconds" not in keywords` and, when true, silently reconnects on an idle or empty stream and retries a 410 once behind our back. Always sending it keeps every reopen, cursor reset and retry decision in `watch()` |
-| `IsTooLargeResourceVersion` | A cursor from the future is never satisfied | **Kept** as the code 504, **dropped** as a reason string | Otherwise a rolled-back backend freezes the store forever, and a plain gateway timeout only costs one LIST. Go reads `ResourceVersionTooLarge` out of `Status.Details.Causes[].Type` ([`isTooLargeResourceVersionError`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go)); the `Status.Reason` is `Timeout`. Matching that name against `reason` never fires, so only the code is checked |
+| `BackoffManager` around reconnects | Survive a watch that keeps dropping | **Kept**, ours only | Always sending `timeout_seconds` is load-bearing: `kubernetes_asyncio` reads its absence as `watch_forever` and then reconnects and retries a 410 behind our back. Sending it keeps every reopen in `watch()` |
+| `IsTooLargeResourceVersion` | A cursor from the future is never satisfied | **Kept** as the code 504, **dropped** as a reason string | A rolled-back backend would otherwise freeze the store forever, and a plain gateway timeout costs one LIST. Go finds `ResourceVersionTooLarge` in `Status.Details.Causes[].Type` ([`isTooLargeResourceVersionError`](https://github.com/kubernetes/client-go/blob/master/tools/cache/reflector.go)), never in `Status.Reason`, so matching it as a reason string never fires |
 | `ApiException` shape | Tell a dead cursor from a transient failure | **Kept**: `status` against 410 / 504 only | `ApiException.__init__` sets `status` from `http_resp.status` or the int the watch layer passes, so it is always an int and never carries a separate `code` |
-| An `ERROR` frame reaching the consumer | A watch that reports failure in-band | **Kept**, though `kubernetes_asyncio` cannot produce it | `Watch.unmarshal_event` raises `ApiException` on `type == "error"` instead of yielding, so the live path is the exception one, and Go turns `watch.Error` into an error too. Kept anyway because losing a cursor-death signal freezes the store forever, and the dependency is unpinned |
+| An `ERROR` frame reaching the consumer | A watch that reports failure in-band | **Kept**, though `kubernetes_asyncio` cannot produce it | `Watch.unmarshal_event` raises `ApiException` on `type == "error"` rather than yielding, so the live path is the exception one. Kept because losing a cursor-death signal freezes the store forever and the dependency is unpinned |
 | `ListAndWatch` → `Run` → LIST again | Refresh after every watch ends | **Dropped**; reopen WATCH from the cursor | A LIST per timeout dominates an idle reflector's cost, and the cursor is still valid |
 | `BackoffUntil` | Keep a relist storm off the apiserver | **Replaced** by one flat `retry_delay` | One reflector, small label-scoped LIST |
 | LIST pagination | Huge collections | **Dropped** | Thousands of pods at most |
@@ -63,7 +58,7 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | Upstream | Solves | Decision | Reason |
 | --- | --- | --- | --- |
 | workqueue | The scheduling core | **Kept** as a dedup set; delayed retry lives in `retry_scheduler.py` | With one worker, the dirty/processing protocol collapses into the set |
-| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` runs once, after `start()` has returned: cancel everything, then wait. Awaiting it inside reconcile asserts — use `asyncio.create_task(loop.stop())` — and a hung `start()` is aborted by cancelling its task, not by `stop()` | Drain exists for many Go workers. One worker means one in-flight parent key, and reconcile is idempotent, so abandoning it costs a re-derivation |
+| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` cancels everything, then waits. It runs once, after `start()` returns; awaiting it inside reconcile asserts (use `asyncio.create_task`), and a hung `start()` is aborted by cancelling its task | Drain exists for many Go workers. One worker means one in-flight key, and reconcile is idempotent, so abandoning it costs a re-derivation |
 
 ### `retry_scheduler.py`
 
@@ -81,6 +76,8 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | Cache-before-notify ordering | Handlers never read a stale state | **Kept** | Correctness, not volume |
 | WaitForCacheSync | Do not decide on a half-filled cache | **Kept**: `run()` + `wait_for_sync()`, the [`SyncingSource`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/source/source.go) shape; `start()` awaits it | A partial engine list at step 0 would silently shrink the fleet |
 | `source.Channel` | External event injection | **Dropped** | Miles-internal events are method calls |
+| Retry inside vs outside the stream | Recover without losing the cursor | **Kept** at both levels: `KubernetesReflector.retry_delay`, then `ReconcileLoop.source_retry_delay` | The inner one recovers a dropped watch, a failed LIST or an expired cursor without ending the stream. The outer one is the net for a stream that dies for good; in-process registries reach it |
+| Closing a stream during teardown | Do not hide a worse error | **Kept**: `stop()` propagates, the reopen path logs | `aclose()` from `stop()` has nothing in flight. `_aclose_logging_failure` never raises because a close failure would either mask an unwinding cancellation or re-raise the failure that the driver exists to recover from |
 | Streaming a listing into the store | Sync a huge collection without holding it in memory | **Dropped**; a listing is one `ReplaceEvent`, and a stream that does not open with one is reopened | client-go buffers too: its watch-list path fills a `temporaryStore` until the `k8s.io/initial-events-end` bookmark, then calls `Replace` once. Ours materializes the page before yielding anyway, so bracketing it would only add a segment FSM and a half-applied state to police |
 
 ### `loop.py`
@@ -100,31 +97,11 @@ Four rows are not 1:1. Each is the shadow of a **Dropped** / **Replaced** row be
 | kubebuilder / Operator SDK | One resource type, hand-written |
 | Thread-safe store / DeltaFIFO / workqueue | Under asyncio state mutates only between `await` points. Removes the data-race class, not the interleaving class: "check, await, mutate" still needs FSM discipline |
 
-Retry lives at two levels:
-
-- `KubernetesReflector.retry_delay` — recovered without ending the stream: dropped watch, failed LIST, expired cursor.
-- `ReconcileLoop.source_retry_delay` — the outer net for a stream that dies for good. In-process registries will reach it.
-
-Cleanup raises unless raising would hide a worse error:
-
-- `stop()` → `SourceStreamDriver.aclose()` has nothing in flight, so a stream that fails to close propagates.
-- `_aclose_logging_failure` never raises, and the single `finally` that calls it needs both reasons: while a cancellation is unwinding, a close failure would replace it and the task would look broken rather than cancelled; on the reopen path, closing a stream that just failed re-raises that same failure and would kill a driver whose whole job is to reopen. It logs with a stacktrace.
-- Nowhere does an `except asyncio.CancelledError: raise` guard a following `except Exception`. `CancelledError` is a `BaseException`, so the handlers that log and retry cannot swallow it; cancellation runs the `finally` blocks and propagates on its own. Adding such a guard back would be dead code that implies a special case which is not there.
-
-`kubernetes_asyncio` is imported lazily so the loop stays importable without a Kubernetes backend, and declared in `requirements.txt` for the test suites.
-
 ## Invariants
 
-1. Reconcile gets a parent key only and re-derives from the store via `get_by_parent(parent_key)`. It must not block on I/O: one worker serves the fleet.
-2. The store is updated before the parent key is enqueued, and hands out the source's own objects — read-only, as with a client-go cache.
-3. No reconcile before the initial list is consumed; `start()` is that barrier.
-4. A parent key is never reconciled concurrently with itself; delivery is at-least-once, so reconcile must be idempotent.
-5. Per-parent-key exponential backoff; a later failure replaces the pending timer, a success cancels it.
-6. A relist must synthesize deletions, or removed objects drift forever.
+The contract for a `reconcile` function lives on `ReconcileLoop`'s docstring, where its callers will read it. One rule has no other home: never guard an `except Exception` with `except asyncio.CancelledError: raise`. `CancelledError` is a `BaseException` and cannot be swallowed by the handler below, so the guard is dead code implying a special case that is not there.
 
 ## Test layers
-
-A fake encodes what we *believe* a dependency does, so it can never catch a wrong belief. Each real layer exists only for what no cheaper layer can prove. All three run on every PR.
 
 | Layer | Where | Proves |
 | --- | --- | --- |
@@ -132,6 +109,7 @@ A fake encodes what we *believe* a dependency does, so it can never catch a wron
 | Real apiserver, no kubelet | `tests/e2e/k8s_apiserver/` | API semantics: cursors, watch timeouts, real 410, relist |
 | kind cluster | `tests/e2e/k8s_kind/` | What only a kubelet produces: Running, restarts, graceful deletion, bookmarks |
 
-- Each environment directory imports no Miles code, so it can be verified before anything uses it.
+All three run on every PR. Neither environment directory imports Miles code, so it can be verified before anything uses it.
+
 - `pytest tests/e2e/k8s_apiserver tests/e2e/k8s_kind` self-provisions from a Docker daemon: etcd and the apiserver as containers, a pinned kind binary on demand. `MILES_K8S_KEEP=1` leaves the environment up, `MILES_K8S_KUBECONFIG=<path>` reuses a cluster, `MILES_K8S_REQUIRE=1` (default in CI) turns missing Docker into a failure.
-- Cursor expiry needs a second apiserver with `--watch-cache=false`: with the cache on, an old `resourceVersion` is still served after etcd is compacted, so nothing can invalidate a live cursor.
+- Cursor expiry needs a second apiserver with `--watch-cache=false`: with the cache on, a compacted `resourceVersion` is still served, so nothing can invalidate a live cursor.
