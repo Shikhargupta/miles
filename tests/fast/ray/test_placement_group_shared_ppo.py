@@ -53,6 +53,10 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
             self.role = role
             groups.append(self)
 
+        @classmethod
+        async def create(cls, args, **kwargs):
+            return cls(args=args, **kwargs)
+
         async def init(self):
             return [0]
 
