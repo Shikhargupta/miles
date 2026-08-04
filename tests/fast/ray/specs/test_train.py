@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.ray.specs.train import compute_trainer_spec_name, specs_trainer
+from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
 
@@ -129,17 +130,17 @@ class TestConstructorArguments:
 
 
 class TestConcurrencyGroups:
-    def test_fault_tolerance_isolates_the_heartbeat_rpc(self):
+    def test_the_heartbeat_rpc_is_always_isolated(self):
         """A heartbeat queued behind a train step reads as a dead cell."""
         (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+        assert spec.concurrency_groups == TRAINER_CONCURRENCY_GROUPS
 
-    def test_no_groups_without_fault_tolerance(self):
-        """Runs without fault tolerance keep ray's default scheduling."""
+    def test_the_groups_do_not_depend_on_fault_tolerance(self):
+        """The actor class declares the groups statically, so the spec cannot drop them."""
         (spec,) = specs_trainer(_make_args())
 
-        assert spec.concurrency_groups is None
+        assert spec.concurrency_groups == TRAINER_CONCURRENCY_GROUPS
 
 
 class TestEnvironmentVariables:
