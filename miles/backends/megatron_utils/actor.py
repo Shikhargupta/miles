@@ -12,6 +12,7 @@ import torch
 import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
+from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
@@ -55,7 +56,6 @@ from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
-from .rematerialize_utils import build_main_cast_context
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
@@ -210,7 +210,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         main_cast_ctx = None
         if args.rematerialize_param_from_master_weight:
-            main_cast_ctx = build_main_cast_context(args, self.model, self.optimizer)
+            main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
             source_getter=lambda: named_params_and_buffers(

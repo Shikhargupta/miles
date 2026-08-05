@@ -9,7 +9,7 @@ import torch
 _SourceGetter = Callable[[], Iterable[tuple[str, torch.Tensor]]]
 
 
-@dataclass
+@dataclass(frozen=True)
 class MainCastContext:
     # Writes this rank's owned shard of the low-precision params from the
     # optimizer's master weights, exactly as the train-step end does.

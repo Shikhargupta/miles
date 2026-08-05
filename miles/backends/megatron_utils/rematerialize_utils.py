@@ -13,7 +13,7 @@ from miles.utils.tensor_backper import MainCastContext
 logger = logging.getLogger(__name__)
 
 
-def named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
+def _named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
     """Tensors not rematerializable from fp32 master weights: expert_bias buffers and
     fp32-dtype params (their optimizer "main" is a view of the param itself)."""
     for vp_stage, model_module in enumerate(model):
@@ -25,8 +25,8 @@ def named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str
                 yield f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}", param
 
 
-def build_main_cast_context(args: Namespace, model: Sequence[torch.nn.Module], optimizer) -> MainCastContext:
-    extras = list(named_restore_extras(model))
+def build_main_cast_context(args: Namespace, *, model: Sequence[torch.nn.Module], optimizer) -> MainCastContext:
+    extras = list(_named_restore_extras(model))
     extras_bytes = sum(t.numel() * t.element_size() for _, t in extras)
     logger.info(
         f"rematerialize-param-from-master-weight: {len(extras)} extra tensors "
@@ -34,17 +34,19 @@ def build_main_cast_context(args: Namespace, model: Sequence[torch.nn.Module], o
         f"{[name for name, _ in extras[:20]]}"
     )
     return MainCastContext(
-        cast_main_to_params=_build_cast_main_to_params_fn(args, optimizer),
+        cast_main_to_params=_build_cast_main_to_params_fn(
+            optimizer, precision_aware=args.use_precision_aware_optimizer
+        ),
         model_chunks=model,
-        extras_getter=lambda: named_restore_extras(model),
+        extras_getter=lambda: _named_restore_extras(model),
         rematerializable_ids=_assert_rematerialize_coverage(model, extras),
         check=args.check_rematerialize_param_from_master_weight,
     )
 
 
-def _build_cast_main_to_params_fn(args: Namespace, optimizer) -> Callable[[], None]:
+def _build_cast_main_to_params_fn(optimizer, *, precision_aware: bool) -> Callable[[], None]:
     dist_opts = optimizer.chained_optimizers
-    if not args.use_precision_aware_optimizer:
+    if not precision_aware:
 
         def cast_mcore():
             for dist_opt in dist_opts:
@@ -54,7 +56,8 @@ def _build_cast_main_to_params_fn(args: Namespace, optimizer) -> Callable[[], No
 
     # Arg validation restricts precision-aware to --optimizer-cpu-offload, where
     # _copy_main_params_to_model_params is a no-op and the standalone masters are
-    # held by the HybridDeviceOptimizer instead.
+    # held by the HybridDeviceOptimizer instead. Imported here, not at the top, so
+    # this module stays importable (and unit-testable) without megatron installed.
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
     inners = [dist_opt.optimizer for dist_opt in dist_opts]

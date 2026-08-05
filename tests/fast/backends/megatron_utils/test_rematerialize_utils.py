@@ -18,9 +18,8 @@ class _FakeDistOpt:
 
 
 def test_mcore_cast_calls_every_chained_optimizer():
-    args = SimpleNamespace(use_precision_aware_optimizer=False)
     dist_opts = [_FakeDistOpt(), _FakeDistOpt()]
-    cast = _build_cast_main_to_params_fn(args, SimpleNamespace(chained_optimizers=dist_opts))
+    cast = _build_cast_main_to_params_fn(SimpleNamespace(chained_optimizers=dist_opts), precision_aware=False)
     cast()
     assert [opt.copied for opt in dist_opts] == [1, 1]
 
@@ -55,7 +54,6 @@ def test_hdo_replay_cpu_hook_takes_precedence_on_overlap():
 
 def test_builder_rejects_non_hdo_inner_under_precision_aware():
     pytest.importorskip("megatron.core")
-    args = SimpleNamespace(use_precision_aware_optimizer=True)
     optimizer = SimpleNamespace(chained_optimizers=[SimpleNamespace(optimizer=object())])
     with pytest.raises(AssertionError):
-        _build_cast_main_to_params_fn(args, optimizer)
+        _build_cast_main_to_params_fn(optimizer, precision_aware=True)
