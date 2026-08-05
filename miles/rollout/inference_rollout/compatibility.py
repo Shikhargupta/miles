@@ -48,6 +48,20 @@ def call_rollout_function(fn, input: RolloutFnInput) -> RolloutFnOutput:
     return output
 
 
+async def maybe_close(fn) -> None:
+    """Release a rollout fn's resources via its optional lifecycle hook.
+
+    Class-based rollout fns may own background tasks, queues, or child data
+    sources; without a close point, dispose leaks them (the FullyAsync worker
+    keeps generating under stale weights, for example). Plain legacy functions
+    have neither hook and are skipped.
+    """
+    if (aclose := getattr(fn, "aclose", None)) is not None:
+        await aclose()
+    elif (close := getattr(fn, "close", None)) is not None:
+        close()
+
+
 class LegacyGenerateFnAdapter:
     def __init__(self, fn: Callable):
         self.fn = fn
