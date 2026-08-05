@@ -1,12 +1,11 @@
 from types import SimpleNamespace
 
 import pytest
-
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 import ray
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
 from miles.ray.train.group import TrainerController
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import NonRetryableError
 
 

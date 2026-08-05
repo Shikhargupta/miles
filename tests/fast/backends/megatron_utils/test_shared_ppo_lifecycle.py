@@ -11,9 +11,8 @@ import pytest
 import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.utils.ray_utils import Box
-
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.utils.ray_utils import Box
 
 
 @pytest.fixture(scope="module")
@@ -338,7 +337,9 @@ def test_critic_output_roundtrips_into_actor_external_data(actor_module: Any, mo
     assert critic_output.values is not None
 
     actor_rollout_data: dict[str, Any] = {"tokens": []}
-    actor_output = _actor_worker(actor_module).train_actor(8, actor_rollout_data, critic_output, witness_info=None, attempt=0)
+    actor_output = _actor_worker(actor_module).train_actor(
+        8, actor_rollout_data, critic_output, witness_info=None, attempt=0
+    )
 
     assert isinstance(actor_output, TrainStepOutput)
     assert actor_output.outcome is TrainStepOutcome.NORMAL

@@ -18,9 +18,7 @@ from miles.utils.ft_utils.api_server.models import CellStatus, TriState
 _ADDR_INFO = CellAddrInfo(server_url="http://10.0.0.1:30000", bootstrap_port=None, gate_url="http://10.0.0.1:13000")
 
 
-def _make_cell(
-    state: CellState, health: TriState = TriState.TRUE, workers_hash: str = "pseudo-hash-0"
-) -> ServerCell:
+def _make_cell(state: CellState, health: TriState = TriState.TRUE, workers_hash: str = "pseudo-hash-0") -> ServerCell:
     cell = ServerCell(
         args=make_args(),
         meta=ServerCellMetadata(

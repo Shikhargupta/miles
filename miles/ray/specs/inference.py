@@ -8,7 +8,6 @@ from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupCo
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
-from miles.rollout.session.ports import compute_num_session_server_ports
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv

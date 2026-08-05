@@ -21,6 +21,7 @@ _DISCIPLINE_OWNER_ATTRIBUTE_NAME: str = "_context_lock_discipline_owner"
 # the annotation machinery (PEP 649) plants these in the class dict; they are not methods of the class
 _ANNOTATION_MEMBER_NAMES: frozenset[str] = frozenset({"__annotate__", "__annotate_func__"})
 
+
 class _LockGrant(NamedTuple):
     lock: "ContextLock"
     generation: int
@@ -64,7 +65,9 @@ class ContextLock:
 
     async def acquire(self) -> None:
         grant = _held_lock.get()
-        assert grant is None or not grant.lock.held_in_current_context, f"Cannot acquire lock {self._name!r}: a context lock is already held"
+        assert (
+            grant is None or not grant.lock.held_in_current_context
+        ), f"Cannot acquire lock {self._name!r}: a context lock is already held"
         wait_reminder = asyncio.ensure_future(self._remind_while_waiting())
         try:
             await self._lock.acquire()

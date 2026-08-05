@@ -2,8 +2,8 @@ import socket
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from typing import TYPE_CHECKING
 from contextlib import AbstractContextManager, nullcontext
+from typing import TYPE_CHECKING
 
 import ray
 import torch
@@ -22,7 +22,7 @@ from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 
 class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):

@@ -45,7 +45,9 @@ def _comparable_params(func) -> list[tuple[str, str, bool]]:
     params = list(inspect.signature(func).parameters.values())
     if params and params[0].name == "self":
         params = params[1:]
-    return [(p.name, p.kind.name, p.default is not inspect.Parameter.empty) for p in params if p.name != "_ray_trace_ctx"]
+    return [
+        (p.name, p.kind.name, p.default is not inspect.Parameter.empty) for p in params if p.name != "_ray_trace_ctx"
+    ]
 
 
 @pytest.fixture(scope="module")

@@ -158,7 +158,9 @@ class TestWaitExpectedNumCells:
         assert len(fake_clock.sleeps) == 2
         assert [cell.cell_index for cell in group._cells] == [0, 1, 2, 3]
 
-    async def test_waiting_returns_immediately_when_every_cell_is_already_observed(self, fake_clock: _AutoAdvancingClock):
+    async def test_waiting_returns_immediately_when_every_cell_is_already_observed(
+        self, fake_clock: _AutoAdvancingClock
+    ):
         """A complete fleet must not cost a single retry sleep."""
         group = _make_group(num_cells=4, indep_dp=True)
         for cell_index in range(4):

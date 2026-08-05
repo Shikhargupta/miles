@@ -296,7 +296,6 @@ class TrainerCell:
         return self._state.worker_handles
 
 
-
 async def _kill_worker(handle: BaseWorkerHandle) -> None:
     try:
         await asyncio.wait_for(handle.kill_self(), timeout=KILL_RPC_TIMEOUT_S)

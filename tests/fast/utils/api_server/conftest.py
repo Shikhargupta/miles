@@ -9,7 +9,7 @@ import pytest
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status, compute_suspended_rollout_cell_status
 from miles.utils.ft_utils.api_server.handles import _CellHandler
-from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellSpec, CellStatus
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
 from miles.utils.test_utils.fault_injector import FailureMode

@@ -51,9 +51,7 @@ def stub_provider(monkeypatch):
 
 
 def _make_cell(**meta_overrides) -> ServerCell:
-    return track_server_cell(
-        ServerCell(args=make_args(), meta=_make_meta(**meta_overrides), router_api_client=None)
-    )
+    return track_server_cell(ServerCell(args=make_args(), meta=_make_meta(**meta_overrides), router_api_client=None))
 
 
 class TestComputeAddrInfo:

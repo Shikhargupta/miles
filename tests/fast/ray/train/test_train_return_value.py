@@ -3,13 +3,12 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 import ray
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ray_utils import Box
 
 pytestmark = pytest.mark.asyncio

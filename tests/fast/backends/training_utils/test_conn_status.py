@@ -16,7 +16,9 @@ _INITIAL_SNAPSHOT: dict[str, str] = {"cell-a": "hash-a", "cell-b": "hash-b"}
         pytest.param({}, True, id="all-cells-gone"),
     ],
 )
-def test_needs_reconnect_tracks_snapshot_changes(next_snapshot: dict[str, str], expected_needs_reconnect: bool) -> None:
+def test_needs_reconnect_tracks_snapshot_changes(
+    next_snapshot: dict[str, str], expected_needs_reconnect: bool
+) -> None:
     """After a successful connect, only a changed rollout cell snapshot forces another reconnect."""
     manager = ConnStatusManager()
     manager.mark_reconnected(_INITIAL_SNAPSHOT)

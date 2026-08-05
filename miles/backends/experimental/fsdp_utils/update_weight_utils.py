@@ -24,8 +24,7 @@ from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
-
+    pass
 
 
 try:

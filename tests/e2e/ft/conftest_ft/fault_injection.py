@@ -1,6 +1,5 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
-import dataclasses
 import enum
 import logging
 import random

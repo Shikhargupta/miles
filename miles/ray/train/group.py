@@ -272,7 +272,9 @@ class TrainerController:
                 logger.error, tag="ft", op="check", **outcomes, decision="retry", reason="all alive cells failed"
             )
             cause = _first_exception(results)
-            raise self._make_all_cells_failed_error("All cells failed in this training attempt", cause=cause) from cause
+            raise self._make_all_cells_failed_error(
+                "All cells failed in this training attempt", cause=cause
+            ) from cause
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others

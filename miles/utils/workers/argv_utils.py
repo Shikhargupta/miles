@@ -114,9 +114,9 @@ def _render_action_argv(action: argparse.Action, value: object) -> list[str]:
 
     if action.nargs == 0:
         flag = _long_option_string(action)
-        assert value == action.const, (
-            f"{flag} cannot be rendered: the CLI only has a flag for {action.const!r}, not {value!r}"
-        )
+        assert (
+            value == action.const
+        ), f"{flag} cannot be rendered: the CLI only has a flag for {action.const!r}, not {value!r}"
         return [flag]
 
     flag = _long_option_string(action)

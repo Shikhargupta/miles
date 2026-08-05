@@ -1,8 +1,6 @@
 import os
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,13 +8,10 @@ import ray
 from tests.fast.ray.train.fake_worker_manager import FakeWorkerManager
 
 import miles.ray.train.group as group_module
-from miles.utils.ft_utils.health_checker import NoopHealthChecker
-from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.retry_utils import retry
-from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.ray.train.cell import TrainerCell
 from miles.utils.ft_utils.health_checker import NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.retry_utils import retry
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 fake_worker_manager: FakeWorkerManager | None = None

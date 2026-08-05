@@ -29,7 +29,7 @@ from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 logger = logging.getLogger(__name__)
 

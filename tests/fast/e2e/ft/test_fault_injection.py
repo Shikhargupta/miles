@@ -2,7 +2,6 @@ import dataclasses
 import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
 from tests.e2e.ft.conftest_ft import fault_injection as fi
 from tests.e2e.ft.conftest_ft.fault_injection import RecoveryGate, cell_is_alive
 from tests.e2e.ft.conftest_ft.modes import MODES, FTTestMode

@@ -10,7 +10,6 @@ pytest.skip(
 )
 
 import asyncio
-from argparse import Namespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,7 +17,7 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, fake_engine, make
 
 import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.test_utils.mock_sglang_engine import parse_cmd_flags
 from miles.utils.workers.addr_allocator import PortAllocator
 

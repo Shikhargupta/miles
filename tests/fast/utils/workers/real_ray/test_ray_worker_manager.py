@@ -318,7 +318,9 @@ class TestStopCellOnRealRay:
 
 
 class TestWorkerInfosOnRealRay:
-    async def test_a_driver_can_describe_and_reach_the_workers_of_one_cell(self, manager_factory, worker_probe_factory):
+    async def test_a_driver_can_describe_and_reach_the_workers_of_one_cell(
+        self, manager_factory, worker_probe_factory
+    ):
         """Worker infos survive the trip to the driver, including usable actor handles."""
         probe = worker_probe_factory()
         manager_factory(

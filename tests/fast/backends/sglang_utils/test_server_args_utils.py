@@ -8,7 +8,8 @@ from argparse import Namespace
 from typing import Any
 
 import pytest
-from tests.fast.backends.sglang_utils.conftest import make_engine_args as _args, tiny_model_path
+from tests.fast.backends.sglang_utils.conftest import make_engine_args as _args
+from tests.fast.backends.sglang_utils.conftest import tiny_model_path
 
 pytest.importorskip("sglang")
 
@@ -27,7 +28,6 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
         "instance, so no generically rendered token parses back to the same value."
     ),
 }
-
 
 
 def _server_args(
@@ -148,29 +148,29 @@ class TestEveryServerArgsFieldIsRenderable:
     @pytest.mark.parametrize(
         "field_name",
         [
-            pytest.param(
-                field.name,
-                marks=pytest.mark.xfail(reason=_FIELDS_WITHOUT_A_RENDERABLE_CLI[field.name], strict=True),
-                id=field.name,
+            (
+                pytest.param(
+                    field.name,
+                    marks=pytest.mark.xfail(reason=_FIELDS_WITHOUT_A_RENDERABLE_CLI[field.name], strict=True),
+                    id=field.name,
+                )
+                if field.name in _FIELDS_WITHOUT_A_RENDERABLE_CLI
+                else pytest.param(field.name, id=field.name)
             )
-            if field.name in _FIELDS_WITHOUT_A_RENDERABLE_CLI
-            else pytest.param(field.name, id=field.name)
             for field in dataclasses.fields(ServerArgs)
         ],
     )
     def test_a_field_renders_to_argv_that_parses_back_to_the_same_value(self, field_name: str) -> None:
         """Every ServerArgs field resolves to a CLI action that round-trips a value of its own shape."""
         parser = _make_server_args_parser()
-        action = _resolve_action(
-            _actions_by_dest(parser), field_name=field_name, dest_prefix="", field_to_dest={}
-        )
+        action = _resolve_action(_actions_by_dest(parser), field_name=field_name, dest_prefix="", field_to_dest={})
         default_value = getattr(_baseline_namespace(), action.dest, None)
 
         accepted = _first_roundtripping_value(action=action, default_value=default_value)
 
-        assert accepted is not None, (
-            f"{field_name!r} renders to argv that {action.option_strings[0]!r} cannot parse back"
-        )
+        assert (
+            accepted is not None
+        ), f"{field_name!r} renders to argv that {action.option_strings[0]!r} cannot parse back"
 
 
 def _make_server_args_parser() -> argparse.ArgumentParser:

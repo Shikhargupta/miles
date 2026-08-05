@@ -1,8 +1,8 @@
 import asyncio
-from typing import Any
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args

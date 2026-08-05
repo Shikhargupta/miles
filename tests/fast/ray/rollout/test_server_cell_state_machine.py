@@ -304,13 +304,17 @@ class TestTick:
 
     async def test_the_snapshot_is_taken_over_the_whole_model_without_a_skip_list(self, cell_env):
         """The baseline must match what the controller-side reset and comparison later cover."""
-        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True, check_weight_update_skip_list=["lm_head"]))
+        cell = _make_cell(
+            args_overrides=dict(check_weight_update_equal=True, check_weight_update_skip_list=["lm_head"])
+        )
         await cell.init()
 
         await cell.tick()
 
         snapshot_calls = [
-            kwargs for name, kwargs in cell_env["memory_calls"] if name == "check_weights" and kwargs["action"] == "snapshot"
+            kwargs
+            for name, kwargs in cell_env["memory_calls"]
+            if name == "check_weights" and kwargs["action"] == "snapshot"
         ]
         assert snapshot_calls == [dict(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)]
 

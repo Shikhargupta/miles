@@ -100,9 +100,7 @@ class TestBaseWorkerSpec:
 class TestCommandWorkerSpec:
     def test_constructs_with_launch_command(self):
         """A command spec carries the launch command callable besides base fields."""
-        spec = CommandWorkerSpec(
-            **_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server"
-        )
+        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server")
         ctx = LaunchCommandContext(host="127.0.0.1", ports={"http": 8000})
         assert spec.launch_command(ctx) == "python -m sglang.launch_server"
         assert isinstance(spec, BaseWorkerSpec)

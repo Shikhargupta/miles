@@ -203,7 +203,9 @@ class TestRayWorkerHandleWaitDead:
             slept.append(seconds)
 
         monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
-        monkeypatch.setattr(worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 60.0, 200.0])))
+        monkeypatch.setattr(
+            worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 60.0, 200.0]))
+        )
         handle, inner = _make_handle(__ray_ready__=_FakeRemoteMethod([_return_factory(None)]))
 
         with caplog.at_level(logging.ERROR, logger="miles.utils.workers.worker_handle"):

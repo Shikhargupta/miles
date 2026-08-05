@@ -251,7 +251,6 @@ class TestRayWorkerProviderWatchCellsPolling:
         finally:
             await stop()
 
-
     async def test_a_cell_added_by_a_partially_failed_poll_can_still_disappear(self):
         """A reconcile that raises mid-poll must not lose the bookkeeping of the cells already delivered."""
         info_a = _cell_info("cell-a")
