@@ -612,6 +612,8 @@ class TestValidateRematerializeParamFromMasterWeight:
             compute_advantages_and_returns=True,
             num_critic_only_steps=0,
             debug_train_only=False,
+            ci_test=False,
+            check_rematerialize_param_from_master_weight=False,
             disable_param_buffers_cpu_backup=False,
         )
         for key, value in overrides.items():
@@ -628,6 +630,16 @@ class TestValidateRematerializeParamFromMasterWeight:
         args = self._make_args(use_precision_aware_optimizer=True, optimizer_cpu_offload=True)
         _validate_rematerialize_param_from_master_weight(args)
         assert args.disable_param_buffers_cpu_backup is True
+
+    def test_ci_test_auto_enables_the_check(self):
+        args = self._make_args(ci_test=True)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.check_rematerialize_param_from_master_weight is True
+
+    def test_check_stays_off_outside_ci(self):
+        args = self._make_args()
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.check_rematerialize_param_from_master_weight is False
 
     def test_accepts_ref_and_teacher_tags(self):
         # Non-actor tags keep pinned copies via the delegated normal backuper.

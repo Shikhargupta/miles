@@ -98,7 +98,7 @@ def execute():
         f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
         "--megatron-to-hf-mode bridge "
-        "--rematerialize-param-from-master-weight --check-rematerialize-param-from-master-weight "
+        "--rematerialize-param-from-master-weight "
     )
 
     train_args = (

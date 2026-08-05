@@ -2624,6 +2624,8 @@ def _validate_rematerialize_param_from_master_weight(args):
         args.num_critic_only_steps == 0
     ), "critic-only steps run update_weights repeatedly without an intervening actor wake_up"
     args.disable_param_buffers_cpu_backup = True
+    if args.ci_test:
+        args.check_rematerialize_param_from_master_weight = True
 
 
 def miles_validate_args(args):
