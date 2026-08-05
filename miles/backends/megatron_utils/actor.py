@@ -213,6 +213,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.model,
                 convert_to_global_name=args.megatron_to_hf_mode == "raw",
                 translate_gpu_to_cpu=not self.args.enable_weights_backuper,
+                # Evaluated at call time: while the model is offloaded, a paused
+                # tensor without a CPU backup must fail fast instead of hanging.
+                require_cpu_backup=self._asleep,
             ),
             single_tag=None if args.enable_weights_backuper else "actor",
         )

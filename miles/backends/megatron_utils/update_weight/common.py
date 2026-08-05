@@ -11,6 +11,7 @@ import torch.distributed as dist
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from ray.actor import ActorHandle
 
+from miles.backends.megatron_utils.lora_utils import _is_adapter_param_name
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import ParamInfo
@@ -291,6 +292,7 @@ def named_params_and_buffers(
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
     translate_gpu_to_cpu: bool = False,
+    require_cpu_backup: bool = False,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     if convert_to_global_name:
         ans = _named_params_and_buffers_global(args, model)
@@ -298,16 +300,26 @@ def named_params_and_buffers(
         ans = _named_params_and_buffers_vanilla(model)
 
     if translate_gpu_to_cpu:
-        ans = ((name, _maybe_get_cpu_backup(tensor)) for name, tensor in ans)
+        ans = ((name, _maybe_get_cpu_backup(name, tensor, require_cpu_backup)) for name, tensor in ans)
 
     return ans
 
 
-def _maybe_get_cpu_backup(x: torch.Tensor):
+def _maybe_get_cpu_backup(name: str, x: torch.Tensor, require_cpu_backup: bool = False):
     from torch_memory_saver import torch_memory_saver
 
     if (cpu_tensor := torch_memory_saver.get_cpu_backup(x)) is not None:
         return cpu_tensor
+
+    # LoRA adapter params are deliberately kept out of the paused region (see
+    # patch_param_grad_buffer_for_colocate_mode_lora), so reading them live is fine.
+    if require_cpu_backup and x.is_cuda and not _is_adapter_param_name(name):
+        raise RuntimeError(
+            f"No CPU backup exists for '{name}' while the training model is offloaded. Reading the paused GPU "
+            f"tensor would touch unmapped memory and hang instead of failing (typically as a 30-minute gloo "
+            f"timeout at weight sync). The weights were offloaded without any host copy; check the "
+            f"--disable-weights-backuper / cpu-backup configuration."
+        )
 
     return x
 
