@@ -1,5 +1,6 @@
 import argparse
 import dataclasses
+import json
 from typing import Any
 
 import pytest
@@ -345,6 +346,60 @@ class TestRenderCliArgvNoneHandling:
         second = _render_cli_argv(_parse(first), cli_defaults=_parse([]))
         assert first == second
         assert "None" not in first
+
+
+@dataclasses.dataclass
+class _GraphConfig:
+    backend: str = "eager"
+    max_bs: int = 4
+
+
+@dataclasses.dataclass
+class _StructuredArgs:
+    max_bs: int = 4
+    graph: _GraphConfig | None = None
+
+
+def _make_structured_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max-bs", type=int, default=4)
+    parser.add_argument("--graph", type=lambda raw: _GraphConfig(**json.loads(raw)), default=None)
+    return parser
+
+
+def _from_parsed_structured(parsed: argparse.Namespace) -> _StructuredArgs:
+    graph = parsed.graph if parsed.graph is not None else _GraphConfig(max_bs=parsed.max_bs)
+    return _StructuredArgs(max_bs=parsed.max_bs, graph=graph)
+
+
+def _render_structured(args_obj: _StructuredArgs) -> list[str]:
+    return render_cli_argv(args_obj, make_parser=_make_structured_parser, from_parsed=_from_parsed_structured)
+
+
+class TestRenderCliArgvDataclassFields:
+    def test_a_derived_dataclass_field_that_the_other_flags_imply_is_not_rendered(self):
+        """Regression: a post-parse derived dataclass used to be emitted as an unparseable Python repr."""
+        args_obj = _StructuredArgs(max_bs=16, graph=_GraphConfig(max_bs=16))
+
+        assert _render_structured(args_obj) == ["--max-bs", "16"]
+
+    def test_a_derived_dataclass_field_never_reaches_the_argv_as_a_repr(self):
+        """The rendered argv must not contain the dataclass constructor text under any flag."""
+        argv = _render_structured(_StructuredArgs(max_bs=16, graph=_GraphConfig(max_bs=16)))
+
+        assert not any("_GraphConfig(" in item for item in argv)
+
+    def test_a_user_set_dataclass_field_roundtrips_as_json(self):
+        """A dataclass value the other flags do not imply is serialized so the parser can read it back."""
+        args_obj = _StructuredArgs(max_bs=16, graph=_GraphConfig(backend="cuda-graph", max_bs=99))
+        argv = _render_structured(args_obj)
+
+        assert argv == ["--max-bs", "16", "--graph", json.dumps({"backend": "cuda-graph", "max_bs": 99})]
+        assert _from_parsed_structured(_make_structured_parser().parse_args(argv)) == args_obj
+
+    def test_a_dataclass_field_equal_to_the_bare_cli_default_is_not_rendered(self):
+        """The plain defaults check still short-circuits before the derived-default comparison."""
+        assert _render_structured(_StructuredArgs(max_bs=4, graph=_GraphConfig())) == []
 
 
 @dataclasses.dataclass

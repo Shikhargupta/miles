@@ -1,5 +1,6 @@
 import argparse
 import dataclasses
+import json
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -37,14 +38,22 @@ def render_cli_argv(
         return from_parsed(make_parser().parse_args(argv))
 
     base_argv = list(required_argv or [])
-    argv = base_argv + _render_cli_argv(args_obj, cli_defaults=parse(base_argv))
+    cli_defaults = parse(base_argv)
+    simple_argv = base_argv + _render_cli_argv(args_obj, cli_defaults=cli_defaults, skip_structured=True)
+    argv = base_argv + _render_cli_argv(args_obj, cli_defaults=cli_defaults, structured_defaults=parse(simple_argv))
 
     parsed = parse(argv)
     assert parsed == args_obj, f"cli argv roundtrip mismatch: {parsed!r} != {args_obj!r}"
     return argv
 
 
-def _render_cli_argv(args_obj: _ArgsT, *, cli_defaults: _ArgsT) -> list[str]:
+def _render_cli_argv(
+    args_obj: _ArgsT,
+    *,
+    cli_defaults: _ArgsT,
+    structured_defaults: _ArgsT | None = None,
+    skip_structured: bool = False,
+) -> list[str]:
     argv: list[str] = []
     for field in dataclasses.fields(args_obj):
         value = getattr(args_obj, field.name)
@@ -69,6 +78,12 @@ def _render_cli_argv(args_obj: _ArgsT, *, cli_defaults: _ArgsT) -> list[str]:
             ), f"{flag} cannot be rendered: a None value in {field.name} cannot round-trip through the CLI"
             argv.append(flag)
             argv.extend(f"{key}={item}" for key, item in value.items())
+        elif dataclasses.is_dataclass(value):
+            if skip_structured:
+                continue
+            if structured_defaults is not None and value == getattr(structured_defaults, field.name):
+                continue
+            argv.extend([flag, json.dumps(dataclasses.asdict(value))])
         else:
             argv.extend([flag, str(value)])
     return argv
