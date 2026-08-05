@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
+import ray
 import torch
 import torch.distributed as dist
 
@@ -26,11 +27,10 @@ from miles.utils.lora import LORA_ADAPTER_NAME
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
 from .hf_weight_iterator_base import HfWeightIteratorBase
-
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
