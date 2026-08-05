@@ -81,10 +81,6 @@ class ServerCell:
             "every cell must be disposed so its health checker task is stopped"
         )
 
-    @property
-    def _health_checker_activeness(self) -> bool:
-        return self._get_health_checker_active_and_epoch().active
-
     def cell_status(self) -> CellStatus:
         workers_hash = self.meta.workers_hash
         match self._state:

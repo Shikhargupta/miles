@@ -81,7 +81,7 @@ class TestHealthCheckerActiveness:
         """A colocated cell waits gated for the next window; its port is not even listening."""
         cell = _make_cell()
 
-        assert not cell._health_checker_activeness
+        assert not cell._get_health_checker_active_and_epoch().active
 
     async def test_a_booting_cell_is_not_probed(self, monkeypatch):
         """Its engine has not answered yet, so a probe would count a false failure."""
@@ -90,7 +90,7 @@ class TestHealthCheckerActiveness:
 
         await cell.init()
 
-        assert not cell._health_checker_activeness
+        assert not cell._get_health_checker_active_and_epoch().active
 
     async def test_a_cell_holding_stale_weights_is_probed(self, monkeypatch):
         """It answers requests with stale weights, so a crash there is a real failure."""
@@ -100,7 +100,7 @@ class TestHealthCheckerActiveness:
         await cell.init()
         await cell.tick()
 
-        assert cell._health_checker_activeness
+        assert cell._get_health_checker_active_and_epoch().active
 
     async def test_a_cell_that_skips_pending_weights_is_probed(self, monkeypatch):
         """A frozen model goes straight to serving, and an unwatched serving cell is a hole in FT."""
@@ -110,7 +110,7 @@ class TestHealthCheckerActiveness:
         await cell.init()
         await cell.tick()
 
-        assert cell._health_checker_activeness
+        assert cell._get_health_checker_active_and_epoch().active
 
     async def test_a_disposed_cell_is_not_probed(self, monkeypatch):
         """Nothing is left to answer once the cell has been torn down."""
@@ -121,7 +121,7 @@ class TestHealthCheckerActiveness:
         await cell.tick()
         await cell.dispose()
 
-        assert not cell._health_checker_activeness
+        assert not cell._get_health_checker_active_and_epoch().active
 
     async def test_a_forced_pause_wins_over_the_cell_state(self, monkeypatch):
         """Engines are unusable while offloaded or mid weight update, whatever state they are in."""
@@ -131,11 +131,11 @@ class TestHealthCheckerActiveness:
 
         await cell.init()
         await cell.tick()
-        assert cell._health_checker_activeness
+        assert cell._get_health_checker_active_and_epoch().active
 
         active["value"] = False
 
-        assert not cell._health_checker_activeness
+        assert not cell._get_health_checker_active_and_epoch().active
 
 
 class TestAddCellHealthChecker:
@@ -158,7 +158,7 @@ class TestAddCellHealthChecker:
         async with srv.context_lock:
             await srv.add_cell(_make_meta())
 
-            assert not srv.server_cells["cell-0"]._health_checker_activeness
+            assert not srv.server_cells["cell-0"]._get_health_checker_active_and_epoch().active
             await srv.dispose()
 
     async def test_no_checker_is_created_without_rollout_fault_tolerance(self):
