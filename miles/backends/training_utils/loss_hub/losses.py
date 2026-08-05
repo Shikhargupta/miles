@@ -76,9 +76,10 @@ def policy_loss_function(
     Args:
         args: Configuration controlling advantage estimator, clipping thresholds,
             entropy/KL coefficients, and TIS settings.
-        batch: Mini-batch containing "advantages", "log_probs" (old policy),
-            "unconcat_tokens", "response_lengths", "total_lengths", "loss_masks",
-            and optionally "ref_log_probs" and "rollout_log_probs".
+        batch: Mini-batch containing "advantages", "unconcat_tokens",
+            "response_lengths", "total_lengths", and "loss_masks". "log_probs"
+            contains the old policy unless `args.skip_actor_logprobs_forward` is
+            enabled; "ref_log_probs" and "rollout_log_probs" are optional.
         logits: Policy logits with shape `[1, T, V]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
 
@@ -92,6 +93,7 @@ def policy_loss_function(
     parallel_state = get_parallel_state()
     advantages_list = [advantage.detach() for advantage in batch["advantages"]]
     advantages = torch.cat(advantages_list, dim=0)
+    skip_actor_logprobs_forward = getattr(args, "skip_actor_logprobs_forward", False)
     scored_old_log_probs = (
         [log_prob.detach() for log_prob in batch["log_probs"]] if batch.get("log_probs") is not None else None
     )
@@ -103,7 +105,9 @@ def policy_loss_function(
     reference_log_probs = (
         [log_prob.detach() for log_prob in batch["ref_log_probs"]] if batch.get("ref_log_probs") is not None else None
     )
-    if args.use_rollout_logprobs:
+    if skip_actor_logprobs_forward:
+        old_log_probs = None
+    elif args.use_rollout_logprobs:
         assert (
             rollout_old_log_probs is not None
         ), "rollout_log_probs must be provided when --use-rollout-logprobs is set"
@@ -129,6 +133,8 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    if skip_actor_logprobs_forward:
+        old_log_probs = [log_prob.detach() for log_prob in log_probs]
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 
@@ -144,12 +150,15 @@ def policy_loss_function(
                 log_probs, total_lengths, response_lengths, strict=False
             )
         ]
-        full_old_log_probs = [
-            all_gather_with_cp(old_log_prob, total_length, response_length)
-            for old_log_prob, total_length, response_length in zip(
-                old_log_probs, total_lengths, response_lengths, strict=False
-            )
-        ]
+        if skip_actor_logprobs_forward:
+            full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
+        else:
+            full_old_log_probs = [
+                all_gather_with_cp(old_log_prob, total_length, response_length)
+                for old_log_prob, total_length, response_length in zip(
+                    old_log_probs, total_lengths, response_lengths, strict=False
+                )
+            ]
 
     # Compute OPSM mask if enabled
     if args.use_opsm:
