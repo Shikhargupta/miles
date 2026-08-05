@@ -14,7 +14,6 @@ from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names, compute_router_spec_name, specs_inference_engine
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import WorkerMetaContext
 
@@ -60,14 +59,6 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
     )
 
 
-def _make_serving_cell(info: CellInfo) -> SimpleNamespace:
-    status = CellStatus(
-        phase="Running",
-        conditions=[CellCondition.allocated(TriState.TRUE), CellCondition.healthy(TriState.TRUE)],
-    )
-    return SimpleNamespace(meta=_make_cell_meta(info), cell_status=lambda: status)
-
-
 class _RecordingServer:
     def __init__(self, server_cells: dict | None = None):
         self.server_cells = server_cells or {}
@@ -95,7 +86,6 @@ def _make_controller(servers: dict) -> InferenceController:
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
     controller._health_checker_activeness = True
-    controller._cell_status_overrides = {}
     return controller
 
 
@@ -345,19 +335,6 @@ class TestEngineMetaContract:
             update_weights=True,
             workers_hash="pseudo-hash-0",
         )
-
-
-class TestPublishedCellStatuses:
-    @pytest.mark.asyncio
-    async def test_a_cell_the_reconciler_lost_is_published_as_suspended(self):
-        """The api server has no second source, so a cell without a process must say so here."""
-        info = _make_cell_info()
-        srv = _RecordingServer({info.cell_id: _make_serving_cell(info)})
-        controller = _make_controller({"default": srv})
-
-        await controller._reconcile(info.cell_id, None)
-
-        assert controller.get_cell_statuses()[info.cell_id].phase == "Suspended"
 
 
 class TestUpdateWeightsLockWindow:

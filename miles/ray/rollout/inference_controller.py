@@ -9,7 +9,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
-from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata, compute_suspended_rollout_cell_status
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names
 from miles.utils.context_lock import (
     ContextLock,
@@ -69,7 +69,6 @@ class InferenceController:
         self._watcher_disposers: list[StopWatchFn] = []
         self._health_checker_activeness: bool = True
         self._ticker: SimpleTicker | None = None
-        self._cell_status_overrides: dict[str, CellStatus] = {}
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
@@ -195,12 +194,11 @@ class InferenceController:
 
     @lock_exempt
     def get_cell_statuses(self) -> dict[str, CellStatus]:
-        observed = {
+        return {
             cell_id: cell.cell_status()
             for srv in list(self.servers.values())
             for cell_id, cell in list(srv.server_cells.items())
         }
-        return {**observed, **self._cell_status_overrides}
 
     @with_lock
     async def check_weights(
@@ -231,11 +229,6 @@ class InferenceController:
 
     @with_lock
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
-        if observed is None:
-            self._cell_status_overrides[cell_id] = compute_suspended_rollout_cell_status()
-        else:
-            self._cell_status_overrides.pop(cell_id, None)
-
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
         for srv in self.servers.values():

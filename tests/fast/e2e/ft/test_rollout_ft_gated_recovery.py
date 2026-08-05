@@ -162,7 +162,6 @@ class _Harness:
         self.controller._watcher_disposers = []
         self.controller._ticker = None
         self.controller._health_checker_activeness = True
-        self.controller._cell_status_overrides = {}
         self.controller.servers = {
             "default": RolloutServer(
                 server_cells={},

@@ -141,10 +141,8 @@ class TestServerCellStatusCarriesItsGeneration:
 
 
 class TestGetCellStatuses:
-    def _controller(
-        self, servers: dict[str, SimpleNamespace], overrides: dict[str, CellStatus] | None = None
-    ) -> SimpleNamespace:
-        return SimpleNamespace(servers=servers, _cell_status_overrides=overrides or {})
+    def _controller(self, servers: dict[str, SimpleNamespace]) -> SimpleNamespace:
+        return SimpleNamespace(servers=servers)
 
     def test_every_cell_of_every_server_is_reported(self):
         """The api server renders one row per cell, so a missing model means missing rows."""
