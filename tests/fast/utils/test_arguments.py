@@ -629,6 +629,11 @@ class TestValidateRematerializeParamFromMasterWeight:
         _validate_rematerialize_param_from_master_weight(args)
         assert args.disable_param_buffers_cpu_backup is True
 
+    def test_accepts_ref_and_teacher_tags(self):
+        # Non-actor tags keep pinned copies via the delegated normal backuper.
+        for overrides in ({"use_kl_loss": True}, {"kl_coef": 0.1}, {"opd_teacher_load": "/path/to/teacher"}):
+            _validate_rematerialize_param_from_master_weight(self._make_args(**overrides))
+
     def test_debug_train_only_silently_disables(self):
         args = self._make_args(debug_train_only=True, colocate=False)
         _validate_rematerialize_param_from_master_weight(args)
@@ -653,9 +658,6 @@ class TestValidateRematerializeParamFromMasterWeight:
             {"use_distributed_optimizer": False},
             {"enable_weights_backuper": False},
             {"keep_old_actor": True},
-            {"kl_coef": 0.1},
-            {"use_kl_loss": True},
-            {"opd_teacher_load": "/path/to/teacher"},
             {"use_precision_aware_optimizer": True},
             {"overlap_param_gather": True},
             {"compute_advantages_and_returns": False},

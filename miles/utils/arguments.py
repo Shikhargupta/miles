@@ -333,7 +333,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rematerialize-param-from-master-weight",
                 action="store_true",
                 help=(
-                    "Colocate only: drop the pinned CPU weight copy. update_weights reads live GPU "
+                    "Colocate only: drop the actor's pinned CPU weight copy (ref/teacher tags, if "
+                    "any, keep theirs). update_weights reads live GPU "
                     "weights (param buffer stays resident until then), and the next train step "
                     "rematerializes them from the optimizer's fp32 master weights, bit-identical "
                     "to the step-end cast. The param buffer now coexists with the resumed engine "
@@ -2610,9 +2611,6 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert args.use_distributed_optimizer
     assert args.enable_weights_backuper
     assert not args.keep_old_actor
-    assert (
-        args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
-    ), "--rematerialize-param-from-master-weight does not support ref/teacher model tags"
     assert not args.use_precision_aware_optimizer or args.optimizer_cpu_offload, (
         "precision-aware without --optimizer-cpu-offload keeps main params inside TE FusedAdam, as int16 "
         "remainders of the bf16 params by default: the redundancy rematerialize needs is already spent. "

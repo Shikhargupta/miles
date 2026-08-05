@@ -184,11 +184,31 @@ def test_get_rejects_unknown_tensor_in_source():
         setup.backuper.get("actor")
 
 
-def test_rejects_non_actor_tag():
+def test_non_actor_tag_keeps_full_pinned_copy():
     setup = _Setup()
-    with pytest.raises(AssertionError):
-        setup.backuper.backup("ref")
-    with pytest.raises(AssertionError):
-        setup.backuper.restore("ref")
-    with pytest.raises(AssertionError):
-        setup.backuper.get("ref")
+    ref_values = {name: t.clone() for name, t in {**setup.params, **setup.extras}.items()}
+    setup.backuper.backup("ref")
+    assert setup.backuper.backup_tags == ["actor", "ref"]
+    setup.corrupt_live_tensors()
+    setup.backuper.restore("ref")
+    for name, tensor in {**setup.params, **setup.extras}.items():
+        assert torch.equal(tensor, ref_values[name]), name
+    got = setup.backuper.get("ref")
+    for name in ref_values:
+        # Pinned host copies, never the live tensors.
+        assert got[name].data_ptr() != {**setup.params, **setup.extras}[name].data_ptr(), name
+
+
+def test_actor_restore_wins_after_ref_switch():
+    # The per-cycle flow: backup actor, switch to ref (overwrites the live
+    # params), then _switch_model("actor") must rematerialize the actor bytes.
+    setup = _Setup()
+    actor_values = {name: t.clone() for name, t in {**setup.params, **setup.extras}.items()}
+    setup.backuper.backup("actor")
+    for param in setup.params.values():
+        param.fill_(7.0)  # stand-in for loading ref weights into the model
+    setup.backuper.backup("ref")
+    setup.backuper.restore("ref")
+    setup.backuper.restore("actor")
+    for name, tensor in {**setup.params, **setup.extras}.items():
+        assert torch.equal(tensor, actor_values[name]), name

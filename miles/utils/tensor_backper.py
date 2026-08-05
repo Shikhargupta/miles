@@ -90,16 +90,19 @@ class _TensorBackuperNormal(TensorBackuper):
 
 
 class _TensorBackuperMainCast(TensorBackuper):
-    """Rematerialize weights from the optimizer's fp32 master weights (same cast +
-    param all-gather as the step end, so bit-identical) instead of a pinned CPU copy;
-    only `extras_getter` tensors keep a small pinned backup. With `check`, the first
-    `_check_num_cycles` restores are SHA256-verified against backup time."""
+    """Rematerialize the actor weights from the optimizer's master weights (same
+    cast + param all-gather as the step end, so bit-identical) instead of a pinned
+    CPU copy; only `extras_getter` tensors keep a small pinned backup. Non-actor
+    tags (ref/teacher) have no optimizer masters and keep full pinned copies via a
+    delegated _TensorBackuperNormal. With `check`, the first `_check_num_cycles`
+    actor restores are SHA256-verified against backup time."""
 
     _check_num_cycles = 2
 
     def __init__(self, source_getter, ctx: MainCastContext):
         super().__init__(source_getter=source_getter)
         self._ctx = ctx
+        self._others = _TensorBackuperNormal(source_getter=source_getter)
         self._extras_backup: dict[str, torch.Tensor] = {}
         self._extras_backup_by_id: dict[int, torch.Tensor] = {}
         self._backup_count = 0
@@ -107,11 +110,12 @@ class _TensorBackuperMainCast(TensorBackuper):
 
     @property
     def backup_tags(self):
-        return ["actor"]
+        return ["actor", *self._others.backup_tags]
 
     @torch.no_grad()
     def backup(self, tag: str) -> None:
-        assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
+        if tag != "actor":
+            return self._others.backup(tag)
         for name, tensor in self._ctx.extras_getter():
             if name not in self._extras_backup:
                 self._extras_backup[name] = torch.empty_like(tensor, device=torch.device("cpu"), pin_memory=True)
@@ -126,7 +130,8 @@ class _TensorBackuperMainCast(TensorBackuper):
 
     @torch.no_grad()
     def restore(self, tag: str) -> None:
-        assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
+        if tag != "actor":
+            return self._others.restore(tag)
         self._ctx.cast_main_to_params()
         for model_chunk in self._ctx.model_chunks:
             model_chunk.start_param_sync(force_sync=True)
@@ -137,7 +142,8 @@ class _TensorBackuperMainCast(TensorBackuper):
             self._verify_hashes()
 
     def get(self, tag: str):
-        assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
+        if tag != "actor":
+            return self._others.get(tag)
         # Extras are paused during update_weights: read them from the pinned backup.
         out = {}
         for name, tensor in self._source_getter():
