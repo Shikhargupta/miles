@@ -184,19 +184,21 @@ def find_slot_state(adapter) -> Path | None:
     return base
 
 
-def load_slot_state(args, model, optimizer, adapter) -> int:
+def load_slot_state(args, model, optimizer, adapter) -> int | None:
     """Restore a slot from its sidecar. Ordering matters: weights ->
     rank/alpha replay -> slot-scoped master rebuild -> overwrite masters and
     Adam state (incl. both step counters) from the sidecar. Returns the
-    restored optimizer step (0 = no sidecar; caller falls back to the
-    weights-only checkpoint path with fresh Adam state)."""
+    restored optimizer step, or None when no sidecar exists (the caller falls
+    back to the weights-only checkpoint path with fresh Adam state). A sidecar
+    can legitimately carry step 0 — an adapter swapped out before its first
+    optimizer step — and its restored state must not be re-initialized."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
     from miles.backends.megatron_utils.multi_lora_optimizer import reload_adapter_slot_model_params
 
     base = find_slot_state(adapter)
     if base is None:
-        return 0
+        return None
     rank = dist.get_rank() if dist.is_initialized() else 0
     shard = _shard_path(base, rank)
     payload = torch.load(shard, map_location="cpu", weights_only=True)
@@ -262,7 +264,7 @@ def swap_in(args, model, optimizer, adapter) -> int:
     from miles.backends.megatron_utils.multi_lora_scheduler import install_slot_scheduler
 
     restored_step = load_slot_state(args, model, optimizer, adapter)
-    if restored_step == 0:
+    if restored_step is None:
         from miles.backends.megatron_utils.multi_lora_utils import _register_adapter
 
         restored_step = _register_adapter(adapter, model)

@@ -58,3 +58,34 @@ class TestManifestGating:
     def test_no_save_dir_means_no_sidecar(self):
         adapter = SimpleNamespace(config=SimpleNamespace(save=None))
         assert find_slot_state(adapter) is None
+
+
+class TestSwapInSidecarSentinel:
+    """A sidecar that exists with optimizer step 0 (an adapter swapped out
+    before its first step) must be restored as-is — only a MISSING sidecar
+    (None) may fall back to the weights-only registration re-init."""
+
+    def _swap_in_with(self, monkeypatch, load_result):
+        import miles.backends.megatron_utils.multi_lora_checkpoint as mlc
+        import miles.backends.megatron_utils.multi_lora_optimizer as mlo
+        import miles.backends.megatron_utils.multi_lora_scheduler as mls
+        import miles.backends.megatron_utils.multi_lora_utils as mlu
+
+        calls = []
+        monkeypatch.setattr(mlc, "load_slot_state", lambda *a, **k: load_result)
+        monkeypatch.setattr(mlu, "_register_adapter", lambda *a, **k: calls.append("register") or 0)
+        monkeypatch.setattr(mlo, "reload_adapter_slot_model_params", lambda *a, **k: calls.append("reload"))
+        monkeypatch.setattr(mls, "install_slot_scheduler", lambda *a, **k: calls.append("scheduler"))
+        adapter = SimpleNamespace(name="a", slot=0)
+        step = mlc.swap_in(args=SimpleNamespace(), model=[], optimizer=None, adapter=adapter)
+        return step, calls
+
+    def test_step_zero_sidecar_is_not_reinitialized(self, monkeypatch):
+        step, calls = self._swap_in_with(monkeypatch, load_result=0)
+        assert step == 0
+        assert calls == ["scheduler"]  # no register, no master re-derivation
+
+    def test_missing_sidecar_falls_back_to_registration(self, monkeypatch):
+        step, calls = self._swap_in_with(monkeypatch, load_result=None)
+        assert step == 0
+        assert calls == ["register", "reload", "scheduler"]

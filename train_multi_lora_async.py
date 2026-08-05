@@ -97,8 +97,12 @@ async def main(args):
 
         # Slot oversubscription: the selection's bind plan was decided
         # by the controller inside generate; execute it collectively on every
-        # trainer rank before train, then commit the reservations. On failure
-        # the reservations roll back and no slot changed tenants durably.
+        # trainer rank before train, then commit the reservations. Bind
+        # failure is FAIL-STOP: abort_bind rolls the controller reservations
+        # back and the exception terminates the run — a half-executed swap
+        # leaves trainer-side slot state (weights/optimizer/loaded set) that
+        # no in-process rollback can trust, and restart rebuilds it from the
+        # checkpoints and sidecars instead.
         control_metadata = rollout_data.get("control_metadata") or {}
         if bind_plan := control_metadata.get("batch_plan"):
             txn_id = control_metadata["train_txn_id"]
@@ -106,6 +110,7 @@ async def main(args):
                 await actor_model.bind_adapters(bind_plan)
                 await get_multi_lora_controller().commit_bind.remote(txn_id)
             except Exception:
+                logger.error("bind_adapters failed; aborting the bind transaction and terminating (fail-stop)")
                 await get_multi_lora_controller().abort_bind.remote(txn_id)
                 raise
         await actor_model.train(rollout_id, rollout_data)

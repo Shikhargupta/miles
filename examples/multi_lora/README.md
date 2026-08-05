@@ -126,9 +126,26 @@ num_step: 400               # stop after N committed optimizer steps
 # optional: save, num_epoch, custom_rm_path, metadata, rollout_function_path
 ```
 
-An adapter's samples per optimizer step is `rollout_batch_size ×
-n_samples_per_prompt`; it must split evenly across the trainer's data-parallel
-ranks (standard configurations satisfy this by construction). On MoE models
-the grouped-GEMM adapter path supports up to `1024 / experts_per_rank`
-concurrent slots (a `torch._grouped_mm` limit; higher expert parallelism
-raises the ceiling).
+## Scheduling semantics and boundaries
+
+- **Oversubscription is queue-first.** A registration beyond the slot pool
+  waits unbound and binds when a slot frees (an earlier run retiring); it does
+  not evict a resident adapter at selection time. The transactional
+  bind-at-selection machinery exists, but reaching it requires the rollout
+  engines to serve more adapters than the trainer has slots — today
+  `--multi-lora-n-adapters` sizes both, so eviction stays dormant.
+- **Batch shape.** A selection ships whole per-adapter batches and trains them
+  as one step; nothing is trimmed and no dp-divisibility is required. The step
+  must still be splittable into `dp_size` micro-batches (with pipeline
+  parallelism disabled that is the only alignment): a selection whose sample
+  count is below `dp_size`, or whose samples individually exceed
+  `--max-tokens-per-gpu` in a way that leaves fewer splittable micro-batches
+  than ranks, fails the schedule with an explicit assertion.
+- **Agentic children.** One rollout execution may emit several sibling samples
+  (shared `rollout_id`); the loss and the per-adapter step normalization both
+  count executions, not samples. Size agentic runs with the per-adapter
+  `rollout_batch_size` — the per-execution trajectory count multiplies the
+  physical batch and is invisible to registration-time validation.
+- On MoE models the grouped-GEMM adapter path supports up to
+  `1024 / experts_per_rank` concurrent slots (a `torch._grouped_mm` limit;
+  higher expert parallelism raises the ceiling).
