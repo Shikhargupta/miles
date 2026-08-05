@@ -602,6 +602,51 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
+    def bind_adapters(self, bind_plan: list[dict]) -> None:
+        """Execute a selection's bind plan on this rank: swap-out evicted
+        tenants, swap-in selected tenants that aren't resident. Sorted by name
+        (the reconcile collective-ordering convention); every rank receives the
+        identical plan, so the collective load/save sequences agree."""
+        if not is_multi_lora_enabled(self.args) or not bind_plan:
+            return
+        needs_work = any(entry.get("evict") or entry["name"] not in self.loaded_adapters for entry in bind_plan)
+        if not needs_work:
+            return
+        from dataclasses import replace as dataclass_replace
+
+        from miles.backends.megatron_utils.multi_lora_checkpoint import swap_in, swap_out
+        from miles.ray.multi_lora.controller import get_multi_lora_controller
+
+        broadcast_buffer = [None]
+        if is_first_replica_megatron_main_rank():
+            broadcast_buffer[0] = ray.get(get_multi_lora_controller().snapshot.remote())
+        if dist.is_initialized():
+            dist.broadcast_object_list(broadcast_buffer, src=0, group=get_gloo_group())
+        snapshot = broadcast_buffer[0]
+        runs = {**snapshot["active"], **snapshot["pending"], **snapshot["retiring"]}
+
+        for entry in sorted(bind_plan, key=lambda e: e["name"]):
+            evict = entry.get("evict")
+            if evict is not None:
+                victim_name = evict[0] if isinstance(evict, (list, tuple)) else evict
+                victim = self.loaded_adapters.pop(victim_name, None)
+                if victim is not None:
+                    swap_out(self.args, self.model, self.optimizer, victim)
+                    self._multi_lora_pending_push.discard(victim_name)
+            name = entry["name"]
+            if name in self.loaded_adapters:
+                continue
+            run = runs.get(name)
+            if run is None:
+                logger.warning(f"[multilora] bind plan names unknown adapter '{name}'; skipped")
+                continue
+            run = dataclass_replace(run, slot=entry["bound_slot"])
+            swap_in(self.args, self.model, self.optimizer, run)
+            self.loaded_adapters[name] = run
+        self.weights_backuper.backup("actor")
+
+    @with_logs
+    @timer
     def reconcile_adapters(self) -> None:
         """Load adapters the controller wants served; retire deregistered ones, dropping their untrained tail."""
         if not is_multi_lora_enabled(self.args):
@@ -614,11 +659,20 @@ class MegatronTrainRayActor(TrainRayActor):
         if is_first_replica_megatron_main_rank():
             controller = get_multi_lora_controller()
             ray.get(controller.retire_adapters.remote())
+            # Bootstrap: queued unbound registrations take freed slots
+            # so this reconcile loads + pushes them (PENDING -> ACTIVE).
+            ray.get(controller.bootstrap_pending.remote())
             broadcast_buffer[0] = ray.get(controller.snapshot.remote())
         if dist.is_initialized():
             dist.broadcast_object_list(broadcast_buffer, src=0, group=get_gloo_group())
         snapshot = broadcast_buffer[0]
-        should_be_loaded = {**snapshot["active"], **snapshot["pending"], **snapshot["retiring"]}
+        should_be_loaded = {
+            name: run
+            for name, run in {**snapshot["active"], **snapshot["pending"], **snapshot["retiring"]}.items()
+            # Unbound tenants (slot oversubscription) have no trainer residency
+            # to reconcile; they bind at selection time or at bootstrap.
+            if run.slot is not None
+        }
         cleanup_names = set(snapshot["cleanup"])
 
         loaded_names = set(self.loaded_adapters)
@@ -752,6 +806,13 @@ class MegatronTrainRayActor(TrainRayActor):
             self.weight_updater.multi_lora_adapters, version_update_names = select_adapters_to_push(
                 self.loaded_adapters, self._multi_lora_pending_push, has_new_engines
             )
+            if not self.weight_updater.multi_lora_adapters:
+                # Nothing to push (no train step committed, no new engine): the
+                # base model is frozen under multi-LoRA, so pausing/flushing
+                # every engine here would stall serving for a no-op.
+                if process_groups_are_temporary:
+                    destroy_process_groups()
+                return
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
