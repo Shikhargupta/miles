@@ -96,19 +96,19 @@ class TestApiContractMatchesRealEngine:
     def test_signature_compat_for_every_shared_method(self) -> None:
         """Every method shared by mock and real engine declares the same parameter names, kinds and default-ness."""
         mock_cls = MockSGLangEngine.__ray_actor_class__
-        shared: set[str] = _public_methods(SGLangEngine) & _public_methods(MockSGLangEngine)
+        shared: set[str] = _public_methods(CommandActor) & _public_methods(MockSGLangEngine)
 
         mismatches: dict[str, dict[str, list[tuple[str, str, bool]]]] = {}
         for name in sorted(shared):
             mock_params = _comparable_params(getattr(mock_cls, name))
             if any(kind == "VAR_KEYWORD" for _name, kind, _has_default in mock_params):
                 continue
-            real_params = _comparable_params(getattr(SGLangEngine, name))
+            real_params = _comparable_params(getattr(CommandActor, name))
             if mock_params != real_params:
                 mismatches[name] = {"mock": mock_params, "real": real_params}
 
         assert not mismatches, (
-            f"MockSGLangEngine signatures drifted from SGLangEngine: {mismatches}. "
+            f"MockSGLangEngine signatures drifted from CommandActor: {mismatches}. "
             f"Update mock_sglang_engine.py so the mock accepts exactly what the real engine accepts."
         )
 

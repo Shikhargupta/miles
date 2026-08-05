@@ -55,7 +55,7 @@ class TestComputeEngineLaunchCmd:
     def test_every_plan_picks_a_fresh_random_seed(self):
         """Each launch leaves the seed to sglang, so two plans never share one."""
         args = make_engine_args()
-        seeds: set[int] = {parse_server_args_argv(shlex.split(_plan(args=args).cmd)[3:]).random_seed for _ in range(5)}
+        seeds: set[int] = {parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).random_seed for _ in range(5)}
         assert len(seeds) > 1
         assert args.seed not in seeds
 
