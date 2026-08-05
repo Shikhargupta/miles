@@ -15,14 +15,19 @@ export MILES_NS="miles-e2e-$USER-$(date +%m%d%H%M)"
 python charts/miles-workbench/cli.py install -n "$MILES_NS" -r workbench -f infra.yaml
 ```
 
-`install` creates the namespace if it is missing, checks that your identity may install the chart,
-installs it, then waits for the workbench pod to be Ready. A failure there is a real problem with the cluster or the
-namespace; fix what it reports. `charts/miles-workbench/README.md` lists the flags of every subcommand.
+`install` does four things in order, and a failure in any of them is a real problem with the cluster or
+the namespace, so fix what it reports:
+
+- creates the namespace if it is missing,
+- checks that your identity may install the chart,
+- installs it,
+- waits for the workbench pod to be Ready.
+
+`charts/miles-workbench/README.md` lists the flags of every subcommand.
 
 ## 2. Point the run at the code you want to test
 
-The image carries a copy of miles; a test of your branch needs your branch. Put the checkout under the
-shared storage root and name that sub-path in `infra.paths.repos` of your `infra.yaml`:
+The image carries a copy of miles, so a test of your branch needs your branch mounted over it:
 
 ```yaml
 infra:
@@ -30,9 +35,9 @@ infra:
     repos: {miles: alice/miles}
 ```
 
-Every pod of the run mounts it over the image's copy, so whatever that checkout has at HEAD is what the
-run executes. Do not copy anything into a pod: the run's pods are separate containers, and the mount is
-declarative.
+- Put the checkout under the shared storage root, and name that sub-path in `infra.paths.repos`.
+- Every pod of the run mounts it over the image's copy, so the checkout's HEAD is what the run executes.
+- Do not copy anything into a pod: the run's pods are separate containers, and the mount is declarative.
 
 ## 3. Launch
 
@@ -47,21 +52,26 @@ python charts/miles-workbench/cli.py exec -n "$MILES_NS" -r workbench -- bash -l
 ```
 
 `exec` shells into the release's pod; with no command it gives you `bash`. Every field of the launch
-script's `ExecuteTrainConfig` is an option of each of its subcommands, and also reads
-`MILES_SCRIPT_<FIELD_NAME_UPPER>` from the environment. Three of them are not optional here:
-`--namespace` is the namespace the release is installed into, `--run-id` names both the release and the
-run directory and has to be a valid kubernetes object name, and `--infra-values` (repeatable) is the
-per-cluster file the pods are rendered from. Relaunching the same run id upgrades that run in place,
-which is how a run grows or shrinks, so do not let it be generated per launch. `--cluster-backend` is a
-config option, and the launcher refuses a config and a train argument that disagree; when they agree it
-appends `--cluster-backend kubernetes` to the argv it renders into the pods, because that flag is also
-what the orchestrator inside the pod dispatches on.
+script's `ExecuteTrainConfig` is an option of each of its subcommands, and each also reads
+`MILES_SCRIPT_<FIELD_NAME_UPPER>` from the environment. Required here:
 
-The remaining Kubernetes-only options are optional: `--shared-root` asserts the storage root derived
-from the infra values instead of trusting it, `--stage-to-local source:destination` (repeatable) copies
-inputs onto the node-local disk once per node and `--node-local-root` is that disk's mount path,
-`--ci-run` first uninstalls leftover CI releases in the namespace, and `--force` applies a relaunch that
-changes more than a fleet's replica count, accepting that the changed pods restart.
+- `--namespace`: the namespace the release is installed into.
+- `--run-id`: names both the release and the run directory, so it has to be a valid kubernetes object
+  name. Relaunching the same run id upgrades that run in place, which is how a run grows or shrinks, so
+  do not generate it per launch.
+- `--infra-values` (repeatable): the per-cluster file the pods are rendered from.
+- `--cluster-backend kubernetes`: a config option. The launcher refuses a config and a train argument
+  that disagree, and when they agree it appends the flag to the argv it renders into the pods, because
+  the orchestrator inside the pod dispatches on it too.
+
+Optional, Kubernetes-only:
+
+- `--shared-root`: assert the storage root derived from the infra values instead of trusting it.
+- `--stage-to-local source:destination` (repeatable): copy inputs onto the node-local disk once per node.
+- `--node-local-root`: that disk's mount path.
+- `--ci-run`: first uninstall leftover CI releases in the namespace.
+- `--force`: apply a relaunch that changes more than a fleet's replica count, accepting that the changed
+  pods restart.
 
 The launcher prints a one-line pod summary until the run settles, then follows the orchestrator's log.
 `ctrl+c` stops watching, not the run. While it starts, read the summary:
@@ -79,7 +89,8 @@ python charts/miles-workbench/cli.py exec -n "$MILES_NS" -r workbench -- \
   cat "$MILES_RUN_DIR/state/orchestrator.exit"
 ```
 
-The run's outcome is that exit file, and the launcher reports it when it stops following.
+- The run's outcome is that exit file.
+- The launcher reports it too, when it stops following.
 
 ## 5. When it fails
 
@@ -99,6 +110,7 @@ python charts/miles-workbench/cli.py uninstall -n "$MILES_NS" -r workbench
 kubectl delete namespace "$MILES_NS"
 ```
 
-Uninstall removes the release only. Deleting the namespace is what frees the gpus, so confirm it is gone
-rather than stuck Terminating. Delete only the namespace `$MILES_NS` names — the suffix below is unique per
-invocation, so never reuse a namespace someone else exported.
+- Uninstall removes the release only.
+- Deleting the namespace is what frees the gpus, so confirm it is gone rather than stuck Terminating.
+- Delete only the namespace `$MILES_NS` names: its suffix is unique per invocation, so never reuse a
+  namespace someone else exported.
