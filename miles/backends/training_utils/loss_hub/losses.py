@@ -64,6 +64,8 @@ def policy_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+    *,
+    allow_training_logprob_reuse: bool = False,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute policy loss (PPO/GSPO) and metrics.
 
@@ -76,12 +78,13 @@ def policy_loss_function(
     Args:
         args: Configuration controlling advantage estimator, clipping thresholds,
             entropy/KL coefficients, and TIS settings.
-        batch: Mini-batch containing "advantages", "unconcat_tokens",
-            "response_lengths", "total_lengths", and "loss_masks". "log_probs"
-            contains the old policy unless `args.skip_actor_logprobs_forward` is
-            enabled; "ref_log_probs" and "rollout_log_probs" are optional.
+        batch: Mini-batch containing "advantages", "log_probs" (old policy),
+            "unconcat_tokens", "response_lengths", "total_lengths", "loss_masks",
+            and optionally "ref_log_probs" and "rollout_log_probs".
         logits: Policy logits with shape `[1, T, V]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
+        allow_training_logprob_reuse: Derive old policy log-probs by detaching
+            current log-probs when the actor explicitly omitted that input.
 
     Returns:
         Tuple of `(loss, metrics)` where `loss` is a scalar tensor and `metrics`
@@ -93,7 +96,6 @@ def policy_loss_function(
     parallel_state = get_parallel_state()
     advantages_list = [advantage.detach() for advantage in batch["advantages"]]
     advantages = torch.cat(advantages_list, dim=0)
-    skip_actor_logprobs_forward = getattr(args, "skip_actor_logprobs_forward", False)
     scored_old_log_probs = (
         [log_prob.detach() for log_prob in batch["log_probs"]] if batch.get("log_probs") is not None else None
     )
@@ -105,7 +107,9 @@ def policy_loss_function(
     reference_log_probs = (
         [log_prob.detach() for log_prob in batch["ref_log_probs"]] if batch.get("ref_log_probs") is not None else None
     )
-    if skip_actor_logprobs_forward:
+    if allow_training_logprob_reuse:
+        if args.use_rollout_logprobs or scored_old_log_probs is not None:
+            raise ValueError("training log-prob reuse requires no separate old-policy log-probs")
         old_log_probs = None
     elif args.use_rollout_logprobs:
         assert (
@@ -133,7 +137,7 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
-    if skip_actor_logprobs_forward:
+    if allow_training_logprob_reuse:
         old_log_probs = [log_prob.detach() for log_prob in log_probs]
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
@@ -150,7 +154,7 @@ def policy_loss_function(
                 log_probs, total_lengths, response_lengths, strict=False
             )
         ]
-        if skip_actor_logprobs_forward:
+        if allow_training_logprob_reuse:
             full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
         else:
             full_old_log_probs = [
