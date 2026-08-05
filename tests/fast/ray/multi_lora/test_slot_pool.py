@@ -13,23 +13,16 @@ def tenant(name: str, reg: str = "r1") -> tuple[str, str]:
 
 
 class TestImmediateTenancy:
-    def test_binds_lowest_free_slot(self):
-        pool = SlotPool(3)
+    def test_bind_release_lifecycle(self):
+        # Lowest free slot first; a full pool queues (never evicts: bootstrap
+        # must not displace a resident tenant); release returns the slot.
+        pool = SlotPool(2)
         assert pool.bind_immediately(tenant("a")) == 0
         assert pool.bind_immediately(tenant("b")) == 1
-        assert pool.free_slot_ids() == {2}
-
-    def test_full_pool_returns_none_and_never_evicts(self):
-        pool = SlotPool(1)
-        assert pool.bind_immediately(tenant("a")) == 0
-        # Registration/bootstrap must queue, not displace a resident tenant.
-        assert pool.bind_immediately(tenant("b")) is None
-
-    def test_release_returns_slot_to_free_pool(self):
-        pool = SlotPool(2)
-        pool.bind_immediately(tenant("a"))
+        assert pool.free_slot_ids() == set()
+        assert pool.bind_immediately(tenant("c")) is None  # full: queue, don't evict
         assert pool.release(tenant("a")) == 0
-        assert pool.free_slot_ids() == {0, 1}
+        assert pool.free_slot_ids() == {0}
         assert pool.release(tenant("never-bound")) is None
 
 
@@ -73,30 +66,23 @@ class TestPlanBind:
         assert tenant("a") in plan1
         assert plan2 == {}  # reserved by txn1, invisible to txn2
 
-    def test_reserved_keep_warm_slot_defers_its_tenant(self):
-        pool = SlotPool(2)
-        pool.bind_immediately(tenant("a"))
-        pool.plan_bind("txn1", [tenant("b"), tenant("a")])  # "b" may evict... nothing: free slot 1
-        # a's own slot got reserved for a; a second txn selecting "a" defers.
-        assert pool.plan_bind("txn2", [tenant("a")]) == {}
-
-    def test_admission_priority_follows_selection_order(self):
-        # When the pool is short, the caller's round-robin order decides who
-        # is omitted — not the tenants' alphabetical order.
+    def test_admission_order_and_keep_warm_priority(self):
+        # Short pool: the caller's round-robin order decides omission — not
+        # alphabetical order.
         pool = SlotPool(1)
         plan = pool.plan_bind("txn1", [tenant("z"), tenant("a")])
         assert tenant("z") in plan
         assert tenant("a") not in plan
 
-    def test_co_selected_resident_is_never_its_plans_eviction_victim(self):
-        # Keep-warm hits reserve first: a resident tenant selected in the same
-        # plan must keep its slot rather than be evicted for an earlier-listed
-        # newcomer (churn would swap it out and back for no reason).
+        # Keep-warm hits reserve BEFORE placement: a co-selected resident must
+        # keep its slot rather than be evicted for an earlier-listed newcomer,
+        # and its reserved slot defers any second transaction.
         pool = SlotPool(1)
         pool.bind_immediately(tenant("a"))
         plan = pool.plan_bind("txn1", [tenant("b"), tenant("a")])
         assert plan[tenant("a")] == {"slot": 0, "evict": None, "txn_id": "txn1"}
         assert tenant("b") not in plan
+        assert pool.plan_bind("txn2", [tenant("a")]) == {}  # reserved: defers
 
 
 class TestCommitAbort:

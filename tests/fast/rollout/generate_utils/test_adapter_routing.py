@@ -30,6 +30,15 @@ def test_routing_is_registration_scoped():
     assert payload["rid"].startswith(rid_prefix("a", "reg1"))
     assert payload["extra_key"] == cache_extra_key("a", "reg1", 3)
 
+    # Adapter-less samples fall back to the fixed single-LoRA name — and only
+    # when the rollout side participates (--lora-train-only opts out).
+    payload = {}
+    apply_adapter_routing(base_args(lora_train_only=True), payload, Sample(prompt="p"))
+    assert "lora_path" not in payload
+    payload = {}
+    apply_adapter_routing(base_args(), payload, Sample(prompt="p"))
+    assert payload["lora_path"] == LORA_ADAPTER_NAME
+
 
 def test_serving_version_override_renames_the_kv_namespace():
     # The live-upsert path routes under the adapter's CURRENT published
@@ -49,12 +58,3 @@ def test_two_registrations_of_one_name_never_share_identity():
     assert first["lora_path"] != second["lora_path"]
     assert first["extra_key"] != second["extra_key"]
     assert first["rid"] != second["rid"]
-
-
-def test_adapterless_sample_uses_single_lora_only_when_rollout_enabled():
-    payload: dict = {}
-    apply_adapter_routing(base_args(lora_train_only=True), payload, Sample(prompt="p"))
-    assert "lora_path" not in payload
-    payload = {}
-    apply_adapter_routing(base_args(), payload, Sample(prompt="p"))
-    assert payload["lora_path"] == LORA_ADAPTER_NAME

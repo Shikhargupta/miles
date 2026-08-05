@@ -240,20 +240,6 @@ class TestChildAbortScoping:
     construction, and the end-of-collection abort targets only that child's
     own rid namespace."""
 
-    def test_child_args_carry_registration_identity(self, monkeypatch):
-        monkeypatch.setattr(
-            rollout_fn_module,
-            "RolloutDataSourceWithBuffer",
-            lambda child_args: SimpleNamespace(args=child_args),
-        )
-        config = AdapterRunConfig(data="/dev/null", rollout_batch_size=2, n_samples_per_prompt=2)
-        run = AdapterRun(name="a", config=config, slot=0, version=1, registration_id="reg1")
-        args = SimpleNamespace(
-            input_key="q", label_key="l", metadata_key=None, save=None, load=None, n_samples_per_prompt=2
-        )
-        source = rollout_fn_module._AdapterDataSource(args, run)
-        assert source.args.multi_lora_adapter_identity == ("a", "reg1")
-
     def test_end_of_collection_abort_targets_only_own_namespace(self, monkeypatch):
         from miles.rollout.inference_rollout import inference_rollout_train as irt
         from miles.utils.multi_lora import rid_prefix
@@ -282,3 +268,17 @@ class TestChildAbortScoping:
         asyncio.run(irt.abort(state, set(), rollout_id=0))
 
         assert posted == [("http://engine:1/abort_request", {"rid": rid_prefix("a", "reg1"), "prefix": True})]
+
+        # The identity the abort keys on is stamped at data-source construction.
+        monkeypatch.setattr(
+            rollout_fn_module,
+            "RolloutDataSourceWithBuffer",
+            lambda child_args: SimpleNamespace(args=child_args),
+        )
+        config = AdapterRunConfig(data="/dev/null", rollout_batch_size=2, n_samples_per_prompt=2)
+        run = AdapterRun(name="a", config=config, slot=0, version=1, registration_id="reg1")
+        source_args = SimpleNamespace(
+            input_key="q", label_key="l", metadata_key=None, save=None, load=None, n_samples_per_prompt=2
+        )
+        source = rollout_fn_module._AdapterDataSource(source_args, run)
+        assert source.args.multi_lora_adapter_identity == ("a", "reg1")
