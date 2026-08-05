@@ -103,9 +103,11 @@ batch, a step that draws an unusually slow task can take several times that.
 `--router-external-host` is the address Harbor sandboxes use to call the Miles
 session server. It must resolve and route from the agent-server machine.
 `--miles-host-ip 0.0.0.0` is useful when those services must accept connections
-forwarded from another host. The only port that has to be reachable end to end is
-the session server port, which the launcher pins with `--session-server-port
-30000`. The SGLang router is no longer reachable on a fixed port: Miles always
+forwarded from another host. The only ports that have to be reachable end to end
+are the session server ports; they are allocated by the worker provider and
+embedded in the session URL handed to each sandbox, so the agent-server machine
+must be able to reach the trainer host on arbitrary ports rather than one fixed
+port. The SGLang router is no longer reachable on a fixed port: Miles always
 starts its own router and picks a free port at random, and only the session
 server talks to it, from inside the trainer host. Tailscale is one option when
 the machines are on different networks.
