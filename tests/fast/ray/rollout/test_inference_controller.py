@@ -9,10 +9,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
-from miles.ray.rollout.inference_controller import (
-    InferenceController,
-    _compute_server_cell_meta_from_info,
-)
+from miles.ray.rollout.inference_controller import InferenceController, _compute_server_cell_meta_from_info
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names, compute_router_spec_name, specs_inference_engine
