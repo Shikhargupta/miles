@@ -13,7 +13,7 @@ import httpx
 from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
 from miles.utils.adapter_config import AdapterRunConfig
 from miles.utils.http_utils import router_worker_base_urls
-from miles.utils.multi_lora import min_groups_per_dp_split, rid_prefix
+from miles.utils.multi_lora import rid_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +108,6 @@ class MultiLoRABackend:
                     f"(rollout_batch_size {rollout_batch_size} x n_samples_per_prompt {n_samples_per_prompt}), "
                     f"exceeding --multi-lora-max-adapter-global-batch-size {max_batch}"
                 )
-        if (dp_size := getattr(self.args, "multi_lora_dp_size", None)) is not None:
-            try:
-                group_multiple = min_groups_per_dp_split(n_samples_per_prompt, dp_size)
-            except ValueError as e:
-                raise ValueError(f"Adapter '{name}': {e}") from None
-            if rollout_batch_size % group_multiple != 0:
-                raise ValueError(
-                    f"Adapter '{name}' rollout_batch_size {rollout_batch_size} must be a multiple of "
-                    f"its min_groups_per_dp_split ({group_multiple} at dp_size={dp_size}), so the "
-                    f"adapter batch can complete from evenly-splitting takes"
-                )
-
         save = Path(config.save) if config.save is not None else None
         if save is None:
             if getattr(self.args, "save", None) is None:

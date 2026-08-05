@@ -2,11 +2,13 @@
 requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
 
 import logging
+import math
 from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
 
 import torch
+import torch.distributed as dist
 from megatron.core.optimizer import get_megatron_optimizer
 from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32, get_grad_norm_fp32
 from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOptimizer
@@ -167,24 +169,48 @@ def zero_adapter_slot_grads(model, slot: int) -> None:
             main_param.grad = None
 
 
+def _found_inf_anywhere(found_inf: bool) -> bool:
+    """The veto must agree on every rank, or the collective step order diverges."""
+    if not dist.is_initialized():
+        return found_inf
+    flag = torch.tensor([1.0 if found_inf else 0.0], device=torch.cuda.current_device())
+    dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+    return flag.item() > 0
+
+
 def step_adapter_slots(
     optimizer,
     model,
-    step_batch_sizes: dict[int, int],
+    step_counts: dict[int, int],
     clip_grad: float,
-) -> dict[int, float]:
-    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients;
-    scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
-    grad_norms: dict[int, float] = {}
+    *,
+    normalize_by_count: bool = True,
+) -> tuple[dict[int, float], set[int]]:
+    """Step exactly the slots in ``step_counts`` (slot -> ACTUAL rollout-execution
+    count: the loss aggregates each execution's samples to one unit, so the
+    per-adapter mean divides by executions, not samples), retaining all other
+    slots' gradients. Returns (grad norm per stepped slot,
+    slots VETOED by the found-inf/NaN gate). A vetoed slot is not stepped, its
+    grads are zeroed so the poison cannot leak into the next batch, and the
+    caller must not advance its clocks nor schedule its publish — the
+    train-commit precondition.
 
-    for slot, batch_size in step_batch_sizes.items():
+    ``normalize_by_count=False`` is the future explicit-step (Tinker) mode:
+    the client owns normalization, the sum is applied as-is.
+    """
+    grad_norms: dict[int, float] = {}
+    vetoed: set[int] = set()
+
+    for slot in sorted(step_counts):
         children = _slot_children(optimizer, slot)
-        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
+        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the per-execution mean.
+        found_inf = False
         for child in children:
-            child.prepare_grads()
-            for main_param in child.get_parameters():
-                if main_param.grad is not None:
-                    main_param.grad.mul_(1.0 / batch_size)
+            found_inf = bool(child.prepare_grads()) or found_inf
+            if normalize_by_count:
+                for main_param in child.get_parameters():
+                    if main_param.grad is not None:
+                        main_param.grad.mul_(1.0 / step_counts[slot])
 
         # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
         grads_for_norm = []
@@ -193,6 +219,19 @@ def step_adapter_slots(
             grads_for_norm += child.get_main_grads_for_grad_norm()
             slot_params += child.get_parameters()
         slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
+
+        # The gate the single-adapter path has always had (`assert update_successful`)
+        # and this path silently lacked: a non-finite step would otherwise be
+        # applied AND live-published to every engine.
+        if _found_inf_anywhere(found_inf) or not math.isfinite(float(slot_norm)):
+            logger.error(
+                f"[multilora] slot {slot}: non-finite gradients "
+                f"(found_inf={found_inf}, grad_norm={float(slot_norm)}); step vetoed, grads cleared"
+            )
+            vetoed.add(slot)
+            zero_adapter_slot_grads(model, slot)
+            continue
+
         if clip_grad > 0.0 and slot_params:
             clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
         grad_norms[slot] = float(slot_norm)
@@ -202,7 +241,7 @@ def step_adapter_slots(
 
         zero_adapter_slot_grads(model, slot)
 
-    if step_batch_sizes:
+    if grad_norms:
         optimizer.allgather_params()
 
-    return grad_norms
+    return grad_norms, vetoed

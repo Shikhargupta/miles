@@ -454,13 +454,18 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     if is_multi_lora_enabled(args):
         # Never abort_all under multi-LoRA: the engines are shared by every
         # tenant, and this end-of-rollout cleanup must not kill other adapters'
-        # in-flight requests. Abort each live registration's rid namespace.
-        from miles.rollout.multi_lora.data_source import fetch_snapshot, sampleable
+        # in-flight requests. Abort this child's own rid namespace when the
+        # identity is known; fall back to every live registration otherwise.
+        identity = getattr(args, "multi_lora_adapter_identity", None)
+        if identity is not None:
+            payloads = [{"rid": rid_prefix(*identity), "prefix": True}]
+        else:
+            from miles.rollout.multi_lora.data_source import fetch_snapshot, sampleable
 
-        payloads = [
-            {"rid": rid_prefix(name, run.registration_id), "prefix": True}
-            for name, run in sampleable(fetch_snapshot()).items()
-        ]
+            payloads = [
+                {"rid": rid_prefix(name, run.registration_id), "prefix": True}
+                for name, run in sampleable(fetch_snapshot()).items()
+            ]
     else:
         payloads = [{"abort_all": True}]
     abort_tasks = [post(f"{url}/abort_request", payload) for url in urls for payload in payloads]

@@ -17,7 +17,8 @@ class AdapterRef:
     time.
 
     ``slot`` is TRANSITIONAL: the trainer-side sample->slot mapping still reads
-    it; serving routing must never use it.
+    it until the bind-plan (BatchPlan) path lands; serving routing must never
+    use it.
     """
 
     name: str
