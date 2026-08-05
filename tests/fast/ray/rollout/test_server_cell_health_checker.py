@@ -15,7 +15,7 @@ from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import (
-    ActivenessState,
+    ActiveAndEpoch,
     ActivenessTracker,
     NoopHealthChecker,
     SimpleHealthChecker,
@@ -49,7 +49,7 @@ def _make_cell(*, ft_components: list[str], global_activeness: bool = True) -> S
             args=make_args(ft_components=ft_components),
             meta=_make_meta(),
             router_api_client=MagicMock(),
-            global_health_checker_activeness=lambda: ActivenessState(active=global_activeness, epoch=0),
+            global_health_checker_activeness=lambda: ActiveAndEpoch(active=global_activeness, epoch=0),
         )
     )
 
@@ -185,15 +185,15 @@ class TestRolloutCellHealthCheckerPause:
         checker.stop()
 
 
-class TestRolloutCellActivenessState:
-    async def test_reading_the_activeness_state_twice_returns_the_very_same_state(self):
+class TestRolloutCellActiveAndEpoch:
+    async def test_reading_the_active_and_epoch_twice_returns_the_very_same_value(self):
         """A pull that samples into a tracker of its own degrades the epoch back into a boolean read."""
         _, cell = await _make_controller_with_serving_cell()
 
-        first = cell._get_health_checker_activeness_state()
-        second = cell._get_health_checker_activeness_state()
+        first = cell._get_health_checker_active_and_epoch()
+        second = cell._get_health_checker_active_and_epoch()
 
-        assert first == second == ActivenessState(active=True, epoch=0)
+        assert first == second == ActiveAndEpoch(active=True, epoch=0)
 
     async def test_a_pause_resume_window_completed_between_two_polls_resets_the_failure_counter(self):
         """The controller opens and closes the whole window while the loop sleeps, so only the epoch reveals it."""
@@ -275,7 +275,7 @@ def _make_fake_clock_checker(
     checker = SimpleHealthChecker(
         name=f"rollout-cell-{cell.meta.cell_id}",
         check_fn=check_fn or _failing_check,
-        get_activeness=cell._get_health_checker_activeness_state,
+        get_activeness=cell._get_health_checker_active_and_epoch,
         on_result=on_result,
         config=SimpleHealthCheckerConfig(interval=10.0, timeout=5.0, first_wait=100.0, failure_threshold=3),
         clock=clock,

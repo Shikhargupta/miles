@@ -21,7 +21,7 @@ from miles.ray.rollout.cell_state import (
 )
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
-    ActivenessState,
+    ActiveAndEpoch,
     BaseHealthChecker,
     NoopHealthChecker,
     SimpleHealthChecker,
@@ -55,7 +55,7 @@ class ServerCell:
     args: Any
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
-    global_health_checker_activeness: Callable[[], ActivenessState] = lambda: ActivenessState(active=True, epoch=0)
+    global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
 
@@ -64,14 +64,14 @@ class ServerCell:
             args=self.args,
             name=f"rollout-cell-{self.meta.cell_id}",
             get_api_client=lambda: self.api_client,
-            get_activeness=self._get_health_checker_activeness_state,
+            get_activeness=self._get_health_checker_active_and_epoch,
         )
         self._health_checker.start()
 
-    def _get_health_checker_activeness_state(self) -> ActivenessState:
-        controller_activeness = self.global_health_checker_activeness()
+    def _get_health_checker_active_and_epoch(self) -> ActiveAndEpoch:
+        controller_active_and_epoch = self.global_health_checker_activeness()
         cell_active = isinstance(self._state, (StatePendingWeights, StateServing))
-        return ActivenessState(active=cell_active and controller_activeness.active, epoch=controller_activeness.epoch)
+        return ActiveAndEpoch(active=cell_active and controller_active_and_epoch.active, epoch=controller_active_and_epoch.epoch)
 
     def __del__(self) -> None:
         assert isinstance(self._state, StateDisposed), (
@@ -81,7 +81,7 @@ class ServerCell:
 
     @property
     def _health_checker_activeness(self) -> bool:
-        return self._get_health_checker_activeness_state().active
+        return self._get_health_checker_active_and_epoch().active
 
     def cell_status(self) -> CellStatus:
         workers_hash = self.meta.workers_hash
@@ -188,9 +188,7 @@ class ServerCell:
 
     async def mark_weights_ready(self) -> None:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
-
         await self._register_with_router(addr_info=self._state.addr_info)
-
         self._mark_serving()
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
@@ -277,7 +275,7 @@ def create_rollout_cell_health_checker(
     args: Any,
     name: str,
     get_api_client: Callable[[], SGLangApiClient],
-    get_activeness: Callable[[], ActivenessState],
+    get_activeness: Callable[[], ActiveAndEpoch],
 ) -> BaseHealthChecker:
     if "rollout" not in args.ft_components:
         return NoopHealthChecker()

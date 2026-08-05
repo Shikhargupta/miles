@@ -8,7 +8,7 @@ from miles.ray.train.cell_state import (
     StateAllocatedUninitialized,
 )
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
-from miles.utils.ft_utils.health_checker import ActivenessState, SimpleHealthChecker, SimpleHealthCheckerConfig
+from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthChecker, SimpleHealthCheckerConfig
 
 if TYPE_CHECKING:
     from miles.ray.train.cell import TrainerCell
@@ -18,7 +18,7 @@ def create_trainer_cell_health_checker(
     *,
     cell: "TrainerCell",
     config: SimpleHealthCheckerConfig,
-    get_activeness: Callable[[], ActivenessState],
+    get_activeness: Callable[[], ActiveAndEpoch],
 ) -> SimpleHealthChecker:
     async def _check() -> None:
         # Cell health is liveness, not training progress: the heartbeat RPC runs on

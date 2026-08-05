@@ -73,22 +73,22 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
         )
 
 
-class ActivenessState(NamedTuple):
+class ActiveAndEpoch(NamedTuple):
     active: bool
     epoch: int
 
 
 class ActivenessTracker:
     def __init__(self, *, active: bool) -> None:
-        self._state = ActivenessState(active=active, epoch=0)
+        self._state = ActiveAndEpoch(active=active, epoch=0)
 
-    def get(self) -> ActivenessState:
+    def get(self) -> ActiveAndEpoch:
         return self._state
 
     def bump_active(self, active: bool) -> None:
         if active == self._state.active:
             return
-        self._state = ActivenessState(active=active, epoch=self._state.epoch + 1)
+        self._state = ActiveAndEpoch(active=active, epoch=self._state.epoch + 1)
 
 
 class BaseHealthChecker(abc.ABC):
@@ -115,7 +115,7 @@ class SimpleHealthChecker(BaseHealthChecker):
         *,
         name: str,
         check_fn: Callable[[], Coroutine[Any, Any, None]],
-        get_activeness: Callable[[], ActivenessState],
+        get_activeness: Callable[[], ActiveAndEpoch],
         on_result: Callable[[bool], None] | None = None,
         config: SimpleHealthCheckerConfig,
         clock: Clock | None = None,
@@ -128,7 +128,7 @@ class SimpleHealthChecker(BaseHealthChecker):
         self._clock = clock or RealClock()
 
         self._status = TriState.UNKNOWN
-        self._activeness = ActivenessState(active=False, epoch=0)
+        self._active_and_epoch = ActiveAndEpoch(active=False, epoch=0)
         self._need_first_wait: bool = True
         self._consecutive_failures: int = 0
         self._task: asyncio.Task[None] | None = None
@@ -166,10 +166,10 @@ class SimpleHealthChecker(BaseHealthChecker):
 
     async def _loop(self) -> None:
         while True:
-            activeness = self._get_activeness()
-            active = activeness.active
-            if activeness != self._activeness:
-                self._activeness = activeness
+            active_and_epoch = self._get_activeness()
+            active = active_and_epoch.active
+            if active_and_epoch != self._active_and_epoch:
+                self._active_and_epoch = active_and_epoch
                 if active:
                     self._on_resumed()
                 else:
@@ -190,8 +190,8 @@ class SimpleHealthChecker(BaseHealthChecker):
 
             if active:
                 success = await self._run_probe()
-                activeness_now = self._get_activeness()
-                if not activeness_now.active or activeness_now.epoch != activeness.epoch:
+                active_and_epoch_now = self._get_activeness()
+                if not active_and_epoch_now.active or active_and_epoch_now.epoch != active_and_epoch.epoch:
                     log_structured(logger.info, tag="ft", op="health", phase="probe_discarded", name=self._name)
                 else:
                     self._publish_result(success=success)

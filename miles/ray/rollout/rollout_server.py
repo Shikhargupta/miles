@@ -10,7 +10,7 @@ from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApi
 from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
-from miles.utils.ft_utils.health_checker import ActivenessState
+from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.retry_utils import retry_until_deadline
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
 
 async def create_rollout_servers(
-    args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActivenessState]
+    args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActiveAndEpoch]
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
     assert args.sglang_router_ip is None and args.sglang_router_port is None, (
@@ -75,8 +75,8 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
-    global_health_checker_activeness: Callable[[], ActivenessState] = lock_exempt(
-        lambda: ActivenessState(active=True, epoch=0)
+    global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lock_exempt(
+        lambda: ActiveAndEpoch(active=True, epoch=0)
     )
     expected_num_cells: int = 0
 

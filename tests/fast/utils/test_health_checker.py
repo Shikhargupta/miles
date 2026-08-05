@@ -2,7 +2,7 @@ import asyncio
 
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import (
-    ActivenessState,
+    ActiveAndEpoch,
     ActivenessTracker,
     NoopHealthChecker,
     SimpleHealthChecker,
@@ -62,7 +62,7 @@ class _Activeness:
     def active(self, value: bool) -> None:
         self._tracker.bump_active(value)
 
-    def __call__(self) -> ActivenessState:
+    def __call__(self) -> ActiveAndEpoch:
         return self._tracker.get()
 
 
