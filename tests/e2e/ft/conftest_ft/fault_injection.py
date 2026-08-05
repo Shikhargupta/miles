@@ -1,11 +1,13 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import dataclasses
 import enum
 import logging
 import random
 import threading
 import time
 from collections.abc import Callable
+from typing import Literal
 
 import requests
 
@@ -70,63 +72,101 @@ def compute_observed_cell_state(cell: dict) -> ObservedCellState:
     return ObservedCellState.SERVING if serving else ObservedCellState.RUNNING_NOT_SERVING
 
 
-class _RecoveryStage(enum.Enum):
-    AWAITING_RELAUNCH = enum.auto()
-    AWAITING_SERVING = enum.auto()
+@dataclasses.dataclass(frozen=True)
+class _CellEvent:
+    kind: Literal["injected", "observed"]
+    state: ObservedCellState | None = None
+
+
+@dataclasses.dataclass
+class _CellInfo:
+    cell_type: str | None = None
+    events: list[_CellEvent] = dataclasses.field(default_factory=list)
 
 
 class RecoveryWitness:
     """Pairs every accepted injection with one completed relaunch-and-serve cycle of the same cell."""
 
     def __init__(self) -> None:
-        self.states_of_cell_name: dict[str, list[ObservedCellState]] = {}
-        self._cell_type_of_name: dict[str, str] = {}
-        self._num_injections_of_cell_name: dict[str, int] = {}
-        self._num_recoveries_of_cell_name: dict[str, int] = {}
-        self._stages_of_cell_name: dict[str, list[_RecoveryStage]] = {}
+        self._info_of_cell_name: dict[str, _CellInfo] = {}
 
     def note_injected(self, cell_name: str) -> None:
-        self._num_injections_of_cell_name[cell_name] = self._num_injections_of_cell_name.get(cell_name, 0) + 1
-        self._stages_of_cell_name.setdefault(cell_name, []).append(_RecoveryStage.AWAITING_RELAUNCH)
+        self._info(cell_name).events.append(_CellEvent(kind="injected"))
 
     def observe(self, cells: list[dict]) -> None:
         for cell in cells:
-            name = cell["metadata"]["name"]
-            self._cell_type_of_name[name] = _cell_type_of(cell)
-            state = compute_observed_cell_state(cell)
-            states = self.states_of_cell_name.setdefault(name, [])
-            if not states or states[-1] != state:
-                states.append(state)
-            self._advance(cell_name=name, state=state)
+            info = self._info(cell["metadata"]["name"])
+            info.cell_type = _cell_type_of(cell)
+            info.events.append(_CellEvent(kind="observed", state=compute_observed_cell_state(cell)))
+
+    @property
+    def states_of_cell_name(self) -> dict[str, list[ObservedCellState]]:
+        return {
+            name: states
+            for name, info in self._info_of_cell_name.items()
+            if (states := _compute_distinct_states(info.events))
+        }
 
     def num_injections(self, *, cell_type: str | None = None) -> int:
-        return self._total(self._num_injections_of_cell_name, cell_type=cell_type)
+        return sum(
+            sum(1 for event in info.events if event.kind == "injected")
+            for info in self._matching_infos(cell_type=cell_type)
+        )
 
     def num_completed_recoveries(self, *, cell_type: str | None = None) -> int:
-        return self._total(self._num_recoveries_of_cell_name, cell_type=cell_type)
+        return sum(_compute_recovery_tally(info.events).num_completed for info in self._matching_infos(cell_type=cell_type))
 
     def cells_with_unfinished_recovery(self, *, cell_type: str | None = None) -> dict[str, int]:
         return {
-            name: len(stages)
-            for name, stages in self._stages_of_cell_name.items()
-            if stages and self._matches(name, cell_type)
+            name: tally.num_unfinished
+            for name, info in self._info_of_cell_name.items()
+            if (cell_type is None or info.cell_type == cell_type)
+            and (tally := _compute_recovery_tally(info.events)).num_unfinished
         }
 
-    def _advance(self, *, cell_name: str, state: ObservedCellState) -> None:
-        stages = self._stages_of_cell_name.get(cell_name)
-        if not stages:
-            return
-        if stages[0] is _RecoveryStage.AWAITING_RELAUNCH and state in _RELAUNCH_STATES:
-            stages[0] = _RecoveryStage.AWAITING_SERVING
-        elif stages[0] is _RecoveryStage.AWAITING_SERVING and state is ObservedCellState.SERVING:
-            stages.pop(0)
-            self._num_recoveries_of_cell_name[cell_name] = self._num_recoveries_of_cell_name.get(cell_name, 0) + 1
+    def _info(self, cell_name: str) -> _CellInfo:
+        return self._info_of_cell_name.setdefault(cell_name, _CellInfo())
 
-    def _total(self, counts_of_cell_name: dict[str, int], *, cell_type: str | None) -> int:
-        return sum(count for name, count in counts_of_cell_name.items() if self._matches(name, cell_type))
+    def _matching_infos(self, *, cell_type: str | None) -> list[_CellInfo]:
+        return [
+            info for info in self._info_of_cell_name.values() if cell_type is None or info.cell_type == cell_type
+        ]
 
-    def _matches(self, cell_name: str, cell_type: str | None) -> bool:
-        return cell_type is None or self._cell_type_of_name.get(cell_name) == cell_type
+
+@dataclasses.dataclass(frozen=True)
+class _RecoveryTally:
+    num_completed: int
+    num_unfinished: int
+
+
+class _RecoveryStage(enum.Enum):
+    AWAITING_RELAUNCH = enum.auto()
+    AWAITING_SERVING = enum.auto()
+
+
+def _compute_recovery_tally(events: list[_CellEvent]) -> _RecoveryTally:
+    pending: list[_RecoveryStage] = []
+    num_completed = 0
+    for event in events:
+        if event.kind == "injected":
+            pending.append(_RecoveryStage.AWAITING_RELAUNCH)
+            continue
+        if not pending:
+            continue
+        if pending[0] is _RecoveryStage.AWAITING_RELAUNCH and event.state in _RELAUNCH_STATES:
+            pending[0] = _RecoveryStage.AWAITING_SERVING
+        elif pending[0] is _RecoveryStage.AWAITING_SERVING and event.state is ObservedCellState.SERVING:
+            pending.pop(0)
+            num_completed += 1
+    return _RecoveryTally(num_completed=num_completed, num_unfinished=len(pending))
+
+
+def _compute_distinct_states(events: list[_CellEvent]) -> list[ObservedCellState]:
+    states: list[ObservedCellState] = []
+    for event in events:
+        if event.kind == "observed" and event.state is not None and (not states or states[-1] != event.state):
+            states.append(event.state)
+    return states
 
 
 def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
