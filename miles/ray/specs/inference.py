@@ -4,7 +4,12 @@ import shlex
 import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
-from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
+from miles.backends.sglang_utils.sglang_config import (
+    ModelConfig,
+    ServerGroupConfig,
+    compute_engine_spec_name,
+    resolve_sglang_config,
+)
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
@@ -15,8 +20,6 @@ from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
 logger = logging.getLogger(__name__)
-
-_COLOCATED_WORKER_TYPES = ("regular", "decode")
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
@@ -103,13 +106,8 @@ def compute_session_server_instance_id(args, instance_index: int) -> str:
     return f"{args.run_uuid}-{instance_index}"
 
 
-def compute_engine_spec_name(model_idx: int, group_index: int) -> str:
-    return f"inference-engine-{model_idx}-{group_index}"
-
-
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
-    colocated_spec_name = compute_colocated_engine_spec_name(args)
 
     return [
         _compute_spec_inference_engine(
@@ -118,9 +116,7 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
             group_index=group_index,
             model_cfg=model_cfg,
             server_group_config=server_group_config,
-            colocate_with_trainer=(
-                compute_engine_spec_name(model_idx=model_idx, group_index=group_index) == colocated_spec_name
-            ),
+            colocate_with_trainer=server_group_config.colocated_with_trainer,
         )
         for model_idx, model_cfg in enumerate(config.models)
         for group_index, server_group_config in enumerate(model_cfg.server_groups)
@@ -130,34 +126,6 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
 
 def compute_engine_spec_names(args) -> list[str]:
     return [spec.name for spec in specs_inference_engine(args)]
-
-
-def compute_colocated_engine_spec_name(args) -> str | None:
-    if not args.colocate:
-        return None
-
-    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
-    deployed = [
-        (compute_engine_spec_name(model_idx=model_idx, group_index=group_index), model_cfg, server_group_config)
-        for model_idx, model_cfg in enumerate(config.models)
-        for group_index, server_group_config in enumerate(model_cfg.server_groups)
-        if server_group_config.worker_type != "placeholder"
-    ]
-
-    if args.colocate_engine_spec is not None:
-        names = [name for name, _model_cfg, _group in deployed]
-        assert args.colocate_engine_spec in names, (
-            f"--colocate-engine-spec '{args.colocate_engine_spec}' names no inference engine of this run, "
-            f"which deploys {names}"
-        )
-        return args.colocate_engine_spec
-
-    candidates = [
-        name
-        for name, model_cfg, server_group_config in deployed
-        if model_cfg.update_weights and server_group_config.worker_type in _COLOCATED_WORKER_TYPES
-    ]
-    return candidates[0] if len(candidates) == 1 else None
 
 
 def _compute_spec_inference_engine(

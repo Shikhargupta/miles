@@ -29,6 +29,7 @@ def _make_model_cfg(*worker_types: str) -> ModelConfig:
             num_gpus=4,
             num_gpus_per_engine=4,
             gpu_offset=group_index * 4,
+            colocated_with_trainer=False,
             needs_offload=False,
         )
         for group_index, worker_type in enumerate(worker_types)
