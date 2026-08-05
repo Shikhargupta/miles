@@ -87,8 +87,27 @@ async def main(args):
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
                 logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
+                # Pace the retry: an admission-empty selection (e.g. every slot
+                # transiently non-bindable) raises without consuming the empty
+                # wait, and an unpaced continue would busy-loop through
+                # reconcile/generate until capacity frees.
+                await asyncio.sleep(args.multi_lora_idle_poll_s)
                 continue
             raise
+
+        # Slot oversubscription: the selection's bind plan was decided
+        # by the controller inside generate; execute it collectively on every
+        # trainer rank before train, then commit the reservations. On failure
+        # the reservations roll back and no slot changed tenants durably.
+        control_metadata = rollout_data.get("control_metadata") or {}
+        if bind_plan := control_metadata.get("batch_plan"):
+            txn_id = control_metadata["train_txn_id"]
+            try:
+                await actor_model.bind_adapters(bind_plan)
+                await get_multi_lora_controller().commit_bind.remote(txn_id)
+            except Exception:
+                await get_multi_lora_controller().abort_bind.remote(txn_id)
+                raise
         await actor_model.train(rollout_id, rollout_data)
         remove_rollout_data_refs(args, rollout_data)
 
