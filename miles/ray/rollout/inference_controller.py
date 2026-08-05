@@ -256,11 +256,11 @@ class InferenceController:
 
     @requires_lock
     async def _health_monitoring_pause(self) -> None:
-        self._health_checker_activeness.set_active(False)
+        self._health_checker_activeness.bump_active(False)
 
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
-        self._health_checker_activeness.set_active(True)
+        self._health_checker_activeness.bump_active(True)
 
 
 @dataclass(frozen=True)

@@ -116,7 +116,7 @@ class TestHealthCheckerActiveness:
     async def test_preparing_a_rollout_resumes_probing(self):
         """Probing comes back exactly when the engines start serving traffic again."""
         controller = _make_controller({"default": _RecordingServer()})
-        controller._health_checker_activeness.set_active(False)
+        controller._health_checker_activeness.bump_active(False)
 
         await controller.prepare_rollout(rollout_id=0)
 
@@ -142,7 +142,7 @@ class TestHealthCheckerActiveness:
     async def test_preparing_an_eval_resumes_probing(self):
         """Eval drives the same engines as a rollout does."""
         controller = _make_controller({"default": _RecordingServer()})
-        controller._health_checker_activeness.set_active(False)
+        controller._health_checker_activeness.bump_active(False)
 
         await controller.prepare_eval()
 

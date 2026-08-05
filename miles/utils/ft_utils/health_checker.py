@@ -79,24 +79,13 @@ class ActivenessState(NamedTuple):
 
 
 class ActivenessTracker:
-    """Monotonic activeness generation, owned by whoever performs the transitions.
-
-    ``set_active`` must be called only at a real transition event (the moment the owner pauses or
-    resumes), so that every flip bumps the epoch and a checker polling ``get`` sees even a pause and
-    resume that both completed between two of its polls.
-
-    Never sample into it from a ``get_activeness`` callback (``set_active(current); return get()``):
-    a pause/resume pair completed between two polls samples the same boolean twice, the epoch never
-    moves, and the tracker degrades back into the plain boolean it replaces.
-    """
-
     def __init__(self, *, active: bool) -> None:
         self._state = ActivenessState(active=active, epoch=0)
 
     def get(self) -> ActivenessState:
         return self._state
 
-    def set_active(self, active: bool) -> None:
+    def bump_active(self, active: bool) -> None:
         if active == self._state.active:
             return
         self._state = ActivenessState(active=active, epoch=self._state.epoch + 1)

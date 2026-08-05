@@ -730,10 +730,10 @@ class TestHeartbeatMonitor:
         """Checkers pull activeness from the group, so one flag governs the whole fleet."""
         group = await _make_alive_group(num_cells=2)
 
-        group._health_checker_activeness.set_active(False)
+        group._health_checker_activeness.bump_active(False)
         assert not any(c.health_checker._get_activeness().active for c in group._cells)
 
-        group._health_checker_activeness.set_active(True)
+        group._health_checker_activeness.bump_active(True)
         assert all(c.health_checker._get_activeness().active for c in group._cells)
 
     async def test_the_paused_context_restores_activeness_after_an_exception(self):

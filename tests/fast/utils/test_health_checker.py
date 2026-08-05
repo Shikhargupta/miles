@@ -60,7 +60,7 @@ class _Activeness:
 
     @active.setter
     def active(self, value: bool) -> None:
-        self._tracker.set_active(value)
+        self._tracker.bump_active(value)
 
     def __call__(self) -> ActivenessState:
         return self._tracker.get()

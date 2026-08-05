@@ -365,18 +365,18 @@ class TrainerController:
     async def onload(self):
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("wake_up")
-        self._health_checker_activeness.set_active(True)
+        self._health_checker_activeness.bump_active(True)
 
     @contextmanager
     def _paused_health_checkers(self) -> Iterator[None]:
-        self._health_checker_activeness.set_active(False)
+        self._health_checker_activeness.bump_active(False)
         try:
             yield
         finally:
-            self._health_checker_activeness.set_active(True)
+            self._health_checker_activeness.bump_active(True)
 
     async def offload(self):
-        self._health_checker_activeness.set_active(False)
+        self._health_checker_activeness.bump_active(False)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("sleep")
 
