@@ -24,13 +24,15 @@ _UNRENDERABLE_ROUTER_FIELDS = {
     "control_plane_api_keys": "The parser normalizes API key tokens into tuples that cannot be serialized by the renderer.",
 }
 _ROUTER_FIELD_PARAMS: list[object] = [
-    pytest.param(
-        field.name,
-        marks=pytest.mark.xfail(reason=_UNRENDERABLE_ROUTER_FIELDS[field.name], strict=True),
-        id=field.name,
+    (
+        pytest.param(
+            field.name,
+            marks=pytest.mark.xfail(reason=_UNRENDERABLE_ROUTER_FIELDS[field.name], strict=True),
+            id=field.name,
+        )
+        if field.name in _UNRENDERABLE_ROUTER_FIELDS
+        else pytest.param(field.name, id=field.name)
     )
-    if field.name in _UNRENDERABLE_ROUTER_FIELDS
-    else pytest.param(field.name, id=field.name)
     for field in dataclasses.fields(RouterArgs)
 ]
 
@@ -146,9 +148,7 @@ def _make_router_cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _find_router_action(
-    *, parser: argparse.ArgumentParser, field_name: str
-) -> argparse.Action | None:
+def _find_router_action(*, parser: argparse.ArgumentParser, field_name: str) -> argparse.Action | None:
     dest = _ROUTER_FIELD_TO_DEST.get(field_name, field_name)
     return next((action for action in parser._actions if action.dest == dest), None)
 
