@@ -107,7 +107,7 @@ class TestRefusals:
         assert diff.changed == ["infra.sharedStorage.claimName"]
 
     def test_refuses_an_adhoc_section_that_woke_up(self):
-        """An upgrade rendering an adhoc Job would run a prepare step against a run already training."""
+        """An upgrade rendering an adhoc Job would run that adhoc command against a run already training."""
         diff = elastic.diff_values(_values(), _mutated(lambda values: values["adhoc"].update(enabled=True)))
 
         assert diff.changed == ["adhoc.enabled"]
