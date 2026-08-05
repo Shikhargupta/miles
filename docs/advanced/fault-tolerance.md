@@ -8,9 +8,9 @@ fault-tolerance machinery. It gates two code paths:
 1. A `RolloutHealthMonitor` thread per server group, started in
    `miles/ray/rollout.py`, which periodically heart-beats each SGLang
    engine.
-2. Engine recovery, which is not a hook of its own: the controller
-   reconciles the observed cells and the weight-update window waits for
-   them to become ready (see "Engine recovery" below).
+2. A recovery hook in the trainer's weight-update step
+   (`miles/backends/megatron_utils/actor.py`), which restarts engines
+   that the health monitor has killed.
 
 ```bash
 --use-fault-tolerance
@@ -47,51 +47,23 @@ Each loop iteration does:
 
 ## Engine recovery
 
-There is no dedicated recovery call. Recovery is the sum of two always-on
-mechanisms: the controller's reconcile loop, and the weight-update window
-that waits for reconciled cells to be ready.
+When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
+`inference_controller.recover_updatable_engines` before each weight
+update (`miles/backends/megatron_utils/actor.py`).
 
-### Reconcile loop
+`recover_updatable_engines` (`miles/ray/rollout/inference_controller.py`):
 
-`InferenceController` (`miles/ray/rollout/inference_controller.py`) watches
-worker cells through `RayWorkerProvider.watch_cells` and handles every
-observation in `_reconcile`, which compares the observed cell against the
-tracked `ServerCell` by `workers_hash`:
+1. Pauses health monitoring.
+2. Calls `srv.recover()` on the updatable server.
 
-- Observed but untracked: `add_cell` on the server named by the cell's `model_id`.
-- Tracked but no longer observed: `remove_cell`, which unregisters it from the router.
-- Tracked with a different `workers_hash` (the cell was relaunched): `remove_cell` then `add_cell`.
+`srv.recover()` (`miles/ray/rollout.py`):
 
-A new `ServerCell` starts `Uninitialized` (`miles/ray/rollout/cell_state.py`).
-`SimpleTicker` runs `_tick_cells` every `TICK_INTERVAL_SECONDS` (`5.0`); once
-`probe_server_healthy` succeeds, `ServerCell.tick` moves the cell
-`Initializing` → `PendingWeights`, releasing and re-onloading the weights
-memory first if `needs_offload` is set.
+1. Finds engine slots set to `None` (killed by the health monitor).
+2. Calls `start_engines` for each affected group.
+3. Releases memory occupation on the new engines.
 
-### Weight-update window
-
-The trainer brackets each weight update with `update_weights_window`
-(`miles/ray/actor_group.py` for v1, `miles/ray/train/group.py` for v2):
-
-1. `start_update_weights` pauses health probing, then `_ensure_cells_ready`
-   polls every `CELLS_READY_POLL_INTERVAL_SECONDS` (`2.0`) up to
-   `CELLS_READY_TIMEOUT_SECONDS` (`3600.0`) until every cell is `PendingWeights`
-   or `Serving`, and returns the engine snapshot plus each cell's `workers_hash`.
-2. The trainer broadcasts the weights to the engines in that snapshot.
-3. `end_update_weights` marks every still-pending cell whose `workers_hash` is
-   unchanged as weights-ready, which registers it with the router and moves it
-   to `Serving`.
-
-The controller's context lock is held for the whole window, so no reconcile can
-change the engine set under the trainer. If the broadcast raises,
-`update_weights_window` calls `abort_update_weights`, which releases the lock
-without marking anything ready; the next reconcile and the next weight update
-then proceed normally.
-
-A cell that died is therefore recovered without any explicit restart call: the
-worker manager relaunches it, the reconcile loop observes the new
-`workers_hash` and re-adds the cell, and the next weight-update window waits for
-it and hands it the current weights before it serves traffic.
+After `recover_updatable_engines` returns, the weight updater connects to
+the new engines and the next weight transfer proceeds normally.
 
 ## P2P weight transfer timeouts
 
