@@ -39,8 +39,6 @@
 ### In CI
 
 - Gated on the `run-ci-ft-short` / `run-ci-ft-long` PR labels (FT is expensive — not run on every PR). `ft-short` covers the comparison scenarios (no_failure / deterministic / with_failure, minutes each); `ft-long` covers the soak scenarios (random-crash survival, realistic-gsm8k convergence — tens of minutes to hours). With a label set, the matching entries run on `stage-c-8-gpu-h200`.
-- Every `ft-long` entry is currently registered `disabled="FT soak tests pending CI infra support"`, so the lane is green without running anything; drop the `disabled=` argument once an `ft-long` capable lane exists.
-- Until then, the rollout-crash soak has a fast-layer stand-in: `tests/fast/e2e/ft/test_rollout_ft_gated_recovery.py` drives crash → suspend → gated relaunch → weight update → Serving against a fake worker manager and checks the snapshots with the soak's own `RecoveryWitness` (state sequence only — no real engines or GPUs).
 - Add a `(scenario, mode)` to CI: copy an entry file, change `run_ci(...)`'s mode.
 - Add a new label: edit `tests/ci/labels.py` and create the matching `run-ci-<label>` GitHub label.
 
