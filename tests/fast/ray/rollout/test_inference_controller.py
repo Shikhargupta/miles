@@ -14,6 +14,7 @@ from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names, compute_router_spec_name, specs_inference_engine
 from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import WorkerMetaContext
 
@@ -85,7 +86,7 @@ def _make_controller(servers: dict) -> InferenceController:
     controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False)
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
-    controller._health_checker_activeness = True
+    controller._health_checker_activeness = ActivenessTracker(active=True)
     return controller
 
 
@@ -98,7 +99,7 @@ class TestHealthCheckerActiveness:
 
         await controller.offload()
 
-        assert not controller._health_checker_activeness
+        assert not controller._health_checker_activeness.get().active
         assert srv.calls == [("offload",)]
 
     @pytest.mark.asyncio
@@ -109,17 +110,17 @@ class TestHealthCheckerActiveness:
         info = await controller.start_update_weights()
         await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
-        assert not controller._health_checker_activeness
+        assert not controller._health_checker_activeness.get().active
 
     @pytest.mark.asyncio
     async def test_preparing_a_rollout_resumes_probing(self):
         """Probing comes back exactly when the engines start serving traffic again."""
         controller = _make_controller({"default": _RecordingServer()})
-        controller._health_checker_activeness = False
+        controller._health_checker_activeness.set_active(False)
 
         await controller.prepare_rollout(rollout_id=0)
 
-        assert controller._health_checker_activeness
+        assert controller._health_checker_activeness.get().active
 
     @pytest.mark.asyncio
     async def test_preparing_a_rollout_awaits_the_dashboard_engine_registration(self, monkeypatch):
@@ -141,11 +142,11 @@ class TestHealthCheckerActiveness:
     async def test_preparing_an_eval_resumes_probing(self):
         """Eval drives the same engines as a rollout does."""
         controller = _make_controller({"default": _RecordingServer()})
-        controller._health_checker_activeness = False
+        controller._health_checker_activeness.set_active(False)
 
         await controller.prepare_eval()
 
-        assert controller._health_checker_activeness
+        assert controller._health_checker_activeness.get().active
 
 
 class TestReconcile:

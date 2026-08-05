@@ -19,6 +19,7 @@ from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import TriState
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ft_utils.mini_ft_controller import _compute_cell_snapshot, _MiniFTController
 from miles.utils.workers.worker_provider.base import CellInfo
 
@@ -161,7 +162,7 @@ class _Harness:
         self.controller.context_lock = ContextLock("InferenceController")
         self.controller._watcher_disposers = []
         self.controller._ticker = None
-        self.controller._health_checker_activeness = True
+        self.controller._health_checker_activeness = ActivenessTracker(active=True)
         self.controller.servers = {
             "default": RolloutServer(
                 server_cells={},

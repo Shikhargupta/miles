@@ -21,6 +21,7 @@ from miles.utils.context_lock import (
     with_lock,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.misc import SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -44,7 +45,7 @@ class InferenceController:
             controller.servers = await create_rollout_servers(
                 args,
                 context_lock=controller.context_lock,
-                global_health_checker_activeness=lambda: controller._health_checker_activeness,
+                global_health_checker_activeness=controller._health_checker_activeness.get,
             )
 
             # TODO: may change to InferenceController.init(engine_provider, ...) later
@@ -67,7 +68,7 @@ class InferenceController:
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
         self._watcher_disposers: list[StopWatchFn] = []
-        self._health_checker_activeness: bool = True
+        self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
 
     # -------------------------- rollout lifecycle hooks -----------------------------
@@ -255,7 +256,7 @@ class InferenceController:
 
     @requires_lock
     async def _health_monitoring_pause(self) -> None:
-        self._health_checker_activeness = False
+        self._health_checker_activeness.set_active(False)
         await asyncio.gather(
             *[
                 cell.cancel_inflight_health_probe()
@@ -266,7 +267,7 @@ class InferenceController:
 
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
-        self._health_checker_activeness = True
+        self._health_checker_activeness.set_active(True)
 
 
 @dataclass(frozen=True)

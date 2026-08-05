@@ -8,7 +8,7 @@ from miles.ray.rollout.cell_state import CellAddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthChecker
+from miles.utils.ft_utils.health_checker import ActivenessState, NoopHealthChecker, SimpleHealthChecker
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
@@ -52,7 +52,7 @@ def _make_cell(*, global_activeness=None, router=None, **meta_overrides) -> Serv
             args=make_args(ft_components=["rollout"]),
             meta=_make_meta(**meta_overrides),
             router_api_client=router or SimpleNamespace(),
-            global_health_checker_activeness=global_activeness or (lambda: True),
+            global_health_checker_activeness=global_activeness or (lambda: ActivenessState(active=True, epoch=0)),
         )
     )
 
@@ -127,7 +127,7 @@ class TestHealthCheckerActiveness:
         """Engines are unusable while offloaded or mid weight update, whatever state they are in."""
         _stub_network(monkeypatch)
         active = {"value": True}
-        cell = _make_cell(global_activeness=lambda: active["value"])
+        cell = _make_cell(global_activeness=lambda: ActivenessState(active=active["value"], epoch=0))
 
         await cell.init()
         await cell.tick()
@@ -153,7 +153,7 @@ class TestAddCellHealthChecker:
 
     async def test_a_cell_added_mid_window_does_not_probe(self):
         """The window releases the lock, so reconcile can add a cell while probing is paused."""
-        srv = _make_server(global_health_checker_activeness=lambda: False)
+        srv = _make_server(global_health_checker_activeness=lambda: ActivenessState(active=False, epoch=0))
 
         async with srv.context_lock:
             await srv.add_cell(_make_meta())

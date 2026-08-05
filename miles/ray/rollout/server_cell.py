@@ -22,7 +22,6 @@ from miles.ray.rollout.cell_state import (
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     ActivenessState,
-    ActivenessTracker,
     BaseHealthChecker,
     NoopHealthChecker,
     SimpleHealthChecker,
@@ -56,13 +55,11 @@ class ServerCell:
     args: Any
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
-    global_health_checker_activeness: Callable[[], bool] = lambda: True
+    global_health_checker_activeness: Callable[[], ActivenessState] = lambda: ActivenessState(active=True, epoch=0)
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
-    _activeness_tracker: ActivenessTracker = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
 
     def __post_init__(self) -> None:
-        self._activeness_tracker = ActivenessTracker(active=self._health_checker_activeness)
         self._health_checker = create_rollout_cell_health_checker(
             args=self.args,
             name=f"rollout-cell-{self.meta.cell_id}",
@@ -72,8 +69,9 @@ class ServerCell:
         self._health_checker.start()
 
     def _get_health_checker_activeness_state(self) -> ActivenessState:
-        self._activeness_tracker.set_active(self._health_checker_activeness)
-        return self._activeness_tracker.get()
+        controller_activeness = self.global_health_checker_activeness()
+        cell_active = isinstance(self._state, (StatePendingWeights, StateServing))
+        return ActivenessState(active=cell_active and controller_activeness.active, epoch=controller_activeness.epoch)
 
     def __del__(self) -> None:
         assert isinstance(self._state, StateDisposed), (
@@ -86,7 +84,7 @@ class ServerCell:
 
     @property
     def _health_checker_activeness(self) -> bool:
-        return isinstance(self._state, (StatePendingWeights, StateServing)) and self.global_health_checker_activeness()
+        return self._get_health_checker_activeness_state().active
 
     def cell_status(self) -> CellStatus:
         workers_hash = self.meta.workers_hash

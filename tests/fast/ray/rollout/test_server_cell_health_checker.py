@@ -13,7 +13,14 @@ from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthChecker
+from miles.utils.ft_utils.health_checker import (
+    ActivenessState,
+    ActivenessTracker,
+    NoopHealthChecker,
+    SimpleHealthChecker,
+    SimpleHealthCheckerConfig,
+)
+from miles.utils.test_utils.clock import FakeClock
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
@@ -41,7 +48,7 @@ def _make_cell(*, ft_components: list[str], global_activeness: bool = True) -> S
             args=make_args(ft_components=ft_components),
             meta=_make_meta(),
             router_api_client=MagicMock(),
-            global_health_checker_activeness=lambda: global_activeness,
+            global_health_checker_activeness=lambda: ActivenessState(active=global_activeness, epoch=0),
         )
     )
 
@@ -169,6 +176,35 @@ class TestRolloutCellHealthCheckerPauseBarrier:
         assert probe_cancelled.is_set()
 
 
+class TestRolloutCellActivenessState:
+    async def test_reading_the_activeness_state_twice_returns_the_very_same_state(self):
+        """A pull that samples into a tracker of its own degrades the epoch back into a boolean read."""
+        _, cell = await _make_controller_with_serving_cell()
+
+        first = cell._get_health_checker_activeness_state()
+        second = cell._get_health_checker_activeness_state()
+
+        assert first == second == ActivenessState(active=True, epoch=0)
+
+    async def test_a_pause_resume_window_completed_between_two_polls_resets_the_failure_counter(self):
+        """The controller opens and closes the whole window while the loop sleeps, so only the epoch reveals it."""
+        controller, cell = await _make_controller_with_serving_cell()
+        checker, clock = _make_fake_clock_checker(cell)
+
+        checker.start()
+        await _settle(clock)
+        await clock.elapse(100.0)
+        await clock.elapse(10.0)
+        assert checker._consecutive_failures == 2
+
+        await controller.offload()
+        await controller.prepare_eval()
+        await clock.elapse(10.0)
+
+        assert checker._consecutive_failures == 0
+        checker.stop()
+
+
 class TestRolloutCellHealthCheckerDisposal:
     async def test_disposing_a_cell_stops_its_checker(self):
         """A removed cell whose loop keeps polling leaks the task and the whole cell it closes over."""
@@ -199,13 +235,13 @@ async def _make_controller_with_serving_cell() -> tuple[InferenceController, Ser
     controller = InferenceController.__new__(InferenceController)
     controller.args = args
     controller.context_lock = ContextLock("InferenceController")
-    controller._health_checker_activeness = True
+    controller._health_checker_activeness = ActivenessTracker(active=True)
 
     srv = RolloutServer(
         server_cells={},
         args=args,
         context_lock=controller.context_lock,
-        global_health_checker_activeness=lambda: controller._health_checker_activeness,
+        global_health_checker_activeness=controller._health_checker_activeness.get,
     )
     controller.servers = {"default": srv}
 
@@ -216,6 +252,30 @@ async def _make_controller_with_serving_cell() -> tuple[InferenceController, Ser
     cell.router_api_client = _NoopRouterApiClient()
     cell._state = StateServing(addr_info=_addr_info())
     return controller, cell
+
+
+def _make_fake_clock_checker(cell: ServerCell) -> tuple[SimpleHealthChecker, FakeClock]:
+    cell._health_checker.stop()
+
+    async def _failing_check() -> None:
+        raise RuntimeError("engine down")
+
+    clock = FakeClock()
+    checker = SimpleHealthChecker(
+        name=f"rollout-cell-{cell.meta.cell_id}",
+        check_fn=_failing_check,
+        get_activeness=cell._get_health_checker_activeness_state,
+        config=SimpleHealthCheckerConfig(interval=10.0, timeout=5.0, first_wait=100.0, failure_threshold=3),
+        clock=clock,
+    )
+    return checker, clock
+
+
+async def _settle(clock: FakeClock) -> None:
+    for _ in range(1000):
+        if clock.pending_count >= 1:
+            return
+        await asyncio.sleep(0)
 
 
 def _restart_checker_with(cell: ServerCell, *, check_fn: Any, on_result: Any) -> SimpleHealthChecker:
