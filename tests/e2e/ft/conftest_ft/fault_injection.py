@@ -114,7 +114,9 @@ class RecoveryWitness:
         )
 
     def num_completed_recoveries(self, *, cell_type: str | None = None) -> int:
-        return sum(_compute_recovery_tally(info.events).num_completed for info in self._matching_infos(cell_type=cell_type))
+        return sum(
+            _compute_recovery_tally(info.events).num_completed for info in self._matching_infos(cell_type=cell_type)
+        )
 
     def cells_with_unfinished_recovery(self, *, cell_type: str | None = None) -> dict[str, int]:
         return {
@@ -128,9 +130,7 @@ class RecoveryWitness:
         return self._info_of_cell_name.setdefault(cell_name, _CellInfo())
 
     def _matching_infos(self, *, cell_type: str | None) -> list[_CellInfo]:
-        return [
-            info for info in self._info_of_cell_name.values() if cell_type is None or info.cell_type == cell_type
-        ]
+        return [info for info in self._info_of_cell_name.values() if cell_type is None or info.cell_type == cell_type]
 
 
 @dataclasses.dataclass(frozen=True)
