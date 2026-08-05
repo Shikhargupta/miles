@@ -137,36 +137,13 @@ async def test_the_trainer_brackets_the_broadcast_with_start_and_end_update_weig
 
 @pytest.mark.asyncio
 async def test_the_trainer_hands_end_update_weights_the_snapshot_start_returned():
-    """Same snapshot pass-through requirement on the fault-tolerant trainer group."""
+    """The snapshot start_update_weights returned is handed back to end_update_weights unchanged."""
     order: list[str] = []
     group = _make_group(order)
 
     await group.update_weights()
 
     _assert_the_snapshot_is_handed_back_unchanged(group._inference_controller)
-
-
-@pytest.mark.asyncio
-async def test_the_trainer_aborts_the_window_when_the_broadcast_raises(monkeypatch):
-    """Same abort requirement on the fault-tolerant trainer group, after its retries are exhausted."""
-    from miles.ray.train import group as train_group_module
-
-    async def _retry_once(fn, **kwargs):
-        await fn(0)
-
-    monkeypatch.setattr(train_group_module, "retry", _retry_once)
-
-    order: list[str] = []
-    group = train_group_module.TrainerController.__new__(train_group_module.TrainerController)
-    group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
-    group._inference_controller = _OrderRecordingInferenceController(order)
-    group._execute_first_alive = AsyncMock(side_effect=RuntimeError("weight transfer died"))
-    group._maybe_log_inference_engine_weight_checksums = AsyncMock()
-
-    with pytest.raises(RuntimeError, match="weight transfer died"):
-        await group.update_weights()
-
-    assert order == ["start_update_weights", "abort_update_weights"]
 
 
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():

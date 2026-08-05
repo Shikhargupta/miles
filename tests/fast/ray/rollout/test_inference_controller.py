@@ -12,7 +12,6 @@ from miles.ray.rollout import inference_controller as inference_controller_modul
 from miles.ray.rollout.inference_controller import (
     InferenceController,
     _compute_server_cell_meta_from_info,
-    update_weights_window,
 )
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
@@ -432,85 +431,6 @@ class TestUpdateWeightsLockWindow:
         """Ordinary controller methods release the lock when they return."""
         controller = _make_controller({})
         await controller.prepare_eval()
-        assert not controller.context_lock.locked
-
-
-class _PendingCell:
-    def __init__(self, meta: ServerCellMetadata):
-        self.meta = meta
-        self.is_pending_weights = True
-        self.is_pending_weights_or_serving = True
-        self.marked_weights_ready = False
-
-    async def mark_weights_ready(self):
-        self.marked_weights_ready = True
-        self.is_pending_weights = False
-
-    async def cancel_inflight_health_probe(self):
-        return None
-
-
-class _UpdatableServer:
-    def __init__(self, server_cells: dict[str, _PendingCell]):
-        self.server_cells = server_cells
-        self.update_weights = True
-        self.api_clients: list[object] = []
-        self.engine_gpu_counts: list[int] = []
-        self.engine_gpu_offsets: list[int] = []
-
-
-def _make_updatable_controller() -> tuple[InferenceController, _PendingCell]:
-    cell = _PendingCell(_make_cell_meta(_make_cell_info()))
-    controller = _make_controller({"default": _UpdatableServer({cell.meta.cell_id: cell})})
-    return controller, cell
-
-
-class TestUpdateWeightsWindowFailurePaths:
-    @pytest.mark.asyncio
-    async def test_a_completed_window_marks_the_snapshot_cells_ready(self):
-        """The happy path publishes the updated cells to the router and closes the lock window."""
-        controller, cell = _make_updatable_controller()
-
-        async with update_weights_window(controller) as info:
-            assert info.snapshot_cell_id_to_hashes == {cell.meta.cell_id: cell.meta.workers_hash}
-            assert controller.context_lock.locked
-
-        assert cell.marked_weights_ready
-        assert not controller.context_lock.locked
-
-    @pytest.mark.asyncio
-    async def test_a_weight_transfer_that_raises_releases_the_split_lock(self):
-        """A broadcast failure must not wedge the controller: the next reconcile still gets the lock."""
-        controller, _ = _make_updatable_controller()
-
-        with pytest.raises(RuntimeError, match="weight transfer died"):
-            async with update_weights_window(controller):
-                raise RuntimeError("weight transfer died")
-
-        assert not controller.context_lock.locked
-        await asyncio.wait_for(controller._reconcile("miles-router-0-0", None), timeout=1.0)
-
-    @pytest.mark.asyncio
-    async def test_a_weight_transfer_that_raises_leaves_the_cells_unpublished(self):
-        """Aborting the window must not advertise cells whose weights were never written."""
-        controller, cell = _make_updatable_controller()
-
-        with pytest.raises(RuntimeError, match="weight transfer died"):
-            async with update_weights_window(controller):
-                raise RuntimeError("weight transfer died")
-
-        assert not cell.marked_weights_ready
-        assert cell.is_pending_weights
-
-    @pytest.mark.asyncio
-    async def test_a_cancelled_weight_transfer_also_releases_the_split_lock(self):
-        """A trainer cancelled mid-update releases the lock too, not only on ordinary exceptions."""
-        controller, _ = _make_updatable_controller()
-
-        with pytest.raises(asyncio.CancelledError):
-            async with update_weights_window(controller):
-                raise asyncio.CancelledError()
-
         assert not controller.context_lock.locked
 
 

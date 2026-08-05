@@ -1,8 +1,6 @@
 import asyncio
-import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -153,10 +151,6 @@ class InferenceController:
         )
 
     @releases_lock
-    async def abort_update_weights(self) -> None:
-        logger.warning("Aborting the weight update window; no cell is marked weights-ready")
-
-    @releases_lock
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
         await asyncio.gather(
             *[
@@ -293,17 +287,6 @@ class InferenceController:
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
         self._health_checker_activeness = True
-
-
-@contextlib.asynccontextmanager
-async def update_weights_window(controller: InferenceController) -> AsyncIterator["UpdatableEngines"]:
-    info: UpdatableEngines = await controller.start_update_weights()
-    try:
-        yield info
-    except BaseException:
-        await controller.abort_update_weights()
-        raise
-    await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
 
 @dataclass(frozen=True)
