@@ -1,10 +1,13 @@
 import atexit
 import ctypes
+import logging
 import os
 import signal
 import subprocess
 import sys
 from functools import partial
+
+logger = logging.getLogger(__name__)
 
 _PR_SET_PDEATHSIG = 1
 
@@ -28,7 +31,9 @@ def terminate_process_tree(process: subprocess.Popen, *, sigkill_timeout: float 
     try:
         process.wait(timeout=sigkill_timeout)
     except subprocess.TimeoutExpired:
-        pass
+        logger.warning(
+            "Process %d did not exit within %.1fs after SIGTERM; escalating to SIGKILL", process.pid, sigkill_timeout
+        )
     _signal_process_group(process.pid, signal.SIGKILL)
     process.wait()
 
