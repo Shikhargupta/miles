@@ -132,6 +132,7 @@ def _build_bridge_subclass():
 
             if not os.environ.get("MILES_NEMOTRONH_KEEP_MTP"):
                 provider.mtp_num_layers = None
+                provider.mtp_hybrid_override_pattern = None
             return provider
 
         def mapping_registry(self):
@@ -194,8 +195,9 @@ def _install_mamba_model_loss_mask_shim() -> None:
 
     _orig_forward = MambaModel.forward
 
-    def forward(self, *args, loss_mask=None, **kwargs):
-        return _orig_forward(self, *args, **kwargs)
+    def forward(self, *args, loss_mask=None, mtp_kwargs=None, **kwargs):
+        mtp_labels = (mtp_kwargs or {}).get("mtp_labels")
+        return _orig_forward(self, *args, loss_mask=loss_mask, mtp_labels=mtp_labels, **kwargs)
 
     MambaModel.forward = forward
     MambaModel._miles_loss_mask_shim_installed = True
