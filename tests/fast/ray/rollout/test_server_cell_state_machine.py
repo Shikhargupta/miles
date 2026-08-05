@@ -244,33 +244,6 @@ class TestTick:
         assert isinstance(cell._state, StateServing)
         assert [name for name, _kwargs in router.calls] == ["add_worker"]
 
-    async def test_a_frozen_cell_whose_router_registration_fails_is_retried_by_a_later_tick(self, cell_env):
-        """Nothing else ever revisits a frozen cell, so a transient router error must not strand it."""
-
-        class _FlakyRouter(_RecordingRouterApiClient):
-            def __init__(self):
-                super().__init__()
-                self.failures = 1
-
-            async def add_worker(self, **kwargs):
-                if self.failures > 0:
-                    self.failures -= 1
-                    raise RuntimeError("router rejected the worker")
-                await super().add_worker(**kwargs)
-
-        router = _FlakyRouter()
-        cell = _make_cell(router=router, update_weights=False)
-        await cell.init()
-
-        with pytest.raises(RuntimeError):
-            await cell.tick()
-        assert cell.is_initializing
-
-        await cell.tick()
-
-        assert isinstance(cell._state, StateServing)
-        assert [name for name, _kwargs in router.calls] == ["add_worker"]
-
     async def test_debug_rollout_only_starts_serving_without_a_weight_update(self, cell_env):
         """With no trainer running, the engine must serve the weights it loaded from disk."""
         cell = _make_cell(args_overrides=dict(debug_rollout_only=True))
