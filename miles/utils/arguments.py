@@ -333,20 +333,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rematerialize-param-from-master-weight",
                 action="store_true",
                 help=(
-                    "Colocate only: drop the actor's pinned CPU weight copy (ref/teacher tags, if "
-                    "any, keep theirs). update_weights reads live GPU "
-                    "weights (param buffer stays resident until then), and the next train step "
-                    "rematerializes them from the optimizer's fp32 master weights, bit-identical "
-                    "to the step-end cast. The param buffer now coexists with the resumed engine "
-                    "for the length of the update, so the GPU peak there grows by the per-rank "
-                    "bf16 shard: --sglang-mem-fraction-static tuned for the pinned-copy flow may "
-                    "need lowering."
+                    "Colocate CPU memory optimization. Drop the actor's parameter weight backup "
+                    "during inference, and rebuild it from the optimizer's master weights on the "
+                    "next train step. Reduces peak CPU memory by 2*param per rank (bf16 training). "
+                    "Works with both the GPU optimizer and the CPU optimizer, but is not compatible "
+                    "with --use-precision-aware-optimizer on GPU. ref/teacher tags keep their "
+                    "backups. Recommended for Grace GPU colocate training."
                 ),
             )
             parser.add_argument(
                 "--check-rematerialize-param-from-master-weight",
                 action="store_true",
-                help=("Verify the first two rematerialize cycles with per-tensor SHA256 recorded at " "backup time."),
+                help="Debug: SHA256-verify the first two rematerialize cycles are bit-identical.",
             )
             parser.add_argument(
                 "--megatron-to-hf-mode",
@@ -2603,25 +2601,25 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
     assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
     assert not args.indep_dp, (
-        "--rematerialize-param-from-master-weight pauses param_buffer inside update_weights, which only the "
-        "first alive cell runs, while sleep runs on all of them; every other cell would keep the bf16 shard "
-        "resident for the whole run. Lift this once all cells update weights (see RayTrainGroup.update_weights)"
+        "--rematerialize-param-from-master-weight drops the backup inside update_weights, which "
+        "RayTrainGroup runs on the first alive cell only. Every other cell would keep it for the whole "
+        "run. Lift this once all cells update weights."
     )
     assert args.colocate and args.offload_train
     assert args.use_distributed_optimizer
     assert args.enable_weights_backuper
     assert not args.keep_old_actor
     assert not args.use_precision_aware_optimizer or args.optimizer_cpu_offload, (
-        "precision-aware without --optimizer-cpu-offload keeps main params inside TE FusedAdam, as int16 "
-        "remainders of the bf16 params by default: the redundancy rematerialize needs is already spent. "
-        "With cpu-offload the HybridDeviceOptimizer holds standalone masters and restore replays its copy-back"
+        "--use-precision-aware-optimizer on GPU keeps the master weights inside TE FusedAdam, stored as "
+        "int16 remainders of the params. There is nothing standalone to rebuild from. Add "
+        "--optimizer-cpu-offload, which holds standalone masters instead."
     )
     assert (
         not args.overlap_param_gather
-    ), "restore calls DDP.start_param_sync outside the training step, which overlap-param-gather does not support"
+    ), "the rebuild calls DDP.start_param_sync outside the training step; overlap-param-gather does not support that"
     assert (
         args.compute_advantages_and_returns
-    ), "the per-cycle restore runs in the compute_advantages_and_returns block; without it training would silently run on dropped weights"
+    ), "the per-cycle rebuild runs in the compute_advantages_and_returns block; without it training would run on dropped weights"
     assert (
         args.num_critic_only_steps == 0
     ), "critic-only steps run update_weights repeatedly without an intervening actor wake_up"

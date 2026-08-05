@@ -198,8 +198,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.colocate:
         misc_args += "--colocate "
-        # Drop the actor's pinned CPU weight copy (HDO holds the masters); the
-        # check flag SHA256-verifies the first rematerialize cycles.
         misc_args += "--rematerialize-param-from-master-weight --check-rematerialize-param-from-master-weight "
     else:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "

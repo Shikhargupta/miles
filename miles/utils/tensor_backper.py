@@ -11,8 +11,7 @@ _SourceGetter = Callable[[], Iterable[tuple[str, torch.Tensor]]]
 
 @dataclass(frozen=True)
 class MainCastContext:
-    # Writes this rank's owned shard of the low-precision params from the
-    # optimizer's master weights, exactly as the train-step end does.
+    # Writes this rank's owned shard from the master weights, as the train-step end does.
     cast_main_to_params: Callable[[], None]
     model_chunks: list
     extras_getter: _SourceGetter
@@ -90,12 +89,11 @@ class _TensorBackuperNormal(TensorBackuper):
 
 
 class _TensorBackuperMainCast(TensorBackuper):
-    """Rematerialize the actor weights from the optimizer's master weights (same
-    cast + param all-gather as the step end, so bit-identical) instead of a pinned
-    CPU copy; only `extras_getter` tensors keep a small pinned backup. Non-actor
-    tags (ref/teacher) have no optimizer masters and keep full pinned copies via a
-    delegated _TensorBackuperNormal. With `check`, the first `_check_num_cycles`
-    actor restores are SHA256-verified against backup time."""
+    """Rebuilds the actor weights from the optimizer's master weights instead of keeping
+    a pinned CPU copy. Restore is the step end's cast + all-gather, so bit-identical.
+    Only `extras_getter` tensors keep a pinned backup. Non-actor tags (ref/teacher) have
+    no master weights and keep full pinned copies via a delegated _TensorBackuperNormal.
+    With `check`, the first `_check_num_cycles` actor restores are SHA256-verified."""
 
     _check_num_cycles = 2
 
@@ -144,7 +142,7 @@ class _TensorBackuperMainCast(TensorBackuper):
     def get(self, tag: str):
         if tag != "actor":
             return self._others.get(tag)
-        # Extras are paused during update_weights: read them from the pinned backup.
+        # Extras are paused during update_weights. Read them from the pinned backup.
         out = {}
         for name, tensor in self._source_getter():
             backup = self._extras_backup_by_id.get(id(tensor))
@@ -206,8 +204,8 @@ class _TensorBackuperNoop(TensorBackuper):
 
 
 def _hash_tensor_sha256(x: torch.Tensor) -> str:
-    """Real hash, unlike _compute_hash_tensor: the rematerialize check has to be
-    able to call a mismatch a bug."""
+    """Real hash, unlike _compute_hash_tensor. The rematerialize check must be able to
+    call a mismatch a bug."""
     data = x.detach().cpu().contiguous()
     return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
 
