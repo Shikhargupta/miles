@@ -168,6 +168,10 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         rollout_pg_offset = _compute_rollout_offset(args)
         megatron_num_gpus = _compute_megatron_num_gpus(args)
 
+        if args.colocate and gpu_offset_cursor.value > 0 and gpu_offset_cursor.value < megatron_num_gpus:
+            gpu_offset_cursor.skipped += megatron_num_gpus - gpu_offset_cursor.value
+            gpu_offset_cursor.value = megatron_num_gpus
+
         gpu_offset = gpu_offset_cursor.value
         group_abs_start = rollout_pg_offset + gpu_offset
         needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
@@ -252,17 +256,25 @@ class SglangConfig(FrozenStrictBaseModel):
         gpu_offset_cursor = _MutableBox(value=0)
         model_configs = [ModelConfig.resolve(m, args, gpu_offset_cursor) for m in raw.models]
 
-        assert gpu_offset_cursor.value == raw.total_num_gpus
+        assert gpu_offset_cursor.value == raw.total_num_gpus + gpu_offset_cursor.skipped
         return cls(models=model_configs)
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
 
+    @property
+    def gpu_span(self) -> int:
+        return max(
+            (group.gpu_offset + group.num_gpus for model in self.models for group in model.server_groups),
+            default=0,
+        )
+
 
 @dataclass
 class _MutableBox:
     value: int
+    skipped: int = 0
 
 
 def resolve_sglang_config(args) -> SglangConfig:

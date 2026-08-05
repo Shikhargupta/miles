@@ -34,9 +34,10 @@ class RayCellOperations:
 
 
 class K8sCellOperations:
-    def __init__(self, *, provider: Any, delete_pods: Any) -> None:
+    def __init__(self, *, provider: Any, delete_pods: Any, colocated_with: Any = None) -> None:
         self._provider = provider
         self._delete_pods = delete_pods
+        self._colocated_with = colocated_with
 
     async def cell_infos(self, spec_names: list[str]) -> dict[str, CellInfo]:
         wanted = set(spec_names)
@@ -47,6 +48,8 @@ class K8sCellOperations:
         pods = list(self._provider.pod_names(cell_id))
         assert pods, f"cannot suspend {cell_id}, which has no pods"
 
+        if self._colocated_with is not None:
+            pods += self._colocated_with(cell_id)
         await self._delete_pods(pods)
 
     async def resume(self, cell_id: str) -> None:

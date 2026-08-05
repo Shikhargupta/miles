@@ -8,6 +8,7 @@ from typing import Any
 
 from miles.utils.ft_utils.api_server.cell_operations import K8sCellOperations
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.colocate_matching import PairingLayout, colocated_pods_of
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name, static_worker_host
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi
 from miles.utils.workers.types import DEFAULT_GPUS_PER_NODE, ClusterBackend
@@ -32,6 +33,13 @@ from miles.utils.workers.worker_spec import (
 )
 
 NAMESPACE_ENV_VAR = "MILES_K8S_NAMESPACE"
+COLOCATE_ENGINE_FLEET_ENV_VAR = "MILES_K8S_COLOCATE_ENGINE_FLEET"
+COLOCATE_TRAINER_FLEET_ENV_VAR = "MILES_K8S_COLOCATE_TRAINER_FLEET"
+COLOCATE_TRAINER_SPEC_ENV_VAR = "MILES_K8S_COLOCATE_TRAINER_SPEC"
+COLOCATE_ENGINE_CELLS_ENV_VAR = "MILES_K8S_COLOCATE_ENGINE_CELLS"
+COLOCATE_TRAINER_CELLS_ENV_VAR = "MILES_K8S_COLOCATE_TRAINER_CELLS"
+COLOCATE_PODS_PER_ENGINE_CELL_ENV_VAR = "MILES_K8S_COLOCATE_PODS_PER_ENGINE_CELL"
+COLOCATE_PODS_PER_TRAINER_CELL_ENV_VAR = "MILES_K8S_COLOCATE_PODS_PER_TRAINER_CELL"
 RELEASE_ENV_VAR = "MILES_K8S_RELEASE"
 NAMESPACE_FILE = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 INSTANCE_LABEL = "app.kubernetes.io/instance"
@@ -69,6 +77,7 @@ def install_kubernetes_workers(
     delete_pods: Callable[[list[str]], Awaitable[None]],
     num_gpus_per_node: int = DEFAULT_GPUS_PER_NODE,
     label_keys: CellLabelKeys | None = None,
+    colocated_with: Callable[[str], list[str]] | None = None,
 ) -> KubernetesProviderFactory:
     watched_spec_names = fleet_spec_names(specs=specs)
     provider = SharedK8sWorkerProvider(
@@ -94,6 +103,7 @@ def install_kubernetes_workers(
             provider=provider,
             spec_names=watched_spec_names,
             delete_pods=delete_pods,
+            colocated_with=colocated_with,
         ),
     )
 
@@ -105,10 +115,11 @@ class WatchingK8sCellOperations:
         provider: SharedK8sWorkerProvider,
         spec_names: list[str],
         delete_pods: Callable[[list[str]], Awaitable[None]],
+        colocated_with: Callable[[str], list[str]] | None = None,
     ) -> None:
         self._provider = provider
         self._spec_names = spec_names
-        self._operations = K8sCellOperations(provider=provider, delete_pods=delete_pods)
+        self._operations = K8sCellOperations(provider=provider, delete_pods=delete_pods, colocated_with=colocated_with)
         self._stop_watch: StopWatchFn | None = None
 
     async def cell_infos(self, spec_names: list[str]) -> dict[str, CellInfo]:
@@ -213,6 +224,24 @@ def is_fleet_spec(spec: BaseWorkerSpec) -> bool:
     return spec.scheduling.num_workers_per_cell * spec.scheduling.num_gpu_slots_per_worker > 0
 
 
+def current_colocated_with() -> Callable[[str], list[str]] | None:
+    engine_fleet = os.environ.get(COLOCATE_ENGINE_FLEET_ENV_VAR, "")
+    if not engine_fleet:
+        return None
+
+    return colocated_pods_of(
+        layout=PairingLayout(
+            engine_cells=int(os.environ[COLOCATE_ENGINE_CELLS_ENV_VAR]),
+            trainer_cells=int(os.environ[COLOCATE_TRAINER_CELLS_ENV_VAR]),
+            pods_per_engine_cell=int(os.environ[COLOCATE_PODS_PER_ENGINE_CELL_ENV_VAR]),
+            pods_per_trainer_cell=int(os.environ[COLOCATE_PODS_PER_TRAINER_CELL_ENV_VAR]),
+        ),
+        engine_fleet=engine_fleet,
+        trainer_fleet=os.environ[COLOCATE_TRAINER_FLEET_ENV_VAR],
+        trainer_spec_name=os.environ[COLOCATE_TRAINER_SPEC_ENV_VAR],
+    )
+
+
 def current_release() -> str:
     release = os.environ.get(RELEASE_ENV_VAR, "")
     assert release, (
@@ -285,6 +314,7 @@ def _install_kubernetes_workers_from_args(args) -> KubernetesProviderFactory:
         kube_client_factory=_create_kube_client,
         delete_pods=_pod_deleter(namespace=namespace),
         num_gpus_per_node=args.num_gpus_per_node,
+        colocated_with=current_colocated_with(),
         label_keys=current_label_keys(),
     )
 

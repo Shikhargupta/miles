@@ -16,6 +16,8 @@ from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandCont
 
 logger = logging.getLogger(__name__)
 
+_COLOCATED_WORKER_TYPES = ("regular", "decode")
+
 
 def specs_router(args) -> list[CommandWorkerSpec]:
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
@@ -107,6 +109,7 @@ def compute_engine_spec_name(model_idx: int, group_index: int) -> str:
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    colocated_spec_name = compute_colocated_engine_spec_name(args)
 
     return [
         _compute_spec_inference_engine(
@@ -115,6 +118,9 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
             group_index=group_index,
             model_cfg=model_cfg,
             server_group_config=server_group_config,
+            colocate_with_trainer=(
+                compute_engine_spec_name(model_idx=model_idx, group_index=group_index) == colocated_spec_name
+            ),
         )
         for model_idx, model_cfg in enumerate(config.models)
         for group_index, server_group_config in enumerate(model_cfg.server_groups)
@@ -126,12 +132,41 @@ def compute_engine_spec_names(args) -> list[str]:
     return [spec.name for spec in specs_inference_engine(args)]
 
 
+def compute_colocated_engine_spec_name(args) -> str | None:
+    if not args.colocate:
+        return None
+
+    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    deployed = [
+        (compute_engine_spec_name(model_idx=model_idx, group_index=group_index), model_cfg, server_group_config)
+        for model_idx, model_cfg in enumerate(config.models)
+        for group_index, server_group_config in enumerate(model_cfg.server_groups)
+        if server_group_config.worker_type != "placeholder"
+    ]
+
+    if args.colocate_engine_spec is not None:
+        names = [name for name, _model_cfg, _group in deployed]
+        assert args.colocate_engine_spec in names, (
+            f"--colocate-engine-spec '{args.colocate_engine_spec}' names no inference engine of this run, "
+            f"which deploys {names}"
+        )
+        return args.colocate_engine_spec
+
+    candidates = [
+        name
+        for name, model_cfg, server_group_config in deployed
+        if model_cfg.update_weights and server_group_config.worker_type in _COLOCATED_WORKER_TYPES
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _compute_spec_inference_engine(
     args,
     model_idx: int,
     group_index: int,
     model_cfg: ModelConfig,
     server_group_config: ServerGroupConfig,
+    colocate_with_trainer: bool,
 ) -> CommandWorkerSpec:
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         dist_init = ctx.self_addrs["dist_init"]
@@ -161,6 +196,7 @@ def _compute_spec_inference_engine(
         num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
         pg_name="rollout",
         pg_slot_offset=server_group_config.gpu_offset,
+        colocate_with_trainer=colocate_with_trainer,
     )
 
     num_workers_total = server_group_config.num_gpus // scheduling.num_gpu_slots_per_worker
