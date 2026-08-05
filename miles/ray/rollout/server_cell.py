@@ -71,7 +71,9 @@ class ServerCell:
     def _get_health_checker_active_and_epoch(self) -> ActiveAndEpoch:
         controller_active_and_epoch = self.global_health_checker_activeness()
         cell_active = isinstance(self._state, (StatePendingWeights, StateServing))
-        return ActiveAndEpoch(active=cell_active and controller_active_and_epoch.active, epoch=controller_active_and_epoch.epoch)
+        return ActiveAndEpoch(
+            active=cell_active and controller_active_and_epoch.active, epoch=controller_active_and_epoch.epoch
+        )
 
     def __del__(self) -> None:
         assert isinstance(self._state, StateDisposed), (
