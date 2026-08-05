@@ -48,6 +48,8 @@ def _render_cli_argv(args_obj: _ArgsT, *, cli_defaults: _ArgsT) -> list[str]:
     argv: list[str] = []
     for field in dataclasses.fields(args_obj):
         value = getattr(args_obj, field.name)
+        if value is None:
+            continue
         if value == getattr(cli_defaults, field.name):
             continue
 
@@ -56,9 +58,15 @@ def _render_cli_argv(args_obj: _ArgsT, *, cli_defaults: _ArgsT) -> list[str]:
             assert value, f"{flag} cannot be rendered: the CLI only has a flag for the non-default value"
             argv.append(flag)
         elif isinstance(value, list):
+            assert all(
+                item is not None for item in value
+            ), f"{flag} cannot be rendered: a None element of {field.name} cannot round-trip through the CLI"
             argv.append(flag)
             argv.extend(str(item) for item in value)
         elif isinstance(value, dict):
+            assert all(
+                item is not None for item in value.values()
+            ), f"{flag} cannot be rendered: a None value in {field.name} cannot round-trip through the CLI"
             argv.append(flag)
             argv.extend(f"{key}={item}" for key, item in value.items())
         else:

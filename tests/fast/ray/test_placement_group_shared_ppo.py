@@ -1,7 +1,7 @@
 from argparse import Namespace
-from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.provider_fixtures import FakeProviderFactory
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
@@ -44,13 +44,11 @@ class _RecordingRolloutExecutor:
     def __init__(self):
         self.train_parallel_config = None
         self.loaded_rollout_id = None
-        self.set_train_parallel_config = SimpleNamespace(remote=self._set_train_parallel_config)
-        self.load = SimpleNamespace(remote=self._load)
 
-    async def _set_train_parallel_config(self, config):
+    async def set_train_parallel_config(self, *, config):
         self.train_parallel_config = config
 
-    async def _load(self, rollout_id):
+    async def load(self, *, rollout_id):
         self.loaded_rollout_id = rollout_id
 
 
@@ -104,6 +102,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         args,
         inference_controller=object(),
         rollout_executor=_RecordingRolloutExecutor(),
+        providers=FakeProviderFactory(),
     )
 
     actor, critic = groups
@@ -127,6 +126,7 @@ async def test_train_parallel_config_travels_from_trainer_to_rollout_executor(mo
         _training_models_args(use_critic=False),
         inference_controller=object(),
         rollout_executor=rollout_executor,
+        providers=FakeProviderFactory(),
     )
 
     assert rollout_executor.train_parallel_config == {"dp_size": 2}
@@ -142,6 +142,7 @@ async def test_train_parallel_config_comes_from_the_actor_not_the_critic(monkeyp
         _training_models_args(use_critic=True),
         inference_controller=object(),
         rollout_executor=rollout_executor,
+        providers=FakeProviderFactory(),
     )
 
     assert rollout_executor.train_parallel_config == {"dp_size": 2}

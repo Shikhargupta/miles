@@ -16,6 +16,7 @@ class DemoServeWorker:
 
 
 _WORKER_CLASS_PATH = f"{DemoServeWorker.__module__}.{DemoServeWorker.__qualname__}"
+_WORKER_ARGV = ["--rollout-num-gpus", "8"]
 
 
 def _make_spec(
@@ -60,7 +61,7 @@ def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:
 
 
 async def _launch(specs, pgs=None) -> RayWorkerManager:
-    manager = RayWorkerManager()
+    manager = RayWorkerManager(worker_argv=_WORKER_ARGV)
     await manager.init(specs, pgs if pgs is not None else {})
     return manager
 
@@ -78,7 +79,7 @@ class TestServeWorkersAreLaunched:
         """A serve spec names its worker class instead of running a shell command."""
         await _launch([_make_spec(num_workers_per_cell=2)])
 
-        assert _actor_classes(fake_ray_cluster) == [DemoServeWorker, DemoServeWorker]
+        assert [issubclass(cls, DemoServeWorker) for cls in _actor_classes(fake_ray_cluster)] == [True, True]
 
     async def test_no_launch_command_is_ever_sent(self, fake_ray_cluster: FakeRayCluster):
         """Serve workers start with their constructor, so post_setup must stay silent."""
@@ -86,20 +87,36 @@ class TestServeWorkersAreLaunched:
 
         assert fake_ray_cluster.calls_of("run") == []
 
-    async def test_each_worker_is_constructed_with_its_own_kwargs(self, fake_ray_cluster: FakeRayCluster):
-        """Every rank needs its own identity, which is what the launch context carries."""
-        await _launch([_make_spec(num_workers_per_cell=3, ctor_kwargs=lambda ctx: {"rank": ctx.worker_in_cell_index})])
+    async def test_the_manager_never_evaluates_the_ctor_kwargs_of_a_spec(self, fake_ray_cluster: FakeRayCluster):
+        """ctor kwargs may hold a live provider, which cannot be shipped from here to the actor."""
 
-        assert [kwargs["rank"] for kwargs in fake_ray_cluster.ctor_kwargs] == [0, 1, 2]
+        def explode(_ctx) -> dict:
+            raise AssertionError("ctor kwargs were computed in the manager process")
 
-    async def test_gpu_ids_reach_the_constructor(self, fake_ray_cluster: FakeRayCluster):
+        await _launch([_make_spec(num_workers_per_cell=2, ctor_kwargs=explode)])
+
+        assert len(fake_ray_cluster.handles) == 2
+
+    async def test_each_worker_is_told_which_rank_of_which_spec_it_is(self, fake_ray_cluster: FakeRayCluster):
+        """Every rank needs its own identity, and the actor rebuilds its whole context from it."""
+        await _launch([_make_spec(num_workers_per_cell=3)])
+
+        assert [kwargs["worker_in_cell_index"] for kwargs in fake_ray_cluster.ctor_kwargs] == [0, 1, 2]
+        assert {kwargs["spec_name"] for kwargs in fake_ray_cluster.ctor_kwargs} == {"trainer"}
+
+    async def test_the_runs_argv_reaches_every_actor(self, fake_ray_cluster: FakeRayCluster):
+        """The actor recomputes the run's specs from this argv, so it is the whole run description it gets."""
+        await _launch([_make_spec()])
+
+        assert fake_ray_cluster.ctor_kwargs[0]["worker_argv"] == _WORKER_ARGV
+
+    async def test_gpu_ids_reach_the_actor(self, fake_ray_cluster: FakeRayCluster):
         """A serve worker cannot ask ray for its slot, so the manager must tell it."""
         spec = _make_spec(
             num_workers_per_cell=2,
             num_gpu_slots_per_worker=1,
             num_gpus_per_worker=0.4,
             pg_name="actor",
-            ctor_kwargs=lambda ctx: {"gpu_ids": ctx.gpu_ids},
         )
 
         await _launch([spec], _make_pgs())

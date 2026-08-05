@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -8,10 +11,12 @@ import httpx
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.rpc.client.call import RpcCall
 from miles.utils.workers.rpc.client.misc import (
+    NEVER_REACHED_SERVER_ERRORS,
     RETRY_INITIAL_DELAY_SECONDS,
     RETRYABLE_ERRORS,
     BootUuidPin,
     RpcTransport,
+    ServerRestartedError,
 )
 from miles.utils.workers.rpc.common.metadata import RpcMethodSpec, collect_rpc_method_specs
 from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, HealthResponse
@@ -21,6 +26,9 @@ DEFAULT_CALL_TIMEOUT_SECONDS = 3600.0
 DEFAULT_READY_TIMEOUT_SECONDS = 600.0
 
 _HEALTH_TIMEOUT_SECONDS = 5.0
+_WAIT_DEAD_PROBE_INTERVAL_SECONDS = 1.0
+
+logger = logging.getLogger(__name__)
 
 
 class RpcWorkerHandle(BaseWorkerHandle):
@@ -79,7 +87,29 @@ class RpcWorkerHandle(BaseWorkerHandle):
             ) from e
 
     async def wait_dead(self, *, timeout: float) -> None:
-        raise NotImplementedError("RpcWorkerHandle cannot confirm worker death yet")
+        deadline = time.monotonic() + timeout
+        while True:
+            if await self._probe_is_dead():
+                return
+            if time.monotonic() >= deadline:
+                logger.error(
+                    "Timed out after %.0fs waiting for %s to die; proceeding anyway",
+                    timeout,
+                    self._worker_cls_name,
+                )
+                return
+            await asyncio.sleep(_WAIT_DEAD_PROBE_INTERVAL_SECONDS)
+
+    async def _probe_is_dead(self) -> bool:
+        try:
+            await self._transport.request(
+                "GET", HEALTH_PATH, seconds=_HEALTH_TIMEOUT_SECONDS, response_model=HealthResponse
+            )
+        except (ServerRestartedError, *NEVER_REACHED_SERVER_ERRORS):
+            return True
+        except RETRYABLE_ERRORS:
+            return False
+        return False
 
     async def _perform_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
         call = RpcCall(

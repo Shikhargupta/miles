@@ -2,14 +2,19 @@ import copy
 import os
 from pathlib import Path
 
-from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.indep_dp import create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
+from miles.utils.workers.worker_spec import (
+    MASTER_PORT_NAME,
+    PortInfo,
+    SchedulingSpec,
+    ServeWorkerSpec,
+    WorkerLaunchContext,
+)
 
-MASTER_PORT_NAME = "master"
+TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
 _TRAINER_ACTOR_CLASSES = {
     "megatron": "miles.backends.megatron_utils.actor.MegatronTrainRayActor",

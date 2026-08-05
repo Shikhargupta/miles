@@ -183,7 +183,7 @@ def manager_factory(ray_local_mode) -> Callable[..., ray.actor.ActorHandle]:
     handles: list[ray.actor.ActorHandle] = []
 
     def _launch(specs: list[CommandWorkerSpec], pgs: dict[str, Any] | None = None) -> ray.actor.ActorHandle:
-        handle = RayWorkerManager.launch(specs, pgs if pgs is not None else {})
+        handle = RayWorkerManager.launch(specs, pgs if pgs is not None else {}, worker_argv=[])
         handles.append(handle)
         return handle
 
@@ -230,7 +230,7 @@ def cell_stoppable_manager_factory(ray_local_mode) -> Callable[..., ray.actor.Ac
     handles: list[ray.actor.ActorHandle] = []
 
     def _launch(specs: list[CommandWorkerSpec], pgs: dict[str, Any] | None = None) -> ray.actor.ActorHandle:
-        handle = ray.remote(CellStoppableManager).options(name=_ACTOR_NAME).remote()
+        handle = ray.remote(CellStoppableManager).options(name=_ACTOR_NAME).remote(worker_argv=[])
         handles.append(handle)
         ray.get(handle.init.remote(specs, pgs if pgs is not None else {}))
         return handle

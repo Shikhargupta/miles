@@ -8,9 +8,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.specs.train import compute_critic_args
 from miles.ray.train.group import TrainerController
-from ..utils.ray_utils import compute_ray_pin_head_options
-from .rollout.inference_controller import InferenceController
-from .rollout.rollout_executor import RolloutExecutor
+from miles.utils.workers.worker_provider.factory import ProviderFactory
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +122,10 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     return ans
 
 
-async def create_training_models(args, inference_controller, rollout_executor):
+async def create_training_models(args, inference_controller, rollout_executor, *, providers: ProviderFactory):
     actor_model = await TrainerController.create(
         args=args,
+        providers=providers,
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
         with_opd_teacher=args.use_opd and args.opd_type == "megatron",
@@ -137,6 +136,7 @@ async def create_training_models(args, inference_controller, rollout_executor):
     if args.use_critic:
         critic_model = await TrainerController.create(
             args=compute_critic_args(args),
+            providers=providers,
             role="critic",
             with_ref=False,
             inference_controller=None,
@@ -151,34 +151,7 @@ async def create_training_models(args, inference_controller, rollout_executor):
     if args.start_rollout_id is None:
         args.start_rollout_id = start_rollout_ids[0]
 
-    await rollout_executor.set_train_parallel_config.remote(await actor_model.get_train_parallel_config())
-    await rollout_executor.load.remote(args.start_rollout_id - 1)
+    await rollout_executor.set_train_parallel_config(config=await actor_model.get_train_parallel_config())
+    await rollout_executor.load(rollout_id=args.start_rollout_id - 1)
 
     return actor_model, critic_model
-
-
-class RolloutComponents(NamedTuple):
-    inference_controller: InferenceController
-    rollout_executor: ray.actor.ActorHandle
-    num_rollout_per_epoch: int | None
-
-
-async def create_rollout_components(args) -> RolloutComponents:
-    inference_controller = await InferenceController.create(args)
-
-    rollout_executor = RolloutExecutor.options(
-        num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
-    ).remote(args=args)
-
-    # calculate num_rollout from num_epoch
-    num_rollout_per_epoch = None
-    if args.num_rollout is None:
-        num_rollout_per_epoch = ray.get(rollout_executor.get_num_rollout_per_epoch.remote())
-        args.num_rollout = num_rollout_per_epoch * args.num_epoch
-        assert args.num_rollout > 0
-
-    return RolloutComponents(
-        inference_controller=inference_controller,
-        rollout_executor=rollout_executor,
-        num_rollout_per_epoch=num_rollout_per_epoch,
-    )

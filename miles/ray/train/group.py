@@ -26,7 +26,7 @@ from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadli
 from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.factory import ProviderFactory
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class TrainerController:
     async def create(
         args,
         *,
+        providers: ProviderFactory,
         inference_controller: object | None,
         role: str,
         with_ref: bool,
@@ -48,13 +49,13 @@ class TrainerController:
     ) -> "TrainerController":
         group = TrainerController(
             args=args,
+            providers=providers,
             inference_controller=inference_controller,
             role=role,
             with_ref=with_ref,
             with_opd_teacher=with_opd_teacher,
         )
-        provider: BaseWorkerProvider = RayWorkerProvider.create()
-        group._watcher_disposer = await provider.watch_cells(group._reconcile, spec_names=[group._spec_name])
+        group._watcher_disposer = await group._provider.watch_cells(group._reconcile, spec_names=[group._spec_name])
         await group._wait_expected_num_cells()
         return group
 
@@ -62,6 +63,7 @@ class TrainerController:
         self,
         args,
         *,
+        providers: ProviderFactory,
         inference_controller: object | None,
         role: str,
         with_ref: bool,
@@ -73,6 +75,7 @@ class TrainerController:
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
         self._spec_name = compute_trainer_spec_name(role)
+        self._provider: BaseWorkerProvider = providers.cells(spec_names=[self._spec_name])
         self._watcher_disposer: StopWatchFn | None = None
 
         self._indep_dp_quorum_id = 0
@@ -93,7 +96,9 @@ class TrainerController:
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
-        self._test_action_executor = FTTestActionGroupExecutor.from_args(args, group=self)
+        self._test_action_executor = FTTestActionGroupExecutor.from_args(
+            args, group=self, cell_operations=providers.cell_operations()
+        )
 
     @property
     def _expected_num_cells(self) -> int:
@@ -151,6 +156,7 @@ class TrainerController:
             cell_index=cell_index,
             workers_hash=workers_hash,
             health_checker=NoopHealthChecker(),
+            provider=self._provider,
         )
 
         if self._health_checker_config is not None:

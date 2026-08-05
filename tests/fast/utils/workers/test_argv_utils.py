@@ -9,7 +9,13 @@ from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers import argv_utils
-from miles.utils.workers.argv_utils import CONFIG_JSON_FLAG, config_to_argv, parse_config_argv, render_cli_argv
+from miles.utils.workers.argv_utils import (
+    CONFIG_JSON_FLAG,
+    _render_cli_argv,
+    config_to_argv,
+    parse_config_argv,
+    render_cli_argv,
+)
 
 
 class _DemoConfig(FrozenStrictBaseModel):
@@ -218,6 +224,127 @@ class TestRenderCliArgv:
                 make_parser=_make_parser,
                 from_parsed=lambda parsed: _make_cli_default_args(count=999),
             )
+
+
+@dataclasses.dataclass
+class _NullableArgs:
+    text: str | None = "text-default"
+    number: int | None = 7
+    items: list[str] | None = None
+    mapping: dict[str, str] | None = None
+
+
+@dataclasses.dataclass
+class _DerivedArgs:
+    mode: str = "off"
+    label: str | None = None
+    count: int = 0
+    verbose: bool = False
+
+
+def _make_derived_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", default="off")
+    parser.add_argument("--label", default=None)
+    parser.add_argument("--count", type=int, default=0)
+    parser.add_argument("--verbose", action="store_true")
+    return parser
+
+
+def _from_parsed_derived(parsed: argparse.Namespace) -> _DerivedArgs:
+    return _DerivedArgs(
+        mode=parsed.mode,
+        label=parsed.label if parsed.mode == "on" else "off-label",
+        count=parsed.count,
+        verbose=parsed.verbose,
+    )
+
+
+class TestRenderCliArgvNoneHandling:
+    def test_a_none_value_is_omitted_instead_of_stringified(self):
+        """A None-valued option disappears rather than rendering the literal word None."""
+        argv = _render_cli_argv(_NullableArgs(text=None), cli_defaults=_NullableArgs())
+        assert argv == []
+        assert "None" not in argv
+
+    def test_a_none_value_is_omitted_even_when_the_cli_default_differs(self):
+        """None never renders a value, whatever the CLI default for that option is."""
+        argv = _render_cli_argv(_NullableArgs(text=None, number=None), cli_defaults=_NullableArgs(text="other"))
+        assert argv == []
+
+    def test_a_none_list_or_dict_option_is_omitted(self):
+        """Nullable list and dict options vanish when they are None."""
+        argv = _render_cli_argv(_NullableArgs(items=None, mapping=None), cli_defaults=_NullableArgs(items=["a"]))
+        assert argv == []
+
+    def test_an_empty_string_value_is_still_rendered(self):
+        """The empty string is a real value and keeps its flag and argument."""
+        argv = _render_cli_argv(_NullableArgs(text=""), cli_defaults=_NullableArgs())
+        assert argv == ["--text", ""]
+
+    def test_empty_string_survives_a_full_roundtrip(self):
+        """An empty-string option parses back to an equal object."""
+        args_obj = _make_cli_default_args(name="")
+        argv = _render(args_obj)
+        assert argv == ["--name", ""]
+        assert _parse(argv) == args_obj
+
+    def test_falsy_but_not_none_values_are_rendered(self):
+        """Zero and empty containers render, unlike None."""
+        argv = _render_cli_argv(_NullableArgs(number=0, items=[], mapping={}), cli_defaults=_NullableArgs(items=["a"]))
+        assert argv == ["--number", "0", "--items", "--mapping"]
+
+    def test_a_false_flag_matching_its_cli_default_is_omitted(self):
+        """A store-true flag left False is absent because that is its parsed value."""
+        args_obj = _make_cli_default_args(verbose=False, count=2)
+        argv = _render(args_obj)
+        assert "--verbose" not in argv
+        assert _parse(argv) == args_obj
+
+    def test_a_zero_value_differing_from_the_cli_default_is_rendered(self):
+        """A numeric zero that differs from the CLI default reaches the command line."""
+        args_obj = _make_cli_default_args(ratio=0.0)
+        argv = _render(args_obj)
+        assert argv == ["--ratio", "0.0"]
+        assert _parse(argv) == args_obj
+
+    def test_a_derived_none_field_roundtrips_once_the_flag_is_omitted(self):
+        """Omitting a None option lets a derived field parse back to None."""
+        args_obj = _DerivedArgs(mode="on", label=None)
+        argv = render_cli_argv(args_obj, make_parser=_make_derived_parser, from_parsed=_from_parsed_derived)
+        assert argv == ["--mode", "on"]
+        assert _from_parsed_derived(_make_derived_parser().parse_args(argv)) == args_obj
+
+    def test_a_none_element_of_a_list_fails_loudly_instead_of_rendering_the_word_none(self):
+        """A None inside a list value aborts naming the field instead of emitting "None"."""
+        with pytest.raises(AssertionError, match="--items cannot be rendered.*items"):
+            _render_cli_argv(_NullableArgs(items=["a", None]), cli_defaults=_NullableArgs())
+
+    def test_a_none_value_in_a_dict_fails_loudly_instead_of_rendering_the_word_none(self):
+        """A None inside a dict value aborts naming the field instead of emitting "key=None"."""
+        with pytest.raises(AssertionError, match="--mapping cannot be rendered.*mapping"):
+            _render_cli_argv(_NullableArgs(mapping={"k": None}), cli_defaults=_NullableArgs())
+
+    def test_a_none_inside_a_container_never_reaches_the_rendered_argv(self):
+        """Regression: rendering a list holding None used to produce the literal string "None"."""
+        with pytest.raises(AssertionError, match="cannot be rendered"):
+            _render(_make_cli_default_args(items=["a", None]))
+
+    def test_render_parse_render_is_stable(self):
+        """Reparsing a rendered argv and rendering again yields the identical argv."""
+        args_obj = _make_cli_default_args(
+            name="other",
+            count=3,
+            ratio=0.0,
+            verbose=True,
+            items=["a", "b"],
+            mapping={"k1": "v1"},
+            cli_filled=None,
+        )
+        first = _render_cli_argv(args_obj, cli_defaults=_parse([]))
+        second = _render_cli_argv(_parse(first), cli_defaults=_parse([]))
+        assert first == second
+        assert "None" not in first
 
 
 @dataclasses.dataclass

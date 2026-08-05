@@ -2,8 +2,9 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_rollout_components, create_training_models
-from miles.ray.wiring import launch_worker_manager
+from miles.ray.placement_group import create_training_models
+from miles.ray.rollout.components import create_rollout_components
+from miles.ray.wiring import create_provider_factory
 from miles.utils import object_store
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.async_utils import eager_create_task
@@ -25,16 +26,20 @@ async def train(args):
     validate_async_off_policy_correction(args)
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    _worker_manager = launch_worker_manager(args)
+    providers = create_provider_factory(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
+        args, providers=providers
+    )
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
+    actor_model, critic_model = await create_training_models(
+        args, inference_controller, rollout_executor, providers=providers
+    )
 
     if args.api_server_port:
         start_api_server(
@@ -43,6 +48,7 @@ async def train(args):
             inference_controller=inference_controller,
             port=args.api_server_port,
             ft_components=args.ft_components,
+            cell_operations=providers.cell_operations(),
         )
 
     maybe_start_mini_ft_controller(args)
@@ -60,7 +66,7 @@ async def train(args):
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
-        await rollout_executor.eval.remote(0)
+        await rollout_executor.eval(rollout_id=0)
 
     async def save_training_model(model, rollout_id, force_sync):
         if args.use_critic and args.offload_train:
@@ -71,7 +77,7 @@ async def train(args):
 
     async def prepare_and_generate(rollout_id):
         await inference_controller.prepare_rollout(rollout_id)
-        return await rollout_executor.get.remote(rollout_id)
+        return await rollout_executor.get(rollout_id=rollout_id)
 
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
@@ -104,7 +110,7 @@ async def train(args):
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_executor.save.remote(rollout_id)
+            await rollout_executor.save(rollout_id=rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -116,7 +122,7 @@ async def train(args):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await inference_controller.prepare_eval()
-            await rollout_executor.eval.remote(rollout_id)
+            await rollout_executor.eval(rollout_id=rollout_id)
 
         if (
             args.debug_exit_after_rollout is not None
@@ -129,7 +135,7 @@ async def train(args):
             )
             break
 
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
 
 

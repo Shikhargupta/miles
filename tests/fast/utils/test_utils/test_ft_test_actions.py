@@ -1,6 +1,5 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -98,20 +97,16 @@ class FakeGroup:
         self.cell_ids = _CELL_IDS[:num_cells]
 
 
-class FakeRemoteMethod:
-    def __init__(self, sink: list[str]) -> None:
-        self._sink = sink
-
-    async def remote(self, cell_ids: list[str]) -> None:
-        self._sink.extend(cell_ids)
-
-
-class FakeWorkerManager:
+class FakeCellOperations:
     def __init__(self) -> None:
         self.stopped: list[str] = []
         self.started: list[str] = []
-        self.stop_cells = FakeRemoteMethod(self.stopped)
-        self.start_cells = FakeRemoteMethod(self.started)
+
+    async def suspend(self, cell_id: str) -> None:
+        self.stopped.append(cell_id)
+
+    async def resume(self, cell_id: str) -> None:
+        self.started.append(cell_id)
 
 
 class TestResolveCellId:
@@ -129,70 +124,67 @@ class TestResolveCellId:
 class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end triggers the worker manager with the resolved cell id on its rollout."""
+        """stop_cell_at_end suspends the resolved cell through the backend's operations."""
         group = FakeGroup(num_cells=3)
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+        executor = FTTestActionGroupExecutor(actions=[action], group=group, cell_operations=operations)
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(5)
+        await executor.run_after_step(5)
 
-        assert manager.stopped == ["trainer-actor-1"]
-        assert manager.started == []
+        assert operations.stopped == ["trainer-actor-1"]
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
         group = FakeGroup(num_cells=3)
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+        executor = FTTestActionGroupExecutor(actions=[action], group=group, cell_operations=operations)
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(4)
+        await executor.run_after_step(4)
 
-        assert manager.stopped == []
-        assert manager.started == []
+        assert operations.stopped == []
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_start_cell_with_default_index_resolves_to_last_cell(self):
-        """start_cell_at_end with cell_index -1 calls the worker manager on the last cell."""
+        """start_cell_at_end with cell_index -1 resumes the last cell."""
         group = FakeGroup(num_cells=3)
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_index=-1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+        executor = FTTestActionGroupExecutor(actions=[action], group=group, cell_operations=operations)
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(2)
+        await executor.run_after_step(2)
 
-        assert manager.started == ["trainer-actor-2"]
-        assert manager.stopped == []
+        assert operations.started == ["trainer-actor-2"]
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_two_actions_same_rollout_both_fire(self):
         """Two actions sharing the same rollout both dispatch to their respective group methods."""
         group = FakeGroup(num_cells=3)
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_index=0)
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_index=2)
-        executor = FTTestActionGroupExecutor(actions=[stop_action, start_action], group=group)
+        executor = FTTestActionGroupExecutor(
+            actions=[stop_action, start_action], group=group, cell_operations=operations
+        )
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(7)
+        await executor.run_after_step(7)
 
-        assert manager.stopped == ["trainer-actor-0"]
-        assert manager.started == ["trainer-actor-2"]
+        assert operations.stopped == ["trainer-actor-0"]
+        assert operations.started == ["trainer-actor-2"]
 
     @pytest.mark.asyncio
     async def test_empty_actions_is_noop(self):
         """An executor with no actions performs no group calls."""
         group = FakeGroup(num_cells=3)
-        manager = FakeWorkerManager()
-        executor = FTTestActionGroupExecutor(actions=[], group=group)
+        operations = FakeCellOperations()
+        executor = FTTestActionGroupExecutor(actions=[], group=group, cell_operations=operations)
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(5)
+        await executor.run_after_step(5)
 
-        assert manager.stopped == []
-        assert manager.started == []
+        assert operations.stopped == []
+        assert operations.started == []

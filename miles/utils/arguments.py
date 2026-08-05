@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 from typing import Any
 
 import yaml
@@ -109,8 +110,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=tuple(backend.value for backend in ClusterBackend),
                 help=(
                     "Which backend provides the worker processes: "
-                    "`ray` launches them from the driver, `kubernetes` expects them to already exist. "
-                    "`kubernetes` is refused until a later milestone provisions those workers."
+                    "`ray` launches them from the driver, `kubernetes` expects the platform to have "
+                    "created them already and observes them by their pod labels."
                 ),
             )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
@@ -2443,6 +2444,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
     return add_miles_arguments
 
 
+def parse_args_from_argv(argv: list[str], add_custom_arguments=None):
+    original_argv = sys.argv
+    sys.argv = [original_argv[0], *argv]
+    try:
+        return parse_args(add_custom_arguments)
+    finally:
+        sys.argv = original_argv
+
+
 def parse_args(add_custom_arguments=None):
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
@@ -3123,11 +3133,6 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
-
-    assert args.cluster_backend == ClusterBackend.RAY.value, (
-        f"--cluster-backend {args.cluster_backend} is not usable yet: "
-        f"only {ClusterBackend.RAY.value} provisions workers today"
-    )
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 

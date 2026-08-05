@@ -23,7 +23,7 @@ from miles.utils.context_lock import (
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.misc import SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.factory import ProviderFactory
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
@@ -38,32 +38,37 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 class InferenceController:
     @staticmethod
     @lock_exempt
-    async def create(args) -> "InferenceController":
-        controller = InferenceController(args)
+    async def create(args, *, providers: ProviderFactory) -> "InferenceController":
+        engine_spec_names: list[str] = [] if args.debug_train_only else compute_engine_spec_names(args)
+        engine_provider: BaseWorkerProvider | None = (
+            None if args.debug_train_only else providers.cells(spec_names=engine_spec_names)
+        )
+        controller = InferenceController(args, engine_provider=engine_provider)
         if not args.debug_train_only:
             controller.servers = await create_rollout_servers(
                 args,
                 context_lock=controller.context_lock,
                 global_health_checker_activeness=lambda: controller._health_checker_activeness,
+                providers=providers,
+                engine_provider=engine_provider,
             )
 
-            # TODO: may change to InferenceController.init(engine_provider, ...) later
-            provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
             controller._watcher_disposers.append(
-                await provider.watch_cells(controller._reconcile, spec_names=compute_engine_spec_names(args))
+                await engine_provider.watch_cells(controller._reconcile, spec_names=engine_spec_names)
             )
             controller._ticker = SimpleTicker(controller._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
             dashboard_hooks.register_router(args)
-            await start_session_server(args)
+            await start_session_server(args, providers=providers)
 
             await asyncio.gather(*[srv.wait_expected_num_cells() for srv in controller.servers.values()])
 
         return controller
 
     @lock_exempt
-    def __init__(self, args):
+    def __init__(self, args, *, engine_provider: BaseWorkerProvider | None):
         self.args = args
+        self._engine_provider = engine_provider
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
         self._watcher_disposers: list[StopWatchFn] = []
@@ -75,7 +80,8 @@ class InferenceController:
     @with_lock
     async def prepare_rollout(self, rollout_id):
         await self._health_monitoring_resume()
-        dashboard_hooks.register_engines(self.servers)
+        if (engine_provider := self._engine_provider) is not None:
+            dashboard_hooks.register_engines(self.servers, provider=engine_provider)
 
     @with_lock
     async def prepare_eval(self):

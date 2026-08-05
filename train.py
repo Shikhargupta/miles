@@ -4,8 +4,9 @@ import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.ray.placement_group import create_rollout_components, create_training_models
-from miles.ray.wiring import launch_worker_manager
+from miles.ray.placement_group import create_training_models
+from miles.ray.rollout.components import create_rollout_components
+from miles.ray.wiring import create_provider_factory
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -24,16 +25,20 @@ async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    _worker_manager = launch_worker_manager(args)
+    providers = create_provider_factory(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
+        args, providers=providers
+    )
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
+    actor_model, critic_model = await create_training_models(
+        args, inference_controller, rollout_executor, providers=providers
+    )
 
     if args.api_server_port:
         start_api_server(
@@ -42,6 +47,7 @@ async def train(args):
             inference_controller=inference_controller,
             port=args.api_server_port,
             ft_components=args.ft_components,
+            cell_operations=providers.cell_operations(),
         )
 
     maybe_start_mini_ft_controller(args)
@@ -63,7 +69,7 @@ async def train(args):
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
         await inference_controller.prepare_eval()
-        await rollout_executor.eval.remote(rollout_id=0)
+        await rollout_executor.eval(rollout_id=0)
 
     async def offload_train():
         if args.use_critic:
@@ -87,17 +93,17 @@ async def train(args):
             await save_training_model(actor_model)
         if args.use_critic:
             await save_training_model(critic_model)
-        await rollout_executor.save.remote(rollout_id)
+        await rollout_executor.save(rollout_id=rollout_id)
 
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
             await inference_controller.prepare_eval()
-            await rollout_executor.eval.remote(rollout_id)
+            await rollout_executor.eval(rollout_id=rollout_id)
 
         await inference_controller.prepare_rollout(rollout_id)
-        rollout_data_pack = await rollout_executor.get.remote(rollout_id)
+        rollout_data_pack = await rollout_executor.get(rollout_id=rollout_id)
 
         if args.offload_rollout:
             offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
@@ -136,7 +142,7 @@ async def train(args):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await inference_controller.prepare_eval()
-            await rollout_executor.eval.remote(rollout_id)
+            await rollout_executor.eval(rollout_id=rollout_id)
 
         if (
             args.debug_exit_after_rollout is not None
@@ -149,7 +155,7 @@ async def train(args):
             )
             break
 
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
 
 

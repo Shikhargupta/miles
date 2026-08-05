@@ -1,11 +1,13 @@
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import model_validator
+from pydantic import ConfigDict, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.worker_provider.factory import ProviderFactory
 
 RPC_PORT_NAME = "rpc"
+MASTER_PORT_NAME = "master"
 DEFAULT_RPC_PORT = 8000
 
 
@@ -52,12 +54,21 @@ class WorkerLaunchContext(FrozenStrictBaseModel):
     gpu_ids: list[int]
 
 
+class WorkerCtorContext(WorkerLaunchContext):
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    providers: ProviderFactory
+
+
+SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
+
+
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
     port_infos: list[PortInfo]
     env_var: Callable[[WorkerLaunchContext], dict[str, str]]
     scheduling: SchedulingSpec
-    meta: Callable[[WorkerMetaContext], dict[str, Any]] | None = None
+    meta: SpecMetaFn | None = None
 
 
 class HostAndPort(FrozenStrictBaseModel):
@@ -84,8 +95,13 @@ class CommandWorkerSpec(BaseWorkerSpec):
 
 class ServeWorkerSpec(BaseWorkerSpec):
     worker_class: str
-    ctor_kwargs: Callable[[WorkerLaunchContext], dict[str, Any]]
+    ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]]
     concurrency_groups: dict[str, int] | None = None
+    rpc_class: str | None = None
+
+    @property
+    def caller_facing_class(self) -> str:
+        return self.worker_class if self.rpc_class is None else self.rpc_class
 
     @model_validator(mode="before")
     @classmethod

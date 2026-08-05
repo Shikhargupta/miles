@@ -8,8 +8,8 @@ from miles.dashboard import backend, hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
 from miles.utils.timer import Timer
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, WorkerInfo
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -41,7 +41,8 @@ def clean_state(monkeypatch):
     monkeypatch.setattr(hooks, "_phase_sink", None)
     monkeypatch.setattr(hooks, "_engines_fingerprint", None)
     monkeypatch.setattr(hooks, "_resolve_identity", lambda: _Identity(node="10.0.0.3", gpus=[3], rank=7))
-    monkeypatch.setattr(hooks, "_ray_get", lambda refs: refs)
+    monkeypatch.setattr(current, "_provider_factory", None)
+    monkeypatch.setattr(current, "_scoped_provider_factories", {})
     monkeypatch.setattr(backend, "_handle", None)
     monkeypatch.setattr(backend, "_is_primary", False)
     monkeypatch.setattr(backend, "_resolution_failed", False)
@@ -138,14 +139,6 @@ def test_register_train_actor_attaches_train_sink(monkeypatch):
 # ---------------------------- engine registration ---------------------------
 
 
-class _FakeProbe:
-    def __init__(self, value_fn):
-        self._value_fn = value_fn
-
-    def remote(self, *args, **kwargs):
-        return self._value_fn(*args, **kwargs)  # hooks._ray_get is patched to the identity function
-
-
 class FakeWorkerHandle(BaseWorkerHandle):
     async def _get_gpu_uuids(self, *, gpu_ids):
         return [None] * len(gpu_ids)
@@ -157,11 +150,12 @@ class FakeWorkerHandle(BaseWorkerHandle):
         return None
 
 
-class FakeManagerHandle:
-    """Duck-typed RayWorkerManager handle serving per-cell worker infos."""
-
+class FakeWorkerProvider:
     def __init__(self, infos_by_cell):
-        self.get_worker_infos = _FakeProbe(lambda *, cell_id: infos_by_cell[cell_id])
+        self._infos_by_cell = infos_by_cell
+
+    def get_worker_infos_of(self, *, cell_ids):
+        return [self._infos_by_cell[cell_id] for cell_id in cell_ids]
 
 
 class FakeCell:
@@ -203,10 +197,10 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
         ],
         "inference-engine-0-0-1": [_worker_info("inference-engine-0-1-0", "node-a", [2, 3])],
     }
-    monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(lambda: FakeManagerHandle(infos_by_cell)))
+    provider = FakeWorkerProvider(infos_by_cell)
     servers = _servers([FakeCell("http://a:1", cell_index=0), FakeCell("http://b:1", cell_index=1)])
 
-    hooks.register_engines(servers)
+    hooks.register_engines(servers, provider=provider)
     [(args, _)] = handle.update_topology.calls
     [snapshot] = args
     assert [e.addr for e in snapshot.engines] == ["http://a:1", "http://b:1"]
@@ -214,11 +208,11 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     assert multinode.gpus == [["node-a", 0], ["node-a", 1], ["node-b", 0], ["node-b", 1]]
     assert len(multinode.gpu_uuids) == 4
 
-    hooks.register_engines(servers)  # steady state: fingerprint unchanged
+    hooks.register_engines(servers, provider=provider)  # steady state: fingerprint unchanged
     assert len(handle.update_topology.calls) == 1
 
     infos_by_cell["inference-engine-0-0-1"] = [_worker_info("inference-engine-0-1-0", "node-a", [2, 3], generation=2)]
-    hooks.register_engines(servers)  # recovery: same worker, new generation
+    hooks.register_engines(servers, provider=provider)  # recovery: same worker, new generation
     assert len(handle.update_topology.calls) == 2
 
 
@@ -227,10 +221,9 @@ def test_register_engines_skips_dead_cells(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
     infos_by_cell = {"inference-engine-0-0-0": [_worker_info("inference-engine-0-0-0", "n", [0])]}
-    monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(lambda: FakeManagerHandle(infos_by_cell)))
-
     hooks.register_engines(
-        _servers([FakeCell("http://a:1", cell_index=0), FakeCell("http://b:1", cell_index=1, alive=False)])
+        _servers([FakeCell("http://a:1", cell_index=0), FakeCell("http://b:1", cell_index=1, alive=False)]),
+        provider=FakeWorkerProvider(infos_by_cell),
     )
 
     [(args, _)] = handle.update_topology.calls
@@ -242,20 +235,20 @@ def test_register_engines_survives_missing_worker_manager(monkeypatch, caplog):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
 
-    def _no_manager():
-        raise ValueError("worker manager actor not found")
+    class _UnreachableProvider:
+        def get_worker_infos_of(self, *, cell_ids):
+            raise ValueError("worker manager actor not found")
 
-    monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(_no_manager))
     hooks._warner.reset_window_for_test()
     with caplog.at_level(logging.WARNING):
-        hooks.register_engines(_servers([FakeCell("http://a:1")]))
+        hooks.register_engines(_servers([FakeCell("http://a:1")]), provider=_UnreachableProvider())
 
     assert handle.update_topology.calls == []
     assert any("engine registration failed" in r.message for r in caplog.records)
 
 
 def test_register_engines_without_collector_is_noop():
-    hooks.register_engines(_servers([FakeCell("http://a:1")]))
+    hooks.register_engines(_servers([FakeCell("http://a:1")]), provider=FakeWorkerProvider({}))
     assert hooks._engines_fingerprint is None
 
 

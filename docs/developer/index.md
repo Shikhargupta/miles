@@ -31,6 +31,12 @@ short tour for new contributors.
 
   </Card>
 
+  <Card title="Worker Providers" icon="share-nodes" href="/developer/worker-providers">
+
+    How processes address their workers, and which layer may know the cluster backend.
+
+  </Card>
+
   <Card title="Experimental Features" icon="flask" href="/developer/experimental-features">
 
     Opt-in backends and features (FSDP, …) that aren't production-ready yet.

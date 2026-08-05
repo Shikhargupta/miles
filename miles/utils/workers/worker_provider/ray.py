@@ -4,7 +4,8 @@ from functools import partial
 
 import ray.actor
 
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, WorkerInfo
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
@@ -23,7 +24,11 @@ class RayWorkerProvider(BaseWorkerProvider):
         return cls(worker_manager_handle=RayWorkerManager.get_handle())
 
     def get_worker_infos(self, *, cell_id: str) -> list[WorkerInfo]:
-        return ray.get(self._worker_manager_handle.get_worker_infos.remote(cell_id))
+        return self.get_worker_infos_of(cell_ids=[cell_id])[0]
+
+    def get_worker_infos_of(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
+        refs = [self._worker_manager_handle.get_worker_infos.remote(cell_id) for cell_id in cell_ids]
+        return ray.get(refs)
 
     async def get_addr(self, worker_name: str) -> HostAndPort:
         return (await self.get_addrs(worker_name=worker_name))["primary"]

@@ -4,23 +4,23 @@ from miles.ray.specs.inference import compute_router_spec_name, compute_session_
 from miles.utils.http_utils import wait_tcp_ready
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.factory import ProviderFactory
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
 
 
-async def wait_router_ready(model_idx: int) -> HostAndPort:
+async def wait_router_ready(*, model_idx: int, providers: ProviderFactory) -> HostAndPort:
     """Wait until the model's router, launched by the RayWorkerManager, is reachable and return its address."""
-    provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
     worker_name = compute_worker_name(spec_name=compute_router_spec_name(model_idx))
+    provider: BaseWorkerProvider = providers.static(worker_name=worker_name)
     router_addr = await provider.get_addr(worker_name=worker_name)
     wait_tcp_ready(router_addr.host, router_addr.port, timeout=30)
     logger.info(f"Router ready at {router_addr}")
     return router_addr
 
 
-async def start_session_server(args):
+async def start_session_server(args, *, providers: ProviderFactory):
     """Start the standalone session servers when ``--use-session-server`` is set.
 
     One independent single-process server per resolved port; the rollout side
@@ -35,10 +35,12 @@ async def start_session_server(args):
     if not hf_checkpoint:
         raise ValueError("--use-session-server requires --hf-checkpoint to be set.")
 
-    provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+    worker_names = [
+        compute_worker_name(spec_name="session-server", cell_index=index) for index in range(args.num_session_servers)
+    ]
     addrs = [
-        await provider.get_addr(worker_name=compute_worker_name(spec_name="session-server", cell_index=i))
-        for i in range(args.num_session_servers)
+        await providers.static(worker_name=worker_name).get_addr(worker_name=worker_name)
+        for worker_name in worker_names
     ]
     ips = [x.host for x in addrs]
     assert len(set(ips)) == 1, f"{ips=}"

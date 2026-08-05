@@ -3,8 +3,6 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-import ray
-
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import is_port_available
 
@@ -58,6 +56,8 @@ class SingletonMeta(type):
 
 
 def get_current_node_ip():
+    import ray
+
     address = ray._private.services.get_node_ip_address()
     # strip ipv6 address
     address = address.strip("[]")

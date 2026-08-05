@@ -4,10 +4,10 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.provider_fixtures import FakeProviderFactory
 
-from miles.ray.specs.train import compute_trainer_spec_name, specs_trainer
-from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS
-from miles.utils.workers.worker_spec import WorkerLaunchContext
+from miles.ray.specs.train import TRAINER_CONCURRENCY_GROUPS, compute_trainer_spec_name, specs_trainer
+from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
 def _make_args(**overrides) -> SimpleNamespace:
@@ -36,10 +36,10 @@ def _make_args(**overrides) -> SimpleNamespace:
     return args
 
 
-def _make_context(**overrides) -> WorkerLaunchContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[0])
+def _make_context(**overrides) -> WorkerCtorContext:
+    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[0], providers=FakeProviderFactory())
     kwargs.update(overrides)
-    return WorkerLaunchContext(**kwargs)
+    return WorkerCtorContext(**kwargs)
 
 
 def _install_fake_torch_memory_saver(monkeypatch, get_binary_path: MagicMock) -> MagicMock:

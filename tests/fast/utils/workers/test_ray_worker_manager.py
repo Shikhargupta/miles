@@ -79,7 +79,7 @@ def _make_pgs(*, num_slots: int = 8, first_gpu_id: int = 0) -> dict[str, Placeme
 async def _launch(
     specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
 ) -> RayWorkerManager:
-    manager = RayWorkerManager()
+    manager = RayWorkerManager(worker_argv=[])
     await manager.init(specs, pgs if pgs is not None else {})
     return manager
 
@@ -87,7 +87,7 @@ async def _launch(
 class TestLaunchEntryPoint:
     async def test_the_manager_is_registered_under_its_well_known_name(self, fake_ray_cluster: FakeRayCluster):
         """Consumers find the manager by a fixed actor name, so it must be launched under that name."""
-        handle = RayWorkerManager.launch([], {})
+        handle = RayWorkerManager.launch([], {}, worker_argv=[])
 
         assert handle.options["name"] == "ray_worker_manager"
         assert handle.actor_class is RayWorkerManager
@@ -98,7 +98,7 @@ class TestLaunchEntryPoint:
         specs = [_make_spec("router")]
         pgs: dict = {}
 
-        RayWorkerManager.launch(specs, pgs)
+        RayWorkerManager.launch(specs, pgs, worker_argv=[])
 
         init_calls = fake_ray_cluster.calls_of("init")
         assert len(init_calls) == 1
@@ -110,11 +110,11 @@ class TestLaunchEntryPoint:
         fake_ray_cluster.method_errors["init"] = RuntimeError("init exploded")
 
         with pytest.raises(RuntimeError, match="init exploded"):
-            RayWorkerManager.launch([_make_spec("router")], {})
+            RayWorkerManager.launch([_make_spec("router")], {}, worker_argv=[])
 
     async def test_get_handle_resolves_the_same_well_known_name(self, fake_ray_cluster: FakeRayCluster):
         """The lookup helper and the launcher must agree on the actor name."""
-        RayWorkerManager.launch([], {})
+        RayWorkerManager.launch([], {}, worker_argv=[])
 
         assert RayWorkerManager.get_handle() is fake_ray_cluster.named_actors["ray_worker_manager"]
 
@@ -159,7 +159,7 @@ class TestInitLaunchesWorkers:
         async def failing_alloc(self) -> None:
             raise RuntimeError("no ports")
 
-        manager = RayWorkerManager()
+        manager = RayWorkerManager(worker_argv=[])
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
                 patched.setattr(

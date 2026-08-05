@@ -7,8 +7,9 @@ from pathlib import Path
 import ray
 
 from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller
-from miles.ray.placement_group import create_rollout_components, create_training_models
-from miles.ray.wiring import launch_worker_manager
+from miles.ray.placement_group import create_training_models
+from miles.ray.rollout.components import create_rollout_components
+from miles.ray.wiring import create_provider_factory
 from miles.utils import object_store
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
@@ -36,10 +37,12 @@ async def main(args):
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
-    _worker_manager = launch_worker_manager(args)
+    providers = create_provider_factory(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
-    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
+    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(
+        args, providers=providers
+    )
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     controller = create_multilora_controller(args, f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
@@ -48,7 +51,7 @@ async def main(args):
     api_port = await controller.api_port.remote()
     logger.info(f"Multi-LoRA control API listening on http://{host}:{api_port} (head node)")
 
-    actor_model, _ = await create_training_models(args, inference_controller, rollout_executor)
+    actor_model, _ = await create_training_models(args, inference_controller, rollout_executor, providers=providers)
 
     # CLI-registered adapters are loaded and pushed by the loop's first
     # reconcile + update_weights.
@@ -83,7 +86,7 @@ async def main(args):
 
         try:
             await inference_controller.prepare_rollout(rollout_id)
-            rollout_data = await rollout_executor.get.remote(rollout_id)
+            rollout_data = await rollout_executor.get(rollout_id=rollout_id)
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
                 logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
@@ -98,7 +101,7 @@ async def main(args):
 
         rollout_id += 1
 
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
     await controller.stop.remote()
 

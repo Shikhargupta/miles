@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
+from tests.fast.fixtures.provider_fixtures import FakeProviderFactory
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import start_session_server, wait_router_ready
@@ -20,16 +19,13 @@ class TestWaitRouterReady:
                 return HostAndPort(host="10.0.0.9", port=12345)
 
         waited: list[tuple[str, int]] = []
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
+        providers = FakeProviderFactory(static_provider=_FakeProvider())
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
             lambda host, port, timeout: waited.append((host, port)),
         )
 
-        addr = await wait_router_ready(model_idx=1)
+        addr = await wait_router_ready(model_idx=1, providers=providers)
 
         assert requested == ["inference-router-1-0-0"]
         assert waited == [("10.0.0.9", 12345)]
@@ -40,13 +36,13 @@ class TestStartSessionServer:
     async def test_disabled_returns_silently(self):
         """Happy no-op: ``use_session_server=False`` returns without touching any other config."""
         args = make_args(use_session_server=False)
-        await start_session_server(args)
+        await start_session_server(args, providers=FakeProviderFactory())
 
     async def test_enabled_without_hf_checkpoint_raises(self):
         """Enabling the session server without a tokenizer source fails fast."""
         args = make_args(use_session_server=True, hf_checkpoint=None)
         with pytest.raises(ValueError, match="hf-checkpoint"):
-            await start_session_server(args)
+            await start_session_server(args, providers=FakeProviderFactory())
 
     async def test_publishes_the_manager_addrs_and_instance_ids(self, monkeypatch):
         """The driver-side contract (ip, ports, instance ids) comes from the worker manager addrs."""
@@ -58,10 +54,7 @@ class TestStartSessionServer:
                 return HostAndPort(host="10.0.0.9", port=5004 + len(requested))
 
         waited: list[tuple[str, int]] = []
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
+        providers = FakeProviderFactory(static_provider=_FakeProvider())
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
             lambda host, port, timeout: waited.append((host, port)),
@@ -73,7 +66,7 @@ class TestStartSessionServer:
             num_session_servers=2,
             run_uuid="00112233445566aa",
         )
-        await start_session_server(args)
+        await start_session_server(args, providers=providers)
 
         assert requested == ["session-server-0-0", "session-server-1-0"]
         assert args.session_server_ip == "10.0.0.9"
@@ -81,7 +74,7 @@ class TestStartSessionServer:
         assert args.session_server_instance_ids == {5005: "00112233445566aa-0", 5006: "00112233445566aa-1"}
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
-    async def test_servers_on_different_hosts_raise(self, monkeypatch):
+    async def test_servers_on_different_hosts_raise(self):
         """A session server fleet spread across hosts violates the single-ip contract."""
 
         class _FakeProvider:
@@ -92,11 +85,8 @@ class TestStartSessionServer:
                 self._counter += 1
                 return HostAndPort(host=f"10.0.0.{self._counter}", port=5005)
 
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
+        providers = FakeProviderFactory(static_provider=_FakeProvider())
 
         args = make_args(use_session_server=True, hf_checkpoint="/fake/model", num_session_servers=2)
         with pytest.raises(AssertionError):
-            await start_session_server(args)
+            await start_session_server(args, providers=providers)

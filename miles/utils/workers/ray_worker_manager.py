@@ -15,7 +15,9 @@ from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
-from miles.utils.workers.worker_handle import BaseWorkerHandle, RayWorkerHandle
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.worker_bootstrap import bootstrapped_worker_class, worker_bootstrap_kwargs
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
@@ -38,22 +40,14 @@ if TYPE_CHECKING:
 _ACTOR_NAME = "ray_worker_manager"
 
 
-@dataclass(kw_only=True)
-class WorkerInfo:
-    name: str
-    generation: int
-    self_addrs: NamedHostAndPorts
-    gpu_ids: list[int]
-    handle: BaseWorkerHandle
-
-
 class RayWorkerManager:
-    def __init__(self):
+    def __init__(self, *, worker_argv: list[str]):
+        self.worker_argv = worker_argv
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
-        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
+    def launch(specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo], *, worker_argv: list[str]):
+        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote(worker_argv=worker_argv)
         ray.get(obj.init.remote(specs, pgs))
         return obj
 
@@ -356,8 +350,12 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
 
     async def launch_actor(self) -> None:
         self.actor_handle = self._create_actor(
-            load_function(self.spec.worker_class),
-            **self.spec.ctor_kwargs(self.launch_context),
+            bootstrapped_worker_class(load_function(self.spec.worker_class)),
+            **worker_bootstrap_kwargs(
+                spec_name=self.spec.name,
+                worker_argv=self.manager.worker_argv,
+                context=self.launch_context,
+            ),
         )
 
     async def post_setup(self) -> None:

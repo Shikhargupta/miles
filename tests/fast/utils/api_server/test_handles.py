@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from miles.utils.ft_utils.api_server.cell_operations import RayCellOperations
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
@@ -36,7 +37,9 @@ def _make_actor_handler(
 ) -> tuple[_CellHandler, object, MockWorkerManager]:
     group = make_mock_controller(cells if cells is not None else [MockTrainerCell()])
     manager = MockWorkerManager(make_cell_summaries(ACTOR_CELL_ID, suspended=suspended))
-    handler = _CellHandler(cell_type="actor", worker_manager=manager, controller=group, spec_names=["trainer-actor"])
+    handler = _CellHandler(
+        cell_type="actor", operations=RayCellOperations(manager), controller=group, spec_names=["trainer-actor"]
+    )
     return handler, group, manager
 
 
@@ -135,7 +138,7 @@ def _make_rollout_handler(
     controller = MockInferenceController({cell_id: resolved} if resolved is not None else {})
     return _CellHandler(
         cell_type="rollout",
-        worker_manager=manager,
+        operations=RayCellOperations(manager),
         controller=controller,
         spec_names=[cell_id.rsplit("-", 1)[0]],
     )
@@ -215,7 +218,10 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
         controller = MockInferenceController()
         handler = _CellHandler(
-            cell_type="rollout", worker_manager=manager, controller=controller, spec_names=_spec_names_of(manager)
+            cell_type="rollout",
+            operations=RayCellOperations(manager),
+            controller=controller,
+            spec_names=_spec_names_of(manager),
         )
 
         await handler.get_cell(ENGINE_CELL_ID)
@@ -228,7 +234,7 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
         handler = _CellHandler(
             cell_type="rollout",
-            worker_manager=manager,
+            operations=RayCellOperations(manager),
             controller=MockInferenceController(),
             spec_names=_spec_names_of(manager),
         )
@@ -243,7 +249,7 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID, suspended=True))
         handler = _CellHandler(
             cell_type="rollout",
-            worker_manager=manager,
+            operations=RayCellOperations(manager),
             controller=MockInferenceController(),
             spec_names=_spec_names_of(manager),
         )
@@ -284,7 +290,7 @@ class TestRolloutCellHandler:
         )
         handler = _CellHandler(
             cell_type="rollout",
-            worker_manager=manager,
+            operations=RayCellOperations(manager),
             controller=MockInferenceController(),
             spec_names=["inference-engine-0-0"],
         )
@@ -302,7 +308,10 @@ class TestRolloutCellHandler:
         manager = MockWorkerManager(make_cell_summaries("engine-a", "engine-b", "engine-c"))
         controller = MockInferenceController()
         handler = _CellHandler(
-            cell_type="rollout", worker_manager=manager, controller=controller, spec_names=_spec_names_of(manager)
+            cell_type="rollout",
+            operations=RayCellOperations(manager),
+            controller=controller,
+            spec_names=_spec_names_of(manager),
         )
 
         cells = await handler.list_cells()
@@ -319,7 +328,7 @@ class TestRolloutCellHandlerInjectFault:
         manager.inject_fault = MockRemoteCall(None)
         handler = _CellHandler(
             cell_type="rollout",
-            worker_manager=manager,
+            operations=RayCellOperations(manager),
             controller=MockInferenceController(),
             spec_names=_spec_names_of(manager),
         )

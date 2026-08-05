@@ -10,10 +10,10 @@ from starlette.responses import JSONResponse
 from miles.ray.specs.inference import compute_engine_spec_names
 from miles.ray.specs.train import compute_trainer_spec_name
 from miles.ray.train.group import TrainerController
+from miles.utils.ft_utils.api_server.cell_operations import BaseCellOperations
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ def start_api_server(
     inference_controller: object,
     port: int,
     ft_components: list[str],
+    cell_operations: BaseCellOperations,
 ) -> None:
     handlers: list[_CellHandler] = []
 
@@ -35,7 +36,7 @@ def start_api_server(
         handlers.append(
             _CellHandler(
                 cell_type="actor",
-                worker_manager=RayWorkerManager.get_handle(),
+                operations=cell_operations,
                 controller=actor_model,
                 spec_names=[compute_trainer_spec_name("actor")],
             )
@@ -45,7 +46,7 @@ def start_api_server(
         handlers.append(
             _CellHandler(
                 cell_type="rollout",
-                worker_manager=RayWorkerManager.get_handle(),
+                operations=cell_operations,
                 controller=inference_controller,
                 spec_names=compute_engine_spec_names(args),
             )

@@ -11,6 +11,8 @@ from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.retry_utils import retry_until_deadline
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.factory import ProviderFactory
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,12 @@ WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
 
 async def create_rollout_servers(
-    args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], bool]
+    args,
+    context_lock: ContextLock,
+    global_health_checker_activeness: Callable[[], bool],
+    *,
+    providers: ProviderFactory,
+    engine_provider: BaseWorkerProvider,
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
     assert args.sglang_router_ip is None and args.sglang_router_port is None, (
@@ -32,7 +39,7 @@ async def create_rollout_servers(
     servers: dict[str, RolloutServer] = {}
 
     for model_idx, model_cfg in enumerate(config.models):
-        router_addr = await wait_router_ready(model_idx=model_idx)
+        router_addr = await wait_router_ready(model_idx=model_idx, providers=providers)
 
         if model_idx == 0:
             args.sglang_router_ip = router_addr.host
@@ -42,6 +49,7 @@ async def create_rollout_servers(
             server_cells={},
             args=args,
             context_lock=context_lock,
+            engine_provider=engine_provider,
             router_ip=router_addr.host,
             router_port=router_addr.port,
             model_name=model_cfg.name,
@@ -70,6 +78,7 @@ class RolloutServer:
     server_cells: dict[str, ServerCell]
     args: Any
     context_lock: ContextLock
+    engine_provider: BaseWorkerProvider
     router_ip: str | None = None
     router_port: int | None = None
     model_name: str = "default"
@@ -106,6 +115,7 @@ class RolloutServer:
             args=self.args,
             router_api_client=self._router_api_client,
             meta=cell_meta,
+            provider=self.engine_provider,
             global_health_checker_activeness=self.global_health_checker_activeness,
         )
         if not self.args.colocate:
