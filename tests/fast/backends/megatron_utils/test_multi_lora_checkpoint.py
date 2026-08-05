@@ -1,11 +1,13 @@
-"""Slot-state sidecar: stable naming and manifest gating.
+"""Slot-state sidecar: stable naming, manifest gating, and slot round-trip.
 
 The stable name must strip EXACTLY the target slot's index — stripping a
 co-tenant's would let one adapter's sidecar overwrite another slot's weights
 on load."""
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
+import pytest
 import torch
 
 from miles.backends.megatron_utils.multi_lora_checkpoint import FORMAT, find_slot_state, stable_slot_param_name
@@ -50,6 +52,76 @@ class TestManifestGating:
             base / "manifest.pt",
         )
         assert find_slot_state(adapter) == base
+
+
+class TestSidecarRoundTrip:
+    """A sidecar saved from slot A must restore positionally into slot B,
+    re-stamping the slot tag (the save carries the SOURCE slot's), and a
+    child-count mismatch must be refused outright, never partially loaded."""
+
+    class _FakeChild:
+        def __init__(self, slot: int, moment: float):
+            self.param_groups = [{"params": [0], "miles_multi_lora_slot": slot, "step": 0}]
+            self.moment = torch.full((2,), moment)
+
+        def state_dict(self):
+            return {
+                "optimizer": {
+                    "state": {0: {"exp_avg": self.moment.clone()}},
+                    "param_groups": [dict(group) for group in self.param_groups],
+                }
+            }
+
+        def load_state_dict(self, state):
+            # Mirrors torch/MCore semantics: copy state tensors in place, take
+            # ALL non-params group keys — including foreign slot tags — from
+            # the save.
+            self.moment.copy_(state["optimizer"]["state"][0]["exp_avg"])
+            for group, saved in zip(self.param_groups, state["optimizer"]["param_groups"], strict=True):
+                group.update({key: value for key, value in saved.items() if key != "params"})
+
+    def _round_trip(self, tmp_path, monkeypatch, target_children):
+        import miles.backends.megatron_utils.multi_lora_checkpoint as mlc
+        import miles.backends.megatron_utils.multi_lora_optimizer as mlo
+
+        config = SimpleNamespace(save=tmp_path, rank=8, alpha=16)
+        adapter = SimpleNamespace(name="a", registration_id="r1", slot=0, step=7, version=2, config=config)
+
+        source = [self._FakeChild(slot=0, moment=1.5)]
+        source[0].param_groups[0]["step"] = 7
+        children_by_slot = {0: source, 1: target_children}
+        monkeypatch.setattr(mlo, "_slot_children", lambda optimizer, slot: children_by_slot[slot])
+        monkeypatch.setattr(
+            mlc,
+            "named_adapter_slot_parameters",
+            lambda model, slot: iter([("m.adapter.linear_in.weight", torch.ones(2))]),
+        )
+        bridge = ModuleType("megatron.bridge.peft.multi_lora_layers")
+        loads: dict = {}
+        bridge.load_adapter = lambda model, slot, weights: loads.update(weights=weights) or len(weights)
+        bridge.init_adapter_slot = lambda model, slot, rank, alpha: loads.update(rank=rank, alpha=alpha)
+        monkeypatch.setitem(sys.modules, "megatron.bridge.peft.multi_lora_layers", bridge)
+
+        mlc.save_slot_state(args=SimpleNamespace(), model=[], optimizer=None, adapter=adapter, reason="swap")
+        adapter.slot = 1
+        step = mlc.load_slot_state(args=SimpleNamespace(), model=[], optimizer=None, adapter=adapter)
+        return step, loads
+
+    def test_optimizer_state_restores_into_another_slot(self, tmp_path, monkeypatch):
+        target = [self._FakeChild(slot=1, moment=0.0)]
+        step, loads = self._round_trip(tmp_path, monkeypatch, target)
+        assert step == 7
+        assert loads["rank"] == 8 and loads["alpha"] == 16
+        assert torch.equal(loads["weights"]["m.adapter.linear_in.weight"], torch.ones(2))
+        assert torch.equal(target[0].moment, torch.full((2,), 1.5))
+        group = target[0].param_groups[0]
+        assert group["step"] == 7
+        assert group["miles_multi_lora_slot"] == 1  # re-stamped over the saved slot-0 tag
+
+    def test_child_count_mismatch_is_refused(self, tmp_path, monkeypatch):
+        two_children = [self._FakeChild(slot=1, moment=0.0), self._FakeChild(slot=1, moment=0.0)]
+        with pytest.raises(ValueError, match="refusing partial restore"):
+            self._round_trip(tmp_path, monkeypatch, two_children)
 
 
 class TestSwapInSidecarSentinel:

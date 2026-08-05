@@ -1,6 +1,7 @@
-"""Per-slot sidecar checkpoints (bf16 weights, fp32 masters, Adam state with
-both step counters, rank/alpha) backing slot swap-out/swap-in and per-adapter
-saves; parameter names are slot-stripped so state restores into any slot.
+"""Per-slot sidecar checkpoints (bf16 weights plus each slot child optimizer's
+state_dict — fp32 masters, Adam moments, both step counters — and rank/alpha)
+backing slot swap-out/swap-in and per-adapter saves; parameter names are
+slot-stripped and optimizer entries positional, so state restores into any slot.
 Every rank writes its shard atomically and rank 0 commits a manifest; the LR
 scheduler is rebuilt from the restored optimizer step, never serialized."""
 
@@ -14,7 +15,7 @@ import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
 
-FORMAT = "miles-multi-lora-slot-v2"
+FORMAT = "miles-multi-lora-slot-v3"
 _SLOT_INDEX = re.compile(r"\.adapters\.(\d+)\.")
 
 
@@ -42,24 +43,6 @@ def named_adapter_slot_parameters(model, slot: int):
                     yield stable_slot_param_name(param_name, slot), param
 
 
-def _slot_adam_index(optimizer, slot: int) -> dict[int, dict]:
-    """id(main param or param) -> raw Adam state, across the slot's children."""
-    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
-
-    index: dict[int, dict] = {}
-    for child in _slot_children(optimizer, slot):
-        raw = getattr(child, "optimizer", child)
-        for param, state in raw.state.items():
-            index[id(param)] = state
-    return index
-
-
-def _slot_group_steps(optimizer, slot: int) -> list:
-    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
-
-    return [group.get("step", 0) for child in _slot_children(optimizer, slot) for group in child.param_groups]
-
-
 def sidecar_dir(adapter) -> Path | None:
     save = adapter.config.save
     return Path(save) / "slot_state" if save is not None else None
@@ -80,23 +63,14 @@ def save_slot_state(args, model, optimizer, adapter, *, reason: str = "swap") ->
         return None
     base.mkdir(parents=True, exist_ok=True)
 
+    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
+
     slot = adapter.slot
-    adam_index = _slot_adam_index(optimizer, slot)
-    weights: dict[str, torch.Tensor] = {}
-    masters: dict[str, torch.Tensor] = {}
-    adam_state: dict[str, dict] = {}
-    for stable_name, param in named_adapter_slot_parameters(model, slot):
-        weights[stable_name] = param.detach().cpu()
-        main = getattr(param, "main_param", None)
-        state = adam_index.get(id(main)) if main is not None else None
-        if state is None:
-            state = adam_index.get(id(param))
-        if main is not None:
-            masters[stable_name] = main.detach().cpu()
-        if state:
-            adam_state[stable_name] = {
-                key: (value.detach().cpu() if torch.is_tensor(value) else value) for key, value in state.items()
-            }
+    weights = {name: param.detach().cpu() for name, param in named_adapter_slot_parameters(model, slot)}
+    # Each child state_dict carries the fp32 masters, Adam moments, and both
+    # step counters; entries are positional across the slot's children, so a
+    # sidecar saved from slot A restores into slot B.
+    optimizer_state = [child.state_dict() for child in _slot_children(optimizer, slot)]
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     payload = {
@@ -106,9 +80,7 @@ def save_slot_state(args, model, optimizer, adapter, *, reason: str = "swap") ->
         "rank_lora": adapter.config.rank,
         "alpha": adapter.config.alpha,
         "weights": weights,
-        "master_params": masters,
-        "adam_state": adam_state,
-        "group_steps": _slot_group_steps(optimizer, slot),
+        "optimizer_state": optimizer_state,
         "clocks": {"optimizer_step": adapter.step, "serving_version": adapter.version},
         "topology": {
             "rank": rank,
@@ -164,12 +136,12 @@ def find_slot_state(adapter) -> Path | None:
 
 
 def load_slot_state(args, model, optimizer, adapter) -> int | None:
-    """Restore a slot from its sidecar (weights -> rank/alpha -> masters/Adam,
-    in that order). Returns the restored optimizer step, or None when no
-    sidecar exists — a real step-0 sidecar must not be re-initialized."""
+    """Restore a slot from its sidecar (weights -> rank/alpha -> optimizer
+    children, in that order). Returns the restored optimizer step, or None when
+    no sidecar exists — a real step-0 sidecar must not be re-initialized."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
-    from miles.backends.megatron_utils.multi_lora_optimizer import reload_adapter_slot_model_params
+    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
 
     base = find_slot_state(adapter)
     if base is None:
@@ -184,32 +156,20 @@ def load_slot_state(args, model, optimizer, adapter) -> int | None:
     loaded = load_adapter(model, slot, payload["weights"])
     assert loaded > 0, f"[multilora] ({adapter.name}) sidecar restored 0 weight tensors"
     init_adapter_slot(model, slot, rank=payload["rank_lora"], alpha=payload["alpha"])
-    # Slot-scoped: a global reload would quantize every other resident slot's
-    # fp32 master through bf16.
-    reload_adapter_slot_model_params(optimizer, slot)
 
-    adam_index = _slot_adam_index(optimizer, slot)
-    masters = payload["master_params"]
-    adam_state = payload["adam_state"]
-    for stable_name, param in named_adapter_slot_parameters(model, slot):
-        main = getattr(param, "main_param", None)
-        if main is not None and stable_name in masters:
-            main.data.copy_(masters[stable_name].to(device=main.device, dtype=main.dtype))
-        state = adam_index.get(id(main)) if main is not None else adam_index.get(id(param))
-        if state is not None and stable_name in adam_state:
-            for key, value in adam_state[stable_name].items():
-                if torch.is_tensor(value) and key in state and torch.is_tensor(state[key]):
-                    state[key].copy_(value.to(device=state[key].device, dtype=state[key].dtype))
-                else:
-                    state[key] = value
-
-    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
-
-    saved_group_steps = payload["group_steps"]
-    groups = [g for child in _slot_children(optimizer, slot) for g in child.param_groups]
-    for group, step in zip(groups, saved_group_steps, strict=False):
-        if step:
-            group["step"] = step
+    children = _slot_children(optimizer, slot)
+    saved_states = payload["optimizer_state"]
+    if len(saved_states) != len(children):
+        raise ValueError(
+            f"[multilora] ({adapter.name}) sidecar has {len(saved_states)} optimizer children "
+            f"but slot {slot} has {len(children)}; refusing partial restore"
+        )
+    for child, state in zip(children, saved_states, strict=True):
+        # MCore copies fp32 masters and Adam state in place (main_param links
+        # survive) and takes group hyperparams — including step — from the save.
+        child.load_state_dict(state)
+        for group in child.param_groups:
+            group["miles_multi_lora_slot"] = slot  # the save carries the SOURCE slot's tag
 
     restored_step = int(payload["clocks"]["optimizer_step"])
     logger.info(f"[multilora] ({adapter.name}) slot state restored at step {restored_step}")
