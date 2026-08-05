@@ -19,7 +19,7 @@ from miles.utils.multi_lora import make_rid, parse_adapter
 DATA_FILE = __file__
 
 
-def make_args(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) -> SimpleNamespace:
+def make_args(max_adapters: int = 4, save: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         multi_lora_n_adapters=max_adapters,
         save=save,
@@ -31,8 +31,8 @@ def make_args(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) 
     )
 
 
-def make_backend(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) -> MultiLoRABackend:
-    return MultiLoRABackend(make_args(max_adapters, save, dp_size), "http://unused")
+def make_backend(max_adapters: int = 4, save: str | None = None) -> MultiLoRABackend:
+    return MultiLoRABackend(make_args(max_adapters, save), "http://unused")
 
 
 def make_config(save: str | None = None, **overrides) -> AdapterRunConfig:
@@ -233,7 +233,7 @@ async def test_register_resolves_batch_shape_defaults(tmp_path):
 
 @pytest.mark.asyncio
 async def test_register_rejects_bad_batch_shapes(tmp_path):
-    backend = make_backend(save=str(tmp_path), dp_size=8)
+    backend = make_backend(save=str(tmp_path))
     with pytest.raises(ValueError, match="exceeding"):
         await backend.register("D", make_config(rollout_batch_size=128))  # 512 samples > cap 256
     with pytest.raises(ValueError, match="exceeds the allocated maximum rank"):
