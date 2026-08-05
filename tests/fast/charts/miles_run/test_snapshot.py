@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from tests.fast.charts.utils import NAMESPACE, RUN_CHART_DIR, RUN_ID, RUN_RELEASE_NAME, requires_helm
@@ -35,6 +36,7 @@ TRAINER_NODES = 4
 ORCHESTRATOR_COMMAND = ["python", "scripts/run_qwen3_4b.py", "train", "--cluster-backend", "kubernetes"]
 WORKER_ARGV = ["--cluster-backend", "kubernetes", "--rollout-num-gpus", str(PREFILL_GPUS + DECODE_GPUS)]
 STAGE_TO_LOCAL = ("/cluster-storage/models/Qwen3-4B:/scratch/Qwen3-4B",)
+PARSER_ENV = {"CUDA_DEVICE_MAX_CONNECTIONS": "1"}
 
 SCENARIO_ARGV = [
     *shlex.split(load_model_args(MODEL_TYPE, rotary_base=ROTARY_BASE)),
@@ -140,6 +142,12 @@ SCENARIO_ARGV = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in PARSER_ENV.items():
+        monkeypatch.setenv(name, value)
+
+
 def synthetic_specs() -> list[Any]:
     return compute_specs(parse_args_from_argv(SCENARIO_ARGV))
 
@@ -153,7 +161,7 @@ def synthetic_run_values() -> dict[str, Any]:
             orchestrator_command=ORCHESTRATOR_COMMAND,
             worker_argv=WORKER_ARGV,
             num_gpus_per_node=GPUS_PER_NODE,
-            env={"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
+            env={"PYTHONUNBUFFERED": "1", **PARSER_ENV},
             colocate=True,
             stage_to_local=STAGE_TO_LOCAL,
             node_local_root="/scratch",
