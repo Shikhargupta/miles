@@ -101,7 +101,11 @@ class ServerCell:
                 )
 
             case StateDisposed():
-                return compute_suspended_rollout_cell_status(workers_hash=workers_hash)
+                return CellStatus(
+                    phase="Suspended",
+                    conditions=[CellCondition.allocated(TriState.FALSE)],
+                    observedWorkersHash=workers_hash,
+                )
 
             case _:
                 raise NotImplementedError(f"Unknown state: {self._state}")
@@ -290,13 +294,5 @@ def compute_pending_rollout_cell_status(*, workers_hash: str | None = None) -> C
     return CellStatus(
         phase="Pending",
         conditions=[CellCondition.allocated(TriState.TRUE)],
-        observedWorkersHash=workers_hash,
-    )
-
-
-def compute_suspended_rollout_cell_status(*, workers_hash: str | None = None) -> CellStatus:
-    return CellStatus(
-        phase="Suspended",
-        conditions=[CellCondition.allocated(TriState.FALSE)],
         observedWorkersHash=workers_hash,
     )
