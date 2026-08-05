@@ -6,18 +6,30 @@ Grafts two paths that did not previously meet:
   * the full-parameter GB300 parallelism from ``scripts/run_glm5_2_744b_a40b.py``.
 
 The LoRA sibling trains ~0.1% of the weights, so it can afford ``PP=1`` with ``EP``
-spanning the world. Full-parameter cannot: at 744B the mixed-precision optimizer state
-is ``744e9 * 16 B ~= 11.9 TB`` (bf16 weights + bf16 grads + fp32 master + Adam m/v),
-which does not fit under that layout. This script therefore adopts the pipeline-parallel
-GB300 config from the full-FT script instead:
+spanning the world. Full-parameter cannot, so this script uses the pipeline-parallel
+GB300 layout from the full-FT script, scaled by node count:
 
-    TP=8  PP=4  DP=2  EP=16  ETP=1  CP=1   ==  64 GPUs  ==  16 nodes x 4
+    TP=8  PP=4  CP=1  ETP=1,  DP = world/32,  EP = 8 * DP
 
-``EP=16`` (not the world) is the value that fits the fp32 optimizer states on 277 GiB
-GB300 parts. ``--decoder-first-pipeline-num-layers 18`` / ``--decoder-last-pipeline-num-layers
-20`` place every pipeline-stage boundary on a DSA *computing* layer (stage starts land on
-global layers 1, 19, 39, 59); GLM-5.2 shares the DSA top-k across layers, so a stage that
-began on a skip layer would read a stale anchor.
+    8 nodes  -> 32 GPUs: DP=1  EP=8
+   16 nodes  -> 64 GPUs: DP=2  EP=16
+
+``--decoder-first-pipeline-num-layers 18`` / ``--decoder-last-pipeline-num-layers 20``
+place every pipeline-stage boundary on a DSA *computing* layer (stage starts land on
+global layers 1, 19, 39, 59); GLM-5.2 shares the DSA top-k across layers, so a stage
+that began on a skip layer would read a stale anchor. PP is therefore pinned at 4 and
+only DP/EP scale with node count.
+
+**Why 8 nodes suffices.** With Megatron's fp32 optimizer defaults the offloaded state is
+12 B/param -- 8.94 TB at 744B, which needs >=10 nodes of host RAM just to hold and forces
+a 16-node floor. ``--use-precision-aware-optimizer`` (mandatory anyway under
+``--optimizer-cpu-offload``) stores the master params and both Adam moments at lower
+precision, affecting storage only and not kernel compute. At ``fp16`` master + ``fp8``
+moments that is 4 B/param = 2.98 TB, i.e. 372 GB on each of 8 nodes against 920 GB
+physical. GPU-side stays 6 B/param (bf16 weights + fp32 main grads) = 4.46 TB against
+8.86 TiB of HBM across 32 GB300 parts. ``--main-grads-dtype`` must stay fp32:
+``arguments.py`` asserts that under ``--accumulate-allreduce-grads-in-fp32``, which bf16
+training requires.
 
 Attention backend: ``tilelang`` (thd), never ``megatron`` (bshd). ``megatron`` is a dense
 O(S**2) reference that materialises the full fp32 score matrix and caps out near S=4096 --
@@ -104,6 +116,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # --micro-batch-size 1), and is the main activation-memory lever at long sequence.
     max_tokens_per_gpu: int = 8192
 
+    # Optimizer-state precision. --use-precision-aware-optimizer stores the master
+    # params and Adam moments at these dtypes; the help is explicit that this affects
+    # STORAGE only, not kernel compute precision. Megatron's defaults are fp32 across
+    # the board, which costs 12 B/param of offloaded state (8.94 TB at 744B) and is
+    # what forces a >=16-node floor. fp8 moments + fp16 master cut that to 4 B/param
+    # (2.98 TB), which is what makes a 32-GPU / 8-node run fit.
+    # --main-grads-dtype must stay fp32: arguments.py asserts it under
+    # --accumulate-allreduce-grads-in-fp32, which bf16 training requires.
+    main_params_dtype: Literal["fp32", "fp16"] = "fp16"
+    exp_avg_dtype: Literal["fp32", "fp16", "bf16", "fp8"] = "fp8"
+    exp_avg_sq_dtype: Literal["fp32", "fp16", "bf16", "fp8"] = "fp8"
+
     # Rollout engine
     fp8_rollout_gpus_per_engine: int = 16
     sglang_mem_fraction_static: float = 0.85
@@ -164,12 +188,26 @@ def _parallel_args(args: ScriptArgs) -> str:
     (MNNVL/IMEX) domain rather than IB-connected.
     """
     world_size = args.num_nodes * args.num_gpus_per_node
-    if not (args.num_nodes >= 16 and args.num_gpus_per_node == 4):
+    if args.num_gpus_per_node != 4:
         raise NotImplementedError(
-            "Full-parameter GLM-5.2 has only one validated layout on GB300: "
-            f">=16 nodes x 4 GPUs. Got {args.num_nodes} x {args.num_gpus_per_node} "
-            f"(world={world_size})."
+            f"GB300 layout assumes 4 GPUs/node, got {args.num_gpus_per_node}."
         )
+
+    # PP is pinned at 4 with an 18/20 first/last split regardless of node count:
+    # GLM-5.2 shares the DSA top-k across layers, so every pipeline stage must START
+    # on a computing layer (18/20 puts stage starts on global layers 1, 19, 39, 59).
+    # Re-deriving PP for a different node count would move those boundaries onto skip
+    # layers and silently feed stale anchor top-k into the backward.
+    # Megatron requires EP * ETP == TP * DP with ETP=1, so EP follows DP.
+    #   8 nodes  -> 32 GPUs: TP=8 PP=4 DP=1 EP=8
+    #  16 nodes  -> 64 GPUs: TP=8 PP=4 DP=2 EP=16
+    if world_size % 32 != 0:
+        raise NotImplementedError(
+            f"world size must be a multiple of TP=8 * PP=4 = 32; got {world_size} "
+            f"({args.num_nodes} nodes x {args.num_gpus_per_node})."
+        )
+    data_parallel = world_size // 32
+    expert_parallel = 8 * data_parallel
 
     # tilelang => thd, which carries packed_seq_params and therefore permits both
     # activation recompute and dynamic batching.
@@ -186,7 +224,7 @@ def _parallel_args(args: ScriptArgs) -> str:
         "--decoder-first-pipeline-num-layers 18 "
         "--decoder-last-pipeline-num-layers 20 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 16 "
+        f"--expert-model-parallel-size {expert_parallel} "
         "--expert-tensor-parallel-size 1 "
         "--qkv-format thd "
         "--recompute-granularity full "
@@ -201,6 +239,9 @@ def _parallel_args(args: ScriptArgs) -> str:
         "--optimizer-cpu-offload "
         "--overlap-cpu-optimizer-d2h-h2d "
         "--use-precision-aware-optimizer "
+        f"--main-params-dtype {args.main_params_dtype} "
+        f"--exp-avg-dtype {args.exp_avg_dtype} "
+        f"--exp-avg-sq-dtype {args.exp_avg_sq_dtype} "
     )
 
 
