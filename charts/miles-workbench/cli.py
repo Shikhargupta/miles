@@ -6,6 +6,7 @@ import datetime
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -332,15 +333,25 @@ def run_preflight_checks(args: argparse.Namespace) -> int:
 
 
 def render_chart(args: argparse.Namespace) -> subprocess.CompletedProcess:
+    if not args.dry_run:
+        return render_chart_from(args, chart_dir=CHART_DIR)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        charts_copy = Path(scratch) / CHART_DIR.parent.name
+        shutil.copytree(CHART_DIR.parent, charts_copy)
+        return render_chart_from(args, chart_dir=charts_copy / CHART_DIR.name)
+
+
+def render_chart_from(args: argparse.Namespace, *, chart_dir: Path) -> subprocess.CompletedProcess:
     build = subprocess.run(
-        ["helm", "dependency", "build", str(CHART_DIR)],
+        ["helm", "dependency", "build", str(chart_dir)],
         capture_output=True,
         text=True,
     )
     if build.returncode != 0:
         return build
     return subprocess.run(
-        ["helm", "template", args.release, str(CHART_DIR), "-n", args.namespace, *helm_value_overrides(args)],
+        ["helm", "template", args.release, str(chart_dir), "-n", args.namespace, *helm_value_overrides(args)],
         capture_output=True,
         text=True,
     )

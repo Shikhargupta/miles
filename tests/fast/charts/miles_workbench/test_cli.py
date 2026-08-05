@@ -366,6 +366,22 @@ class TestDryRun:
         assert not any(call.startswith("helm upgrade") for call in calls)
         assert not any("rollout status" in call for call in calls)
 
+    def test_it_changes_nothing_on_the_local_disk_either(self, fake_tools):
+        """Vendoring dependencies into the checkout is a write, and a dry run promises not to write."""
+        result = run_cli("install", "--dry-run", "-n", "rl", "-r", "wb")
+        builds = [call for call in calls_of(fake_tools) if call.startswith("helm dependency build")]
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert builds, "the dry run still has to render the chart to check what it grants"
+        assert not any(call.endswith(str(CHART_DIR)) for call in builds)
+
+    def test_it_still_renders_the_chart_it_checks(self, fake_tools):
+        """A dry run that skipped the render would stop reporting the rbac the chart asks for."""
+        result = run_cli("install", "--dry-run", "-n", "rl", "-r", "wb")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert any(call.startswith("helm template wb ") for call in calls_of(fake_tools))
+
 
 class TestExec:
     def test_it_execs_into_the_statefulset_of_that_release(self, fake_tools):
@@ -442,3 +458,15 @@ class TestCli:
         }
 
         assert imports <= set(sys.stdlib_module_names) | {"__future__"}
+
+    def test_it_offers_exactly_these_subcommands(self):
+        """The subcommand set is the cli's whole contract with a runbook, so a rename must be deliberate."""
+        result = subprocess.run([str(CLI_PATH), "--help"], capture_output=True, text=True)
+
+        assert result.returncode == 0, result.stderr
+        assert set(result.stdout.split("{", 1)[1].split("}", 1)[0].split(",")) == {
+            "install",
+            "exec",
+            "uninstall",
+            "collect-diagnosis",
+        }
