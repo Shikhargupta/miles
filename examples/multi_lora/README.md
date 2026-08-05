@@ -17,7 +17,6 @@ example trains two adapters on Qwen3-4B:
 ```
 run_multi_lora.py            # launcher: prepare / train / full-train / serve
 register_and_train.py        # client example: register runs via the API, watch them finish
-service_smoke.py             # 7-phase lifecycle validation against a live service (used by CI/E2E)
 adapters/
   gsm8k.yaml
   dapo_math.yaml
@@ -92,7 +91,7 @@ python examples/multi_lora/register_and_train.py \
     --adapter dapo_math=examples/multi_lora/adapters/dapo_math.yaml
 ```
 
-`service_smoke.py` exercises the full register/train/deregister lifecycle
+`tests/manual/multi_lora_service_smoke.py` exercises the full register/train/deregister lifecycle
 (including mid-run registration, mid-run deregistration, and name reuse) and
 is what the GPU E2E scripts assert against.
 

@@ -1,7 +1,7 @@
 """Smoke test for multi-LoRA service mode: register/deregister against a running
 trainer, using step counts as the race-free progress signal.
 
-Usage: python examples/multi_lora/service_smoke.py --api-url http://HOST:8068 \\
+Usage: python tests/manual/multi_lora_service_smoke.py --api-url http://HOST:8068 \\
     --data /root/datasets/gsm8k/train.parquet --input-key messages --label-key label --rm-type math
 """
 
