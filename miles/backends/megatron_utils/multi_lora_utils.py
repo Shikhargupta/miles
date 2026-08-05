@@ -358,7 +358,11 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
     zero_optimizer_state_for_adapter(optimizer, model, slot)
     zero_adapter_slot_grads(model, slot)
     drop_slot_scheduler(optimizer, slot)
-    optimizer.reload_model_params()
+    # Slot-scoped: a global reload would quantize every other resident slot's fp32
+    # master through bf16.
+    from miles.backends.megatron_utils.multi_lora_optimizer import reload_adapter_slot_model_params
+
+    reload_adapter_slot_model_params(optimizer, slot)
     logger.info(f"{log_prefix} cleared optimizer state and retained grads for slot {slot}")
 
 
@@ -380,7 +384,12 @@ def load_adapters(args, model, optimizer, adapters) -> int:
         install_slot_scheduler(args, optimizer, adapter, resume_steps[adapter.name])
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
-    optimizer.reload_model_params()
+    from miles.backends.megatron_utils.multi_lora_optimizer import reload_adapter_slot_model_params
+
+    # Slot-scoped: a global reload would quantize every other resident slot's fp32
+    # master through bf16.
+    for adapter in adapters:
+        reload_adapter_slot_model_params(optimizer, adapter.slot)
     if is_first_replica_megatron_main_rank():
         for name, step in resume_steps.items():
             if step > 0:

@@ -109,7 +109,11 @@ def build_multi_lora_optimizer(
             for child in children:
                 for group in child.param_groups:
                     group["miles_multi_lora_slot"] = slot
-                base_optimizers.append(child)
+                # LayerWiseDistributedOptimizer wraps raw torch optimizers itself; the
+                # MCore pinned by Megatron-Bridge rejects pre-wrapped Megatron children
+                # (TypeError). param_groups proxy to the raw groups, so the slot tags
+                # above survive the unwrap.
+                base_optimizers.append(child.optimizer)
                 init_fns.append(_adam_init_state_fn)
     finally:
         config.bf16 = reset_bf16
@@ -130,6 +134,15 @@ def build_multi_lora_optimizer(
 
 def _slot_children(optimizer, slot: int):
     return [optimizer.chained_optimizers[i] for i in optimizer.miles_slot_child_indices[slot]]
+
+
+def reload_adapter_slot_model_params(optimizer, slot: int) -> None:
+    """Refresh fp32 masters from model params for ONE slot's children only. A global
+    ``optimizer.reload_model_params()`` re-derives every resident slot's fp32 master
+    from its bf16 model weights, silently dropping the low mantissa bits other slots'
+    masters have accumulated since their last step."""
+    for child in _slot_children(optimizer, slot):
+        child.reload_model_params()
 
 
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
