@@ -39,8 +39,8 @@
 ### In CI
 
 - Gated on the `run-ci-ft-short` / `run-ci-ft-long` PR labels (FT is expensive — not run on every PR). `ft-short` covers the comparison scenarios (no_failure / deterministic / with_failure, minutes each); `ft-long` covers the soak scenarios (random-crash survival, realistic-gsm8k convergence — tens of minutes to hours). With a label set, the matching entries run on `stage-c-8-gpu-h200`.
-- **Every `ft-long` entry is currently registered `disabled="FT soak tests pending CI infra support"`, so `run_suite.py` classifies it as skipped and the lane is green without running anything.** Nothing in those tests is known broken; the unblock condition is an `ft-long` capable `stage-c-8-gpu-h200` lane, after which the `disabled=` argument is simply dropped. The specific infra gap is not recorded anywhere in the repo.
-- While that holds, `test_rollout_ft_random_colocate_dp2_cp2.py` — the only entry that crashes rollout engines — has a fast-layer stand-in, `tests/fast/e2e/ft/test_rollout_ft_gated_recovery.py`: a fake worker manager drives a colocated 2-engine deployment through crash → suspend → gated relaunch → weight-update window → Serving, and feeds the resulting api-server snapshots through the soak's own `RecoveryWitness`. It covers the state sequence, not the real engines, GPUs, weight transfer or timing.
+- Every `ft-long` entry is currently registered `disabled="FT soak tests pending CI infra support"`, so the lane is green without running anything; drop the `disabled=` argument once an `ft-long` capable lane exists.
+- Until then, the rollout-crash soak has a fast-layer stand-in: `tests/fast/e2e/ft/test_rollout_ft_gated_recovery.py` drives crash → suspend → gated relaunch → weight update → Serving against a fake worker manager and checks the snapshots with the soak's own `RecoveryWitness` (state sequence only — no real engines or GPUs).
 - Add a `(scenario, mode)` to CI: copy an entry file, change `run_ci(...)`'s mode.
 - Add a new label: edit `tests/ci/labels.py` and create the matching `run-ci-<label>` GitHub label.
 
@@ -270,17 +270,12 @@ Architecture (external fault injection, not inside training loop):
      --crash-probability is set high enough that the soak reliably clears this floor. Faults are
      random, so neither an exact sequence nor the end-state membership is asserted — the
      witness only proves repeated faults were injected and healing actually ran.
-  8. Rollout recovery witness: EVERY accepted rollout injection must be paired, per cell and in
+  8. Rollout recovery witness: every accepted rollout injection must be paired, per cell and in
      order, with one completed Serving -> (Suspended|Pending) -> Serving cycle; an injection still
-     unpaired when training ends fails the soak. Existence of one healing is not enough: a second
-     fault accepted shortly before the last rollout would otherwise ride on the first heal.
-     The terminal state is Serving, not Running: the api server renders StatePendingWeights and
-     StateServing alike as phase Running, so a replacement that got weights but was never registered
-     in the router (e.g. end_update_weights silently skipping its mark_weights_ready) would satisfy
-     a Running-based witness while never serving again. The Serving condition on the cell status is
-     set exactly when the cell entered the router's worker list, so it is the signal used here.
+     unpaired when training ends fails the soak. The terminal state is Serving, not Running:
+     phase Running also covers a replacement that got weights but never re-entered the router.
      Suspended is not required in between — it lasts only --mini-ft-controller-resume-delay (10s),
-     which a 2s poll can miss; Pending alone is accepted as the relaunch half.
+     which a 2s poll can miss.
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.5)
 ```
