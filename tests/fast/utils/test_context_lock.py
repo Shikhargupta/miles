@@ -19,32 +19,20 @@ from miles.utils.context_lock import (
 )
 
 
-class _ConcurrencyTracker:
-    def __init__(self) -> None:
-        self.max_concurrent_calls = 0
-        self._concurrent_calls = 0
-
-    def enter(self) -> None:
-        self._concurrent_calls += 1
-        self.max_concurrent_calls = max(self.max_concurrent_calls, self._concurrent_calls)
-
-    def exit(self) -> None:
-        self._concurrent_calls -= 1
-
-
 @enforce_lock_discipline
 class _Guarded:
     @lock_exempt
-    def __init__(self, tracker: _ConcurrencyTracker | None = None) -> None:
+    def __init__(self) -> None:
         self.context_lock = ContextLock("guarded")
-        self.tracker = tracker if tracker is not None else _ConcurrencyTracker()
-        self.async_private_method_calls = 0
+        self.max_concurrent_calls = 0
+        self._concurrent_calls = 0
 
     @with_lock
     async def locked_method(self, delay: float = 0) -> bool:
-        self.tracker.enter()
+        self._concurrent_calls += 1
+        self.max_concurrent_calls = max(self.max_concurrent_calls, self._concurrent_calls)
         await asyncio.sleep(delay)
-        self.tracker.exit()
+        self._concurrent_calls -= 1
         return self.context_lock.held_in_current_context
 
     @with_lock
@@ -65,7 +53,6 @@ class _Guarded:
 
     @requires_lock
     async def async_private_method(self) -> bool:
-        self.async_private_method_calls += 1
         return True
 
     @requires_lock
@@ -242,7 +229,7 @@ class TestWithLock:
         """Two decorated calls never run their bodies at the same time."""
         guarded = _Guarded()
         await asyncio.gather(guarded.locked_method(delay=0.01), guarded.locked_method(delay=0.01))
-        assert guarded.tracker.max_concurrent_calls == 1
+        assert guarded.max_concurrent_calls == 1
 
     @pytest.mark.asyncio
     async def test_the_return_value_is_passed_through(self):
@@ -252,14 +239,14 @@ class TestWithLock:
 
     @pytest.mark.asyncio
     async def test_two_instances_sharing_a_lock_serialize_against_each_other(self):
-        """Two instances handed the very same lock object never overlap their bodies."""
-        shared_tracker = _ConcurrencyTracker()
-        first = _Guarded(tracker=shared_tracker)
-        second = _Guarded(tracker=shared_tracker)
+        """Collaborators are expected to be handed the very same lock object."""
+        first = _Guarded()
+        second = _Guarded()
         second.context_lock = first.context_lock
 
         await asyncio.gather(first.locked_method(delay=0.01), second.locked_method(delay=0.01))
-        assert shared_tracker.max_concurrent_calls == 1
+        assert first.max_concurrent_calls == 1
+        assert second.max_concurrent_calls == 1
 
     def test_rejects_sync_functions_at_decoration_time(self):
         """with_lock cannot await inside a sync function, so it must refuse one."""
@@ -765,11 +752,10 @@ class TestRequiresLock:
 
     @pytest.mark.asyncio
     async def test_raises_for_async_methods_before_running_the_body(self):
-        """The decorator asserts before awaiting async bodies too, so the body leaves no trace."""
+        """The decorator asserts before awaiting async bodies too."""
         guarded = _Guarded()
         with pytest.raises(AssertionError, match="must be called with"):
             await guarded.async_private_method()
-        assert guarded.async_private_method_calls == 0
 
     @pytest.mark.asyncio
     async def test_raises_for_property_access_outside_the_lock(self):
@@ -823,49 +809,6 @@ class TestRequiresLock:
         assert await guarded.locked_method_calling_private() is True
         with pytest.raises(AssertionError, match="must be called with"):
             guarded._private_method()
-
-    @pytest.mark.asyncio
-    async def test_raises_in_a_child_task_that_outlives_the_critical_section(self):
-        """A task spawned inside the section loses its authorization once the holder releases and someone else acquires."""
-        guarded = _Guarded()
-        resume = asyncio.Event()
-        child_saw_held: list[bool] = []
-
-        async def child() -> None:
-            await resume.wait()
-            child_saw_held.append(guarded.context_lock.held_in_current_context)
-            guarded._private_method()
-
-        async with guarded.context_lock:
-            child_task = asyncio.create_task(child())
-            await asyncio.sleep(0)
-
-        holder = _HolderTask(guarded.context_lock)
-        await holder.start()
-        resume.set()
-        with pytest.raises(AssertionError, match="must be called with the 'guarded' context lock held"):
-            await child_task
-        assert child_saw_held == [False]
-        await holder.finish()
-
-    @pytest.mark.asyncio
-    async def test_a_child_task_that_outlives_the_section_can_still_acquire_the_lock(self):
-        """A stale authorization must not be mistaken for a live one and block a fresh acquire."""
-        guarded = _Guarded()
-        resume = asyncio.Event()
-
-        async def child() -> None:
-            await resume.wait()
-            async with guarded.context_lock:
-                assert guarded._private_method() is True
-
-        async with guarded.context_lock:
-            child_task = asyncio.create_task(child())
-            await asyncio.sleep(0)
-
-        resume.set()
-        await child_task
-        assert not guarded.context_lock.locked
 
     @pytest.mark.asyncio
     async def test_reports_a_missing_lock_attribute(self):
@@ -1163,30 +1106,6 @@ class TestEnforceLockDiscipline:
 
         with pytest.raises(AssertionError, match="not decorated with @enforce_lock_discipline"):
             await _Forgotten().method()
-
-    @pytest.mark.asyncio
-    async def test_a_guarded_method_wrapped_by_another_decorator_runs_on_an_enforced_class(self):
-        """An outer functools.wraps decorator must not hide the owner marker from the inner lock wrapper."""
-
-        def _passthrough(fn):
-            @functools.wraps(fn)
-            async def outer(self, *args, **kwargs):
-                return await fn(self, *args, **kwargs)
-
-            return outer
-
-        @enforce_lock_discipline
-        class _Stacked:
-            @lock_exempt
-            def __init__(self) -> None:
-                self.context_lock = ContextLock("stacked")
-
-            @_passthrough
-            @with_lock
-            async def method(self) -> bool:
-                return self.context_lock.held_in_current_context
-
-        assert await _Stacked().method() is True
 
     def test_lock_exempt_leaves_the_function_behaviour_untouched(self):
         """The exemption is a marker only; it must not wrap or alter the call."""

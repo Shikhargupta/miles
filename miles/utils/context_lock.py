@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from types import TracebackType
-from typing import Any, NamedTuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,21 +21,13 @@ _DISCIPLINE_OWNER_ATTRIBUTE_NAME: str = "_context_lock_discipline_owner"
 # the annotation machinery (PEP 649) plants these in the class dict; they are not methods of the class
 _ANNOTATION_MEMBER_NAMES: frozenset[str] = frozenset({"__annotate__", "__annotate_func__"})
 
-
-class _LockGrant(NamedTuple):
-    lock: "ContextLock"
-    generation: int
-
-
-_held_lock: contextvars.ContextVar["_LockGrant | None"] = contextvars.ContextVar("held_context_lock", default=None)
+_held_lock: contextvars.ContextVar["ContextLock | None"] = contextvars.ContextVar("held_context_lock", default=None)
 
 
 class ContextLock:
     def __init__(self, name: str) -> None:
         self._name = name
         self._lock = asyncio.Lock()
-        self._generation_counter: int = 0
-        self._active_generation: int | None = None
         self._detached = False
 
     @property
@@ -48,8 +40,7 @@ class ContextLock:
 
     @property
     def held_in_current_context(self) -> bool:
-        grant = _held_lock.get()
-        return grant is not None and grant.lock is self and grant.generation == self._active_generation
+        return _held_lock.get() is self
 
     async def __aenter__(self) -> "ContextLock":
         await self.acquire()
@@ -64,22 +55,16 @@ class ContextLock:
         self.release()
 
     async def acquire(self) -> None:
-        grant = _held_lock.get()
-        assert (
-            grant is None or not grant.lock.held_in_current_context
-        ), f"Cannot acquire lock {self._name!r}: a context lock is already held"
+        assert _held_lock.get() is None, f"Cannot acquire lock {self._name!r}: a context lock is already held"
         wait_reminder = asyncio.ensure_future(self._remind_while_waiting())
         try:
             await self._lock.acquire()
         finally:
             wait_reminder.cancel()
-        self._generation_counter += 1
-        self._active_generation = self._generation_counter
-        _held_lock.set(_LockGrant(lock=self, generation=self._generation_counter))
+        _held_lock.set(self)
 
     def release(self) -> None:
         self._assert_held_in_current_context()
-        self._active_generation = None
         _held_lock.set(None)
         self._lock.release()
 
@@ -100,10 +85,10 @@ class ContextLock:
         assert self._detached, f"Cannot reattach lock {self._name!r}: it was not detached"
         assert _held_lock.get() is None, f"Cannot reattach lock {self._name!r}: a context lock is already held"
         self._detached = False
-        _held_lock.set(_LockGrant(lock=self, generation=self._active_generation))
+        _held_lock.set(self)
 
     def _assert_held_in_current_context(self) -> None:
-        assert self.held_in_current_context, f"Lock {self._name!r} must be held by the current context"
+        assert _held_lock.get() is self, f"Lock {self._name!r} must be held by the current context"
 
     async def _remind_while_waiting(self) -> None:
         wait_start_time = time.monotonic()
@@ -121,7 +106,7 @@ def enforce_lock_discipline(cls: type) -> type:
                 f"{cls.__name__}.{member_name} must be decorated with one of the context-lock decorators "
                 f"(e.g. with_lock or lock_exempt)"
             )
-            _propagate_discipline_owner(fn=fn, owner_name=cls.__name__)
+            setattr(fn, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, cls.__name__)
     setattr(cls, _DISCIPLINE_ENFORCED_ATTRIBUTE_NAME, True)
     return cls
 
@@ -207,16 +192,6 @@ def _extract_checkable_functions(member: Any) -> list[Callable[..., Any]]:
     if inspect.isfunction(member):
         return [member]
     return []
-
-
-def _propagate_discipline_owner(fn: Callable[..., Any], owner_name: str) -> None:
-    target: Any = fn
-    seen: set[int] = set()
-    while target is not None and id(target) not in seen:
-        seen.add(id(target))
-        if inspect.isfunction(target) or inspect.ismethod(target):
-            setattr(target, _DISCIPLINE_OWNER_ATTRIBUTE_NAME, owner_name)
-        target = getattr(target, "__wrapped__", None)
 
 
 def _get_lock(obj: Any) -> ContextLock:
