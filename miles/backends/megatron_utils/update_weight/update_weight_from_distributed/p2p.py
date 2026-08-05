@@ -34,7 +34,7 @@ from .p2p_transfer_utils import (
 )
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 logger = logging.getLogger(__name__)
 
