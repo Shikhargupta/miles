@@ -7,7 +7,6 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status, compute_suspended_rollout_cell_status
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellSpec, CellStatus
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
@@ -131,12 +130,6 @@ class MockInferenceController:
     def get_cell_statuses(self) -> dict[str, CellStatus]:
         self.status_calls += 1
         return dict(self._statuses)
-
-    def notify_cell_suspended(self, cell_id: str) -> None:
-        self._statuses[cell_id] = compute_suspended_rollout_cell_status()
-
-    def notify_cell_resumed(self, cell_id: str) -> None:
-        self._statuses[cell_id] = compute_pending_rollout_cell_status()
 
     def observe_cell(self, cell_id: str, status: CellStatus) -> None:
         self._statuses[cell_id] = status

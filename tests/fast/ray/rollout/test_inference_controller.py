@@ -359,43 +359,6 @@ class TestPublishedCellStatuses:
 
         assert controller.get_cell_statuses()[info.cell_id].phase == "Suspended"
 
-    @pytest.mark.asyncio
-    async def test_a_resumed_cell_is_published_as_pending_until_it_is_observed(self):
-        """Until reconcile sees the new generation, the old generation's verdict must not be published for it."""
-        info = _make_cell_info()
-        srv = _RecordingServer({info.cell_id: _make_serving_cell(info)})
-        controller = _make_controller({"default": srv})
-
-        controller.notify_cell_resumed(info.cell_id)
-
-        status = controller.get_cell_statuses()[info.cell_id]
-        assert status.phase == "Pending"
-        assert [c.type for c in status.conditions] == ["Allocated"]
-
-    @pytest.mark.asyncio
-    async def test_a_suspended_cell_is_published_as_suspended_before_the_next_poll(self):
-        """A suspend the api server just performed is known to it, poll interval or not."""
-        info = _make_cell_info()
-        srv = _RecordingServer({info.cell_id: _make_serving_cell(info)})
-        controller = _make_controller({"default": srv})
-
-        controller.notify_cell_suspended(info.cell_id)
-
-        assert controller.get_cell_statuses()[info.cell_id].phase == "Suspended"
-
-    @pytest.mark.asyncio
-    async def test_observing_the_new_generation_hands_the_cell_back_to_its_own_status(self):
-        """The override is a stopgap for one poll interval, not a permanent shadow of the cell."""
-        info = _make_cell_info()
-        srv = _RecordingServer()
-        controller = _make_controller({info.meta["model_id"]: srv})
-        controller.notify_cell_resumed(info.cell_id)
-
-        await controller._reconcile(info.cell_id, info)
-        srv.server_cells[info.cell_id] = _make_serving_cell(info)
-
-        assert controller.get_cell_statuses()[info.cell_id].phase == "Running"
-
 
 class TestUpdateWeightsLockWindow:
     @pytest.mark.asyncio
