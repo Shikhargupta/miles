@@ -607,6 +607,7 @@ class TestValidateRematerializeParamFromMasterWeight:
             use_kl_loss=False,
             opd_teacher_load=None,
             use_precision_aware_optimizer=False,
+            optimizer_cpu_offload=False,
             overlap_param_gather=False,
             compute_advantages_and_returns=True,
             num_critic_only_steps=0,
@@ -619,6 +620,12 @@ class TestValidateRematerializeParamFromMasterWeight:
 
     def test_valid_config_forces_no_param_buffer_cpu_backup(self):
         args = self._make_args()
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.disable_param_buffers_cpu_backup is True
+
+    def test_accepts_precision_aware_with_cpu_offload(self):
+        # HDO holds standalone masters; restore replays its copy-back hooks.
+        args = self._make_args(use_precision_aware_optimizer=True, optimizer_cpu_offload=True)
         _validate_rematerialize_param_from_master_weight(args)
         assert args.disable_param_buffers_cpu_backup is True
 

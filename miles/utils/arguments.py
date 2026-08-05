@@ -2613,9 +2613,11 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.kl_coef == 0 and not args.use_kl_loss and args.opd_teacher_load is None
     ), "--rematerialize-param-from-master-weight does not support ref/teacher model tags"
-    assert (
-        not args.use_precision_aware_optimizer
-    ), "precision-aware optimizers keep main params internally; _copy_main_params_to_model_params is a no-op"
+    assert not args.use_precision_aware_optimizer or args.optimizer_cpu_offload, (
+        "precision-aware without --optimizer-cpu-offload keeps main params inside TE FusedAdam, as int16 "
+        "remainders of the bf16 params by default: the redundancy rematerialize needs is already spent. "
+        "With cpu-offload the HybridDeviceOptimizer holds standalone masters and restore replays its copy-back"
+    )
     assert (
         not args.overlap_param_gather
     ), "restore calls DDP.start_param_sync outside the training step, which overlap-param-gather does not support"

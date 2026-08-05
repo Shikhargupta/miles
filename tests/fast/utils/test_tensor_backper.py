@@ -65,7 +65,9 @@ class _Setup:
         self.optimizer = SimpleNamespace(chained_optimizers=[_FakeOptimizer(owned, self.staging, self.shards)])
         self.model_chunk = _FakeModelChunk(self.params, self.staging)
         ctx = MainCastContext(
-            optimizer=self.optimizer,
+            cast_main_to_params=lambda: [
+                opt._copy_main_params_to_model_params() for opt in self.optimizer.chained_optimizers
+            ],
             model_chunks=[self.model_chunk],
             extras_getter=lambda: iter(self.extras.items()),
             rematerializable_ids={id(t) for t in self.params.values()},
@@ -116,7 +118,7 @@ def test_chained_optimizer_casts_every_inner_optimizer():
     setup = _Setup()
     names = list(setup.mains)
     inner = [_FakeOptimizer({n: setup.mains[n]}, setup.staging, setup.shards) for n in names]
-    setup.backuper._ctx.optimizer = SimpleNamespace(chained_optimizers=inner)
+    setup.optimizer.chained_optimizers = inner  # the ctx closure reads through
     expected = {name: param.clone() for name, param in setup.params.items()}
     setup.backuper.backup("actor")
     setup.corrupt_live_tensors()

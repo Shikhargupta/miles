@@ -11,7 +11,9 @@ _SourceGetter = Callable[[], Iterable[tuple[str, torch.Tensor]]]
 
 @dataclass
 class MainCastContext:
-    optimizer: object
+    # Writes this rank's owned shard of the low-precision params from the
+    # optimizer's master weights, exactly as the train-step end does.
+    cast_main_to_params: Callable[[], None]
     model_chunks: list
     extras_getter: _SourceGetter
     rematerializable_ids: set
@@ -125,8 +127,7 @@ class _TensorBackuperMainCast(TensorBackuper):
     @torch.no_grad()
     def restore(self, tag: str) -> None:
         assert tag == "actor", f"main-cast restore supports only the 'actor' tag, got {tag}"
-        for optimizer in self._ctx.optimizer.chained_optimizers:
-            optimizer._copy_main_params_to_model_params()
+        self._ctx.cast_main_to_params()
         for model_chunk in self._ctx.model_chunks:
             model_chunk.start_param_sync(force_sync=True)
         for name, tensor in self._ctx.extras_getter():
@@ -202,7 +203,7 @@ def _hash_tensor_sha256(x: torch.Tensor) -> str:
     """Real hash, unlike _compute_hash_tensor: the rematerialize check has to be
     able to call a mismatch a bug."""
     data = x.detach().cpu().contiguous()
-    return hashlib.sha256(data.view(torch.uint8).numpy().tobytes()).hexdigest()
+    return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
 
 
 def _compute_hash_dict(tensors: dict[str, torch.Tensor]):

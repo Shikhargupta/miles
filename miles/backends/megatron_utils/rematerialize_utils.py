@@ -3,7 +3,7 @@ weights from the distributed optimizer's fp32 main params instead of a pinned CP
 
 import logging
 from argparse import Namespace
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import torch
 
@@ -34,12 +34,53 @@ def build_main_cast_context(args: Namespace, model: Sequence[torch.nn.Module], o
         f"{[name for name, _ in extras[:20]]}"
     )
     return MainCastContext(
-        optimizer=optimizer,
+        cast_main_to_params=_build_cast_main_to_params_fn(args, optimizer),
         model_chunks=model,
         extras_getter=lambda: named_restore_extras(model),
         rematerializable_ids=_assert_rematerialize_coverage(model, extras),
         check=args.check_rematerialize_param_from_master_weight,
     )
+
+
+def _build_cast_main_to_params_fn(args: Namespace, optimizer) -> Callable[[], None]:
+    dist_opts = optimizer.chained_optimizers
+    if not args.use_precision_aware_optimizer:
+
+        def cast_mcore():
+            for dist_opt in dist_opts:
+                dist_opt._copy_main_params_to_model_params()
+
+        return cast_mcore
+
+    # Arg validation restricts precision-aware to --optimizer-cpu-offload, where
+    # _copy_main_params_to_model_params is a no-op and the standalone masters are
+    # held by the HybridDeviceOptimizer instead.
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+
+    inners = [dist_opt.optimizer for dist_opt in dist_opts]
+    for inner in inners:
+        assert isinstance(inner, HybridDeviceOptimizer), type(inner)
+
+    def cast_hdo():
+        for inner in inners:
+            _replay_hybrid_device_copy_back(inner)
+
+    return cast_hdo
+
+
+@torch.no_grad()
+def _replay_hybrid_device_copy_back(hdo) -> None:
+    """Replay HDO's two step post-hooks, which wrote this rank's owned bf16 shard
+    from the masters at step end - so the replay is bit-identical by construction."""
+    # CPU fraction: maps each shard view to the CPU tensor the CPU optimizer
+    # updates in place (the fp32 master under param_update_in_fp32).
+    for shard_view, cpu_master in hdo.gpu_params_map_cpu_copy.items():
+        shard_view.data.copy_(cpu_master.data)
+    # GPU fraction: fp32 masters cloned on-device; the CPU hook already covered
+    # the overlap.
+    for shard_view, fp32_master in hdo.param_to_fp32_param.items():
+        if shard_view not in hdo.gpu_params_map_cpu_copy:
+            shard_view.data.copy_(fp32_master.data)
 
 
 def _assert_rematerialize_coverage(model: Sequence[torch.nn.Module], extras: list[tuple[str, torch.Tensor]]) -> set:
