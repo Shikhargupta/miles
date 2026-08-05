@@ -132,11 +132,8 @@ def convert_samples_to_train_data(
 
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
-        # The bind plan is authoritative for slot routing: under oversubscription
-        # a sample's stamped slot can be stale (its adapter was swapped) or None
-        # (unbound at generation time). A name missing from the plan means the
-        # batch and its selection disagree — training on the stamped slot could
-        # write into another tenant's adapter, so fail loudly instead.
+        # The bind plan is authoritative for slot routing; a stamped slot can
+        # be stale, and a name missing from the plan must fail loudly.
         slot_by_name = {name: slot for slot, name in (metadata.get("adapter_name_by_slot") or {}).items()}
         missing = {sample.adapter.name for sample in samples if sample.adapter.name not in slot_by_name}
         if missing:
@@ -144,9 +141,7 @@ def convert_samples_to_train_data(
                 f"Samples from adapters {sorted(missing)} have no bind-plan slot; refusing stale slot routing"
             )
         train_data["adapter_slots"] = [slot_by_name[sample.adapter.name] for sample in samples]
-        # Slots whose adapter batch completes with this batch: the trainer
-        # scales their accumulated gradients by 1/actual-count and advances the
-        # LR schedule. All of it comes from the BatchPlan.
+        # Slots stepping with this batch; all of it comes from the BatchPlan.
         train_data["step_slots"] = sorted(metadata.get("step_slots", []))
         train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
         if (actual_counts := metadata.get("step_adapter_actual_counts")) is not None:

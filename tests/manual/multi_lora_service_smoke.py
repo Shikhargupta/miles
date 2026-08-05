@@ -72,13 +72,8 @@ class ServiceClient:
         raise SmokeFailure(f"timed out after {self.timeout_s}s waiting for: {description}")
 
     def wait_for_step(self, name: str, min_step: int, allow_completion: bool = False) -> None:
-        # Step-triggered deregistration can move an adapter through RETIRING
-        # and into its terminal record between polls (the whole train cycle can
-        # finish inside one poll interval); count ACTIVE and RETIRING for
-        # progress waits, and with allow_completion treat a terminal record
-        # (CLEANUP/COMPLETED, or an already-expired name) as success — without
-        # an explicit deregister those states are only reachable after
-        # committed steps hit num_step.
+        # A whole train cycle can finish between polls; with allow_completion a
+        # terminal record (only reachable after num_step) also counts as success.
         def predicate(_active: dict) -> bool:
             adapters = self.adapters(states={"ACTIVE", "RETIRING"})
             if name in adapters and adapters[name]["step"] >= min_step:

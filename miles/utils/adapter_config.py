@@ -37,9 +37,7 @@ class AdapterRunConfig:
     rm_type: str | None = None
     custom_rm_path: str | None = None
 
-    # Real per-adapter rollout function for the Option 1 wrapper
-    # (MultiLoRARolloutFn); one invocation must return one complete logical
-    # batch. Defaults to the standard InferenceRolloutFn child.
+    # Per-adapter child rollout fn; one invocation returns one complete batch.
     rollout_function_path: str | None = None
 
     # Stop after N optimizer steps; derived from num_epoch (default 1) when absent.

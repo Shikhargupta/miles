@@ -87,22 +87,14 @@ async def main(args):
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
                 logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
-                # Pace the retry: an admission-empty selection (e.g. every slot
-                # transiently non-bindable) raises without consuming the empty
-                # wait, and an unpaced continue would busy-loop through
-                # reconcile/generate until capacity frees.
+                # Pace the retry so an admission-empty selection cannot busy-loop.
                 await asyncio.sleep(args.multi_lora_idle_poll_s)
                 continue
             raise
 
-        # Slot oversubscription: the selection's bind plan was decided
-        # by the controller inside generate; execute it collectively on every
-        # trainer rank before train, then commit the reservations. Bind
-        # failure is FAIL-STOP: abort_bind rolls the controller reservations
-        # back and the exception terminates the run — a half-executed swap
-        # leaves trainer-side slot state (weights/optimizer/loaded set) that
-        # no in-process rollback can trust, and restart rebuilds it from the
-        # checkpoints and sidecars instead.
+        # Execute the selection's bind plan on every trainer rank, then commit.
+        # Bind failure is fail-stop: a half-executed swap cannot be rolled back
+        # in-process, so abort the reservations and let restart rebuild.
         control_metadata = rollout_data.get("control_metadata") or {}
         if bind_plan := control_metadata.get("batch_plan"):
             txn_id = control_metadata["train_txn_id"]

@@ -71,9 +71,8 @@ def validate_multi_lora_args(args: Any) -> None:
     if not args.multi_lora:
         return
 
-    # Swap in the Option 1 wrapper and its no-op manager-level data source unless
-    # the user pointed these flags elsewhere. The wrapper owns one real data
-    # source per adapter registration; the manager-level source is a facade.
+    # Default to the multi-LoRA wrapper and its no-op manager-level data
+    # source unless the user pointed these flags elsewhere.
     if args.rollout_function_path is None:
         args.rollout_function_path = "miles.rollout.multi_lora.rollout_fn.MultiLoRARolloutFn"
     if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
@@ -153,11 +152,8 @@ def validate_multi_lora_args(args: Any) -> None:
             args.multi_lora_max_adapter_global_batch_size > 0
         ), "--multi-lora-max-adapter-global-batch-size must be positive"
 
-    # Batch shaping rides the rollout-side DP schedule: the whole selection
-    # trains as one step, micro-batches pack slot-contiguously, and nothing is
-    # trimmed — no dynamic-global-batch-size bookkeeping needed. Reject the
-    # flag up front: with it set, the trainer expects per-batch metadata that
-    # the multi-LoRA pipeline never emits, and would die mid-run instead.
+    # Batch shaping rides the rollout-side DP schedule; the legacy dynamic-gbs
+    # flag expects per-batch metadata multi-LoRA never emits, so fail at launch.
     assert not getattr(args, "use_dynamic_global_batch_size", False), (
         "Multi-LoRA does not take --use-dynamic-global-batch-size: variable batches "
         "ride the rollout-side DP schedule directly; drop the flag."
@@ -182,11 +178,8 @@ def parse_adapter(rid: str) -> str:
 
 
 def serving_lora_name(adapter_name: str, registration_id: str) -> str:
-    """Engine-side LoRA adapter name for one registration. Weight pushes and every
-    inference request (rollout and prefill scoring) must agree on this. The full
-    registration id is part of the identity: a re-registered name is a new tenant,
-    a new engine lora_id, and a new KV-cache namespace (anti-ABA). Never parsed
-    back — the engine registry keys on the full string."""
+    """Engine-side LoRA name for one registration; pushes and every inference
+    request must agree on it, and a re-registered name is a new tenant."""
     return f"__miles_adapter_{adapter_name}_{registration_id}"
 
 

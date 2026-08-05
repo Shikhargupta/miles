@@ -68,9 +68,8 @@ class RolloutManager:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
 
-        # Multi-LoRA's Option 1 wrapper (and its eval fn) are class-based rollout
-        # fns by design; the legacy plain-function invocation would call the
-        # CLASS with (args, rollout_id, data_source, evaluation=...) and crash.
+        # The multi-LoRA rollout fn is class-based; the legacy plain-function
+        # invocation would call the class itself and crash.
         self.use_experimental_refactor = enable_experimental_rollout_refactor() or is_multi_lora_enabled(args)
         if self.use_experimental_refactor:
             input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
@@ -156,13 +155,11 @@ class RolloutManager:
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         if batch_plan := control_metadata.get("batch_plan"):
-            # The BatchPlan is authoritative for step decisions (Option 1); the
-            # first-sample metadata hack remains only for the legacy collector.
+            # The BatchPlan is authoritative for step decisions.
             metadata["step_slots"] = sorted(entry["bound_slot"] for entry in batch_plan)
             metadata["step_adapter_names"] = sorted(entry["name"] for entry in batch_plan)
-            # Step normalization divides by ROLLOUT executions, matching the
-            # loss's per-rollout denominators: an agentic batch of K sibling
-            # trajectories per execution counts once, not K times.
+            # Normalization counts rollout executions (matching the loss), so K
+            # sibling trajectories from one execution count once.
             metadata["step_adapter_actual_counts"] = {
                 entry["bound_slot"]: entry["actual_rollout_count"] for entry in batch_plan
             }
@@ -179,9 +176,8 @@ class RolloutManager:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        # control_metadata rides next to the data_ref so the driver can hand
-        # batch-level decisions (bind plan, train_txn_id) to the trainer —
-        # never smuggled inside samples or the object-store shard.
+        # control_metadata carries batch-level decisions (bind plan, txn id)
+        # to the driver — never smuggled inside samples.
         return dict(sample_indices=sample_indices, data_ref=data_ref, control_metadata=control_metadata)
 
     async def eval(

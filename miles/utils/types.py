@@ -8,18 +8,9 @@ import torch
 
 @dataclass(frozen=True)
 class AdapterRef:
-    """Serving identity of the LoRA adapter a sample is bound to; ``None`` = no adapter.
-
-    Serving routing (lora_path / rid / KV-cache namespace) derives from
-    ``(name, registration_id)`` — a re-registered name is a new tenant with a
-    fresh namespace, so a stale abort or cache entry can never cross tenants.
-    ``serving_version`` is the adapter's published weight revision at sample
-    time.
-
-    ``slot`` is TRANSITIONAL: the trainer-side sample->slot mapping still reads
-    it until the bind-plan (BatchPlan) path lands; serving routing must never
-    use it.
-    """
+    """Serving identity of the sample's LoRA adapter: routing derives from
+    ``(name, registration_id)`` so a re-registered name never aliases a
+    previous tenant; ``slot`` is trainer-side only, never used for serving."""
 
     name: str
     registration_id: str

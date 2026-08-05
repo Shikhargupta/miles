@@ -452,10 +452,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
 
     logger.info(f"Abort request for {urls}")
     if is_multi_lora_enabled(args):
-        # Never abort_all under multi-LoRA: the engines are shared by every
-        # tenant, and this end-of-rollout cleanup must not kill other adapters'
-        # in-flight requests. Abort this child's own rid namespace when the
-        # identity is known; fall back to every live registration otherwise.
+        # Engines are shared by every tenant: abort this child's own rid
+        # namespace, never abort_all.
         identity = getattr(args, "multi_lora_adapter_identity", None)
         if identity is not None:
             payloads = [{"rid": rid_prefix(*identity), "prefix": True}]

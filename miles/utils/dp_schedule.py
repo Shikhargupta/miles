@@ -37,14 +37,10 @@ def build_dp_schedule(
     rollout_indices: list[int],
     adapter_slots: list[int] | None = None,
 ) -> tuple[list[list[int]], list[list[list[int]]], list[int], list[int]]:
-    """Compute per-rank ``(partitions, micro_batch_indices, num_microbatches, num_rollouts)``;
-    ``global_batch_size`` counts rollouts, not training samples.
-
-    ``adapter_slots`` (multi-LoRA) is the per-sample trainer slot: the whole
-    batch trains as one step (the rollout wrapper already selected it as
-    exactly one optimizer step per adapter), and every micro-batch is ordered
-    by slot — the per-adapter token routing is a per-slot counts vector, which
-    assumes slot-contiguous rows within each forward."""
+    """Compute per-rank ``(partitions, micro_batch_indices, num_microbatches,
+    num_rollouts)``; ``global_batch_size`` counts rollouts, not samples. With
+    ``adapter_slots`` (multi-LoRA) the whole batch trains as one step and every
+    micro-batch is ordered by slot (the token routing needs contiguous rows)."""
     dp_size = train_parallel_config["dp_size"]
     cp_size = train_parallel_config["cp_size"]
     vpp_size = train_parallel_config["vpp_size"] or 1

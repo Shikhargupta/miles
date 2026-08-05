@@ -1,11 +1,7 @@
-"""Multi-LoRA adapter registry: the controller-owned lifecycle state machine.
-
-One record per adapter name, walking PENDING -> ACTIVE -> RETIRING -> CLEANUP
--> COMPLETED. Slots are rented containers managed by the SlotPool; serving
-identity lives in ``(name, registration_id)`` (rid, engine lora name, KV-cache
-namespace all carry the registration), so slot reuse and same-name
-re-registration can never alias a previous tenant.
-"""
+"""Controller-owned adapter lifecycle: one record per name, walking PENDING ->
+ACTIVE -> RETIRING -> CLEANUP -> COMPLETED. Slots are rented from the SlotPool;
+serving identity is ``(name, registration_id)``, so slot reuse or same-name
+re-registration can never alias a previous tenant."""
 
 import logging
 import re
@@ -75,8 +71,7 @@ class AdapterRegistry:
         self.max_adapters = max_adapters
         self.slot_pool = SlotPool(max_adapters)
         self.records: dict[str, AdapterRecord] = {}
-        # rollout_id -> selected adapter names (Option 1: a selection is whole
-        # adapter batches, so the commit is one optimizer step per name).
+        # rollout_id -> selected names; the commit is one optimizer step each.
         self.selection_records: dict[int, list[str]] = {}
 
     @property

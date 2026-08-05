@@ -1,20 +1,11 @@
-"""Register LoRA adapter runs against a live multi-LoRA service and watch them train.
-
-The service (``train_multi_lora_async.py``, e.g. launched via
-``run_multi_lora.py serve``) owns the base model, the trainer slots, and the
-SGLang engines. Each registration is an independent training run with its own
-dataset, reward, batch shape, learning-rate clock, and stop condition; the
-service trains every active run concurrently and retires a run automatically
-once its committed optimizer steps reach ``num_step``. Re-registering a name
-whose earlier run saved checkpoints resumes from where it stopped.
+"""Register LoRA adapter runs against a live multi-LoRA service (started via
+``run_multi_lora.py serve``) and watch them train to completion.
 
 Usage:
   python examples/multi_lora/register_and_train.py \\
       --api-url http://127.0.0.1:8068 \\
       --adapter gsm8k=examples/multi_lora/adapters/gsm8k.yaml \\
       --adapter dapo_math=examples/multi_lora/adapters/dapo_math.yaml
-
-Ctrl-C deregisters the runs this client registered and exits.
 """
 
 import argparse

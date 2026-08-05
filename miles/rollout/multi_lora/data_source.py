@@ -1,10 +1,5 @@
-"""Manager-level data source for multi-LoRA (Option 1).
-
-The real per-adapter data sources are owned by the ``MultiLoRARolloutFn``
-wrapper (one per registration, stamping serving identity at sample time); the
-RolloutManager-level source is a no-op facade satisfying the DataSource
-contract. The snapshot helpers here are shared with the rollout-layer scoped
-aborts."""
+"""No-op manager-level data source: the real per-adapter sources live inside
+``MultiLoRARolloutFn``. The snapshot helpers are shared with scoped aborts."""
 
 import logging
 from argparse import Namespace
@@ -28,9 +23,8 @@ def sampleable(snapshot: dict) -> dict[str, AdapterRun]:
 
 
 class MultiLoRANullDataSource(DataSource):
-    """No-op DataSource: the Option 1 wrapper owns one real RolloutDataSource
-    per adapter registration, so there is nothing to sample, save, or load at
-    the manager level."""
+    """No-op DataSource: the wrapper owns one real source per registration, so
+    there is nothing to sample, save, or load at the manager level."""
 
     def __init__(self, args: Namespace):
         self.args = args

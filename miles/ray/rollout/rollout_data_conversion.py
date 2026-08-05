@@ -22,11 +22,8 @@ def postprocess_rollout_data(args, data, train_parallel_config):
     while isinstance(data[0], list):
         data = list(itertools.chain.from_iterable(data))
 
-    # Compact rollouts must not be trimmed by sample count; the schedule drops
-    # whole trailing rollouts instead. Multi-LoRA batches never trim either:
-    # the selection is whole per-adapter batches whose actual counts are
-    # already booked in the BatchPlan, and the rollout-side schedule trains
-    # everything as one step.
+    # Compact rollouts and multi-LoRA batches never trim: the schedule drops
+    # whole trailing rollouts, and a multi-LoRA selection trains whole.
     is_compact = any(s.rollout_id is not None for s in data)
 
     if not args.disable_rollout_trim_samples and not is_compact and not is_multi_lora_enabled(args):

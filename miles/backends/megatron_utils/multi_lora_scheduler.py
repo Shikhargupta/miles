@@ -1,8 +1,6 @@
-"""Per-adapter LR/WD schedules for multi-LoRA: one ``OptimizerParamScheduler`` per adapter slot, clocked by
-the adapter's own OPTIMIZER STEPS (child batches vary in size under Option 1, so a sample clock would silently
-misposition warmup/decay). ``num_step`` is the total horizon relative to the adapter's ``start_step``; resume
-repositions to ``resume_step``, never restarts the horizon. Adapters without a known ``num_step`` warm up,
-then hold ``--lr`` constant."""
+"""One ``OptimizerParamScheduler`` per adapter slot, clocked by that adapter's
+own optimizer steps. ``num_step`` is the horizon relative to ``start_step``;
+resume repositions the clock, and adapters without ``num_step`` hold ``--lr``."""
 
 import logging
 from argparse import Namespace

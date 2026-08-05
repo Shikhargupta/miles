@@ -1,7 +1,6 @@
-"""Multi-LoRA train-data pipeline (Option 1): BatchPlan-driven step metadata,
-no-trim postprocessing (batch shaping rides the rollout-side DP schedule),
-actual-count normalization inputs, plan-authoritative slot routing, and
-per-group reward normalization with heterogeneous group sizes."""
+"""Multi-LoRA train-data pipeline: BatchPlan-driven step metadata, no-trim
+postprocessing, plan-authoritative slot routing, and per-group reward
+normalization."""
 
 import pytest
 

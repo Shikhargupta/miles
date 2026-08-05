@@ -111,10 +111,8 @@ def build_multi_lora_optimizer(
             for child in children:
                 for group in child.param_groups:
                     group["miles_multi_lora_slot"] = slot
-                # LayerWiseDistributedOptimizer wraps raw torch optimizers itself; the
-                # MCore pinned by Megatron-Bridge rejects pre-wrapped Megatron children
-                # (TypeError). param_groups proxy to the raw groups, so the slot tags
-                # above survive the unwrap.
+                # LayerWise wraps raw torch optimizers itself; the pinned MCore
+                # rejects pre-wrapped children (slot tags survive via the proxy).
                 base_optimizers.append(child.optimizer)
                 init_fns.append(_adam_init_state_fn)
     finally:
@@ -139,17 +137,15 @@ def _slot_children(optimizer, slot: int):
 
 
 def reload_adapter_slot_model_params(optimizer, slot: int) -> None:
-    """Refresh fp32 masters from model params for ONE slot's children only. A global
-    ``optimizer.reload_model_params()`` re-derives every resident slot's fp32 master
-    from its bf16 model weights, silently dropping the low mantissa bits other slots'
-    masters have accumulated since their last step."""
+    """Refresh fp32 masters for ONE slot only — a global reload would quantize
+    every other resident slot's masters through bf16."""
     for child in _slot_children(optimizer, slot):
         child.reload_model_params()
 
 
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
-    survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
+    """Reset DDP grad bookkeeping WITHOUT zeroing buffers, so per-adapter
+    accumulation survives (replaces ``zero_grad_buffer``)."""
     for model_chunk in model_chunks:
         if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
             for param in model_chunk.params_with_grad:
@@ -186,18 +182,10 @@ def step_adapter_slots(
     *,
     normalize_by_count: bool = True,
 ) -> tuple[dict[int, float], set[int]]:
-    """Step exactly the slots in ``step_counts`` (slot -> ACTUAL rollout-execution
-    count: the loss aggregates each execution's samples to one unit, so the
-    per-adapter mean divides by executions, not samples), retaining all other
-    slots' gradients. Returns (grad norm per stepped slot,
-    slots VETOED by the found-inf/NaN gate). A vetoed slot is not stepped, its
-    grads are zeroed so the poison cannot leak into the next batch, and the
-    caller must not advance its clocks nor schedule its publish — the
-    train-commit precondition.
-
-    ``normalize_by_count=False`` is the future explicit-step (Tinker) mode:
-    the client owns normalization, the sum is applied as-is.
-    """
+    """Step exactly the slots in ``step_counts`` (slot -> rollout-execution
+    count, the loss's aggregation unit), retaining all other slots' gradients.
+    Returns (grad norms, vetoed slots): a found-inf/NaN slot is not stepped,
+    its grads are cleared, and the caller must not commit or publish it."""
     grad_norms: dict[int, float] = {}
     vetoed: set[int] = set()
 

@@ -1,6 +1,5 @@
-"""Registration-scoped adapter routing: the single injection point that stamps
-serving identity onto engine requests (lora_path, prefix-abortable rid, and
-the KV-cache namespace), and the live-upsert serving_version override."""
+"""Registration-scoped adapter routing: serving identity stamped onto engine
+requests, plus the live-upsert serving_version override."""
 
 from types import SimpleNamespace
 

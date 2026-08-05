@@ -1,10 +1,6 @@
-"""Option 1 wrapper selection semantics.
-
-Pins the policy invariants: whole child batches are atomic (overshoot, never
-split), the round-robin cursor persists across selections, the empty-batch and
-coalesce clocks are separate, child failures isolate to their adapter, and the
-merge emits the BatchPlan control plane exactly once per selected adapter.
-"""
+"""Multi-LoRA wrapper selection invariants: whole child batches are atomic,
+the round-robin cursor persists, failures isolate per adapter, and the merge
+emits the BatchPlan exactly once per selected adapter."""
 
 import asyncio
 from collections import deque
@@ -235,10 +231,8 @@ class TestChildIsolation:
 
 
 class TestChildAbortScoping:
-    """One adapter finishing its batch must never cancel another tenant's
-    in-flight requests: identity is stamped on child args at data-source
-    construction, and the end-of-collection abort targets only that child's
-    own rid namespace."""
+    """The end-of-collection abort targets only the child's own rid namespace,
+    never another tenant's in-flight requests."""
 
     def test_end_of_collection_abort_targets_only_own_namespace(self, monkeypatch):
         from miles.rollout.inference_rollout import inference_rollout_train as irt

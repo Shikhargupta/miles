@@ -1,23 +1,12 @@
-"""Multi-LoRA GRPO example (Qwen3-4B, disaggregated 4 train + 4 rollout GPUs).
-
-Trains multiple LoRA adapters concurrently on a shared base model. Each
-adapter is an independent run — its own rank/alpha, batch shape, dataset,
-reward, and ``num_step`` stop condition — and whole per-adapter batches are
-scheduled atomically; adapters may outnumber the slot pool (registrations
-queue unbound and bind when a slot frees or at selection). Two example
-adapters ship in ``adapters/``: gsm8k (rm_type=math) and dapo_math
-(rm_type=deepscaler). The driver is ``train_multi_lora_async.py`` at the repo
-root; it forbids ``--colocate`` (generation needs continuous GPU).
+"""Multi-LoRA GRPO example (Qwen3-4B): trains multiple LoRA adapters
+concurrently on a shared base model, each as an independent run with its own
+dataset, reward, batch shape, and stop step. See examples/multi_lora/README.md.
 
 Usage:
-  python examples/multi_lora/run_multi_lora.py prepare      # download Qwen3-4B + both datasets (once per node)
-  python examples/multi_lora/run_multi_lora.py train        # bounded run: registers the two adapters, exits when each hits num_step
+  python examples/multi_lora/run_multi_lora.py prepare      # download model + datasets (once per node)
+  python examples/multi_lora/run_multi_lora.py train        # bounded run over adapters/, exits at num_step
   python examples/multi_lora/run_multi_lora.py full-train   # prepare + train
-  python examples/multi_lora/run_multi_lora.py serve        # service mode: no adapters preloaded, idles for registrations (API on :8068)
-
-Service mode pairs with the client example:
-  python examples/multi_lora/register_and_train.py --api-url http://127.0.0.1:8068 \\
-      --adapter gsm8k=examples/multi_lora/adapters/gsm8k.yaml
+  python examples/multi_lora/run_multi_lora.py serve        # service mode: register at runtime (API on :8068)
 """
 
 from dataclasses import dataclass

@@ -1,21 +1,7 @@
-"""Option 1 multi-LoRA rollout frontend.
-
-Each real per-adapter child RolloutFn produces ONE complete logical batch per
-invocation; that whole batch is the atomic selection unit — never split into
-prompt groups. The wrapper owns per-registration runtimes, a ready queue, a
-persistent round-robin, and a soft global target with allowed overshoot.
-
-The Option 1 gate — an adapter's next child batch starts only after its
-previous batch trained AND its new revision published — rides on the driver
-sequence: ``update_weights`` runs before ``generate``, and a selected
-adapter's next child launches at the next ``generate`` call.
-
-The BatchPlan (``RolloutFnTrainOutput.metadata``) is the only control plane:
-selected adapters, their bound slots (from the controller's plan_bind), and
-their ACTUAL sample counts flow through it to the conversion and trainer;
-``record_train_selection``/``commit_train_selection`` book exactly one
-optimizer step per selected adapter.
-"""
+"""Multi-LoRA rollout frontend: one child RolloutFn per registration, whole
+child batches selected atomically by a persistent round-robin. The BatchPlan
+(``RolloutFnTrainOutput.metadata``) is the only rollout-to-train control plane,
+booking exactly one optimizer step per selected adapter."""
 
 import asyncio
 import copy
@@ -48,7 +34,7 @@ Tenant = tuple[str, str]
 
 def leaf_sample_count(node) -> int:
     """Recursive leaf counter: multi-agent children may nest groups, so
-    ``len(group)`` is not the sample count (review P1-3)."""
+    ``len(group)`` is not the sample count."""
     if isinstance(node, list):
         return sum(leaf_sample_count(child) for child in node)
     return 1
@@ -69,12 +55,9 @@ def iter_leaf_samples(node):
 
 
 def leaf_rollout_count(node) -> int:
-    """Distinct rollout executions among the leaves. Agentic children emit K
-    sibling samples per execution (shared ``rollout_id``), and the loss
-    aggregates each execution to ONE unit (per-rollout denominators) — so the
-    per-adapter step normalizer must count executions, not samples, or a
-    K-trajectory adapter's update shrinks by 1/K. Samples without a
-    ``rollout_id`` are their own execution (the classic 1:1 path)."""
+    """Distinct rollout executions among the leaves (samples without a
+    ``rollout_id`` count as their own). The step normalizer divides by
+    executions, matching the loss's per-rollout aggregation."""
     shared: set = set()
     solo = 0
     for sample in iter_leaf_samples(node):
@@ -102,9 +85,7 @@ class _AdapterDataSource:
         child_args.rollout_batch_size = config.rollout_batch_size
         child_args.n_samples_per_prompt = config.n_samples_per_prompt or args.n_samples_per_prompt
         child_args.start_rollout_id = 0
-        # The child's own request namespace: end-of-collection aborts must
-        # cancel only this registration's in-flight requests, never another
-        # tenant's (registration identity is fixed for the runtime's lifetime).
+        # End-of-collection aborts cancel only this registration's requests.
         child_args.multi_lora_adapter_identity = (run.name, run.registration_id)
         self.args = child_args
         self.run = run
@@ -193,7 +174,7 @@ class AdapterRolloutRuntime:
 
 
 class MultiLoRARolloutFn:
-    """Option 1 wrapper: whole child batches only, persistent round-robin,
+    """Multi-LoRA wrapper: whole child batches only, persistent round-robin,
     soft target with overshoot, coalesce timeout, registration fencing."""
 
     def __init__(self, input: RolloutFnConstructorInput):
@@ -433,9 +414,7 @@ class MultiLoRARolloutFn:
             )
             for key, value in (output.metrics or {}).items():
                 metrics[f"{run.name}/{key}"] = value
-            # Per-run reward observability: one line per selected batch so a
-            # service operator (or an E2E gate) can follow each adapter's
-            # training signal without joining trainer-side logs.
+            # Per-run reward observability: one line per selected batch.
             rewards = []
             for group in output.samples:
                 for sample in group:

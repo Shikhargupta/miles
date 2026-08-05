@@ -444,9 +444,7 @@ if __name__ == "__main__":
 
 
 def test_multi_lora_trains_whole_batch_as_one_step():
-    # The wrapper's selection is exactly one optimizer step per adapter: all
-    # samples land in ONE step regardless of global_batch_size, and a total
-    # that divides into neither gbs nor dp_size is fully covered (no trim).
+    # All samples land in ONE step regardless of gbs, fully covered (no trim).
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100)
     partitions, _, num_microbatches, num_rollouts = build_dp_schedule(
         args,
@@ -462,9 +460,8 @@ def test_multi_lora_trains_whole_batch_as_one_step():
 
 
 def test_multi_lora_micro_batches_are_slot_sorted():
-    # FFD packs by length only and can interleave adapters inside a bin; the
-    # schedule must restore slot order within every micro-batch (the per-slot
-    # token routing is a counts vector over contiguous rows).
+    # FFD packs by length only; the schedule must restore slot order within
+    # every micro-batch (token routing needs contiguous rows).
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=40)
     adapter_slots = [1, 0, 1, 0, 0, 1, 1, 0]
     partitions, micro_batch_indices, _, _ = build_dp_schedule(

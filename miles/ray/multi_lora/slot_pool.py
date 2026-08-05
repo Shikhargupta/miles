@@ -1,15 +1,7 @@
-"""Slot pool: trainer-slot tenancy for multi-LoRA adapters.
-
-A slot is a rented container, not an adapter identity: it holds
-the Megatron adapter weights, the per-slot optimizer state, and the per-slot
-scheduler while a tenant is bound. Registration-time binding (``bind_immediately``)
-serves today's fixed-slot lifetime and Option 1's bootstrap; bind transactions
-(``plan_bind`` / ``commit_bind`` / ``abort_bind``) serve bind-at-selection under
-slot oversubscription.
-
-All mutations must run on the controller actor's driver-sequenced path — never
-from HTTP handlers.
-"""
+"""Trainer-slot tenancy: a slot is a rented container (weights, optimizer
+state, scheduler), not an adapter identity. ``bind_immediately`` serves
+registration/bootstrap and the ``plan/commit/abort_bind`` transactions serve
+bind-at-selection; all mutations run on the controller's driver-sequenced path."""
 
 from dataclasses import dataclass, field
 
@@ -87,13 +79,9 @@ class SlotPool:
     # ---------------------- bind transactions ----------------------
 
     def plan_bind(self, txn_id: str, tenants: list[Tenant]) -> dict[Tenant, dict]:
-        """Authoritative admission for one selection: reserve a slot per tenant
-        and return {tenant: {"slot", "evict", "txn_id"}}. Keep-warm hits reserve
-        their own slots first, so a co-selected resident is never picked as an
-        eviction victim; the rest place into free or LRU-evictable slots in the
-        caller's selection order (round-robin fairness decides who is omitted
-        when the pool is short). Omitted tenants re-queue as READY. Reservations
-        are provisional until commit_bind/abort_bind."""
+        """Reserve a slot per tenant and return {tenant: {"slot", "evict",
+        "txn_id"}}; keep-warm hits reserve first, the rest place in the
+        caller's selection order, and omitted tenants re-queue as READY."""
         plan: dict[Tenant, dict] = {}
         placing: list[Tenant] = []
         for tenant in tenants:
@@ -112,10 +100,8 @@ class SlotPool:
         return plan
 
     def commit_bind(self, txn_id: str) -> None:
-        """Reservations become tenancy. The "selected" pin only protects the
-        plan -> commit/abort window, so it clears here: committed tenants must
-        stay LRU-evictable or every slot that ever hosted a selection would be
-        pinned forever and the pool would stop admitting new tenants."""
+        """Reservations become tenancy; the "selected" pin clears here (it only
+        guards the plan -> commit window) so committed tenants stay evictable."""
         for entry in self.entries:
             if entry.reserved_by == txn_id:
                 entry.tenant = entry.proposed_tenant

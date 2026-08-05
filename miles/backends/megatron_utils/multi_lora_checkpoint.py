@@ -1,27 +1,8 @@
-"""Optimizer-inclusive per-slot checkpoints: the slot swap primitive.
-
-One sidecar format serves slot swap-out/swap-in, periodic per-adapter saves,
-and the future Tinker ``save_state``/load-with-optimizer. The payload must be
-complete for numeric equivalence: bf16 slot weights, fp32
-master params (NOT re-derivable from bf16 — reloading would drop the low
-mantissa bits), Adam moments AND both step counters (per-param ``state["step"]``
-and per-group ``group["step"]`` — FusedAdam tracks bias correction per group),
-plus rank/alpha (non-persistent Bridge buffers, replayed via
-``init_adapter_slot``). The LR scheduler is NOT serialized: its clock is the
-optimizer step count, so ``install_slot_scheduler(..., resume_step)`` rebuilds
-it exactly.
-
-Stable parameter names strip the slot index (``...adapters.{slot}.`` ->
-``...adapter.``), matching the exposed-slot export convention that
-``load_adapter`` already consumes — state can move between slots and, later,
-between training clients.
-
-Distributed layout: every rank writes its own shard (tp/pp/ep-sharded weights,
-rank-owned optimizer state under the LayerWise whole-param DP scatter); each
-shard is written atomically (tmp + rename); rank 0 commits a manifest after a
-barrier. A load first validates the manifest and topology, then mutates the
-slot.
-"""
+"""Per-slot sidecar checkpoints (bf16 weights, fp32 masters, Adam state with
+both step counters, rank/alpha) backing slot swap-out/swap-in and per-adapter
+saves; parameter names are slot-stripped so state restores into any slot.
+Every rank writes its shard atomically and rank 0 commits a manifest; the LR
+scheduler is rebuilt from the restored optimizer step, never serialized."""
 
 import logging
 import os
@@ -38,10 +19,8 @@ _SLOT_INDEX = re.compile(r"\.adapters\.(\d+)\.")
 
 
 def stable_slot_param_name(name: str, slot: int) -> str:
-    """``...adapters.{slot}.linear_in.weight`` -> ``...adapter.linear_in.weight``.
-
-    Matches the exposed-slot naming that ``load_adapter`` consumes, so the
-    weights section of a sidecar is directly loadable into ANY slot."""
+    """``...adapters.{slot}.`` -> ``...adapter.``: the exposed-slot naming that
+    ``load_adapter`` consumes, so a sidecar loads into any slot."""
     return _SLOT_INDEX.sub(lambda m: ".adapter." if int(m.group(1)) == slot else m.group(0), name)
 
 
@@ -185,13 +164,9 @@ def find_slot_state(adapter) -> Path | None:
 
 
 def load_slot_state(args, model, optimizer, adapter) -> int | None:
-    """Restore a slot from its sidecar. Ordering matters: weights ->
-    rank/alpha replay -> slot-scoped master rebuild -> overwrite masters and
-    Adam state (incl. both step counters) from the sidecar. Returns the
-    restored optimizer step, or None when no sidecar exists (the caller falls
-    back to the weights-only checkpoint path with fresh Adam state). A sidecar
-    can legitimately carry step 0 — an adapter swapped out before its first
-    optimizer step — and its restored state must not be re-initialized."""
+    """Restore a slot from its sidecar (weights -> rank/alpha -> masters/Adam,
+    in that order). Returns the restored optimizer step, or None when no
+    sidecar exists — a real step-0 sidecar must not be re-initialized."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
     from miles.backends.megatron_utils.multi_lora_optimizer import reload_adapter_slot_model_params
