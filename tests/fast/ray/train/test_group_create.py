@@ -27,9 +27,9 @@ class _RecordingWorkerProvider(RayWorkerProvider):
 
     async def _poll_once(
         self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, spec_names: list[str]
-    ) -> dict[str, CellInfo]:
+    ) -> None:
         self.poll_count += 1
-        return await super()._poll_once(reconcile, seen_infos=seen_infos, spec_names=spec_names)
+        await super()._poll_once(reconcile, seen_infos=seen_infos, spec_names=spec_names)
 
 
 def _make_args(*, num_cells: int) -> SimpleNamespace:
