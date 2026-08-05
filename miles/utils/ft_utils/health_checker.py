@@ -113,9 +113,6 @@ class BaseHealthChecker(abc.ABC):
     @abc.abstractmethod
     def stop(self) -> None: ...
 
-    @abc.abstractmethod
-    async def cancel_inflight_probe(self) -> None: ...
-
 
 class SimpleHealthChecker(BaseHealthChecker):
     """Periodic async health checker. Calls *check_fn*; reports result via *on_result*.
@@ -147,7 +144,6 @@ class SimpleHealthChecker(BaseHealthChecker):
         self._consecutive_failures: int = 0
         self._task: asyncio.Task[None] | None = None
         self._probe_task: asyncio.Task[None] | None = None
-        self._probe_discarded: bool = False
 
     @property
     def status(self) -> TriState:
@@ -168,24 +164,6 @@ class SimpleHealthChecker(BaseHealthChecker):
             self._probe_task.cancel()
             self._probe_task = None
         self._status = TriState.UNKNOWN
-
-    async def cancel_inflight_probe(self) -> None:
-        probe_task = self._probe_task
-        if probe_task is None:
-            return
-
-        log_structured(logger.info, tag="ft", op="health", phase="cancel_probe", name=self._name)
-        self._probe_discarded = True
-        probe_task.cancel()
-
-        try:
-            await probe_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            log_structured(
-                logger.error, tag="ft", op="health", phase="cancel_probe_failed", name=self._name, exc_info=True
-            )
 
     def _on_paused(self) -> None:
         log_structured(logger.info, tag="ft", op="health", phase="pause", name=self._name)
@@ -223,8 +201,8 @@ class SimpleHealthChecker(BaseHealthChecker):
 
             if active:
                 success = await self._run_probe()
-                if self._probe_discarded:
-                    self._probe_discarded = False
+                activeness_now = self._get_activeness()
+                if not activeness_now.active or activeness_now.epoch != activeness.epoch:
                     log_structured(logger.info, tag="ft", op="health", phase="probe_discarded", name=self._name)
                 else:
                     self._publish_result(success=success)
@@ -232,16 +210,11 @@ class SimpleHealthChecker(BaseHealthChecker):
             await self._clock.sleep(self._config.interval)
 
     async def _run_probe(self) -> bool:
-        self._probe_discarded = False
         self._probe_task = asyncio.create_task(asyncio.wait_for(self._check_fn(), timeout=self._config.timeout))
 
         try:
             await self._probe_task
             return True
-        except asyncio.CancelledError:
-            if not self._probe_discarded:
-                raise
-            return False
         except Exception:
             log_structured(logger.error, tag="ft", op="health", phase="check_failed", name=self._name, exc_info=True)
             return False
@@ -308,6 +281,3 @@ class NoopHealthChecker(BaseHealthChecker):
 
     def stop(self) -> None:
         self.stopped = True
-
-    async def cancel_inflight_probe(self) -> None:
-        pass

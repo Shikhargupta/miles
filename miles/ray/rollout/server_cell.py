@@ -79,9 +79,6 @@ class ServerCell:
             "every cell must be disposed so its health checker task is stopped"
         )
 
-    async def cancel_inflight_health_probe(self) -> None:
-        await self._health_checker.cancel_inflight_probe()
-
     @property
     def _health_checker_activeness(self) -> bool:
         return self._get_health_checker_activeness_state().active
