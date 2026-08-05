@@ -179,19 +179,13 @@ class ServerCell:
 
         if serve_without_weight_update:
             self._mark_serving()
-        else:
-            await self._prepare_weight_update_checker()
-
-    async def _prepare_weight_update_checker(self) -> None:
-        if not self.args.check_weight_update_equal:
-            return
-
-        await self.check_weights(
-            action="reset_tensors",
-            allow_quant_error=False,
-            selector="all",
-            skip_list=self.args.check_weight_update_skip_list,
-        )
+        elif self.args.check_weight_update_equal:
+            await self.check_weights(
+                action="reset_tensors",
+                allow_quant_error=False,
+                selector="all",
+                skip_list=self.args.check_weight_update_skip_list,
+            )
 
     async def mark_weights_ready(self) -> None:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
