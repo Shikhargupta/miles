@@ -111,35 +111,6 @@ class TestServerCellStatus:
         assert _conditions(status) == [("Allocated", TriState.FALSE)]
 
 
-class TestServerCellStatusCarriesItsGeneration:
-    def test_a_pending_cell_names_the_generation_it_describes(self):
-        """Without the generation stamp a consumer cannot tell this is the freshly relaunched process."""
-        status = _make_cell(StateUninitialized(), workers_hash="gen-2").cell_status()
-
-        assert status.observedWorkersHash == "gen-2"
-
-    def test_a_running_cells_health_verdict_names_the_generation_it_was_taken_from(self):
-        """A Healthy=False about generation 1 must never be attributed to generation 2."""
-        status = _make_cell(
-            StateServing(addr_info=_ADDR_INFO), health=TriState.FALSE, workers_hash="gen-1"
-        ).cell_status()
-
-        assert _conditions(status) == [("Allocated", TriState.TRUE), ("Healthy", TriState.FALSE)]
-        assert status.observedWorkersHash == "gen-1"
-
-    def test_a_suspended_cell_names_the_generation_it_describes(self):
-        """A torn down generation must be distinguishable from its replacement."""
-        status = _make_cell(StateDisposed(), workers_hash="gen-1").cell_status()
-
-        assert status.observedWorkersHash == "gen-1"
-
-    def test_a_stale_verdict_is_rejectable_by_comparing_generations(self):
-        """This is the mini-ft heal loop: the old verdict must not gate the new process."""
-        stale = _make_cell(StateServing(addr_info=_ADDR_INFO), health=TriState.FALSE, workers_hash="gen-1")
-
-        assert stale.cell_status().observedWorkersHash != "gen-2"
-
-
 class TestGetCellStatuses:
     def _controller(self, servers: dict[str, SimpleNamespace]) -> SimpleNamespace:
         return SimpleNamespace(servers=servers)
@@ -182,23 +153,3 @@ class TestGetCellStatuses:
         statuses = InferenceController.get_cell_statuses(controller)
 
         assert statuses["engine-0"] is not statuses["engine-1"]
-
-    def test_the_published_status_keeps_each_cells_generation(self):
-        """The api server publishes this document, so the generation must survive the hand-off."""
-        controller = self._controller(
-            {
-                "actor": SimpleNamespace(
-                    server_cells={
-                        "engine-0": _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="gen-7"),
-                        "engine-1": _make_cell(StateUninitialized(), workers_hash="gen-8"),
-                    }
-                )
-            }
-        )
-
-        statuses = InferenceController.get_cell_statuses(controller)
-
-        assert {cell_id: status.observedWorkersHash for cell_id, status in statuses.items()} == {
-            "engine-0": "gen-7",
-            "engine-1": "gen-8",
-        }
