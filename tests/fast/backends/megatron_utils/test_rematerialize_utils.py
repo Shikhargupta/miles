@@ -39,8 +39,7 @@ def test_hdo_replay_covers_both_fractions():
 
 
 def test_hdo_replay_cpu_hook_takes_precedence_on_overlap():
-    # A CPU-fraction param appears in both maps (its fp32 clone is the CPU master);
-    # the replay must mirror the hooks: the GPU-fraction pass skips it.
+    # A CPU-fraction param is in both maps; the GPU pass must skip it, like the hooks do.
     view = torch.zeros(4, dtype=torch.bfloat16)
     cpu_master = torch.full((4,), 2.0)
     stale = torch.full((4,), 3.0)

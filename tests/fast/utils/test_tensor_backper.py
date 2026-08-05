@@ -27,8 +27,7 @@ def _cpu_fallback(monkeypatch):
 
 
 class _FakeOptimizer:
-    """Casts its fp32 main shard into the staging buffers, like Megatron's
-    _copy_main_params_to_model_params writing only this rank's owned shard."""
+    """Like _copy_main_params_to_model_params: writes only this rank's owned shard."""
 
     def __init__(self, mains, staging, shards):
         self._mains = mains
@@ -107,8 +106,7 @@ def test_restore_only_covers_owned_shard_and_relies_on_param_sync():
     expected = {name: param.clone() for name, param in setup.params.items()}
     setup.backuper.backup("actor")
     setup.corrupt_live_tensors()
-    # The staging halves not owned by this rank stand in for the other DP
-    # rank's cast, delivered by the all-gather.
+    # The unowned staging halves stand in for the other DP rank's cast.
     setup.backuper.restore("actor")
     for name, param in setup.params.items():
         assert torch.equal(param, expected[name]), name
@@ -134,8 +132,7 @@ def test_get_returns_pinned_backup_for_extras_and_live_tensors_for_params():
     for name, param in setup.params.items():
         assert got[name].data_ptr() == param.data_ptr(), name
     for name, extra in setup.extras.items():
-        # Extras' TMS region is paused during update_weights: get() must hand
-        # out the pinned host copy, never the live tensor.
+        # Extras are paused during update_weights, so get() must hand out the backup.
         assert got[name].data_ptr() != extra.data_ptr(), name
         assert torch.equal(got[name], extra), name
 
@@ -200,8 +197,7 @@ def test_non_actor_tag_keeps_full_pinned_copy():
 
 
 def test_actor_restore_wins_after_ref_switch():
-    # The per-cycle flow: backup actor, switch to ref (overwrites the live
-    # params), then _switch_model("actor") must rematerialize the actor bytes.
+    # A ref switch overwrites the live params; the actor restore must win them back.
     setup = _Setup()
     actor_values = {name: t.clone() for name, t in {**setup.params, **setup.extras}.items()}
     setup.backuper.backup("actor")

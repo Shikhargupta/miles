@@ -626,7 +626,6 @@ class TestValidateRematerializeParamFromMasterWeight:
         assert args.disable_param_buffers_cpu_backup is True
 
     def test_accepts_precision_aware_with_cpu_offload(self):
-        # HDO holds standalone masters; restore replays its copy-back hooks.
         args = self._make_args(use_precision_aware_optimizer=True, optimizer_cpu_offload=True)
         _validate_rematerialize_param_from_master_weight(args)
         assert args.disable_param_buffers_cpu_backup is True
@@ -642,7 +641,6 @@ class TestValidateRematerializeParamFromMasterWeight:
         assert args.check_rematerialize_param_from_master_weight is False
 
     def test_accepts_ref_and_teacher_tags(self):
-        # Non-actor tags keep pinned copies via the delegated normal backuper.
         for overrides in ({"use_kl_loss": True}, {"kl_coef": 0.1}, {"opd_teacher_load": "/path/to/teacher"}):
             _validate_rematerialize_param_from_master_weight(self._make_args(**overrides))
 

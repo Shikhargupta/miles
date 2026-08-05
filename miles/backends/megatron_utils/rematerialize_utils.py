@@ -14,8 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def _named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
-    """Tensors with no master weight to rebuild from: expert_bias buffers and fp32-dtype
-    params. These keep a pinned backup."""
+    """Tensors with no master weight to rebuild from, so they keep a pinned backup."""
     for vp_stage, model_module in enumerate(model):
         for name, buffer in model_module.named_buffers():
             if "expert_bias" in name:
@@ -54,10 +53,8 @@ def _build_cast_main_to_params_fn(optimizer, *, precision_aware: bool) -> Callab
 
         return cast_mcore
 
-    # Under --optimizer-cpu-offload, _copy_main_params_to_model_params is a no-op and
-    # HybridDeviceOptimizer holds the masters instead. Arg validation rejects every other
-    # precision-aware config. Imported here, not at the top, so this module stays
-    # importable without megatron.
+    # Arg validation narrows precision-aware to --optimizer-cpu-offload, where
+    # _copy_main_params_to_model_params is a no-op and HDO holds the masters instead.
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
     inners = [dist_opt.optimizer for dist_opt in dist_opts]
@@ -73,21 +70,21 @@ def _build_cast_main_to_params_fn(optimizer, *, precision_aware: bool) -> Callab
 
 @torch.no_grad()
 def _replay_hybrid_device_copy_back(hdo) -> None:
-    """Replay HDO's two step post-hooks. They wrote this rank's owned shard from the
-    masters at step end, so the replay is bit-identical."""
-    # CPU fraction: values are the CPU masters the CPU optimizer updates in place.
+    """Replay HDO's two step post-hooks, which wrote this shard at step end."""
     for shard_view, cpu_master in hdo.gpu_params_map_cpu_copy.items():
         shard_view.data.copy_(cpu_master.data)
-    # GPU fraction: on-device masters. The CPU hook already covered the overlap.
+    # The CPU pass above already covered the params present in both maps.
     for shard_view, fp32_master in hdo.param_to_fp32_param.items():
         if shard_view not in hdo.gpu_params_map_cpu_copy:
             shard_view.data.copy_(fp32_master.data)
 
 
 def _assert_rematerialize_coverage(model: Sequence[torch.nn.Module], extras: list[tuple[str, torch.Tensor]]) -> set:
-    """Every param must be rebuildable, via the DDP buffers (cast + all-gather) or the
-    extras backup. Anything else would come back as garbage. DDP buffer membership is
-    the right criterion: optimizer structures only cover this rank's shard under DP>1."""
+    """Anything outside the DDP buffers and the extras backup would come back as garbage.
+
+    DDP buffer membership is the right criterion: optimizer structures only cover this
+    rank's shard under DP>1.
+    """
     restorable = {id(t) for _, t in extras}
     for model_module in model:
         for buffer in model_module.buffers + model_module.expert_parallel_buffers:

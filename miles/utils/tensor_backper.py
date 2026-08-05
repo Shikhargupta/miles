@@ -89,11 +89,13 @@ class _TensorBackuperNormal(TensorBackuper):
 
 
 class _TensorBackuperMainCast(TensorBackuper):
-    """Rebuilds the actor weights from the optimizer's master weights instead of keeping
-    a pinned CPU copy. Restore is the step end's cast + all-gather, so bit-identical.
-    Only `extras_getter` tensors keep a pinned backup. Non-actor tags (ref/teacher) have
-    no master weights and keep full pinned copies via a delegated _TensorBackuperNormal.
-    With `check`, the first `_check_num_cycles` actor restores are SHA256-verified."""
+    """Rebuilds the actor weights instead of keeping a pinned CPU copy of them.
+
+    Restore replays the step end's cast + all-gather, so it is bit-identical. Only
+    `extras_getter` tensors keep a pinned backup. Non-actor tags (ref/teacher) have no
+    master weights to rebuild from, so they keep full pinned copies via a delegated
+    _TensorBackuperNormal.
+    """
 
     _check_num_cycles = 2
 
@@ -204,8 +206,7 @@ class _TensorBackuperNoop(TensorBackuper):
 
 
 def _hash_tensor_sha256(x: torch.Tensor) -> str:
-    """Real hash, unlike _compute_hash_tensor. The rematerialize check must be able to
-    call a mismatch a bug."""
+    """Real hash, unlike _compute_hash_tensor: a mismatch here has to mean a bug."""
     data = x.detach().cpu().contiguous()
     return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
 
