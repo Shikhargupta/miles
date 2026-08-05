@@ -79,7 +79,10 @@ def make_group(
 ) -> list[Sample]:
     samples = []
     for _ in range(adapter.config.n_samples_per_prompt):
-        sample = Sample(prompt="p", adapter=AdapterRef(adapter.name, adapter.slot))
+        sample = Sample(
+            prompt="p",
+            adapter=AdapterRef(adapter.name, registration_id="reg1", serving_version=1, slot=adapter.slot),
+        )
         if slot_version is not None:
             sample.metadata["slot_version"] = slot_version
         if registration_id is not None:

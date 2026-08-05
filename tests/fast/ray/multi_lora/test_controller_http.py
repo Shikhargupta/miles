@@ -143,7 +143,10 @@ async def test_deregister_marks_and_retire_adapters_aborts():
 
         applied = await ctl.backend.retire_adapters()
         assert applied == ["A"]
-        assert ctl.aborts == [{"rid": f"A{RID_SEPARATOR}", "prefix": True}]
+        # Registration-scoped abort (anti-ABA): the prefix carries the retiring
+        # tenant's registration id, never the bare name.
+        registration_id = ctl.backend.registry.records["A"].registration_id
+        assert ctl.aborts == [{"rid": f"A{RID_SEPARATOR}{registration_id}{RID_SEPARATOR}", "prefix": True}]
         assert ctl.backend.registry.active_adapters() == {}
 
 

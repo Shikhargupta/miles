@@ -15,9 +15,12 @@ __all__ = [
     "RID_SEPARATOR",
     "define_new_adapter_metrics",
     "is_multi_lora_enabled",
+    "cache_extra_key",
     "make_rid",
     "min_groups_per_dp_split",
     "parse_adapter",
+    "rid_prefix",
+    "serving_lora_name",
     "slot_lora_name",
     "validate_multi_lora_args",
 ]
@@ -180,12 +183,35 @@ def validate_multi_lora_args(args: Any) -> None:
     args.megatron_to_hf_mode = "bridge"
 
 
-def make_rid(adapter_name: str) -> str:
-    return f"{adapter_name}{RID_SEPARATOR}{uuid.uuid4().hex}"
+def make_rid(adapter_name: str, registration_id: str) -> str:
+    """Request id carrying the full registration: a stale tenant's prefix abort
+    can never match a same-name successor's requests."""
+    return f"{adapter_name}{RID_SEPARATOR}{registration_id}{RID_SEPARATOR}{uuid.uuid4().hex}"
+
+
+def rid_prefix(adapter_name: str, registration_id: str) -> str:
+    """Abort-by-prefix namespace for one registration of one adapter."""
+    return f"{adapter_name}{RID_SEPARATOR}{registration_id}{RID_SEPARATOR}"
 
 
 def parse_adapter(rid: str) -> str:
-    return rid.rsplit(RID_SEPARATOR, 1)[0]
+    # The separator cannot appear in adapter names, so the first segment is the name.
+    return rid.split(RID_SEPARATOR, 1)[0]
+
+
+def serving_lora_name(adapter_name: str, registration_id: str) -> str:
+    """Engine-side LoRA adapter name for one registration. Weight pushes and every
+    inference request (rollout and prefill scoring) must agree on this. The full
+    registration id is part of the identity: a re-registered name is a new tenant,
+    a new engine lora_id, and a new KV-cache namespace (anti-ABA). Never parsed
+    back — the engine registry keys on the full string."""
+    return f"__miles_adapter_{adapter_name}_{registration_id}"
+
+
+def cache_extra_key(adapter_name: str, registration_id: str, serving_version: int) -> str:
+    """KV-cache namespace: registration and serving version both enter the key, so
+    neither a re-registered name nor a republished revision can reuse stale KV."""
+    return f"{adapter_name}:{registration_id}:v{serving_version}"
 
 
 def slot_lora_name(slot: int) -> str:

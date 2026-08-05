@@ -48,7 +48,7 @@ async def test_process_group_stamps_submission_version(monkeypatch):
 
     monkeypatch.setattr(mod, "AdaptersCache", lambda: cache)
 
-    g = [Sample(prompt="p", adapter=AdapterRef("A", 0))]
+    g = [Sample(prompt="p", adapter=AdapterRef("A", registration_id="ra", serving_version=1, slot=0))]
     result = await process_group(None, g, {}, gen, FakeDataSource())
 
     assert result is g

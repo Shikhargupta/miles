@@ -102,7 +102,12 @@ class MultiLoRAAsyncDataSource(DataSource):
 
             adapter = adapters[name]
             config = adapter.config
-            ref = AdapterRef(name=name, slot=adapter.slot)
+            ref = AdapterRef(
+                name=name,
+                registration_id=adapter.registration_id,
+                serving_version=adapter.version,
+                slot=adapter.slot,
+            )
             reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)
             for sample in groups[0]:
                 sample.adapter = ref

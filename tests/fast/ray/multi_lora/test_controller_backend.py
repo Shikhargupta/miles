@@ -60,7 +60,7 @@ def register_and_promote(registry: AdapterRegistry, name: str, config=None) -> N
 
 def test_rid_roundtrip_preserves_names_with_underscores():
     for name in ["a", "adapter_a", "weird__name", "x_y_z"]:
-        assert parse_adapter(make_rid(name)) == name
+        assert parse_adapter(make_rid(name, "reg1")) == name
 
 
 def test_register_starts_pending_and_push_promotes():
@@ -280,7 +280,7 @@ async def test_free_slot_reaborts_before_releasing_slot():
     backend = make_backend()
     aborted: list[str] = []
 
-    async def record_abort(name: str) -> None:
+    async def record_abort(name: str, registration_id: str) -> None:
         aborted.append(name)
 
     backend.abort_adapter_requests = record_abort
@@ -300,7 +300,7 @@ async def test_free_slot_skips_abort_when_not_in_cleanup():
     backend = make_backend()
     aborted: list[str] = []
 
-    async def record_abort(name: str) -> None:
+    async def record_abort(name: str, registration_id: str) -> None:
         aborted.append(name)
 
     backend.abort_adapter_requests = record_abort

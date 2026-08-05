@@ -37,7 +37,7 @@ def adapter_group(
     group = []
     for k in range(n_samples):
         sample = make_sample(index=start_index + k, reward=rewards[k])
-        sample.adapter = AdapterRef(name, slot)
+        sample.adapter = AdapterRef(name, registration_id=f"reg-{name}", serving_version=1, slot=slot)
         sample.metadata = {"adapter_global_batch_size": adapter_global_batch_size}
         group.append(sample)
     return group

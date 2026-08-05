@@ -8,10 +8,22 @@ import torch
 
 @dataclass(frozen=True)
 class AdapterRef:
-    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
+    """Serving identity of the LoRA adapter a sample is bound to; ``None`` = no adapter.
+
+    Serving routing (lora_path / rid / KV-cache namespace) derives from
+    ``(name, registration_id)`` — a re-registered name is a new tenant with a
+    fresh namespace, so a stale abort or cache entry can never cross tenants.
+    ``serving_version`` is the adapter's published weight revision at sample
+    time.
+
+    ``slot`` is TRANSITIONAL: the trainer-side sample->slot mapping still reads
+    it; serving routing must never use it.
+    """
 
     name: str
-    slot: int
+    registration_id: str
+    serving_version: int
+    slot: int | None
 
 
 @dataclass(frozen=True)
@@ -175,7 +187,8 @@ class Sample:
         return sample
 
     def get_reward_value(self, args) -> float:
-        return self.reward if not args.reward_key else self.reward[args.reward_key]
+        reward_key = getattr(args, "reward_key", None)
+        return self.reward if not reward_key else self.reward[reward_key]
 
     @property
     def effective_response_length(self):
