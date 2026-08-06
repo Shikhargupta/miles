@@ -319,17 +319,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--disable-weights-backuper",
-                action="store_false",
-                dest="enable_weights_backuper",
-                help=(
-                    "Applies to `megatron` training backend only. "
-                    "Disables the system that backups model weights (Actor, Ref, Old Actor) to CPU RAM. "
-                    "Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing KL-divergence against a reference model. "
-                    "Note: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
-                ),
-            )
-            parser.add_argument(
                 "--rematerialize-param-from-master-weight",
                 action="store_true",
                 help=(
@@ -2607,7 +2596,6 @@ def _validate_rematerialize_param_from_master_weight(args):
     )
     assert args.colocate and args.offload_train
     assert args.use_distributed_optimizer
-    assert args.enable_weights_backuper
     assert not args.keep_old_actor
     assert not args.use_precision_aware_optimizer or args.optimizer_cpu_offload, (
         "--use-precision-aware-optimizer on GPU keeps the master weights inside TE FusedAdam, stored as "
@@ -3052,7 +3040,7 @@ def miles_validate_args(args):
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
-        args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+        args.disable_param_buffers_cpu_backup = True
 
     _validate_rematerialize_param_from_master_weight(args)
 
@@ -3061,11 +3049,6 @@ def miles_validate_args(args):
         assert (
             args.train_backend == "megatron"
         ), "--offload-train-target=disk is only supported on the megatron backend"
-        assert args.enable_weights_backuper, (
-            "--offload-train-target=disk requires the weights backuper (do not pass "
-            "--disable-weights-backuper): disk-offloaded weights are read from GPU after resume, "
-            "not from a CPU backup."
-        )
         assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
         if args.offload_train_disk_dir is None:
             uid = os.getuid() if hasattr(os, "getuid") else 0
