@@ -598,7 +598,7 @@ def _train(args: ScriptArgs):
         "--rollout-health-check-timeout 300 "
     )
     if args.colocate:
-        misc_args += "--colocate --rematerialize-param-from-master-weight "
+        misc_args += "--colocate "
     else:
         misc_args += f"--rollout-num-gpus {args.rollout_num_gpus} "
 
