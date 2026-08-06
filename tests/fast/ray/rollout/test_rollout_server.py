@@ -14,10 +14,11 @@ from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
 class TestRolloutServerPureFunctions:
-    def test_resolve_sglang_config_yaml_gpu_mismatch_asserts(self, tmp_path):
+    def testresolve_sglang_config_yaml_gpu_mismatch_asserts(self, tmp_path):
         cfg_path = tmp_path / "cfg.yaml"
         cfg_path.write_text(
             "sglang:\n"
@@ -34,7 +35,7 @@ class TestRolloutServerPureFunctions:
     def test_eval_fleet_inherits_rollout_engine_settings(self):
         """The eval model carries only what makes it an eval fleet; the rest is inherited."""
         args = make_args(eval_num_gpus=2, eval_num_gpus_per_engine=2)
-        config = _resolve_sglang_config(args)
+        config = resolve_sglang_config(args)
 
         [eval_model] = [m for m in config.models if m.name == "eval"]
         assert eval_model.update_weights is False
@@ -51,7 +52,7 @@ class TestRolloutServerPureFunctions:
     def test_tp_coupled_sizes_are_not_inherited_across_a_different_eval_tp(self):
         """Inheriting these across a different eval tp gives an engine that will not boot."""
         args = make_args(rollout_num_gpus_per_engine=8, eval_num_gpus=1, eval_num_gpus_per_engine=1)
-        [group] = [m for m in _resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
+        [group] = [m for m in resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
 
         assert {k: group.overrides[k] for k in ("dp_size", "pp_size", "ep_size", "attn_cp_size")} == dict.fromkeys(
             ("dp_size", "pp_size", "ep_size", "attn_cp_size"), 1
@@ -59,7 +60,7 @@ class TestRolloutServerPureFunctions:
 
     def test_tp_coupled_sizes_are_inherited_when_the_tp_matches(self):
         args = make_args(rollout_num_gpus_per_engine=2, eval_num_gpus=2, eval_num_gpus_per_engine=2)
-        [group] = [m for m in _resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
+        [group] = [m for m in resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
 
         assert "ep_size" not in group.overrides  # left to the shared --sglang-* fill-in
 
@@ -70,13 +71,13 @@ class TestRolloutServerPureFunctions:
             eval_num_gpus_per_engine=2,
             eval_sglang_ep_size=2,
         )
-        [group] = [m for m in _resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
+        [group] = [m for m in resolve_sglang_config(args).models if m.name == "eval"][0].server_groups
 
         assert group.overrides["ep_size"] == 2
 
     def test_eval_sglang_overrides_reach_the_eval_group_only(self):
         args = make_args(eval_num_gpus=2, eval_sglang_mem_fraction_static=0.95)
-        config = _resolve_sglang_config(args)
+        config = resolve_sglang_config(args)
 
         by_name = {m.name: m for m in config.models}
         assert by_name["eval"].server_groups[0].overrides["mem_fraction_static"] == 0.95
@@ -104,7 +105,7 @@ class TestRolloutServerPureFunctions:
             eval_num_gpus_per_engine=2,
             eval_sglang_mem_fraction_static=0.95,
         )
-        config = _resolve_sglang_config(args)
+        config = resolve_sglang_config(args)
 
         [eval_model] = [m for m in config.models if m.name == "eval"]
         # Auto-inference would give True here and put the fleet in the broadcast group.
@@ -132,7 +133,7 @@ class TestRolloutServerPureFunctions:
         args = make_args(
             sglang_config=str(cfg_path), rollout_num_gpus=8, eval_num_gpus=2, eval_sglang_mem_fraction_static=0.95
         )
-        config = _resolve_sglang_config(args)
+        config = resolve_sglang_config(args)
 
         [eval_model] = [m for m in config.models if m.name == "eval"]
         assert eval_model.server_groups[0].overrides["mem_fraction_static"] == 0.5
@@ -234,7 +235,12 @@ class TestEngineListOrdering:
         for index in sorted(range(num_cells), key=lambda i: f"inference-engine-0-0-{i}"):
             meta = SimpleNamespace(num_gpus_per_engine=index + 1, gpu_offset=index)
             cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(meta=meta, api_client=f"client-{index}")
-        return RolloutServer(server_cells=cells, args=SimpleNamespace(), context_lock=_make_lock())
+        return RolloutServer(
+            server_cells=cells,
+            args=SimpleNamespace(),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
+        )
 
     @pytest.mark.asyncio
     async def test_engine_lists_are_ordered_by_gpu_offset_not_insertion(self):
@@ -265,7 +271,10 @@ class TestAddCellRollback:
     async def test_a_failed_add_still_tracks_the_cell_so_nothing_leaks(self, monkeypatch):
         """The cell is committed before init runs, so a failing init cannot orphan its health checker task."""
         srv = RolloutServer(
-            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+            server_cells={},
+            args=SimpleNamespace(colocate=False, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
         )
         monkeypatch.setattr(ServerCell, "init", _raise_async)
 
@@ -280,7 +289,10 @@ class TestAddCellRollback:
     async def test_disposing_the_server_removes_every_cell_it_tracks(self, monkeypatch):
         """Controller teardown must reach each cell so its health checker task stops with it."""
         srv = RolloutServer(
-            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+            server_cells={},
+            args=SimpleNamespace(colocate=True, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
         )
         monkeypatch.setattr(ServerCell, "init", _noop_async)
 
@@ -294,7 +306,10 @@ class TestAddCellRollback:
     async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
         srv = RolloutServer(
-            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+            server_cells={},
+            args=SimpleNamespace(colocate=False, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
         )
         monkeypatch.setattr(ServerCell, "init", _noop_async)
 
@@ -315,7 +330,10 @@ class TestAddCellInitTiming:
             initialized.append(self.meta.cell_id)
 
         srv = RolloutServer(
-            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+            server_cells={},
+            args=SimpleNamespace(colocate=False, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
         )
         monkeypatch.setattr(ServerCell, "init", _record)
 
@@ -334,7 +352,10 @@ class TestAddCellInitTiming:
             initialized.append(self.meta.cell_id)
 
         srv = RolloutServer(
-            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+            server_cells={},
+            args=SimpleNamespace(colocate=True, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
         )
         monkeypatch.setattr(ServerCell, "init", _record)
 
@@ -344,6 +365,11 @@ class TestAddCellInitTiming:
             assert initialized == []
             assert list(srv.server_cells) == ["inference-engine-0-0-0"]
             await srv.dispose()
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"cell startup is patched out in this module ({worker_name=})")
 
 
 async def _make_serving_server(monkeypatch, *, num_cells: int) -> RolloutServer:
