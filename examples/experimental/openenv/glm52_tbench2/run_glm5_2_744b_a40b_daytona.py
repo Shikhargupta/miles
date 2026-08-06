@@ -95,12 +95,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # 4-GPU engine per node, dp-attention + deepep, EAGLE 1/1/2.
     # "low-latency": one TP8 engine per node pair, EAGLE 5/1/6.
     sglang_config: Literal["balanced", "low-latency"] = "balanced"
+    # Share the actor's GPUs with the engines instead of running a dedicated
+    # inference fleet. Off = the reference 8 train + N inference topology, which is
+    # the only shape the reference run covers. On = everything on one 8-node
+    # allocation, for sites that do not have 16 nodes.
+    colocate: bool = False
 
     def __post_init__(self):
-        min_nodes = 8 if self.debug_replay_data else 10
+        min_nodes = 8 if (self.debug_replay_data or self.colocate) else 10
         assert (
             self.num_nodes >= min_nodes and self.num_gpus_per_node == 4
-        ), "GB300 config: 8 train nodes plus inference nodes (4 GPUs each)"
+        ), "GB300 config: 8 train nodes plus inference nodes (4 GPUs each), or --colocate on 8"
         assert self.daytona_api_key, "DAYTONA_API_KEY must be set in the environment"
         if not self.prompt_data:
             self.prompt_data = f"{self.data_dir}/tbench2_train.jsonl"
@@ -129,14 +134,27 @@ def _execute_train(args: ScriptArgs):
         f"--save-interval {args.save_interval} "
     )
 
-    rollout_args = (
-        "--rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn "
-        "--pause-generation-mode in_place "
-        f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
-        # Free a submission slot per finished sample, not per finished group:
-        # with long-horizon agentic trials, waiting for each group's slowest
-        # sibling is a primary rollout-throughput limiter.
-        "--rollout-submission-granularity sample "
+    # Async and colocate are mutually exclusive by construction:
+    #   arguments.py:54  assert not args.colocate,
+    #     "--fully-async cannot colocate: rollout must keep generating while training runs"
+    # So --colocate selects the SYNCHRONOUS rollout path -- the default rollout
+    # function and train.py, as the sync sibling run-openenv-tbench2.py does. The
+    # agentic wiring below (generate / agent / reward hooks) is identical either way;
+    # only the scheduling changes. Throughput is lower than the reference 8+8 async
+    # topology, because generation stops while the training step runs.
+    if args.colocate:
+        rollout_args = ""
+    else:
+        rollout_args = (
+            "--rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn "
+            "--pause-generation-mode in_place "
+            f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
+            # Free a submission slot per finished sample, not per finished group:
+            # with long-horizon agentic trials, waiting for each group's slowest
+            # sibling is a primary rollout-throughput limiter.
+            "--rollout-submission-granularity sample "
+        )
+    rollout_args += (
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
         "--apply-chat-template "
@@ -266,7 +284,9 @@ def _execute_train(args: ScriptArgs):
         "--attention-backend flash "
         "--allgather-cp "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
-        "--actor-num-nodes 8 "
+        # Disaggregated: exactly 8 nodes train and the rest serve. Colocated: every
+        # node does both, so the actor spans the whole allocation.
+        f"--actor-num-nodes {args.num_nodes if args.colocate else 8} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--moe-token-dispatcher-type alltoall "
@@ -274,10 +294,23 @@ def _execute_train(args: ScriptArgs):
     )
     if args.offload_train_disk_dir:
         misc_args += f"--stream-optimizer-state-to-disk --offload-train-disk-dir {args.offload_train_disk_dir} "
-    rollout_gpus = (args.num_nodes - 8) * args.num_gpus_per_node
-    assert args.debug_replay_data or (
-        rollout_gpus > 0 and rollout_gpus % 8 == 0
-    ), f"needs 8 train nodes plus a multiple of 8 rollout GPUs; --num-nodes {args.num_nodes} gives {rollout_gpus}"
+    if args.colocate:
+        # Colocated variant: engines share the actor's GPUs rather than running on a
+        # dedicated inference fleet, so the whole allocation both trains and generates.
+        # This is NOT the reference topology (8 train + 8 inference) and is not covered
+        # by the reference run; it exists because this site has 8 nodes, full stop.
+        # Generation pauses in place around each training step (--pause-generation-mode
+        # in_place is already set), so throughput is strictly worse than 8+8 -- the
+        # point is fitting, not speed. Expect KV-pool pressure: the README's 0.75 ->
+        # 0.85 mem-fraction note shows how sharply truncation responds to it, and here
+        # the trainer is competing for the same HBM.
+        rollout_gpus = args.num_nodes * args.num_gpus_per_node
+        misc_args += "--colocate "
+    else:
+        rollout_gpus = (args.num_nodes - 8) * args.num_gpus_per_node
+        assert args.debug_replay_data or (
+            rollout_gpus > 0 and rollout_gpus % 8 == 0
+        ), f"needs 8 train nodes plus a multiple of 8 rollout GPUs; --num-nodes {args.num_nodes} gives {rollout_gpus}"
     misc_args += f"--rollout-num-gpus {max(rollout_gpus, 8)} "
     if args.debug_replay_data:
         misc_args += f"--load-debug-rollout-data {args.debug_replay_data} "
@@ -334,7 +367,9 @@ def _execute_train(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         extra_env_vars=extra_env_vars,
         megatron_path=args.megatron_path,
-        train_script="train_async.py",
+        # train_async.py drives FullyAsyncRolloutFn; the colocated path is synchronous
+        # and uses the ordinary train loop, matching the sync sibling.
+        train_script="train.py" if args.colocate else "train_async.py",
     )
 
 
