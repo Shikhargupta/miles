@@ -414,11 +414,15 @@ def execute(args: ScriptArgs):
         # knobs alone cannot fix this because gc_threshold is relative to the
         # per-process cap, which defaults to the whole device; NCCL allocates outside
         # torch's pool. expandable_segments:True, the usual answer, breaks
-        # torch_memory_saver. So hard-cap torch at 0.72 x 139.8 GiB = 100.6 GiB
-        # (peak allocated ~57 GiB, non-torch usage ~26 GiB, leaving ~13 GiB free),
-        # which also makes gc_threshold fire at 0.8 x cap = 80 GiB reserved.
+        # torch_memory_saver. So hard-cap torch to force the allocator to release
+        # cached blocks, and gc_threshold fires at 0.8 x cap.
+        # 0.72 (100.6 GiB) was tuned for 16k sequences (peak allocated ~57 GiB);
+        # at 64k the first train step needs ~101 GiB torch (33k-token mean
+        # trajectories) and OOMs against that cap. 0.80 x 139.8 GiB = 111.8 GiB is
+        # near the physical max: the paused sglang engine holds ~18 GiB and the
+        # train process uses ~7.5 GiB outside torch, so 0.85 would not fit.
         "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8,max_split_size_mb:512",
-        "MILES_TRAIN_MEMORY_FRACTION": "0.72",
+        "MILES_TRAIN_MEMORY_FRACTION": "0.80",
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
