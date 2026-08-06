@@ -256,7 +256,7 @@ class _BaseActorManager(Generic[SpecT]):
                     self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
                 )
                 if port_info.allow_dynamic
-                else port_info.static_port
+                else port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
             )
             self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
 

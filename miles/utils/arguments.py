@@ -2347,6 +2347,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of session server instances.",
             )
             parser.add_argument(
+                "--session-server-ip",
+                type=str,
+                default=None,
+                help="Address the session servers bind to, e.g. 0.0.0.0 to accept traffic from outside "
+                "the cluster. Peers still reach them on the address their worker was placed on. "
+                "Defaults to that placed address.",
+            )
+            parser.add_argument(
+                "--session-server-port",
+                type=int,
+                default=None,
+                help="Base port for the session servers, so a network policy can whitelist a known range. "
+                "Instance i listens on this port plus i. Defaults to a dynamically allocated port.",
+            )
+            parser.add_argument(
                 "--tito-model",
                 type=str,
                 default="default",

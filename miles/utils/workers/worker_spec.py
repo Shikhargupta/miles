@@ -19,6 +19,14 @@ class PortInfo(FrozenStrictBaseModel):
     mode: Literal["per_worker", "master"] = "per_worker"
     allow_dynamic: bool = False
     num_consecutive: int = 1
+    offset_by_cell: bool = False
+
+    @model_validator(mode="after")
+    def _reject_offsetting_a_dynamically_allocated_port(self) -> "PortInfo":
+        assert not (
+            self.offset_by_cell and self.allow_dynamic
+        ), f"Port {self.name!r} cannot be offset by cell index: it is allocated dynamically"
+        return self
 
 
 class SchedulingSpec(FrozenStrictBaseModel):

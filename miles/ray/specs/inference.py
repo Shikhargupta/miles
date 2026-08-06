@@ -53,7 +53,7 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
     return CommandWorkerSpec(
         name=compute_router_spec_name(model_idx),
         port_infos=[
-            PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+            _compute_router_primary_port_info(args, model_idx=model_idx),
             PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
         ],
         env_var=lambda _ctx: {},
@@ -66,13 +66,19 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
     )
 
 
+def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
+    if args.sglang_router_port is None:
+        return PortInfo(name="primary", static_port=8000, allow_dynamic=True)
+    return PortInfo(name="primary", static_port=args.sglang_router_port + model_idx)
+
+
 def spec_session_server(args) -> CommandWorkerSpec:
     _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         config = compute_session_server_config(
             args,
-            host=ctx.self_addrs["primary"].host,
+            host=args.session_server_ip or ctx.self_addrs["primary"].host,
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
@@ -84,7 +90,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
     return CommandWorkerSpec(
         name="session-server",
         port_infos=[
-            PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+            _compute_session_server_primary_port_info(args),
         ],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -95,6 +101,12 @@ def spec_session_server(args) -> CommandWorkerSpec:
         ),
         launch_command=_compute_launch_command,
     )
+
+
+def _compute_session_server_primary_port_info(args) -> PortInfo:
+    if args.session_server_port is None:
+        return PortInfo(name="primary", static_port=8000, allow_dynamic=True)
+    return PortInfo(name="primary", static_port=args.session_server_port, offset_by_cell=True)
 
 
 def compute_session_server_instance_id(args, instance_index: int) -> str:
