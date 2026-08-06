@@ -63,7 +63,7 @@ def save_slot_state(args, model, optimizer, adapter, *, reason: str = "swap") ->
         return None
     base.mkdir(parents=True, exist_ok=True)
 
-    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
+    from miles.backends.megatron_utils.multi_lora_utils.optimizer import _slot_children
 
     slot = adapter.slot
     weights = {name: param.detach().cpu() for name, param in named_adapter_slot_parameters(model, slot)}
@@ -141,7 +141,7 @@ def load_slot_state(args, model, optimizer, adapter) -> int | None:
     no sidecar exists — a real step-0 sidecar must not be re-initialized."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
-    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
+    from miles.backends.megatron_utils.multi_lora_utils.optimizer import _slot_children
 
     base = find_slot_state(adapter)
     if base is None:
@@ -181,9 +181,9 @@ def swap_out(args, model, optimizer, adapter) -> None:
     tenant: optimizer state and retained grads must never leak across."""
     from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
 
-    from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
-    from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
-    from miles.backends.megatron_utils.multi_lora_utils import zero_optimizer_state_for_adapter
+    from miles.backends.megatron_utils.multi_lora_utils.optimizer import zero_adapter_slot_grads
+    from miles.backends.megatron_utils.multi_lora_utils.scheduler import drop_slot_scheduler
+    from miles.backends.megatron_utils.multi_lora_utils.utils import zero_optimizer_state_for_adapter
 
     save_slot_state(args, model, optimizer, adapter, reason="swap")
     clear_adapter_slot(model, adapter.slot)
@@ -196,14 +196,14 @@ def swap_in(args, model, optimizer, adapter) -> int:
     """Bind a tenant into a (vacated) slot: sidecar restore when one exists,
     otherwise the weights-only registration path. Installs the scheduler at
     the restored step (the scheduler clock IS the optimizer step count)."""
-    from miles.backends.megatron_utils.multi_lora_scheduler import install_slot_scheduler
+    from miles.backends.megatron_utils.multi_lora_utils.scheduler import install_slot_scheduler
 
     restored_step = load_slot_state(args, model, optimizer, adapter)
     if restored_step is None:
-        from miles.backends.megatron_utils.multi_lora_utils import _register_adapter
+        from miles.backends.megatron_utils.multi_lora_utils.utils import _register_adapter
 
         restored_step = _register_adapter(adapter, model)
-        from miles.backends.megatron_utils.multi_lora_optimizer import reload_adapter_slot_model_params
+        from miles.backends.megatron_utils.multi_lora_utils.optimizer import reload_adapter_slot_model_params
 
         reload_adapter_slot_model_params(optimizer, adapter.slot)
     install_slot_scheduler(args, optimizer, adapter, restored_step)

@@ -591,7 +591,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("ref")
 
         if train_step_outcome == TrainStepOutcome.NORMAL and is_multi_lora_enabled(self.args):
-            from miles.backends.megatron_utils.multi_lora_utils import commit_trained_batch
+            from miles.backends.megatron_utils.multi_lora_utils.utils import commit_trained_batch
 
             commit_trained_batch(rollout_data, rollout_id, self._multi_lora_pending_push)
 
@@ -614,7 +614,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return
         from dataclasses import replace as dataclass_replace
 
-        from miles.backends.megatron_utils.multi_lora_checkpoint import swap_in, swap_out
+        from miles.backends.megatron_utils.multi_lora_utils.checkpoint import swap_in, swap_out
         from miles.ray.multi_lora.controller import get_multi_lora_controller
 
         broadcast_buffer = [None]
@@ -651,8 +651,8 @@ class MegatronTrainRayActor(TrainRayActor):
         """Load adapters the controller wants served; retire deregistered ones, dropping their untrained tail."""
         if not is_multi_lora_enabled(self.args):
             return
-        from miles.backends.megatron_utils.multi_lora_utils import cleanup_adapters as _cleanup_adapters
-        from miles.backends.megatron_utils.multi_lora_utils import load_adapters as _load_adapters
+        from miles.backends.megatron_utils.multi_lora_utils.utils import cleanup_adapters as _cleanup_adapters
+        from miles.backends.megatron_utils.multi_lora_utils.utils import load_adapters as _load_adapters
         from miles.ray.multi_lora.controller import get_multi_lora_controller
 
         broadcast_buffer = [None]
@@ -716,7 +716,7 @@ class MegatronTrainRayActor(TrainRayActor):
             maybe_finalize_async_save(blocking=True)
 
         if is_multi_lora_enabled(self.args):
-            from miles.backends.megatron_utils.multi_lora_utils import save_due_adapter_checkpoints
+            from miles.backends.megatron_utils.multi_lora_utils.utils import save_due_adapter_checkpoints
 
             if not save_due_adapter_checkpoints(self.args, self.model):
                 return
@@ -801,7 +801,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         version_update_names: list[str] = []
         if is_multi_lora_enabled(self.args):
-            from miles.backends.megatron_utils.multi_lora_utils import select_adapters_to_push
+            from miles.backends.megatron_utils.multi_lora_utils.utils import select_adapters_to_push
 
             self.weight_updater.multi_lora_adapters, version_update_names = select_adapters_to_push(
                 self.loaded_adapters, self._multi_lora_pending_push, has_new_engines
@@ -820,7 +820,7 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):
-                from miles.backends.megatron_utils.multi_lora_utils import commit_weight_push
+                from miles.backends.megatron_utils.multi_lora_utils.utils import commit_weight_push
 
                 self._multi_lora_pending_push.clear()
                 commit_weight_push(version_update_names, self._is_first_replica_megatron_main_rank)

@@ -10,7 +10,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.megatron_utils.multi_lora_checkpoint import FORMAT, find_slot_state, stable_slot_param_name
+from miles.backends.megatron_utils.multi_lora_utils.checkpoint import FORMAT, find_slot_state, stable_slot_param_name
 
 
 class TestStableName:
@@ -81,8 +81,8 @@ class TestSidecarRoundTrip:
                 group.update({key: value for key, value in saved.items() if key != "params"})
 
     def _round_trip(self, tmp_path, monkeypatch, target_children):
-        import miles.backends.megatron_utils.multi_lora_checkpoint as mlc
-        import miles.backends.megatron_utils.multi_lora_optimizer as mlo
+        import miles.backends.megatron_utils.multi_lora_utils.checkpoint as mlc
+        import miles.backends.megatron_utils.multi_lora_utils.optimizer as mlo
 
         config = SimpleNamespace(save=tmp_path, rank=8, alpha=16)
         adapter = SimpleNamespace(name="a", registration_id="r1", slot=0, step=7, version=2, config=config)
@@ -130,10 +130,10 @@ class TestSwapInSidecarSentinel:
     (None) may fall back to the weights-only registration re-init."""
 
     def _swap_in_with(self, monkeypatch, load_result):
-        import miles.backends.megatron_utils.multi_lora_checkpoint as mlc
-        import miles.backends.megatron_utils.multi_lora_optimizer as mlo
-        import miles.backends.megatron_utils.multi_lora_scheduler as mls
-        import miles.backends.megatron_utils.multi_lora_utils as mlu
+        import miles.backends.megatron_utils.multi_lora_utils.checkpoint as mlc
+        import miles.backends.megatron_utils.multi_lora_utils.optimizer as mlo
+        import miles.backends.megatron_utils.multi_lora_utils.scheduler as mls
+        import miles.backends.megatron_utils.multi_lora_utils.utils as mlu
 
         calls = []
         monkeypatch.setattr(mlc, "load_slot_state", lambda *a, **k: load_result)

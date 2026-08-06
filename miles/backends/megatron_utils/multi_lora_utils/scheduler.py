@@ -20,7 +20,7 @@ class _SlotParamGroups:
 def build_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) -> OptimizerParamScheduler:
     """Build the slot's scheduler and position it at the adapter's committed
     samples. Rebuilt on every adapter load, so slot reuse starts fresh."""
-    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
+    from miles.backends.megatron_utils.multi_lora_utils.optimizer import _slot_children
 
     groups = [group for child in _slot_children(optimizer, adapter.slot) for group in child.param_groups]
     num_step = adapter.config.num_step
