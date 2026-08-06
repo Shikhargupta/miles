@@ -278,6 +278,7 @@ def _execute_train(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
+        "--rematerialize-param-from-master-weight "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
 
