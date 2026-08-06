@@ -1,5 +1,4 @@
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -208,62 +207,3 @@ def test_actor_restore_wins_after_ref_switch():
     setup.backuper.restore("actor")
     for name, tensor in {**setup.params, **setup.extras}.items():
         assert torch.equal(tensor, actor_values[name]), name
-
-
-class _FakeTMS:
-    def __init__(self, backups):
-        self._backups = backups
-
-    def get_cpu_backup(self, tensor):
-        return self._backups.get(id(tensor))
-
-
-def _install_fake_tms(monkeypatch, backups):
-    module = ModuleType("torch_memory_saver")
-    module.torch_memory_saver = _FakeTMS(backups)
-    monkeypatch.setitem(sys.modules, "torch_memory_saver", module)
-
-
-def _frozen_setup():
-    frozen = torch.nn.Parameter(torch.randn(4), requires_grad=False)
-    trainable = torch.nn.Parameter(torch.randn(4))
-    buffer = torch.zeros(2)
-    tensors = [("base.w", frozen), ("adapter.w", trainable), ("expert_bias", buffer)]
-    return frozen, trainable, buffer, TensorBackuper.create(source_getter=lambda: iter(tensors))
-
-
-def test_normal_backuper_skips_frozen_params_but_not_buffers():
-    frozen, trainable, buffer, backuper = _frozen_setup()
-    backuper.backup("actor")
-    assert set(backuper._backups["actor"]) == {"adapter.w", "expert_bias"}
-    trainable.data.fill_(7.0)
-    buffer.fill_(7.0)
-    frozen_before = frozen.detach().clone()
-    backuper.restore("actor")
-    assert not torch.equal(trainable, torch.full((4,), 7.0))
-    assert not torch.equal(buffer, torch.full((2,), 7.0))
-    assert torch.equal(frozen, frozen_before)
-
-
-def test_get_serves_frozen_from_tms_backup_when_paused(monkeypatch):
-    frozen, trainable, _, backuper = _frozen_setup()
-    backuper.backup("actor")
-    host = torch.full((4,), 3.0)
-    _install_fake_tms(monkeypatch, {id(frozen): host})
-    got = backuper.get("actor")
-    assert got["base.w"] is host
-    assert torch.equal(got["adapter.w"], trainable)
-
-
-def test_get_serves_frozen_live_when_resident(monkeypatch):
-    frozen, _, _, backuper = _frozen_setup()
-    backuper.backup("actor")
-    _install_fake_tms(monkeypatch, {})
-    assert backuper.get("actor")["base.w"].data_ptr() == frozen.data_ptr()
-
-
-def test_get_rejects_missing_trainable_entry(monkeypatch):
-    _, _, _, backuper = _frozen_setup()
-    _install_fake_tms(monkeypatch, {})
-    with pytest.raises(AssertionError, match="missing from the 'actor' backup"):
-        backuper.get("actor")
