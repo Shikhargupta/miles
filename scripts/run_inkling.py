@@ -382,8 +382,6 @@ def _train(args: ScriptArgs):
         )
     else:
         misc_args += "--colocate "
-        if args.train_mode == "full":
-            misc_args += "--rematerialize-param-from-master-weight "
 
     extra_env_vars = {
         "SGLANG_ENABLE_UNIFIED_RADIX_TREE": "1",
