@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from miles.ray.placement_group import create_placement_groups
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
