@@ -35,15 +35,22 @@ async def retry(
 
     attempt = 0
     delay = initial_delay
+    first_swallowed: BaseException | None = None
     while True:
         try:
             return await fn(attempt)
-        except NonRetryableError:
+        except NonRetryableError as error:
+            if first_swallowed is not None and error.__cause__ is None:
+                raise error from first_swallowed
             raise
-        except Exception:
+        except Exception as error:
+            if first_swallowed is None:
+                first_swallowed = error
             attempt += 1
             if max_attempts is not None and attempt >= max_attempts:
                 logger.warning(f"retry: attempt {attempt} failed, giving up (max_attempts={max_attempts})")
+                if error is not first_swallowed:
+                    raise error from first_swallowed
                 raise
             logger.warning(f"retry: attempt {attempt} failed, retrying in {delay:.1f}s", exc_info=True)
             await sleep_fn(delay)
