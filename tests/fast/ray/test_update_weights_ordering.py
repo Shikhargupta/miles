@@ -61,7 +61,7 @@ class _ServerStub:
 
 
 def _make_inference_controller(**arg_overrides: object) -> InferenceController:
-    return InferenceController(make_args(**arg_overrides))
+    return InferenceController(make_args(**arg_overrides), engine_provider=None, router_provider=None)
 
 
 @pytest.mark.asyncio
@@ -151,7 +151,7 @@ async def test_the_trainer_hands_end_update_weights_the_snapshot_start_returned(
 
 
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
-    """Every engine is paused before any engine is flushed."""
+    """Each weight-update phase finishes on every engine before the next phase starts on any."""
     from unittest.mock import patch
 
     from miles.backends.experimental.fsdp_utils.update_weight_utils import UpdateWeightFromTensor
@@ -163,14 +163,14 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
         def __init__(self, index: int):
             self._index = index
 
-        async def pause_generation(self, *, mode: str = "retract"):
+        async def pause_generation(self, mode: str = "retract"):
             order.append(f"pause-{self._index}")
             pause_modes.append(mode)
 
         async def flush_cache(self):
             order.append(f"flush-{self._index}")
 
-        async def begin_weight_update(self):
+        async def begin_weight_update(self, selector: str = "all"):
             order.append(f"begin-{self._index}")
 
         async def end_weight_update(self):
