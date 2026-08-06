@@ -2907,8 +2907,14 @@ def miles_validate_args(args):
                 args.ckpt_step = args.ref_ckpt_step
             args.start_rollout_id = 0
 
-    if args.eval_interval is not None:
-        assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
+    # Only the built-in rollout path reads --eval-prompt-data. A custom rollout or eval
+    # function carries its own evaluation work (an environment taskset, a benchmark
+    # suite, ...) and is free to run without Miles-side eval datasets.
+    if args.eval_interval is not None and args.rollout_function_path is None and args.eval_function_path is None:
+        assert args.eval_datasets, (
+            "Evaluation datasets must be configured when --eval-interval is set with the built-in "
+            "rollout function. A custom --rollout-function-path / --eval-function-path supplies its own."
+        )
 
     if args.eval_num_gpus > 0:
         assert args.eval_num_gpus % args.eval_num_gpus_per_engine == 0, (

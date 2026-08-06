@@ -668,3 +668,28 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
+def _eval_interval_args(*extra: str):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    return parser.parse_args(["--eval-interval", "1", "--hf-checkpoint", "test/model", *extra] + REQUIRED_ARGS)
+
+
+def test_eval_interval_requires_datasets_on_the_builtin_path():
+    args = _eval_interval_args()
+
+    with pytest.raises(AssertionError, match="built-in"):
+        miles_validate_args(args)
+
+
+def test_eval_interval_needs_no_datasets_when_a_custom_rollout_function_evaluates():
+    args = _eval_interval_args("--rollout-function-path", "my_module.MyRolloutFn")
+
+    miles_validate_args(args)
+
+
+def test_eval_interval_needs_no_datasets_when_a_custom_eval_function_evaluates():
+    args = _eval_interval_args("--eval-function-path", "my_module.MyEvalFn")
+
+    miles_validate_args(args)
