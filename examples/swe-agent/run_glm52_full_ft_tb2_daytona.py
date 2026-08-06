@@ -78,13 +78,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/data/home/sdong/Megatron-LM"
 
     # Paths (this cluster: /data is the shared VAST mount, visible on every node)
-    hf_checkpoint: str = "/data/models/GLM-5.2"
-    # Rollout-side fp8 checkpoint; the trainer stays bf16.
-    fp8_rollout_checkpoint: str = "/data/models/GLM-5.2_fp8"
-    # Reference checkpoint for KL. Only needed when a KL term is actually on; the GRPO
-    # recipe below runs kl-coef 0, so this stays empty by default and no second 744B
-    # copy has to be converted or held.
-    ref_load: str = ""
+    #
+    # Checkpoint wiring follows scripts/run_glm5_2_744b_a40b.py, NOT the LoRA sibling:
+    #   --hf-checkpoint -> the fp8 directory, which is what the sglang rollout serves
+    #   --ref-load      -> the Megatron torch_dist checkpoint the train actor loads
+    # The LoRA path instead passed the bf16 HF dir with --megatron-to-hf-mode bridge and
+    # materialised HF tensors per rank at init: ~205 GB x 4 actors, which fits the ~2 TB
+    # of an H200 node but not the 920 GB of a GB300 one. That killed jobs 1912/1913 (Ray
+    # OOM) and 1914 (kernel OOM). torch_dist is parallelism-aware and streams shards.
+    # Build it with: scripts/run_glm5_2_744b_a40b.py prepare --num-nodes 8 --num-gpus-per-node 4
+    hf_checkpoint: str = "/data/models/GLM-5.2_fp8"
+    ref_load: str = "/data/models/GLM-5.2_torch_dist"
     # Must be shared across nodes: every rank writes its dist-checkpoint shard here and
     # the generated sglang config is read by engine actors on every node.
     save_dir: str = "/data/home/sdong/runs/260805-f86465b2"
@@ -272,32 +276,11 @@ def _sglang_args(args: ScriptArgs) -> str:
     )
 
 
-def _write_sglang_fp8_config(args: ScriptArgs) -> str:
-    """Serve the fp8 checkpoint while the trainer stays bf16.
-
-    Unlike the LoRA sibling, update_weights here pushes the *whole* re-quantised 744B
-    model every step, because full-parameter training changes every tensor.
-    """
-    path = f"{args.save_dir.rstrip('/')}/sglang_fp8_rollout.yaml"
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(
-            "sglang:\n"
-            "  - name: default\n"
-            f"    model_path: {args.fp8_rollout_checkpoint}\n"
-            "    update_weights: true\n"
-            "    server_groups:\n"
-            "      - worker_type: regular\n"
-            f"        num_gpus: {args.num_nodes * args.num_gpus_per_node}\n"
-        )
-    return path
-
-
 def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
-        "--megatron-to-hf-mode bridge "
         f"--dsa-attention-backend {args.dsa_attention_backend} "
+        f"--load {args.save_dir} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
@@ -402,7 +385,10 @@ def execute(args: ScriptArgs):
             f"--prometheus-run-name {args.wandb_run_name} "
         )
 
-    sglang_args = _sglang_args(args) + f"--sglang-config {_write_sglang_fp8_config(args)} "
+    # No --sglang-config yaml: --hf-checkpoint already points at the fp8 directory, so
+    # the engines serve it directly (this is what run_glm5_2_744b_a40b.py does). The
+    # LoRA sibling needed the yaml only because its --hf-checkpoint was the bf16 dir.
+    sglang_args = _sglang_args(args)
 
     train_args = (
         f"{ckpt_args}"
