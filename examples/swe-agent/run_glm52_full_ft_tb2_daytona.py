@@ -202,16 +202,23 @@ def _parallel_args(args: ScriptArgs) -> str:
     # on a computing layer (18/20 puts stage starts on global layers 1, 19, 39, 59).
     # Re-deriving PP for a different node count would move those boundaries onto skip
     # layers and silently feed stale anchor top-k into the backward.
+    # TP is 4, not the upstream GB300 branch's 8, so a tensor-parallel group never
+    # leaves a node. TP=8 would span two nodes and lean on multi-node NVLink; on this
+    # cluster that returns
+    #   AcceleratorError: CUDA error: Invalid access of peer GPU memory over nvlink
+    # during checkpoint load (job 1916), even though nvidia-imex reports the fabric as
+    # Completed. Intra-node NV18 is proven working. TP=4 also matches upstream's own
+    # 256-GPU H200 branch, so it is not an exotic choice.
     # Megatron requires EP * ETP == TP * DP with ETP=1, so EP follows DP.
-    #   8 nodes  -> 32 GPUs: TP=8 PP=4 DP=1 EP=8
-    #  16 nodes  -> 64 GPUs: TP=8 PP=4 DP=2 EP=16
-    if world_size % 32 != 0:
+    #   8 nodes  -> 32 GPUs: TP=4 PP=4 DP=2 EP=8
+    #  16 nodes  -> 64 GPUs: TP=4 PP=4 DP=4 EP=16
+    if world_size % 16 != 0:
         raise NotImplementedError(
-            f"world size must be a multiple of TP=8 * PP=4 = 32; got {world_size} "
+            f"world size must be a multiple of TP=4 * PP=4 = 16; got {world_size} "
             f"({args.num_nodes} nodes x {args.num_gpus_per_node})."
         )
-    data_parallel = world_size // 32
-    expert_parallel = 8 * data_parallel
+    data_parallel = world_size // 16
+    expert_parallel = 4 * data_parallel
 
     # tilelang => thd, which carries packed_seq_params and therefore permits both
     # activation recompute and dynamic batching.
@@ -222,7 +229,7 @@ def _parallel_args(args: ScriptArgs) -> str:
         )
 
     return (
-        "--tensor-model-parallel-size 8 "
+        "--tensor-model-parallel-size 4 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 4 "
         "--decoder-first-pipeline-num-layers 18 "
