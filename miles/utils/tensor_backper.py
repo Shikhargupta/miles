@@ -50,7 +50,16 @@ class TensorBackuper(ABC):
         raise NotImplementedError
 
 
+def _is_frozen_param(tensor: torch.Tensor) -> bool:
+    # Not just requires_grad: buffers match that too, yet change during training.
+    return isinstance(tensor, torch.nn.Parameter) and not tensor.requires_grad
+
+
 class _TensorBackuperNormal(TensorBackuper):
+    """Frozen params are skipped: they never change and the always-cpu-backed
+    default TMS region already restores their bytes, so a backup here would only
+    double the host copy. All tags share the live frozen values."""
+
     def __init__(self, source_getter):
         super().__init__(source_getter=source_getter)
         self._backups: dict[str, dict[str, torch.Tensor]] = defaultdict(dict)
@@ -60,12 +69,23 @@ class _TensorBackuperNormal(TensorBackuper):
         return list(self._backups)
 
     def get(self, tag: str):
-        return self._backups[tag]
+        out = dict(self._backups[tag])
+        for name, tensor in self._source_getter():
+            if name not in out:
+                assert _is_frozen_param(tensor), f"{name} missing from the '{tag}' backup"
+                from torch_memory_saver import torch_memory_saver
+
+                # No backup means the region was never paused: the live tensor is valid.
+                cpu_backup = torch_memory_saver.get_cpu_backup(tensor)
+                out[name] = cpu_backup if cpu_backup is not None else tensor.detach()
+        return out
 
     @torch.no_grad()
     def backup(self, tag: str) -> None:
         backup_dict = self._backups[tag]
         for name, param in self._source_getter():
+            if _is_frozen_param(param):
+                continue
             if name not in backup_dict:
                 backup_dict[name] = torch.empty_like(param, device=torch.device("cpu"), pin_memory=True)
             backup_dict[name].copy_(param.detach(), non_blocking=True)
@@ -80,6 +100,8 @@ class _TensorBackuperNormal(TensorBackuper):
     def restore(self, tag: str) -> None:
         backup_dict = self._backups[tag]
         for name, param in self._source_getter():
+            if _is_frozen_param(param):
+                continue
             assert name in backup_dict
             param.copy_(backup_dict[name], non_blocking=True)
         torch.cuda.synchronize()
