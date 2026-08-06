@@ -404,25 +404,6 @@ def create_lora_instance(args: Namespace):
 # ---------------------------------------------------------------------------
 
 
-def build_peft_adapter_config(args: Namespace, *, rank: int, alpha) -> dict:
-    """HF PEFT ``adapter_config.json`` payload, shared by the single-LoRA and
-    multi-LoRA save paths (multi passes per-adapter rank/alpha)."""
-    target_modules_hf = (
-        convert_target_modules_to_hf(list(args.target_modules))
-        if args.target_modules
-        else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-    )
-    return {
-        "peft_type": "LORA",
-        "r": rank,
-        "lora_alpha": alpha,
-        "target_modules": target_modules_hf,
-        "lora_dropout": getattr(args, "lora_dropout", 0.0),
-        "bias": "none",
-        "task_type": "CAUSAL_LM",
-    }
-
-
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
@@ -494,7 +475,20 @@ def save_lora_checkpoint(
         if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
             torch.save(lora_state_dict, save_path / "adapter_model.bin")
 
-            config = build_peft_adapter_config(args, rank=args.lora_rank, alpha=args.lora_alpha)
+            target_modules_hf = (
+                convert_target_modules_to_hf(list(args.target_modules))
+                if args.target_modules
+                else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            )
+            config = {
+                "peft_type": "LORA",
+                "r": args.lora_rank,
+                "lora_alpha": args.lora_alpha,
+                "target_modules": target_modules_hf,
+                "lora_dropout": args.lora_dropout,
+                "bias": "none",
+                "task_type": "CAUSAL_LM",
+            }
             with open(save_path / "adapter_config.json", "w") as f:
                 json.dump(config, f, indent=2)
 

@@ -200,7 +200,7 @@ def save_multi_lora_checkpoints(
     from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
     from safetensors.torch import save_file as save_safetensors
 
-    from miles.backends.megatron_utils.lora_utils import build_peft_adapter_config
+    from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
     from miles.utils import megatron_bridge_utils
 
     parallel_state = get_parallel_state()
@@ -211,6 +211,12 @@ def save_multi_lora_checkpoints(
     # Exactly one writer per (tp, pp, ep) shard; see adapter_shard_topology.
     is_shard_writer, _ = adapter_shard_topology()
     is_global_writer = is_shard_writer and tp_rank == 0 and pp_rank == 0 and ep_rank == 0
+
+    target_modules_hf = (
+        convert_target_modules_to_hf(list(args.target_modules))
+        if args.target_modules
+        else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
 
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
@@ -260,7 +266,15 @@ def save_multi_lora_checkpoints(
                 str(tmp_dir / "adapter_model.safetensors"),
                 metadata={"format": "pt"},
             )
-            adapter_config_json = build_peft_adapter_config(args, rank=config.rank, alpha=config.alpha)
+            adapter_config_json = {
+                "peft_type": "LORA",
+                "r": config.rank,
+                "lora_alpha": config.alpha,
+                "target_modules": target_modules_hf,
+                "lora_dropout": getattr(args, "lora_dropout", 0.0),
+                "bias": "none",
+                "task_type": "CAUSAL_LM",
+            }
             with open(tmp_dir / "adapter_config.json", "w") as f:
                 json.dump(adapter_config_json, f, indent=2)
             os.sync()
