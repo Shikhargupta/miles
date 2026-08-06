@@ -62,35 +62,38 @@ def _make_controller(
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
     group = TrainerController(
-        args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
+        with_ref=False,
         inference_controller=inference_controller,
     )
+    group._adopt_args(_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells))
     for cell_index in range(num_cells):
-        cell = group._create_cell(f"{group._pool}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1")
+        cell = group._create_cell(
+            f"{group._pool_id}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1"
+        )
         group._cells_by_id[cell.cell_id] = cell
     return group
 
 
 async def _stop_cell(group: TrainerController, cell_index: int) -> None:
     """Suspension stops the cell in the manager; reconcile then drops it from the bookkeeping."""
-    cell_id = f"{group._pool}-{cell_index}"
+    cell_id = f"{group._pool_id}-{cell_index}"
     train_conftest.fake_worker_manager._stop_cells([cell_id])
     await group._reconcile(cell_id, None)
 
 
 def _cell(group: TrainerController, cell_index: int) -> object:
-    return group._cells_by_id[f"{group._pool}-{cell_index}"]
+    return group._cells_by_id[f"{group._pool_id}-{cell_index}"]
 
 
 def _start_cell(group: TrainerController, cell_index: int) -> None:
     """The manager relaunches the cell, so reconcile hands the controller a fresh object."""
-    cell_id = f"{group._pool}-{cell_index}"
+    cell_id = f"{group._pool_id}-{cell_index}"
     group._cells_by_id[cell_id] = group._create_cell(cell_id, cell_index=cell_index, workers_hash="pseudo-hash-2")
 
 
 def _was_stopped(group: TrainerController, cell_index: int) -> bool:
-    return [f"{group._pool}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
+    return [f"{group._pool_id}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
 
 
 def _was_killed(group: TrainerController, cell_index: int) -> bool:
@@ -105,7 +108,7 @@ def _was_killed(group: TrainerController, cell_index: int) -> bool:
 
 async def _init_controller(group: TrainerController) -> None:
     """Call init and wait for all cells to become alive."""
-    await group.init()
+    await group.init(group.args)
 
 
 async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerController:
@@ -205,7 +208,7 @@ class TestExecuteFirstAlive:
 class TestGetTrainParallelConfig:
     @staticmethod
     def _set_configs(cell, configs: list[dict]) -> None:
-        handles = cell._get_actor_handles()
+        handles = get_raw_actor_handles(cell)
         ray.get(
             [handle.set_train_parallel_config.remote(config) for handle, config in zip(handles, configs, strict=True)]
         )
@@ -220,8 +223,8 @@ class TestGetTrainParallelConfig:
     async def test_skips_stopped_cells(self):
         """A stopped cell 0 must not be asked; the next alive cell answers instead."""
         group = await _make_alive_controller(num_cells=2)
-        self._set_configs(group._cells[1], [{"dp_size": 2}])
-        await group._cells[0].stop()
+        self._set_configs(_cell(group, 1), [{"dp_size": 2}])
+        await _stop_cell(group, 0)
 
         assert await group.get_train_parallel_config() == {"dp_size": 2}
 
@@ -802,9 +805,13 @@ class TestCheckTrainOneAttempt:
         ],
     )
     def test_raises_when_all_cells_errored(self, results):
-        """A freshly built group has no alive or pending cell, so an all-errored attempt is non-retryable."""
+        """With every cell errored there is nothing left to heal, so an all-errored attempt is non-retryable."""
+        group = _make_controller(num_cells=1)
+        for cell in group._cells:
+            cell._mark_as_errored()
+
         with pytest.raises(NonRetryableError, match="All cells failed"):
-            _make_controller(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
+            group._check_train_one_attempt(_alive_cells_for(results), results)
 
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
         """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
@@ -827,7 +834,7 @@ async def _set_all_train_return(group: TrainerController, value: TrainStepOutput
 
 async def _set_all_train_returns_per_attempt(group: TrainerController, values: list[TrainStepOutput]) -> None:
     for cell in group._cells:
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_values_per_attempt.remote(values))
 
 
@@ -1036,7 +1043,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
 
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=3)
 
-        inference_ctl.check_weights.assert_awaited_once_with("checksum")
+        inference_ctl.check_weights.assert_awaited_once_with(action="checksum")
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
         assert logged == dict(rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])
