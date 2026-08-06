@@ -305,7 +305,7 @@ def _execute_train(args: ScriptArgs):
         # so it goes through the Ray env rather than the launcher shell.
         "TORCH_NCCL_TRACE_BUFFER_SIZE": "4096",
         "TORCH_NCCL_DUMP_ON_TIMEOUT": "1",
-        "TORCH_NCCL_DEBUG_INFO_TEMP_FILE": os.environ.get("MILES_NCCL_TRACE_PREFIX", "/tmp/nccl_trace"),
+        "TORCH_NCCL_DEBUG_INFO_TEMP_FILE": "/tmp/nccl_trace",
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256",
         "SGLANG_NSA_FORCE_MLA": "1",
         # Node-local caches: the NFS defaults (~/.triton, ~/.cache/tvm-ffi)
