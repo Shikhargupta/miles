@@ -100,6 +100,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # the only shape the reference run covers. On = everything on one 8-node
     # allocation, for sites that do not have 16 nodes.
     colocate: bool = False
+    # Keep gradients in bf16 instead of accumulating in fp32, roughly halving the
+    # gradient buffer. Needed to fit a colocated trainer on 8 nodes; a precision
+    # reduction relative to the reference configuration, so leave it off when the
+    # disaggregated topology is available.
+    bf16_grads: bool = False
 
     def __post_init__(self):
         min_nodes = 8 if (self.debug_replay_data or self.colocate) else 10
@@ -279,7 +284,23 @@ def _execute_train(args: ScriptArgs):
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
-        "--accumulate-allreduce-grads-in-fp32 "
+        # fp32 gradient accumulation costs ~2x the gradient buffer. On a colocated
+        # 8-node site the trainer has to share each GPU with an inference engine and
+        # that buffer is what does not fit, so --bf16-grads drops this flag and lets
+        # Megatron keep gradients in bf16. It must be OMITTED, not overridden: the
+        # dtype assertion in arguments.py runs BEFORE --grad-reduce-in-bf16 is
+        # processed, so passing both just trips
+        #   "--main-grads-dtype can only be fp32 when
+        #    --accumulate-allreduce-grads-in-fp32 is set"
+        # This is a real precision reduction versus the reference recipe.
+        + ("" if args.bf16_grads else "--accumulate-allreduce-grads-in-fp32 ")
+        # --grad-reduce-in-bf16 only: it sets accumulate_allreduce_grads_in_fp32=False,
+        # and with bf16 params Megatron then keeps main_grad in bf16. Do NOT also pass
+        # --main-grads-dtype bf16 -- the disk-offload path requires the precision-aware
+        # optimizer, and that combination asserts with
+        #   "main_grads_dtype can only be fp32 when not using precision-aware optimizer"
+        + ("--grad-reduce-in-bf16 " if args.bf16_grads else "")
+        +
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--allgather-cp "
