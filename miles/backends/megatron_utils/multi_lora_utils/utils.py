@@ -470,11 +470,21 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
 def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> None:
     """A train call landed: schedule the stepped adapters' engine push and
     commit the batch on the controller (main rank only). The stepped set ships
-    with the train data, identical on all ranks."""
+    with the train data, identical on all ranks. External batches step nothing
+    and publish nothing here: they pin their slots dirty and complete their
+    forward_backward operations instead."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     pending_push.update(rollout_data.get("step_adapter_names", []))
     if is_first_replica_megatron_main_rank():
+        if rollout_data.get("batch_kind") == "external":
+            name_by_slot = rollout_data.get("adapter_name_by_slot", {})
+            ray.get(
+                get_multi_lora_controller().commit_external_batch.remote(
+                    sorted(name_by_slot.values()),
+                    [op_id for op_id in rollout_data.get("operation_by_slot", {}).values() if op_id],
+                )
+            )
         ray.get(
             get_multi_lora_controller().commit_train_selection.remote(
                 rollout_id, list(rollout_data.get("vetoed_adapter_names", []))

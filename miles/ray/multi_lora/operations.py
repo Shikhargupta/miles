@@ -189,12 +189,17 @@ class OperationLedger:
                 tenants.append(tenant)
         return tenants
 
-    def claim_control_operation(self, name: str, registration_id: str) -> dict | None:
+    def claim_control_operation(self, name: str, registration_id: str, kinds: tuple[str, ...] | None = None) -> dict | None:
+        """Claim the next open operation when it is a control kind (optionally
+        restricted to ``kinds`` — heads of other kinds stay queued so a later
+        executor can pick them up without losing their turn)."""
         queue = self.queues.get((name, registration_id))
         if queue is None:
             return None
         op = queue.first_open()
         if op is None or op.state is not OperationState.QUEUED or op.kind not in CONTROL_KINDS:
+            return None
+        if kinds is not None and op.kind.value not in kinds:
             return None
         op.state = OperationState.CLAIMED
         return op.view()

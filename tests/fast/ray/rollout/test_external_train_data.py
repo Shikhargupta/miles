@@ -48,6 +48,7 @@ class TestBatchPlanMetadata:
         assert metadata["adapter_name_by_slot"] == {0: "A", 1: "B"}
         assert metadata["batch_kind"] == "external"
         assert metadata["adapter_loss_by_slot"] == {0: {"loss_fn": "cross_entropy"}, 1: {"loss_fn": "ppo"}}
+        assert metadata["operation_by_slot"] == {0: "op-A", 1: "op-B"}
 
     def test_native_plan_keeps_the_fused_step_behavior(self):
         plan = [plan_entry("A", 0), plan_entry("B", 1)]

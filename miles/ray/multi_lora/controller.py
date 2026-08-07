@@ -145,6 +145,15 @@ class MultiLoRAController:
     def ack_operation(self, operation_id: str) -> None:
         self.backend.operations.ack(operation_id)
 
+    def claim_ready_control_operations(self) -> list[dict]:
+        return self.backend.claim_ready_control_operations()
+
+    def complete_control_operations(self, results: dict) -> None:
+        self.backend.complete_control_operations(results)
+
+    def commit_external_batch(self, names: list, operation_ids: list) -> None:
+        self.backend.commit_external_batch(list(names), list(operation_ids))
+
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)
 

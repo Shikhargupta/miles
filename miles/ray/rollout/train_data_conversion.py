@@ -72,6 +72,8 @@ def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
     if "native_train" not in kinds:
         metadata["batch_kind"] = "external"
         metadata["adapter_loss_by_slot"] = {entry["bound_slot"]: entry.get("loss_spec") or {} for entry in batch_plan}
+        # The trainer completes these operations after the batch lands.
+        metadata["operation_by_slot"] = {entry["bound_slot"]: entry["operation_id"] for entry in batch_plan}
     return metadata
 
 
@@ -198,6 +200,8 @@ def convert_samples_to_train_data(
             train_data["adapter_name_by_slot"] = name_by_slot
         if (loss_by_slot := metadata.get("adapter_loss_by_slot")) is not None:
             train_data["adapter_loss_by_slot"] = loss_by_slot
+        if (operation_by_slot := metadata.get("operation_by_slot")) is not None:
+            train_data["operation_by_slot"] = operation_by_slot
         if metadata.get("batch_kind") is not None:
             train_data["batch_kind"] = metadata["batch_kind"]
 
@@ -395,6 +399,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "step_adapter_actual_counts",
             "adapter_name_by_slot",
             "adapter_loss_by_slot",
+            "operation_by_slot",
             "batch_kind",
             "prompt_group_sizes",
         ]:

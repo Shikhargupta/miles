@@ -75,6 +75,15 @@ async def main(args):
         # and only then does the data source sample them. The actor pushes only
         # stale adapter weights (newly loaded, or stepped by the last batch).
         await actor_model.reconcile_adapters()
+
+        # Control phase: data-less external operations (optim_step) execute
+        # every iteration — including the idle paths below — so a client
+        # waiting on a step never depends on another adapter generating data.
+        control_ops = await get_multi_lora_controller().claim_ready_control_operations.remote()
+        if control_ops:
+            results = await actor_model.execute_adapter_controls(control_ops)
+            await get_multi_lora_controller().complete_control_operations.remote(results)
+
         await actor_model.update_weights()
 
         # With nothing active, generate would wait forever.

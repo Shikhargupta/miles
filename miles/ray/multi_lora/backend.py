@@ -195,6 +195,60 @@ class MultiLoRABackend:
             raise ValueError(f"Adapter '{name}' is a dataset run; operations apply to input_mode: external only")
         return self.operations.enqueue(operation_id, name, record.registration_id, ordinal, kind, payload)
 
+    # Control kinds the driver's control phase can execute today; the rest
+    # (save_state / load_state / publish_snapshot) keep their queue turn until
+    # their executors land.
+    EXECUTABLE_CONTROL_KINDS = ("optim_step",)
+
+    def claim_ready_control_operations(self) -> list[dict]:
+        """Claim every registration whose next open operation is an executable
+        control kind on a slot-resident ACTIVE adapter. Claims are strictly
+        serialized per registration, so an optim_step is claimable only after
+        its preceding forward_backward batches reached terminal states."""
+        ready = []
+        for name, registration_id in self.operations.claimable_control_tenants():
+            record = self.registry.find(name)
+            if (
+                record is None
+                or record.registration_id != registration_id
+                or record.state is not AdapterState.ACTIVE
+                or record.slot is None
+            ):
+                continue
+            operation = self.operations.claim_control_operation(
+                name, registration_id, kinds=self.EXECUTABLE_CONTROL_KINDS
+            )
+            if operation is not None:
+                operation["slot"] = record.slot
+                ready.append(operation)
+        return ready
+
+    def complete_control_operations(self, results: dict[str, dict]) -> None:
+        """Book the trainer's control-phase outcomes: success advances the
+        adapter's step clock, both outcomes release the dirty-gradient pin
+        (a veto zeroes the accumulated gradients on every rank)."""
+        for operation_id, outcome in results.items():
+            operation = self.operations.get(operation_id)
+            if operation is None:
+                continue
+            if outcome.get("ok"):
+                self.operations.complete(operation_id, outcome.get("result"))
+                if operation["kind"] == "optim_step":
+                    self.registry.commit_external_step(operation["name"])
+            else:
+                self.operations.fail(operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server"))
+                if operation["kind"] == "optim_step":
+                    self.registry.clear_dirty(operation["name"])
+
+    def commit_external_batch(self, names: list[str], operation_ids: list[str]) -> None:
+        """An external train call landed: its slots now hold unstepped
+        gradients (pin them) and its forward_backward operations are done."""
+        self.registry.mark_accumulated(names)
+        for operation_id in operation_ids:
+            operation = self.operations.get(operation_id)
+            if operation is not None and operation["state"] == "CLAIMED":
+                self.operations.complete(operation_id, None)
+
     async def free_slot(self, name: str) -> int:
         """Free the adapter's slot after one final abort round: requests can survive the
         ``retire_adapters`` abort (e.g. multi-turn groups), and must not leak to the slot's next tenant."""

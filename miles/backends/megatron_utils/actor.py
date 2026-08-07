@@ -604,6 +604,49 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
+    def execute_adapter_controls(self, operations: list[dict]) -> dict:
+        """Run data-less external operations on this rank; every rank receives
+        the identical list, and the slot-sorted step order keeps the collective
+        sequence identical. Only optim_step executes today: it applies the
+        operation's AdamParams and steps the slot's accumulated gradients with
+        sum semantics (no count normalization — the loss weights own the scale)."""
+        from miles.backends.megatron_utils.multi_lora_utils.optimizer import step_adapter_slots
+
+        results: dict[str, dict] = {}
+        optim_ops = [op for op in operations if op["kind"] == "optim_step"]
+        if optim_ops:
+            adam_by_slot = {op["slot"]: (op.get("payload") or {}).get("adam_params") or {} for op in optim_ops}
+            grad_norms, vetoed = step_adapter_slots(
+                self.optimizer,
+                self.model,
+                {op["slot"]: 1 for op in optim_ops},
+                clip_grad=0.0,
+                normalize_by_count=False,
+                adam_params_by_slot=adam_by_slot,
+            )
+            for op in optim_ops:
+                slot = op["slot"]
+                if slot in vetoed:
+                    results[op["operation_id"]] = dict(
+                        ok=False, error="non-finite gradients; step vetoed and gradients cleared", category="server"
+                    )
+                else:
+                    results[op["operation_id"]] = dict(
+                        ok=True,
+                        result=dict(
+                            grad_norm=grad_norms.get(slot),
+                            learning_rate=adam_by_slot[slot].get("learning_rate", 1e-4),
+                        ),
+                    )
+        for op in operations:
+            if op["operation_id"] not in results:
+                results[op["operation_id"]] = dict(
+                    ok=False, error=f"operation kind '{op['kind']}' has no executor yet", category="server"
+                )
+        return results
+
+    @with_logs
+    @timer
     def bind_adapters(self, bind_plan: list[dict]) -> None:
         """Execute a selection's bind plan on this rank: swap-out evicted
         tenants, swap-in selected tenants that aren't resident. Sorted by name
