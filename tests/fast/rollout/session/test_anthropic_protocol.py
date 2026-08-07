@@ -458,6 +458,61 @@ def test_response_converts_reasoning_text_tools_and_usage() -> None:
     assert converted["usage"] == {"input_tokens": 11, "output_tokens": 7}
 
 
+def test_response_converts_null_content_tool_call() -> None:
+    converted = openai_to_anthropic_response(
+        _response(
+            content=None,
+            tool_calls=[
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                }
+            ],
+        )
+    )
+
+    assert converted["content"] == [{"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "pwd"}}]
+
+
+def test_response_skips_malformed_tool_calls_and_sanitizes_arguments() -> None:
+    converted = openai_to_anthropic_response(
+        _response(
+            content=None,
+            tool_calls=[
+                None,
+                {"id": "bad_function", "function": None},
+                {"id": "bad_json", "function": {"name": "bash", "arguments": "{"}},
+                {"id": "array_json", "function": {"name": "bash", "arguments": "[]"}},
+            ],
+        )
+    )
+
+    assert converted["content"] == [
+        {"type": "tool_use", "id": "bad_json", "name": "bash", "input": {}},
+        {"type": "tool_use", "id": "array_json", "name": "bash", "input": {}},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (42, [{"type": "text", "text": "42"}]),
+        (
+            [
+                {"type": "text", "text": "kept"},
+                {"type": "image_url", "image_url": {"url": "ignored"}},
+                {"type": "text", "text": 42},
+                None,
+            ],
+            [{"type": "text", "text": "kept"}],
+        ),
+    ],
+)
+def test_response_normalizes_openai_content_parts(content: object, expected: list[dict[str, str]]) -> None:
+    assert openai_to_anthropic_response(_response(content=content))["content"] == expected
+
+
 def test_response_maps_tool_and_length_stop_reasons() -> None:
     tool_response = _response(tool_calls=[])
     tool_response["choices"][0]["finish_reason"] = "tool_calls"
@@ -501,6 +556,34 @@ def test_stream_has_protocol_order_for_text_and_tool_use() -> None:
     assert events[-2][1]["usage"] == {"output_tokens": 7}
 
 
+def test_stream_emits_thinking_delta() -> None:
+    events = _parse_sse(render_anthropic_sse(_response(reasoning_content="Think first.", content=None)))
+
+    assert [event_type for event_type, _ in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[1][1]["content_block"] == {"type": "thinking", "thinking": ""}
+    assert events[2][1]["delta"] == {"type": "thinking_delta", "thinking": "Think first."}
+
+
+def test_stream_omits_delta_for_empty_content_fallback() -> None:
+    events = _parse_sse(render_anthropic_sse(_response(content="")))
+
+    assert [event_type for event_type, _ in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[1][1]["content_block"] == {"type": "text", "text": ""}
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected_type"),
     [
@@ -508,10 +591,28 @@ def test_stream_has_protocol_order_for_text_and_tool_use() -> None:
         (401, "authentication_error"),
         (403, "permission_error"),
         (404, "not_found_error"),
+        (413, "request_too_large"),
         (429, "rate_limit_error"),
         (500, "api_error"),
+        (503, "api_error"),
+        (529, "overloaded_error"),
     ],
 )
 def test_error_conversion(status_code: int, expected_type: str) -> None:
     converted = openai_error_to_anthropic(status_code, {"error": {"message": "bad request"}})
     assert converted == {"type": "error", "error": {"type": expected_type, "message": "bad request"}}
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_message"),
+    [
+        ({"error": "string error"}, "string error"),
+        ({"message": "top-level message"}, "top-level message"),
+        ("not an object", "Upstream request failed with status 500"),
+        ({"error": {}}, "Upstream request failed with status 500"),
+    ],
+)
+def test_error_conversion_message_fallbacks(payload: object, expected_message: str) -> None:
+    converted = openai_error_to_anthropic(500, payload)
+
+    assert converted["error"]["message"] == expected_message

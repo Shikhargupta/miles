@@ -292,7 +292,11 @@ def _response_text_blocks(content: Any) -> list[dict[str, Any]]:
 
 
 def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
-    """Convert one complete OpenAI chat-completion response to Anthropic form."""
+    """Convert one complete OpenAI chat-completion response to Anthropic form.
+
+    OpenAI finish reasons do not identify which stop sequence matched, so the
+    Anthropic ``stop_sequence`` field cannot be reconstructed.
+    """
     response = _require_mapping(response, "response")
     choices = response.get("choices")
     choice = choices[0] if isinstance(choices, list) and choices else {}
@@ -369,6 +373,7 @@ def render_anthropic_sse(response: Mapping[str, Any]) -> bytes:
             start_block = {"type": "text", "text": ""}
             delta = {"type": "text_delta", "text": block["text"]}
         elif block_type == "thinking":
+            # Miles has reasoning text but no Anthropic signature to replay as a signature_delta.
             start_block = {"type": "thinking", "thinking": ""}
             delta = {"type": "thinking_delta", "thinking": block["thinking"]}
         else:
@@ -427,8 +432,12 @@ def openai_error_to_anthropic(status_code: int, payload: Any) -> dict[str, Any]:
         error_type = "permission_error"
     elif status_code == 404:
         error_type = "not_found_error"
+    elif status_code == 413:
+        error_type = "request_too_large"
     elif status_code == 429:
         error_type = "rate_limit_error"
+    elif status_code == 529:
+        error_type = "overloaded_error"
     elif 400 <= status_code < 500:
         error_type = "invalid_request_error"
     else:
