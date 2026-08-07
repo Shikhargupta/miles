@@ -147,7 +147,7 @@ class AdapterRolloutRuntime:
     def __init__(self, args, run: AdapterRun):
         self.run = run
         if getattr(run.config, "input_mode", "multi-lora") == "thinker":
-            from miles.rollout.multi_lora.queue_rollout_fn import ThinkerOperationSource, QueueChildRolloutFn
+            from miles.rollout.multi_lora.queue_rollout_fn import QueueChildRolloutFn, ThinkerOperationSource
 
             self.data_source = ThinkerOperationSource(args, run)
             child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)

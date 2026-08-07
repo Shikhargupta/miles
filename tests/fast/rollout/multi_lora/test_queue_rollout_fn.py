@@ -14,7 +14,7 @@ import pytest
 
 import miles.rollout.multi_lora.queue_rollout_fn as queue_module
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
-from miles.rollout.multi_lora.queue_rollout_fn import ThinkerOperationSource, QueueChildRolloutFn
+from miles.rollout.multi_lora.queue_rollout_fn import QueueChildRolloutFn, ThinkerOperationSource
 from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
 
 
