@@ -76,9 +76,7 @@ async def test_create_sends_session_request_overrides(monkeypatch):
         request_overrides={"max_tokens": 4096, "temperature": 0.7, "seed": 42},
     )
 
-    assert seen == [
-        {"request_overrides": {"max_tokens": 4096, "temperature": 0.7, "seed": 42}}
-    ]
+    assert seen == [{"request_overrides": {"max_tokens": 4096, "temperature": 0.7, "seed": 42}}]
 
 
 @pytest.mark.asyncio
