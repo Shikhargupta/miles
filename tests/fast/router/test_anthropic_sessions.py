@@ -7,6 +7,8 @@ import requests
 from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import router_env  # noqa: F401
 
+from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
+from miles.utils.types import Sample
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult
 
 
@@ -111,6 +113,39 @@ class TestAnthropicSessionRoute:
         assert second.status_code == 200
         records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
         assert len(records) == 2
+
+    def test_anthropic_turn_collects_a_nonempty_training_sample(self, router_env) -> None:
+        session_id = _create_session(router_env.url)
+        original_chat_response = MockSGLangServer._compute_chat_completions_response
+
+        def response_without_replay_buffers(self: MockSGLangServer, payload: dict) -> dict:
+            response = original_chat_response(self, payload)
+            meta_info = response["choices"][0]["meta_info"]
+            meta_info.pop("routed_experts", None)
+            meta_info.pop("indexer_topk", None)
+            return response
+
+        with patch.object(
+            MockSGLangServer,
+            "_compute_chat_completions_response",
+            new=response_without_replay_buffers,
+        ):
+            response = _post_messages(router_env.url, session_id, _request())
+            assert response.status_code == 200
+
+            samples = requests.post(
+                f"{router_env.url}/sessions/{session_id}/samples",
+                json={},
+                timeout=10.0,
+            )
+
+        assert samples.status_code == 200
+        reply = decode_samples_and_merge_input_sample(samples.content, Sample())
+        assert reply.empty_reason is None
+        assert len(reply.samples) == 1
+        [sample] = reply.samples
+        assert sample.response_length > 0
+        assert len(sample.rollout_log_probs) == sample.response_length
 
     def test_tool_use_and_result_round_trip_passes_tito_prefix_check(self, router_env) -> None:
         session_id = _create_session(router_env.url)
