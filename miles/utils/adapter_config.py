@@ -88,6 +88,7 @@ def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
         metadata_key=raw.get("metadata_key"),
         rm_type=raw.get("rm_type"),
         custom_rm_path=raw.get("custom_rm_path"),
+        rollout_function_path=raw.get("rollout_function_path"),
         num_step=raw.get("num_step"),
         num_epoch=raw.get("num_epoch"),
         metadata=raw.get("metadata") or {},
