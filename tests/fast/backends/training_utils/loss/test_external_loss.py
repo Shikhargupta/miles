@@ -87,11 +87,13 @@ def test_importance_sampling_and_ppo_clip():
 
     loss, _ = run(args, batch, logits)
     lp = reference_log_probs(args, batch, logits)
-    ratios = [torch.exp(l - o) for l, o in zip(lp, batch["rollout_log_probs"], strict=True)]
+    ratios = [torch.exp(new - old) for new, old in zip(lp, batch["rollout_log_probs"], strict=True)]
     expected = sum(-(r * a).sum() for r, a in zip(ratios, advantages, strict=True))
     assert torch.allclose(loss, expected)
 
-    batch["adapter_loss_by_slot"] = {0: {"loss_fn": "ppo", "loss_fn_config": {"clip_low_threshold": 0.9, "clip_high_threshold": 1.1}}}
+    batch["adapter_loss_by_slot"] = {
+        0: {"loss_fn": "ppo", "loss_fn_config": {"clip_low_threshold": 0.9, "clip_high_threshold": 1.1}}
+    }
     loss_ppo, _ = run(args, batch, logits)
     expected_ppo = sum(
         -torch.minimum(r * a, r.clamp(0.9, 1.1) * a).sum() for r, a in zip(ratios, advantages, strict=True)

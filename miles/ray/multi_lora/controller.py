@@ -118,7 +118,9 @@ class MultiLoRAController:
 
     # ---------------- external operations ----------------
 
-    def enqueue_operation(self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None) -> dict:
+    def enqueue_operation(
+        self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None
+    ) -> dict:
         return self.backend.enqueue_operation(name, operation_id, ordinal, kind, payload)
 
     def claim_data_operation(self, name: str, registration_id: str) -> dict | None:

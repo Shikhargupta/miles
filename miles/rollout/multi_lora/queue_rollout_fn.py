@@ -61,9 +61,9 @@ class QueueChildRolloutFn:
     runtime simply stays IN_FLIGHT and other adapters keep training."""
 
     def __init__(self, input: RolloutFnConstructorInput):
-        assert isinstance(input.data_source, ExternalOperationSource), (
-            "QueueChildRolloutFn serves external adapters; dataset adapters use a dataset child rollout fn"
-        )
+        assert isinstance(
+            input.data_source, ExternalOperationSource
+        ), "QueueChildRolloutFn serves external adapters; dataset adapters use a dataset child rollout fn"
         self.source: ExternalOperationSource = input.data_source
 
     async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:

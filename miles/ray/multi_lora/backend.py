@@ -145,7 +145,9 @@ class MultiLoRABackend:
         if config.rm_type is not None or config.custom_rm_path is not None:
             raise ValueError(f"External adapter '{name}' must not set a reward; losses come per operation")
         if config.rollout_function_path is not None:
-            raise ValueError(f"External adapter '{name}' must not set rollout_function_path; the queue child is built in")
+            raise ValueError(
+                f"External adapter '{name}' must not set rollout_function_path; the queue child is built in"
+            )
         if config.num_epoch is not None:
             raise ValueError(f"External adapter '{name}' must not set num_epoch (there is no dataset); use num_step")
         if config.num_step is not None and (type(config.num_step) is not int or config.num_step <= 0):
@@ -184,7 +186,9 @@ class MultiLoRABackend:
 
     # ---------------- external operations ----------------
 
-    def enqueue_operation(self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None) -> dict:
+    def enqueue_operation(
+        self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None
+    ) -> dict:
         """Enqueue one client operation against the name's CURRENT registration
         (clients address adapters by name; the resolved registration_id rides
         the operation, so a re-registered name can never execute stale work)."""
@@ -236,7 +240,9 @@ class MultiLoRABackend:
                 if operation["kind"] == "optim_step":
                     self.registry.commit_external_step(operation["name"])
             else:
-                self.operations.fail(operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server"))
+                self.operations.fail(
+                    operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server")
+                )
                 if operation["kind"] == "optim_step":
                     self.registry.clear_dirty(operation["name"])
 

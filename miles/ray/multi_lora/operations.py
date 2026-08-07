@@ -13,7 +13,6 @@ methods are synchronous and atomic by construction.
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +188,9 @@ class OperationLedger:
                 tenants.append(tenant)
         return tenants
 
-    def claim_control_operation(self, name: str, registration_id: str, kinds: tuple[str, ...] | None = None) -> dict | None:
+    def claim_control_operation(
+        self, name: str, registration_id: str, kinds: tuple[str, ...] | None = None
+    ) -> dict | None:
         """Claim the next open operation when it is a control kind (optionally
         restricted to ``kinds`` — heads of other kinds stay queued so a later
         executor can pick them up without losing their turn)."""
