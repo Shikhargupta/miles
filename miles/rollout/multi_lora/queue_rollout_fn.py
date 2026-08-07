@@ -91,14 +91,14 @@ class QueueChildRolloutFn:
                 )
 
     def _batch_from_operation(self, operation: dict) -> RolloutFnTrainOutput:
-        if operation["kind"] != "forward_backward":
-            # FORWARD executes through the forward-only trainer verb (B9); fail
-            # instead of silently training it as a backward pass.
+        # forward rides the same batch path as forward_backward; its samples
+        # contribute no loss term (zero gradients) and only return logprobs.
+        if operation["kind"] not in ("forward_backward", "forward"):
             raise ValueError(f"operation kind '{operation['kind']}' is not executable yet")
         payload = operation.get("payload") or {}
         raw_samples = payload.get("samples")
         if not raw_samples:
-            raise ValueError("forward_backward payload carries no samples")
+            raise ValueError(f"{operation['kind']} payload carries no samples")
         groups: list[list[Sample]] = []
         for i, raw in enumerate(raw_samples):
             raw = dict(raw)

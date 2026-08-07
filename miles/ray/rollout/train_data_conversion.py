@@ -66,14 +66,22 @@ def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
         "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
     }
     kinds = {entry.get("operation_kind", "multi_lora_train") for entry in batch_plan}
-    # One selection is one kind: reward/advantage post-processing and loss
-    # dispatch gate per train call (the selection enforces this upstream).
-    assert len(kinds) == 1, f"selection mixes operation kinds {sorted(kinds)}"
+    # One selection is one input mode: reward/advantage post-processing and
+    # loss dispatch gate per train call (the selection enforces this upstream).
+    # Within thinker mode, forward and forward_backward operations may share a
+    # selection — forward slots just contribute no loss term.
+    assert kinds == {"multi_lora_train"} or kinds <= {
+        "forward_backward",
+        "forward",
+    }, f"selection mixes input modes: {sorted(kinds)}"
     if "multi_lora_train" not in kinds:
         metadata["batch_kind"] = "thinker"
         metadata["adapter_loss_by_slot"] = {entry["bound_slot"]: entry.get("loss_spec") or {} for entry in batch_plan}
         # The trainer completes these operations after the batch lands.
         metadata["operation_by_slot"] = {entry["bound_slot"]: entry["operation_id"] for entry in batch_plan}
+        metadata["forward_only_slots"] = sorted(
+            entry["bound_slot"] for entry in batch_plan if entry.get("operation_kind") == "forward"
+        )
     return metadata
 
 
@@ -202,6 +210,8 @@ def convert_samples_to_train_data(
             train_data["adapter_loss_by_slot"] = loss_by_slot
         if (operation_by_slot := metadata.get("operation_by_slot")) is not None:
             train_data["operation_by_slot"] = operation_by_slot
+        if (forward_only_slots := metadata.get("forward_only_slots")) is not None:
+            train_data["forward_only_slots"] = forward_only_slots
         if metadata.get("batch_kind") is not None:
             train_data["batch_kind"] = metadata["batch_kind"]
 
@@ -400,6 +410,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "adapter_name_by_slot",
             "adapter_loss_by_slot",
             "operation_by_slot",
+            "forward_only_slots",
             "batch_kind",
             "prompt_group_sizes",
         ]:

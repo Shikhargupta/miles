@@ -53,7 +53,9 @@ class MultiLoRABackend:
             return config
 
         if config.input_mode not in ("multi-lora", "thinker"):
-            raise ValueError(f"Adapter '{name}' input_mode must be 'dataset' or 'thinker', got '{config.input_mode}'")
+            raise ValueError(
+                f"Adapter '{name}' input_mode must be 'multi-lora' or 'thinker', got '{config.input_mode}'"
+            )
         if config.input_mode == "thinker":
             return self._resolve_thinker_config(name, config)
         if config.data is None:
@@ -202,13 +204,17 @@ class MultiLoRABackend:
     # Control kinds the driver's control phase can execute today; the rest
     # (save_state / load_state / publish_snapshot) keep their queue turn until
     # their executors land.
-    EXECUTABLE_CONTROL_KINDS = ("optim_step",)
+    EXECUTABLE_CONTROL_KINDS = ("optim_step", "publish_snapshot", "save_state", "load_state")
+    # Moving state under unstepped gradients would silently drop them (no
+    # sidecar carries grads): the client must step or deregister first.
+    DIRTY_GATED_KINDS = ("save_state", "load_state")
 
     def claim_ready_control_operations(self) -> list[dict]:
         """Claim every registration whose next open operation is an executable
         control kind on a slot-resident ACTIVE adapter. Claims are strictly
         serialized per registration, so an optim_step is claimable only after
-        its preceding forward_backward batches reached terminal states."""
+        its preceding forward_backward batches reached terminal states. The
+        claimed view carries the registry's authoritative clocks."""
         ready = []
         for name, registration_id in self.operations.claimable_control_tenants():
             record = self.registry.find(name)
@@ -222,15 +228,31 @@ class MultiLoRABackend:
             operation = self.operations.claim_control_operation(
                 name, registration_id, kinds=self.EXECUTABLE_CONTROL_KINDS
             )
-            if operation is not None:
-                operation["slot"] = record.slot
-                ready.append(operation)
+            if operation is None:
+                continue
+            if operation["kind"] in self.DIRTY_GATED_KINDS and self._slot_dirty(record):
+                self.operations.fail(
+                    operation["operation_id"],
+                    f"adapter '{name}' holds unstepped gradients; optim_step (or deregister) before "
+                    f"{operation['kind']}",
+                    "user",
+                )
+                continue
+            operation["slot"] = record.slot
+            operation["step"] = record.step
+            operation["serving_version"] = record.serving_version
+            ready.append(operation)
         return ready
 
+    def _slot_dirty(self, record) -> bool:
+        entry = self.registry.slot_pool.entry_of(record.tenant)
+        return entry is not None and "dirty-grads" in entry.pins
+
     def complete_control_operations(self, results: dict[str, dict]) -> None:
-        """Book the trainer's control-phase outcomes: success advances the
-        adapter's step clock, both outcomes release the dirty-gradient pin
-        (a veto zeroes the accumulated gradients on every rank)."""
+        """Book the trainer's control-phase outcomes: an optim_step success
+        advances the adapter's step clock and either outcome releases the
+        dirty-gradient pin (a veto zeroes the accumulated gradients on every
+        rank); a load_state success repositions the step clock."""
         for operation_id, outcome in results.items():
             operation = self.operations.get(operation_id)
             if operation is None:
@@ -239,6 +261,8 @@ class MultiLoRABackend:
                 self.operations.complete(operation_id, outcome.get("result"))
                 if operation["kind"] == "optim_step":
                     self.registry.commit_thinker_step(operation["name"])
+                elif operation["kind"] == "load_state":
+                    self.registry.set_step(operation["name"], int((outcome.get("result") or {}).get("step", 0)))
             else:
                 self.operations.fail(
                     operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server")
@@ -267,6 +291,19 @@ class MultiLoRABackend:
         if record is not None and record.state is AdapterState.CLEANUP:
             await self.abort_adapter_requests(name, record.registration_id)
         return self.registry.free_slot(name)
+
+    def service_info(self) -> dict:
+        """Deployment facts a thinker frontend needs for get_server_capabilities
+        and weights_info: one base model per deployment, the rank ceiling, and
+        slot occupancy."""
+        args = self.args
+        return dict(
+            base_model=getattr(args, "hf_checkpoint", None),
+            lora_rank_max=getattr(args, "lora_rank", None),
+            n_adapters=getattr(args, "multi_lora_n_adapters", None),
+            occupied_slots=sorted(e.slot for e in self.registry.slot_pool.entries if e.tenant is not None),
+            active_adapters=sorted(self.registry.in_state(AdapterState.ACTIVE)),
+        )
 
     async def worker_urls(self) -> list[str]:
         assert self.client is not None

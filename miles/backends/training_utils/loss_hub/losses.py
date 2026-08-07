@@ -529,8 +529,14 @@ def thinker_loss_function(
                 full = all_gather_with_cp(logp, total_lengths[i], response_lengths[i])
             collector[(adapter_slots[i], sample_indices[i])] = full.detach().float().cpu().tolist()
 
+    # forward operations only read logprobs (collected above): their samples
+    # contribute no loss term, so no gradient ever reaches their adapter.
+    forward_only_slots = set(batch.get("forward_only_slots") or ())
+
     loss = None
     for i, logp in enumerate(log_probs):
+        if adapter_slots[i] in forward_only_slots:
+            continue
         spec = specs_by_slot.get(adapter_slots[i]) or {}
         loss_fn = spec.get("loss_fn", "cross_entropy")
         config = spec.get("loss_fn_config") or {}

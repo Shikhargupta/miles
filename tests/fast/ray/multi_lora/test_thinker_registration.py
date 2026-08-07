@@ -130,12 +130,6 @@ class TestControlOperations:
         [op] = backend.claim_ready_control_operations()
         assert op["operation_id"] == "opt1" and op["slot"] == backend.registry.find("X").slot
 
-    def test_unexecutable_kinds_keep_their_turn(self):
-        backend = self.ready_backend()
-        backend.enqueue_operation("X", "save1", 1, "save_state")
-        assert backend.claim_ready_control_operations() == []
-        assert backend.operations.get("save1")["state"] == "QUEUED"
-
     def test_success_advances_step_and_releases_dirty_pin(self):
         backend = self.ready_backend(num_step=2)
         record = backend.registry.find("X")
@@ -184,3 +178,59 @@ class TestControlOperations:
         backend.operations.claim_data_operation("X", reg_id)
         backend.commit_thinker_batch(["X"], ["fb1"], {"fb1": [[-0.1, -0.2], [-0.3]]})
         assert backend.operations.get("fb1")["result"] == {"logprobs": [[-0.1, -0.2], [-0.3]]}
+
+
+class TestStateAndPublishOperations:
+    def ready_backend(self):
+        backend = make_backend()
+        register_thinker(backend)
+        backend.registry.record_weight_update(["X"])
+        return backend
+
+    def test_claim_carries_authoritative_clocks(self):
+        backend = self.ready_backend()
+        backend.registry.set_step("X", 7)
+        backend.enqueue_operation("X", "pub1", 1, "publish_snapshot")
+        [op] = backend.claim_ready_control_operations()
+        assert op["kind"] == "publish_snapshot" and op["step"] == 7
+        assert op["serving_version"] == 1  # the registration push
+
+    def test_dirty_slot_fails_state_moves_but_allows_publish(self):
+        backend = self.ready_backend()
+        backend.commit_thinker_batch(["X"], [])  # pin dirty
+        backend.enqueue_operation("X", "save1", 1, "save_state", {"tag": "t0"})
+        assert backend.claim_ready_control_operations() == []
+        view = backend.operations.get("save1")
+        assert view["state"] == "FAILED" and view["error_category"] == "user"
+        assert "unstepped gradients" in view["error"]
+
+        backend.enqueue_operation("X", "pub1", 2, "publish_snapshot")
+        [op] = backend.claim_ready_control_operations()
+        assert op["operation_id"] == "pub1"  # publishing pre-step weights is fine
+
+    def test_load_state_success_repositions_the_step_clock(self):
+        backend = self.ready_backend()
+        backend.enqueue_operation("X", "load1", 1, "load_state", {"path": "/tmp/state"})
+        [op] = backend.claim_ready_control_operations()
+        backend.complete_control_operations(
+            {op["operation_id"]: dict(ok=True, result={"step": 42, "path": "/tmp/state"})}
+        )
+        record = backend.registry.find("X")
+        assert record.step == 42 and record.start_step == 42
+        assert backend.operations.get("load1")["result"]["step"] == 42
+
+    def test_publish_completion_does_not_advance_the_step_clock(self):
+        backend = self.ready_backend()
+        backend.enqueue_operation("X", "pub1", 1, "publish_snapshot")
+        [op] = backend.claim_ready_control_operations()
+        backend.complete_control_operations(
+            {op["operation_id"]: dict(ok=True, result={"serving_version": 2, "serving_name": "X@r"})}
+        )
+        assert backend.registry.find("X").step == 0
+        assert backend.operations.get("pub1")["result"]["serving_version"] == 2
+
+    def test_service_info_reports_deployment_facts(self):
+        backend = self.ready_backend()
+        info = backend.service_info()
+        assert info["n_adapters"] == 4 and info["lora_rank_max"] == 32
+        assert info["occupied_slots"] == [0] and info["active_adapters"] == ["X"]

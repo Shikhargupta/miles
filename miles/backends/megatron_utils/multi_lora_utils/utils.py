@@ -481,9 +481,12 @@ def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> No
     if is_first_replica_megatron_main_rank():
         if thinker:
             name_by_slot = rollout_data.get("adapter_name_by_slot", {})
+            # forward-only adapters accumulated nothing: no dirty pin for them.
+            forward_only = set(rollout_data.get("forward_only_slots") or ())
+            accumulated = sorted(name for slot, name in name_by_slot.items() if slot not in forward_only)
             ray.get(
                 get_multi_lora_controller().commit_thinker_batch.remote(
-                    sorted(name_by_slot.values()),
+                    accumulated,
                     [op_id for op_id in rollout_data.get("operation_by_slot", {}).values() if op_id],
                     logprobs_by_op,
                 )

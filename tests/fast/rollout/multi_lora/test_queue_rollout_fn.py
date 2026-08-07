@@ -120,12 +120,19 @@ def test_bad_payload_fails_its_operation_and_the_child_continues(fake_ray):
     assert failed_id == "bad" and category == "user" and "no samples" in error
 
 
-def test_forward_kind_fails_until_the_forward_verb_lands(fake_ray):
-    controller = _FakeController([op("fwd", kind="forward"), op("good")])
+def test_forward_operations_build_batches_too(fake_ray):
+    controller = _FakeController(
+        [
+            op(
+                "fwd",
+                kind="forward",
+                payload={"samples": [{"prompt": "p", "tokens": [1, 2], "response_length": 1, "loss_mask": [1]}]},
+            )
+        ]
+    )
     fake_ray(controller)
     child = make_child(make_run())
     output = asyncio.run(child(RolloutFnTrainInput(rollout_id=0)))
-
-    assert output.metadata["operation_id"] == "good"
-    [(failed_id, _, category)] = controller.failed
-    assert failed_id == "fwd" and category == "user"
+    assert output.metadata["operation_kind"] == "forward"
+    assert output.metadata["step_after_backward"] is False
+    assert controller.failed == []

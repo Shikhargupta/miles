@@ -59,7 +59,7 @@ class TestBatchPlanMetadata:
 
     def test_mixed_kind_selection_is_a_bug(self):
         plan = [plan_entry("A", 0), plan_entry("B", 1, kind="forward_backward", step=False)]
-        with pytest.raises(AssertionError, match="mixes operation kinds"):
+        with pytest.raises(AssertionError, match="mixes input modes"):
             batch_plan_to_metadata(plan)
 
 
@@ -128,3 +128,20 @@ def test_gather_groups_logprob_rows_per_operation():
     }
     result = _gather_thinker_logprobs(rollout_data)
     assert result == {"op-A": [[-0.1], [-0.2]], "op-B": [[-0.9]]}
+
+
+class TestForwardOperations:
+    def test_forward_and_forward_backward_share_a_selection(self):
+        plan = [
+            plan_entry("A", 0, kind="forward_backward", step=False, loss_spec={"loss_fn": "cross_entropy"}),
+            plan_entry("B", 1, kind="forward", step=False),
+        ]
+        metadata = batch_plan_to_metadata(plan)
+        assert metadata["batch_kind"] == "thinker"
+        assert metadata["forward_only_slots"] == [1]
+        assert metadata["step_slots"] == []
+
+    def test_multi_lora_selection_never_mixes_with_thinker(self):
+        plan = [plan_entry("A", 0), plan_entry("B", 1, kind="forward", step=False)]
+        with pytest.raises(AssertionError, match="mixes input modes"):
+            batch_plan_to_metadata(plan)

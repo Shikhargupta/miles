@@ -169,3 +169,20 @@ def test_collector_captures_per_datum_logprobs_in_row_order():
     assert set(collector) == {(0, 0), (0, 1)}
     assert collector[(0, 0)] == pytest.approx(lp[0].tolist())
     assert collector[(0, 1)] == pytest.approx(lp[1].tolist())
+
+
+def test_forward_only_slots_collect_logprobs_without_a_loss_term():
+    args, batch, logits = make_batch()
+    batch["adapter_slots"] = [0, 1]
+    batch["loss_weights"] = [torch.ones(3), None]  # forward sample needs no channels
+    batch["adapter_loss_by_slot"] = {0: {"loss_fn": "cross_entropy"}, 1: {}}
+    batch["forward_only_slots"] = [1]
+    batch["sample_indices"] = [0, 0]
+    collector: dict = {}
+    batch["thinker_logprob_collector"] = collector
+
+    loss, _ = run(args, batch, logits)
+    lp = reference_log_probs(args, batch, logits)
+    # slot 1 contributed logprobs but no loss.
+    assert torch.allclose(loss, -(lp[0].sum()))
+    assert collector[(1, 0)] == pytest.approx(lp[1].tolist())

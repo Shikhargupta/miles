@@ -168,6 +168,8 @@ def get_batch(
     # fills for the operation result plane.
     if "adapter_loss_by_slot" in data_iterator.rollout_data:
         batch["adapter_loss_by_slot"] = data_iterator.rollout_data["adapter_loss_by_slot"]
+    if "forward_only_slots" in data_iterator.rollout_data:
+        batch["forward_only_slots"] = data_iterator.rollout_data["forward_only_slots"]
     if "thinker_logprob_collector" in data_iterator.rollout_data:
         batch["thinker_logprob_collector"] = data_iterator.rollout_data["thinker_logprob_collector"]
 
