@@ -47,7 +47,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         "Pass --use-session-server to start the session server."
     )
     use_v2 = getattr(input.args, "use_session_server", None) == "v2"
-    tracer = await OpenAIEndpointTracer.create(input.args)
+    request_kwargs = build_chat_request_kwargs(input.sampling_params)
+    tracer = await OpenAIEndpointTracer.create(input.args, request_overrides=request_kwargs)
 
     custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
     assert (
@@ -75,7 +76,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         agent_metadata = await custom_agent_function(
             base_url=tracer.base_url,
             prompt=input.sample.prompt,
-            request_kwargs=build_chat_request_kwargs(input.sampling_params),
+            request_kwargs=request_kwargs,
             metadata=metadata,
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")

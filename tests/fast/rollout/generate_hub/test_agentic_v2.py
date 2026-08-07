@@ -26,7 +26,7 @@ class _Tracer:
         return self.reply
 
 
-def _generate_input(**args_kwargs) -> GenerateFnInput:
+def _generate_input(*, sampling_params: dict | None = None, **args_kwargs) -> GenerateFnInput:
     args = SimpleNamespace(
         session_server_ip="127.0.0.1",
         session_server_ports=[12345],
@@ -43,7 +43,12 @@ def _generate_input(**args_kwargs) -> GenerateFnInput:
         label="label",
         metadata={"source": "test"},
     )
-    return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
+    return GenerateFnInput(
+        state=state,
+        sample=sample,
+        sampling_params=sampling_params or {},
+        evaluation=False,
+    )
 
 
 async def _fake_agent(**kwargs):
@@ -51,7 +56,8 @@ async def _fake_agent(**kwargs):
 
 
 def _patch_agent(monkeypatch, tracer):
-    async def fake_create(args):
+    async def fake_create(args, *, request_overrides=None):
+        tracer.request_overrides = request_overrides
         return tracer
 
     monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
@@ -68,6 +74,39 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
 
     assert output.samples == [sample]
     assert tracer.agent_metadata == {"agent_result": "done"}
+
+
+@pytest.mark.asyncio
+async def test_sampling_params_are_pinned_and_forwarded_to_agent(monkeypatch):
+    sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    seen: dict = {}
+
+    async def capture_agent(**kwargs):
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: capture_agent)
+    sampling_params = {
+        "max_new_tokens": 4096,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 20,
+        "sampling_seed": 42,
+    }
+
+    await agentic_tool_call.generate(_generate_input(sampling_params=sampling_params))
+
+    expected = {
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 20,
+        "seed": 42,
+    }
+    assert tracer.request_overrides == expected
+    assert seen["request_kwargs"] == expected
 
 
 @pytest.mark.asyncio
