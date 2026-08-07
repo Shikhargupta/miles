@@ -77,7 +77,7 @@ def _tool_result_content(content: Any) -> str | list[dict[str, Any]]:
 def _append_content_message(messages: list[dict[str, Any]], role: str, parts: list[dict[str, Any]]) -> None:
     if not parts:
         return
-    messages.append({"role": role, "content": _content_value(parts)})
+    messages.append({"role": role, "content": _content_value(parts.copy())})
     parts.clear()
 
 
