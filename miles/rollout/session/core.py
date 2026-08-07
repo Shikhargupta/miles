@@ -22,6 +22,7 @@ from miles.rollout.session.anthropic import (
     openai_error_to_anthropic,
     openai_to_anthropic_response,
     render_anthropic_sse,
+    restore_replayed_tool_arguments,
 )
 from miles.rollout.session.errors import (
     MessageValidationError,
@@ -328,7 +329,14 @@ class SessionCore:
         return Response(status_code=204)
 
     async def chat_completions(
-        self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
+        self,
+        session_id: str,
+        *,
+        method: str,
+        query: str,
+        headers: dict,
+        body: bytes,
+        restore_anthropic_arguments: bool = False,
     ) -> Response:
         """Proxy a chat completion through the backend with TITO token tracking.
 
@@ -352,6 +360,8 @@ class SessionCore:
             )
 
             request_messages = request_body.get("messages", [])
+            if restore_anthropic_arguments:
+                restore_replayed_tool_arguments(request_messages, session.messages)
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
                 tools=request_body.get("tools"),
@@ -438,6 +448,7 @@ class SessionCore:
                 query=query,
                 headers=headers,
                 body=json.dumps(openai_request).encode(),
+                restore_anthropic_arguments=True,
             )
         except SessionError as exc:
             return _anthropic_error_response(exc.status_code, {"error": str(exc)})

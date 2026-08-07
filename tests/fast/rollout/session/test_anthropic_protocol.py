@@ -9,6 +9,7 @@ from miles.rollout.session.anthropic import (
     openai_error_to_anthropic,
     openai_to_anthropic_response,
     render_anthropic_sse,
+    restore_replayed_tool_arguments,
 )
 
 
@@ -253,6 +254,46 @@ def test_request_joins_thinking_and_defaults_tool_input() -> None:
             ],
         }
     ]
+
+
+def test_restore_replayed_tool_arguments_preserves_original_json_spelling() -> None:
+    stored_messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command": "pwd"}'},
+                }
+            ],
+        }
+    ]
+    replayed_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                },
+                {
+                    "id": "toolu_changed",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command":"ls"}'},
+                },
+            ],
+        }
+    ]
+
+    restore_replayed_tool_arguments(replayed_messages, stored_messages)
+
+    tool_calls = replayed_messages[0]["tool_calls"]
+    assert tool_calls[0]["function"]["arguments"] == '{"command": "pwd"}'
+    assert tool_calls[1]["function"]["arguments"] == '{"command":"ls"}'
 
 
 @pytest.mark.parametrize(
