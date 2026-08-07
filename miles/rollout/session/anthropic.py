@@ -235,22 +235,18 @@ def anthropic_to_openai_request(request: Mapping[str, Any]) -> dict[str, Any]:
     """Convert one Anthropic Messages request to OpenAI chat-completion form."""
     request = _require_mapping(request, "request")
     model = _require_nonempty_string(request.get("model"), "model")
-    max_tokens = request.get("max_tokens")
-    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+    if isinstance(max_tokens := request.get("max_tokens"), bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         raise AnthropicProtocolError("max_tokens must be a positive integer")
-    raw_messages = request.get("messages")
-    if not isinstance(raw_messages, list):
+    if not isinstance(raw_messages := request.get("messages"), list):
         raise AnthropicProtocolError("messages must be an array")
 
     messages: list[dict[str, Any]] = []
-    system = _convert_system(request.get("system"))
-    if system is not None:
+    if (system := _convert_system(request.get("system"))) is not None:
         messages.append({"role": "system", "content": system})
 
     for message_index, raw_message in enumerate(raw_messages):
         message = _require_mapping(raw_message, f"messages[{message_index}]")
-        role = message.get("role")
-        if role not in ("user", "assistant", "system"):
+        if (role := message.get("role")) not in ("user", "assistant", "system"):
             raise AnthropicProtocolError(f"messages[{message_index}].role is invalid: {role!r}")
         _convert_message_content(messages, role, message.get("content"), message_index)
 
@@ -261,15 +257,13 @@ def anthropic_to_openai_request(request: Mapping[str, Any]) -> dict[str, Any]:
         "stream": bool(request.get("stream", False)),
     }
     for source, target in (("temperature", "temperature"), ("top_p", "top_p"), ("top_k", "top_k")):
-        if request.get(source) is not None:
-            converted[target] = request[source]
-    if request.get("stop_sequences") is not None:
-        converted["stop"] = request["stop_sequences"]
+        if (value := request.get(source)) is not None:
+            converted[target] = value
+    if (stop_sequences := request.get("stop_sequences")) is not None:
+        converted["stop"] = stop_sequences
 
-    tools = _convert_tools(request.get("tools"))
-    if tools is not None:
+    if (tools := _convert_tools(request.get("tools"))) is not None:
         converted["tools"] = tools
-    tool_choice = _convert_tool_choice(request.get("tool_choice"), tools)
-    if tool_choice is not None:
+    if (tool_choice := _convert_tool_choice(request.get("tool_choice"), tools)) is not None:
         converted["tool_choice"] = tool_choice
     return converted
