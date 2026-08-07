@@ -176,3 +176,11 @@ class TestControlOperations:
         backend.operations.claim_data_operation("X", reg_id)
         backend.commit_external_batch(["X"], ["fb1"])
         assert backend.operations.get("fb1")["state"] == "SUCCEEDED"
+
+    def test_forward_backward_results_carry_row_ordered_logprobs(self):
+        backend = self.ready_backend()
+        reg_id = backend.registry.find("X").registration_id
+        backend.enqueue_operation("X", "fb1", 1, "forward_backward", {"samples": [{}, {}]})
+        backend.operations.claim_data_operation("X", reg_id)
+        backend.commit_external_batch(["X"], ["fb1"], {"fb1": [[-0.1, -0.2], [-0.3]]})
+        assert backend.operations.get("fb1")["result"] == {"logprobs": [[-0.1, -0.2], [-0.3]]}

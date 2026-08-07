@@ -100,9 +100,12 @@ class QueueChildRolloutFn:
         if not raw_samples:
             raise ValueError("forward_backward payload carries no samples")
         groups: list[list[Sample]] = []
-        for raw in raw_samples:
+        for i, raw in enumerate(raw_samples):
             raw = dict(raw)
             raw.setdefault("status", Sample.Status.COMPLETED.value)
+            # Row identity within the operation: the result plane returns
+            # per-datum logprobs in this order.
+            raw.setdefault("index", i)
             groups.append([Sample.from_dict(raw)])
         return RolloutFnTrainOutput(
             samples=self.source.stamp(groups),

@@ -113,3 +113,18 @@ class TestExternalConversion:
             assert len(shard["loss_weights"]) == 2  # row-partitioned
             assert shard["batch_kind"] == "external"  # batch-level, replicated
             assert shard["adapter_loss_by_slot"] == {0: {"loss_fn": "ppo"}}
+
+
+def test_gather_groups_logprob_rows_per_operation():
+    from miles.backends.megatron_utils.multi_lora_utils.utils import _gather_external_logprobs
+
+    rollout_data = {
+        "external_logprob_collector": {
+            (0, 1): [-0.2],
+            (0, 0): [-0.1],
+            (1, 0): [-0.9],
+        },
+        "operation_by_slot": {0: "op-A", 1: "op-B"},
+    }
+    result = _gather_external_logprobs(rollout_data)
+    assert result == {"op-A": [[-0.1], [-0.2]], "op-B": [[-0.9]]}

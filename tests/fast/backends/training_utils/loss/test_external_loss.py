@@ -153,3 +153,17 @@ def test_missing_channel_and_unknown_loss_fail_loudly():
     batch["adapter_loss_by_slot"] = {0: {"loss_fn": "dro"}}
     with pytest.raises(ValueError, match="unknown loss_fn 'dro'"):
         run(args, batch, logits)
+
+
+def test_collector_captures_per_datum_logprobs_in_row_order():
+    args, batch, logits = make_batch()
+    batch["loss_weights"] = [torch.ones(3), torch.ones(5)]
+    batch["sample_indices"] = [0, 1]
+    collector: dict = {}
+    batch["external_logprob_collector"] = collector
+
+    run(args, batch, logits)
+    lp = reference_log_probs(args, batch, logits)
+    assert set(collector) == {(0, 0), (0, 1)}
+    assert collector[(0, 0)] == pytest.approx(lp[0].tolist())
+    assert collector[(0, 1)] == pytest.approx(lp[1].tolist())

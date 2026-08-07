@@ -240,14 +240,19 @@ class MultiLoRABackend:
                 if operation["kind"] == "optim_step":
                     self.registry.clear_dirty(operation["name"])
 
-    def commit_external_batch(self, names: list[str], operation_ids: list[str]) -> None:
+    def commit_external_batch(
+        self, names: list[str], operation_ids: list[str], logprobs_by_op: dict[str, list] | None = None
+    ) -> None:
         """An external train call landed: its slots now hold unstepped
-        gradients (pin them) and its forward_backward operations are done."""
+        gradients (pin them) and its forward_backward operations complete with
+        their per-datum target logprobs (row order = the operation's datum
+        order), which the frontend maps into ForwardBackwardOutput."""
         self.registry.mark_accumulated(names)
+        logprobs_by_op = logprobs_by_op or {}
         for operation_id in operation_ids:
             operation = self.operations.get(operation_id)
             if operation is not None and operation["state"] == "CLAIMED":
-                self.operations.complete(operation_id, None)
+                self.operations.complete(operation_id, {"logprobs": logprobs_by_op.get(operation_id)})
 
     async def free_slot(self, name: str) -> int:
         """Free the adapter's slot after one final abort round: requests can survive the

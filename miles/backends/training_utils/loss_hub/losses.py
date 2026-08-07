@@ -517,6 +517,18 @@ def external_loss_function(
             raise ValueError(f"external loss '{loss_fn}' needs per-token '{key}'")
         return values[i]
 
+    # Operation result plane: per-datum target logprobs, keyed by (slot, row)
+    # so one selection's adapters never collide. CP shards gather to the full
+    # response; a checkpointed loss recompute overwrites idempotently.
+    collector = batch.get("external_logprob_collector")
+    if collector is not None:
+        sample_indices = batch["sample_indices"]
+        for i, logp in enumerate(log_probs):
+            full = logp
+            if get_parallel_state().cp.size > 1:
+                full = all_gather_with_cp(logp, total_lengths[i], response_lengths[i])
+            collector[(adapter_slots[i], sample_indices[i])] = full.detach().float().cpu().tolist()
+
     loss = None
     for i, logp in enumerate(log_probs):
         spec = specs_by_slot.get(adapter_slots[i]) or {}

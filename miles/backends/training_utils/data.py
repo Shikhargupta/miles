@@ -163,9 +163,13 @@ def get_batch(
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
 
-    # External batches dispatch the loss per slot; the spec map is batch-level.
+    # External batches dispatch the loss per slot; the spec map is batch-level,
+    # and the logprob collector is a shared mutable side channel the loss
+    # fills for the operation result plane.
     if "adapter_loss_by_slot" in data_iterator.rollout_data:
         batch["adapter_loss_by_slot"] = data_iterator.rollout_data["adapter_loss_by_slot"]
+    if "external_logprob_collector" in data_iterator.rollout_data:
+        batch["external_logprob_collector"] = data_iterator.rollout_data["external_logprob_collector"]
 
     # No-op safety net if batches reach get_batch without rollout-level preprocessing.
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)

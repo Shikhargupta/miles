@@ -461,6 +461,11 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutcome:
+        # External batches collect per-datum logprobs for the operation result
+        # plane; the loss fills this shared side channel during the forward.
+        if rollout_data.get("batch_kind") == "external":
+            rollout_data["external_logprob_collector"] = {}
+
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
