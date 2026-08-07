@@ -279,6 +279,19 @@ def _execute_train(args: ScriptArgs):
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
         "--use-miles-dashboard "
         "--dashboard-sglang-scrape-mode direct "
+        # Entropy must be observed on BOTH sides. --use-rollout-entropy alone leaves
+        # train/entropy_loss pinned at the hardcoded 0.0, because losses.py gates the
+        # whole computation on `args.entropy_coef != 0 or args.observe_training_entropy`
+        # and every launcher here hardcodes --entropy-coef 0.00. With the coefficient at
+        # 0 the observed entropy is detached, so this only costs compute -- it cannot
+        # change the gradient.
+        "--observe-training-entropy "
+        "--use-rollout-entropy "
+        # Prometheus exporter on the Ray driver node. On a k8s site Grafana Alloy
+        # auto-discovers this via pod annotations; on a Slurm site nothing scrapes it
+        # automatically, but the /metrics endpoint is still there to curl.
+        "--use-prometheus "
+        f"--prometheus-run-name {args.run_id} "
     )
 
     misc_args = (
