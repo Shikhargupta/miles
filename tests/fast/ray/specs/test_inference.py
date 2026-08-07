@@ -13,6 +13,7 @@ from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
     INFERENCE_CONTROLLER_POOL_ID,
+    INFERENCE_CONTROLLER_WORKER_CLASS,
     _compute_spec_router,
     compute_engine_pool_ids,
     compute_router_pool_id,
@@ -23,9 +24,19 @@ from miles.ray.specs.inference import (
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
+from miles.utils.external_utils.command_utils.helm_backend.values import RunLayout, build_values, section_of
 from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerCtorContext, WorkerMetaContext
+
+
+def _controller_layout() -> RunLayout:
+    return RunLayout(
+        run_id="260101-000000-000",
+        release="miles-run-260101",
+        orchestrator_command=["python", "/repo/train.py"],
+        worker_argv=["--rollout-num-gpus", "8"],
+    )
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
@@ -487,6 +498,19 @@ class TestSpecInferenceController:
     def test_the_worker_name_is_stable(self):
         """The driver looks the controller up by name, so this name is part of the release's contract."""
         assert inference_controller_worker_name() == "inference-controller-0-0"
+
+    def test_it_renders_into_static_workers_with_its_rpc_port(self, tmp_path):
+        """The release has to contain the controller pod, or the address book would point at nothing."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        values = build_values([spec], _controller_layout())
+
+        (entry,) = values["run"]["staticWorkers"]
+        assert section_of(spec) == "staticWorkers"
+        assert entry["name"] == INFERENCE_CONTROLLER_POOL_ID
+        assert entry["ports"] == [{"name": "rpc", "port": 8000}]
+        assert INFERENCE_CONTROLLER_WORKER_CLASS in entry["command"]
+        assert "resources" not in entry
 
     def test_it_asks_for_a_provider_over_the_engine_pools_it_will_observe(self, tmp_path):
         """The controller never learns which backend reports those cells, only which pools it wants reported."""

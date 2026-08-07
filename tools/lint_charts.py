@@ -15,13 +15,49 @@ BASE_VALUES: dict[str, list[str]] = {
     "miles-workbench": ["--set", "objectName=lint-miles-workbench"],
 }
 
+SHARED_INFRA_VARIANTS: list[list[str]] = [
+    ["--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=shared"],
+    ["--set", "infra.sharedStorage.type=none"],
+    ["--set", "infra.paths.repos.miles=alice/miles", "--set", "infra.paths.repos.megatron=alice/Megatron-LM"],
+]
+
 VARIANTS: dict[str, list[list[str]]] = {
     "miles-workbench": [
-        ["--set", "sharedStorage.type=pvc", "--set", "sharedStorage.pvcClaimName=shared"],
-        ["--set", "sharedStorage.type=none"],
+        *SHARED_INFRA_VARIANTS,
         ["--set", "rbac.create=false", "--set", "serviceAccount.name=preexisting"],
         ["--set", "rbac.leaderWorkerSets=false"],
     ],
+    "miles-run": [
+        *SHARED_INFRA_VARIANTS,
+        ["--set-json", 'run.orchestrator.command=["python","train.py"]'],
+        [
+            "--set-json",
+            'run.staticWorkers=[{"name":"router","objectName":"lint-router",'
+            '"command":["python","-m","router"],"ports":[{"name":"http","port":30000}]}]',
+        ],
+        [
+            "--set-json",
+            'run.inferenceEngines=[{"name":"engine","objectName":"lint-engine","replicas":2,"size":4,'
+            '"command":["python","-m","sglang.launch_server"],"resources":{"limits":{"nvidia.com/gpu":8}}}]',
+        ],
+        [
+            "--set-json",
+            'run.inferenceEngines=[{"name":"prefill","objectName":"lint-prefill","replicas":1,"size":4,"command":["python"]},'
+            '{"name":"decode","objectName":"lint-decode","replicas":8,"command":["python"]}]',
+        ],
+        [
+            "--set-json",
+            'run.trainers=[{"name":"trainer-actor","objectName":"lint-trainer-actor","replicas":2,"size":2,'
+            '"command":["python","-m","supervisor"]},'
+            '{"name":"trainer-critic","objectName":"lint-trainer-critic","command":["python","-m","supervisor"]}]',
+        ],
+    ],
+}
+
+
+REJECTED_VARIANTS: dict[str, list[list[str]]] = {
+    "miles-workbench": [["--set", "infra.env.PYTHONPATH=/somewhere"]],
+    "miles-run": [["--set", "infra.env.PYTHONPATH=/somewhere"]],
 }
 
 
@@ -47,6 +83,11 @@ def lint_chart(chart: Path) -> bool:
         result = run(["helm", "lint", str(chart), *base, *extra])
         if result.returncode != 0:
             print(result.stdout + result.stderr, file=sys.stderr)
+            ok = False
+    for extra in REJECTED_VARIANTS.get(chart.name, []):
+        result = run(["helm", "lint", str(chart), *extra])
+        if result.returncode == 0:
+            print(f"{chart.name} accepted values it must refuse: {extra}", file=sys.stderr)
             ok = False
     return ok
 

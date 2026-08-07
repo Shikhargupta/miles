@@ -52,6 +52,9 @@ class SchedulingSpec(FrozenStrictBaseModel):
             return 1
         return exact_div(gpus_per_cell, self.num_gpus_per_node)
 
+    def gpus_per_pod(self) -> int:
+        return exact_div(self.gpus_per_cell(), self.pods_per_cell())
+
     def workers_per_pod(self) -> int:
         return exact_div(self.num_workers_per_cell, self.pods_per_cell())
 
@@ -132,3 +135,16 @@ class ServeWorkerSpec(BaseWorkerSpec):
                 PortInfo(name=RPC_PORT_NAME, static_port=DEFAULT_RPC_PORT, mode="per_worker", allow_dynamic=True)
             )
         return {**values, "port_infos": port_infos}
+
+
+def assert_worker_ports_fit(spec: ServeWorkerSpec) -> None:
+    workers_per_pod = spec.scheduling.workers_per_pod()
+    rpc_port = next(port.static_port for port in spec.port_infos if port.name == RPC_PORT_NAME)
+    for port in spec.port_infos:
+        if port.name == RPC_PORT_NAME:
+            continue
+        assert rpc_port + workers_per_pod <= port.static_port or port.static_port + port.num_consecutive <= rpc_port, (
+            f"spec '{spec.name}' serves {workers_per_pod} workers per pod from {RPC_PORT_NAME} port {rpc_port} "
+            f"upwards, which reaches into the {port.num_consecutive} port(s) '{port.name}' claims from "
+            f"{port.static_port}"
+        )
