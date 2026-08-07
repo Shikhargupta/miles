@@ -32,6 +32,10 @@ DEFAULT_CHILD_ROLLOUT_PATH = "miles.rollout.inference_rollout.inference_rollout_
 Tenant = tuple[str, str]
 
 
+def _runtime_kind(runtime: "AdapterRolloutRuntime") -> str:
+    return getattr(runtime.run.config, "input_mode", "dataset") or "dataset"
+
+
 def leaf_sample_count(node) -> int:
     """Recursive leaf counter: multi-agent children may nest groups, so
     ``len(group)`` is not the sample count."""
@@ -329,9 +333,15 @@ class MultiLoRARolloutFn:
         collected = 0
         coalesce_deadline: float | None = None
 
+        selected_kind: str | None = None
         while True:
-            runtime = self._pop_next_ready()
+            runtime = self._pop_next_ready(kind=selected_kind)
             if runtime is not None:
+                # One selection = one kind: reward post-processing, advantage
+                # computation and loss dispatch all gate per train call, so an
+                # external batch must never share a selection with a dataset
+                # batch. Mismatched READY runtimes wait for the next selection.
+                selected_kind = _runtime_kind(runtime)
                 selected.append(runtime)
                 # Leave READY immediately or the round-robin would re-select
                 # the same batch until the target is met (duplicated samples).
@@ -368,14 +378,17 @@ class MultiLoRARolloutFn:
                 continue
         return selected
 
-    def _pop_next_ready(self) -> AdapterRolloutRuntime | None:
+    def _pop_next_ready(self, kind: str | None = None) -> AdapterRolloutRuntime | None:
         """Persistent round-robin over READY runtimes: the cursor survives
-        across selections so fast adapters cannot starve slow ones."""
+        across selections so fast adapters cannot starve slow ones. With a
+        kind, only matching runtimes qualify (selection kind partitioning)."""
         for _ in range(len(self.rotation)):
             tenant = self.rotation.popleft()
             self.rotation.append(tenant)
             runtime = self.runtimes.get(tenant)
             if runtime is not None and runtime.state == AdapterRolloutRuntime.READY:
+                if kind is not None and _runtime_kind(runtime) != kind:
+                    continue
                 return runtime
         return None
 

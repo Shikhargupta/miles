@@ -480,7 +480,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
         with inverse_timer("train_wait"), timer("train"):
-            if self.args.compute_advantages_and_returns:
+            # External batches carry client-supplied logprobs/advantages; the
+            # ref/old-policy passes and advantage computation are RL machinery.
+            if self.args.compute_advantages_and_returns and rollout_data.get("batch_kind") != "external":
                 if "ref" in self.weights_backuper.backup_tags:
                     self._set_replay_stage("fallthrough")
                     self._switch_model("ref")

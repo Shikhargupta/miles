@@ -21,6 +21,10 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "opd_reverse_kl": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
+    # Client-supplied per-token channels (external adapters); the binary
+    # loss_masks stay int32, these carry the float semantics.
+    "loss_weights": "float32",
+    "advantages": "float32",
 }
 
 ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
@@ -47,6 +51,30 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
 }
 
 
+def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
+    """Distill one selection's BatchPlan into conversion metadata. The plan is
+    authoritative for step decisions: accumulate-only entries (external
+    forward_backward) stay out of every step_* field but keep their
+    adapter_name_by_slot row, which token routing needs."""
+    stepping = [entry for entry in batch_plan if entry.get("step_after_backward", True)]
+    metadata: dict[str, Any] = {
+        "step_slots": sorted(entry["bound_slot"] for entry in stepping),
+        "step_adapter_names": sorted(entry["name"] for entry in stepping),
+        # Normalization counts rollout executions (matching the loss), so K
+        # sibling trajectories from one execution count once.
+        "step_adapter_actual_counts": {entry["bound_slot"]: entry["actual_rollout_count"] for entry in stepping},
+        "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
+    }
+    kinds = {entry.get("operation_kind", "native_train") for entry in batch_plan}
+    # One selection is one kind: reward/advantage post-processing and loss
+    # dispatch gate per train call (the selection enforces this upstream).
+    assert len(kinds) == 1, f"selection mixes operation kinds {sorted(kinds)}"
+    if "native_train" not in kinds:
+        metadata["batch_kind"] = "external"
+        metadata["adapter_loss_by_slot"] = {entry["bound_slot"]: entry.get("loss_spec") or {} for entry in batch_plan}
+    return metadata
+
+
 def convert_samples_to_train_data(
     args,
     samples: list[Sample] | list[list[Sample]],
@@ -60,12 +88,18 @@ def convert_samples_to_train_data(
     if (f := custom_convert_samples_to_train_data_func) is not None:
         return f(args, samples)
 
-    raw_rewards, rewards = _post_process_rewards(
-        args,
-        samples,
-        custom_reward_post_process_func=custom_reward_post_process_func,
-        prompt_group_sizes=metadata.get("prompt_group_sizes"),
-    )
+    external = metadata.get("batch_kind") == "external"
+    if external:
+        # External batches carry no rewards: losses come from client-supplied
+        # per-token channels, never from reward post-processing.
+        raw_rewards = rewards = [0.0] * len(samples)
+    else:
+        raw_rewards, rewards = _post_process_rewards(
+            args,
+            samples,
+            custom_reward_post_process_func=custom_reward_post_process_func,
+            prompt_group_sizes=metadata.get("prompt_group_sizes"),
+        )
 
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
@@ -130,6 +164,20 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+    # Client-supplied per-token channels (external adapters). Absent tensors
+    # default to no-ops so one batch may mix CE (weights) and IS/PPO
+    # (advantages) samples across adapters.
+    if any(sample.loss_weights is not None for sample in samples):
+        train_data["loss_weights"] = [
+            sample.loss_weights if sample.loss_weights is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+    if any(sample.advantages is not None for sample in samples):
+        train_data["advantages"] = [
+            sample.advantages if sample.advantages is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
         # The bind plan is authoritative for slot routing; a stamped slot can
@@ -148,6 +196,10 @@ def convert_samples_to_train_data(
             train_data["step_adapter_actual_counts"] = actual_counts
         if (name_by_slot := metadata.get("adapter_name_by_slot")) is not None:
             train_data["adapter_name_by_slot"] = name_by_slot
+        if (loss_by_slot := metadata.get("adapter_loss_by_slot")) is not None:
+            train_data["adapter_loss_by_slot"] = loss_by_slot
+        if metadata.get("batch_kind") is not None:
+            train_data["batch_kind"] = metadata["batch_kind"]
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
@@ -323,6 +375,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            "loss_weights",
+            "advantages",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
@@ -340,6 +394,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "step_adapter_names",
             "step_adapter_actual_counts",
             "adapter_name_by_slot",
+            "adapter_loss_by_slot",
+            "batch_kind",
             "prompt_group_sizes",
         ]:
             if key not in data:
