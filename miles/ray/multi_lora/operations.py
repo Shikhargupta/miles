@@ -1,4 +1,4 @@
-"""Per-registration operation ledger for external (client-driven) adapters.
+"""Per-registration operation ledger for thinker (client-driven) adapters.
 
 Clients push protocol-neutral operations; data-bearing kinds ride the rollout
 selection path through the queue child rollout fn, data-less kinds execute in

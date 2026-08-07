@@ -143,7 +143,7 @@ class RayTrainGroup:
             await self._broadcast("bind_adapters", bind_plan)
 
     async def execute_adapter_controls(self, operations: list[dict]) -> dict:
-        """Multi-LoRA external mode: run data-less operations (optim_step) on
+        """Multi-LoRA thinker mode: run data-less operations (optim_step) on
         every trainer rank; the per-operation outcomes are rank-identical, so
         the first rank's map is authoritative."""
         results = await self._broadcast("execute_adapter_controls", operations)

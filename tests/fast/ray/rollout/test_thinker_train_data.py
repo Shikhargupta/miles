@@ -1,4 +1,4 @@
-"""External batches through the train-data pipeline: BatchPlan-derived
+"""Thinker batches through the train-data pipeline: BatchPlan-derived
 metadata (step filtering, kind partitioning, loss specs), reward bypass, and
 client channel packaging."""
 
@@ -18,7 +18,7 @@ from miles.ray.rollout.train_data_conversion import (
 from miles.utils.types import AdapterRef
 
 
-def plan_entry(name, slot, kind="native_train", step=True, loss_spec=None, count=2):
+def plan_entry(name, slot, kind="multi_lora_train", step=True, loss_spec=None, count=2):
     return dict(
         name=name,
         registration_id=f"reg-{name}",
@@ -27,7 +27,7 @@ def plan_entry(name, slot, kind="native_train", step=True, loss_spec=None, count
         actual_sample_count=count,
         actual_rollout_count=count,
         prompt_group_sizes=[1] * count,
-        operation_id=None if kind == "native_train" else f"op-{name}",
+        operation_id=None if kind == "multi_lora_train" else f"op-{name}",
         operation_kind=kind,
         batch_id=None,
         step_after_backward=step,
@@ -46,7 +46,7 @@ class TestBatchPlanMetadata:
         assert metadata["step_adapter_actual_counts"] == {}
         # Token routing still needs every selected adapter's slot.
         assert metadata["adapter_name_by_slot"] == {0: "A", 1: "B"}
-        assert metadata["batch_kind"] == "external"
+        assert metadata["batch_kind"] == "thinker"
         assert metadata["adapter_loss_by_slot"] == {0: {"loss_fn": "cross_entropy"}, 1: {"loss_fn": "ppo"}}
         assert metadata["operation_by_slot"] == {0: "op-A", 1: "op-B"}
 
@@ -63,7 +63,7 @@ class TestBatchPlanMetadata:
             batch_plan_to_metadata(plan)
 
 
-def external_sample(index, slot, *, loss_weights=None, advantages=None):
+def thinker_sample(index, slot, *, loss_weights=None, advantages=None):
     sample = make_sample(index=index, reward=None)
     sample.adapter = AdapterRef(name="X", registration_id="reg-X", serving_version=1, slot=slot)
     sample.loss_weights = loss_weights
@@ -71,7 +71,7 @@ def external_sample(index, slot, *, loss_weights=None, advantages=None):
     return sample
 
 
-def convert_external(samples, metadata):
+def convert_thinker(samples, metadata):
     return convert_samples_to_train_data(
         make_args(multi_lora=True),
         samples,
@@ -81,29 +81,29 @@ def convert_external(samples, metadata):
     )
 
 
-class TestExternalConversion:
+class TestThinkerConversion:
     def test_rewards_bypass_and_channel_extraction(self):
         plan = [plan_entry("X", 0, kind="forward_backward", step=False, loss_spec={"loss_fn": "cross_entropy"})]
         metadata = batch_plan_to_metadata(plan)
         samples = [
-            external_sample(0, 0, loss_weights=[0.5] * 4),
-            external_sample(1, 0, advantages=[1.0] * 4),  # no weights: defaults to zeros
+            thinker_sample(0, 0, loss_weights=[0.5] * 4),
+            thinker_sample(1, 0, advantages=[1.0] * 4),  # no weights: defaults to zeros
         ]
-        train_data = convert_external(samples, metadata)
+        train_data = convert_thinker(samples, metadata)
 
         # No reward post-processing ran: rewardless samples convert cleanly.
         assert train_data["rewards"] == [0.0, 0.0]
         assert train_data["loss_weights"] == [[0.5] * 4, [0.0] * 4]
         assert train_data["advantages"] == [[0.0] * 4, [1.0] * 4]
-        assert train_data["batch_kind"] == "external"
+        assert train_data["batch_kind"] == "thinker"
         assert train_data["adapter_loss_by_slot"] == {0: {"loss_fn": "cross_entropy"}}
         assert train_data["step_adapter_actual_counts"] == {}
 
-    def test_shards_carry_the_external_keys(self):
+    def test_shards_carry_the_thinker_keys(self):
         plan = [plan_entry("X", 0, kind="forward_backward", step=False, loss_spec={"loss_fn": "ppo"})]
         metadata = batch_plan_to_metadata(plan)
-        samples = [external_sample(i, 0, loss_weights=[1.0] * 4) for i in range(4)]
-        train_data = convert_external(samples, metadata)
+        samples = [thinker_sample(i, 0, loss_weights=[1.0] * 4) for i in range(4)]
+        train_data = convert_thinker(samples, metadata)
         train_data["total_lengths"] = [len(t) for t in train_data["tokens"]]
 
         shards = _package_shards(
@@ -111,20 +111,20 @@ class TestExternalConversion:
         )
         for shard in shards:
             assert len(shard["loss_weights"]) == 2  # row-partitioned
-            assert shard["batch_kind"] == "external"  # batch-level, replicated
+            assert shard["batch_kind"] == "thinker"  # batch-level, replicated
             assert shard["adapter_loss_by_slot"] == {0: {"loss_fn": "ppo"}}
 
 
 def test_gather_groups_logprob_rows_per_operation():
-    from miles.backends.megatron_utils.multi_lora_utils.utils import _gather_external_logprobs
+    from miles.backends.megatron_utils.multi_lora_utils.utils import _gather_thinker_logprobs
 
     rollout_data = {
-        "external_logprob_collector": {
+        "thinker_logprob_collector": {
             (0, 1): [-0.2],
             (0, 0): [-0.1],
             (1, 0): [-0.9],
         },
         "operation_by_slot": {0: "op-A", 1: "op-B"},
     }
-    result = _gather_external_logprobs(rollout_data)
+    result = _gather_thinker_logprobs(rollout_data)
     assert result == {"op-A": [[-0.1], [-0.2]], "op-B": [[-0.9]]}

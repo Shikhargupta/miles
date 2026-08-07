@@ -14,17 +14,17 @@ import pytest
 
 import miles.rollout.multi_lora.queue_rollout_fn as queue_module
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
-from miles.rollout.multi_lora.queue_rollout_fn import ExternalOperationSource, QueueChildRolloutFn
+from miles.rollout.multi_lora.queue_rollout_fn import ThinkerOperationSource, QueueChildRolloutFn
 from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
 
 
 def make_run(name="X", reg="rx", slot=3, version=2) -> AdapterRun:
-    config = AdapterRunConfig(input_mode="external", metadata={"team": "t1"})
+    config = AdapterRunConfig(input_mode="thinker", metadata={"team": "t1"})
     return AdapterRun(name=name, config=config, slot=slot, version=version, registration_id=reg)
 
 
 def make_child(run: AdapterRun) -> QueueChildRolloutFn:
-    source = ExternalOperationSource(SimpleNamespace(), run)
+    source = ThinkerOperationSource(SimpleNamespace(), run)
     return QueueChildRolloutFn(RolloutFnConstructorInput(args=source.args, data_source=source))
 
 

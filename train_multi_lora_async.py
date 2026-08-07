@@ -76,7 +76,7 @@ async def main(args):
         # stale adapter weights (newly loaded, or stepped by the last batch).
         await actor_model.reconcile_adapters()
 
-        # Control phase: data-less external operations (optim_step) execute
+        # Control phase: data-less thinker operations (optim_step) execute
         # every iteration — including the idle paths below — so a client
         # waiting on a step never depends on another adapter generating data.
         control_ops = await get_multi_lora_controller().claim_ready_control_operations.remote()

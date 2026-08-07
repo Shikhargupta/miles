@@ -33,7 +33,7 @@ Tenant = tuple[str, str]
 
 
 def _runtime_kind(runtime: "AdapterRolloutRuntime") -> str:
-    return getattr(runtime.run.config, "input_mode", "dataset") or "dataset"
+    return getattr(runtime.run.config, "input_mode", "multi-lora") or "multi-lora"
 
 
 def leaf_sample_count(node) -> int:
@@ -146,10 +146,10 @@ class AdapterRolloutRuntime:
 
     def __init__(self, args, run: AdapterRun):
         self.run = run
-        if getattr(run.config, "input_mode", "dataset") == "external":
-            from miles.rollout.multi_lora.queue_rollout_fn import ExternalOperationSource, QueueChildRolloutFn
+        if getattr(run.config, "input_mode", "multi-lora") == "thinker":
+            from miles.rollout.multi_lora.queue_rollout_fn import ThinkerOperationSource, QueueChildRolloutFn
 
-            self.data_source = ExternalOperationSource(args, run)
+            self.data_source = ThinkerOperationSource(args, run)
             child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
             self.child_fn = QueueChildRolloutFn(child_input)
         else:
@@ -239,8 +239,8 @@ class MultiLoRARolloutFn:
                 continue
             runtime = AdapterRolloutRuntime(self.args, run)
             self.runtimes[tenant] = runtime
-            if getattr(run.config, "input_mode", "dataset") != "external":
-                # External runs have no dataset: num_step is client-set or
+            if getattr(run.config, "input_mode", "multi-lora") != "thinker":
+                # Thinker runs have no dataset: num_step is client-set or
                 # unbounded, never derived from num_epoch x rows.
                 await asyncio.to_thread(
                     ray.get,
@@ -339,7 +339,7 @@ class MultiLoRARolloutFn:
             if runtime is not None:
                 # One selection = one kind: reward post-processing, advantage
                 # computation and loss dispatch all gate per train call, so an
-                # external batch must never share a selection with a dataset
+                # thinker batch must never share a selection with a dataset
                 # batch. Mismatched READY runtimes wait for the next selection.
                 selected_kind = _runtime_kind(runtime)
                 selected.append(runtime)
@@ -424,7 +424,7 @@ class MultiLoRARolloutFn:
             run = runtime.run
             data.extend(output.samples)
             plan_entry = plan_by_tenant[runtime.tenant]
-            # Operation directives from an external queue child; native
+            # Operation directives from a thinker queue child; multi-LoRA
             # dataset batches keep the fused step-after-backward behavior.
             op_meta = output.metadata or {}
             batch_plan.append(
@@ -437,7 +437,7 @@ class MultiLoRARolloutFn:
                     actual_rollout_count=leaf_rollout_count(output.samples),
                     prompt_group_sizes=[leaf_sample_count([group]) for group in output.samples],
                     operation_id=op_meta.get("operation_id"),
-                    operation_kind=op_meta.get("operation_kind", "native_train"),
+                    operation_kind=op_meta.get("operation_kind", "multi_lora_train"),
                     batch_id=op_meta.get("batch_id"),
                     step_after_backward=op_meta.get("step_after_backward", True),
                     loss_spec=op_meta.get("loss_spec"),
@@ -460,7 +460,7 @@ class MultiLoRARolloutFn:
                 metrics[f"{run.name}/rollout_reward_mean"] = reward_mean
                 logger.info(f"[multilora] ({run.name}) selected batch: n={len(rewards)} reward_mean={reward_mean:.4f}")
 
-        # Accumulate-only batches (external forward_backward) are selections
+        # Accumulate-only batches (thinker forward_backward) are selections
         # without a step: the registry books a step only for stepping entries.
         step_names = sorted(entry["name"] for entry in batch_plan if entry["step_after_backward"])
         await asyncio.to_thread(

@@ -52,12 +52,12 @@ class MultiLoRABackend:
         if config is None or not isinstance(config, AdapterRunConfig):
             return config
 
-        if config.input_mode not in ("dataset", "external"):
-            raise ValueError(f"Adapter '{name}' input_mode must be 'dataset' or 'external', got '{config.input_mode}'")
-        if config.input_mode == "external":
-            return self._resolve_external_config(name, config)
+        if config.input_mode not in ("multi-lora", "thinker"):
+            raise ValueError(f"Adapter '{name}' input_mode must be 'dataset' or 'thinker', got '{config.input_mode}'")
+        if config.input_mode == "thinker":
+            return self._resolve_thinker_config(name, config)
         if config.data is None:
-            raise ValueError(f"Adapter '{name}' needs a dataset path: set 'data' (or use input_mode: external)")
+            raise ValueError(f"Adapter '{name}' needs a dataset path: set 'data' (or use input_mode: thinker)")
 
         rank = config.rank if config.rank is not None else getattr(self.args, "lora_rank", 1)
         alpha = config.alpha if config.alpha is not None else getattr(self.args, "lora_alpha", rank)
@@ -128,8 +128,8 @@ class MultiLoRABackend:
             save=save,
         )
 
-    def _resolve_external_config(self, name: str, config: AdapterRunConfig) -> AdapterRunConfig:
-        """External adapters have no dataset, reward, or server-side batch
+    def _resolve_thinker_config(self, name: str, config: AdapterRunConfig) -> AdapterRunConfig:
+        """Thinker adapters have no dataset, reward, or server-side batch
         shape: clients push batches through the operation queue and end the
         run by explicit deregistration (num_step remains an optional bound)."""
         rank = config.rank if config.rank is not None else getattr(self.args, "lora_rank", 1)
@@ -141,15 +141,15 @@ class MultiLoRABackend:
         if alpha is None or alpha <= 0:
             raise ValueError(f"Adapter '{name}' must have a positive alpha")
         if config.data is not None:
-            raise ValueError(f"External adapter '{name}' must not set 'data'; batches arrive via operations")
+            raise ValueError(f"Thinker adapter '{name}' must not set 'data'; batches arrive via operations")
         if config.rm_type is not None or config.custom_rm_path is not None:
-            raise ValueError(f"External adapter '{name}' must not set a reward; losses come per operation")
+            raise ValueError(f"Thinker adapter '{name}' must not set a reward; losses come per operation")
         if config.rollout_function_path is not None:
             raise ValueError(
-                f"External adapter '{name}' must not set rollout_function_path; the queue child is built in"
+                f"Thinker adapter '{name}' must not set rollout_function_path; the queue child is built in"
             )
         if config.num_epoch is not None:
-            raise ValueError(f"External adapter '{name}' must not set num_epoch (there is no dataset); use num_step")
+            raise ValueError(f"Thinker adapter '{name}' must not set num_epoch (there is no dataset); use num_step")
         if config.num_step is not None and (type(config.num_step) is not int or config.num_step <= 0):
             raise ValueError(f"Adapter '{name}' num_step must be a positive integer")
         return replace(config, rank=rank, alpha=alpha, save=self._resolve_save(name, config))
@@ -184,7 +184,7 @@ class MultiLoRABackend:
                 await self.abort_adapter_requests(name, record.registration_id)
         return names
 
-    # ---------------- external operations ----------------
+    # ---------------- thinker operations ----------------
 
     def enqueue_operation(
         self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None
@@ -195,8 +195,8 @@ class MultiLoRABackend:
         record = self.registry.find(name)
         if record is None or record.state not in (AdapterState.PENDING, AdapterState.ACTIVE):
             raise ValueError(f"Adapter '{name}' is not accepting operations (not registered or retiring)")
-        if getattr(record.config, "input_mode", "dataset") != "external":
-            raise ValueError(f"Adapter '{name}' is a dataset run; operations apply to input_mode: external only")
+        if getattr(record.config, "input_mode", "multi-lora") != "thinker":
+            raise ValueError(f"Adapter '{name}' is a dataset run; operations apply to input_mode: thinker only")
         return self.operations.enqueue(operation_id, name, record.registration_id, ordinal, kind, payload)
 
     # Control kinds the driver's control phase can execute today; the rest
@@ -238,7 +238,7 @@ class MultiLoRABackend:
             if outcome.get("ok"):
                 self.operations.complete(operation_id, outcome.get("result"))
                 if operation["kind"] == "optim_step":
-                    self.registry.commit_external_step(operation["name"])
+                    self.registry.commit_thinker_step(operation["name"])
             else:
                 self.operations.fail(
                     operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server")
@@ -246,10 +246,10 @@ class MultiLoRABackend:
                 if operation["kind"] == "optim_step":
                     self.registry.clear_dirty(operation["name"])
 
-    def commit_external_batch(
+    def commit_thinker_batch(
         self, names: list[str], operation_ids: list[str], logprobs_by_op: dict[str, list] | None = None
     ) -> None:
-        """An external train call landed: its slots now hold unstepped
+        """A thinker train call landed: its slots now hold unstepped
         gradients (pin them) and its forward_backward operations complete with
         their per-datum target logprobs (row order = the operation's datum
         order), which the frontend maps into ForwardBackwardOutput."""

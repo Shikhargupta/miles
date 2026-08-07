@@ -1,4 +1,4 @@
-"""Built-in child rollout fn for external adapters: one claimed
+"""Built-in child rollout fn for thinker adapters: one claimed
 forward_backward operation becomes one complete child batch. The child knows
 nothing about slots or serving aliases — like any child it just returns
 stamped samples; the operation directives ride ``RolloutFnTrainOutput.metadata``
@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 _CLAIM_POLL_S = 0.5
 
 
-class ExternalOperationSource:
-    """Per-registration stand-in for ``_AdapterDataSource``: external
+class ThinkerOperationSource:
+    """Per-registration stand-in for ``_AdapterDataSource``: thinker
     adapters have no dataset, so this only carries the child args and the
     current run view used for stamping serving identity."""
 
@@ -62,9 +62,9 @@ class QueueChildRolloutFn:
 
     def __init__(self, input: RolloutFnConstructorInput):
         assert isinstance(
-            input.data_source, ExternalOperationSource
-        ), "QueueChildRolloutFn serves external adapters; dataset adapters use a dataset child rollout fn"
-        self.source: ExternalOperationSource = input.data_source
+            input.data_source, ThinkerOperationSource
+        ), "QueueChildRolloutFn serves thinker adapters; dataset adapters use a dataset child rollout fn"
+        self.source: ThinkerOperationSource = input.data_source
 
     async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         from miles.ray.multi_lora.controller import get_multi_lora_controller

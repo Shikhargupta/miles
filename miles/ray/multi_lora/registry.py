@@ -250,10 +250,10 @@ class AdapterRegistry:
             self.deregister(name)
         return stepped
 
-    # ---------------- external operations ----------------
+    # ---------------- thinker operations ----------------
 
     def mark_accumulated(self, names: list[str]) -> None:
-        """An external forward_backward landed: the slot holds unstepped
+        """A thinker forward_backward landed: the slot holds unstepped
         gradients, which no sidecar carries — pin it against eviction until an
         optim_step consumes them (or a veto clears them)."""
         for name in names:
@@ -266,10 +266,10 @@ class AdapterRegistry:
         if record is not None:
             self.slot_pool.unpin(record.tenant, "dirty-grads")
 
-    def commit_external_step(self, name: str) -> int:
-        """One external optim_step applied: advance the step clock (num_step
+    def commit_thinker_step(self, name: str) -> int:
+        """One thinker optim_step applied: advance the step clock (num_step
         remains an optional client-set bound) without scheduling any publish —
-        external weights reach the engines only via an explicit snapshot."""
+        thinker weights reach the engines only via an explicit snapshot."""
         record = self.find(name)
         if record is None:
             return -1
@@ -280,7 +280,7 @@ class AdapterRegistry:
             and record.state is AdapterState.ACTIVE
             and (record.step - record.start_step) >= record.config.num_step
         ):
-            logger.info(f"External adapter '{name}' reached num_step={record.config.num_step}, deregistering")
+            logger.info(f"Thinker adapter '{name}' reached num_step={record.config.num_step}, deregistering")
             self.deregister(name)
         return record.step
 

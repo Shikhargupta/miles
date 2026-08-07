@@ -123,13 +123,13 @@ def test_warmup_ramps_from_init_lr():
     assert slot_lr(optimizer, 0) == pytest.approx(LR)  # warmed up
 
 
-def test_external_adapters_install_no_scheduler_and_step_skips_them():
+def test_thinker_adapters_install_no_scheduler_and_step_skips_them():
     from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
 
     optimizer = SimpleNamespace()  # deliberately no miles_slot_schedulers
-    adapter = AdapterRun(name="X", config=AdapterRunConfig(input_mode="external"), slot=3)
+    adapter = AdapterRun(name="X", config=AdapterRunConfig(input_mode="thinker"), slot=3)
     install_slot_scheduler(args=None, optimizer=optimizer, adapter=adapter, resume_step=0)
     assert not hasattr(optimizer, "miles_slot_schedulers")
-    # Stepping an external slot (no scheduler installed) is a silent no-op,
+    # Stepping a thinker slot (no scheduler installed) is a silent no-op,
     # never a KeyError.
     assert step_slot_schedulers(optimizer, [3]) == {}

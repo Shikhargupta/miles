@@ -1,4 +1,4 @@
-"""External (client-driven) adapter registration and operation routing through
+"""Thinker (client-driven) adapter registration and operation routing through
 MultiLoRABackend (no Ray, no HTTP I/O)."""
 
 from types import SimpleNamespace
@@ -30,18 +30,18 @@ def make_backend(max_adapters: int = 4) -> MultiLoRABackend:
     return MultiLoRABackend(args, "http://unused")
 
 
-def external_config(**overrides) -> AdapterRunConfig:
-    return AdapterRunConfig(input_mode="external", **overrides)
+def thinker_config(**overrides) -> AdapterRunConfig:
+    return AdapterRunConfig(input_mode="thinker", **overrides)
 
 
-def register_external(backend, name="X", **overrides) -> dict:
-    return asyncio.run(backend.register(name, external_config(**overrides)))
+def register_thinker(backend, name="X", **overrides) -> dict:
+    return asyncio.run(backend.register(name, thinker_config(**overrides)))
 
 
-class TestExternalRegistration:
-    def test_external_registers_without_data_or_reward(self):
+class TestThinkerRegistration:
+    def test_thinker_registers_without_data_or_reward(self):
         backend = make_backend()
-        result = register_external(backend, rank=8, alpha=16)
+        result = register_thinker(backend, rank=8, alpha=16)
         assert result == {"name": "X", "slot": 0}
         config = backend.registry.find("X").config
         assert config.rank == 8 and config.alpha == 16
@@ -69,16 +69,16 @@ class TestExternalRegistration:
             (dict(rank=64), "exceeds the allocated maximum rank"),
         ],
     )
-    def test_external_config_rejections(self, overrides, message):
+    def test_thinker_config_rejections(self, overrides, message):
         backend = make_backend()
         with pytest.raises(ValueError, match=message):
-            register_external(backend, **overrides)
+            register_thinker(backend, **overrides)
 
 
 class TestOperationRouting:
     def test_enqueue_resolves_the_current_registration(self):
         backend = make_backend()
-        register_external(backend)
+        register_thinker(backend)
         record = backend.registry.find("X")
         view = backend.enqueue_operation("X", "op1", 1, "forward_backward", {"samples": []})
         assert view["registration_id"] == record.registration_id
@@ -87,7 +87,7 @@ class TestOperationRouting:
     def test_dataset_adapters_take_no_operations(self):
         backend = make_backend()
         asyncio.run(backend.register("D", AdapterRunConfig(data=DATA_FILE, rm_type="math")))
-        with pytest.raises(ValueError, match="input_mode: external"):
+        with pytest.raises(ValueError, match="input_mode: thinker"):
             backend.enqueue_operation("D", "op1", 1, "forward_backward")
 
     def test_unregistered_name_is_rejected(self):
@@ -97,7 +97,7 @@ class TestOperationRouting:
 
     def test_retirement_fences_open_operations(self, monkeypatch):
         backend = make_backend()
-        register_external(backend)
+        register_thinker(backend)
         backend.enqueue_operation("X", "op1", 1, "forward_backward")
 
         async def no_abort(name, registration_id):
@@ -115,7 +115,7 @@ class TestOperationRouting:
 class TestControlOperations:
     def ready_backend(self, num_step=None):
         backend = make_backend()
-        register_external(backend, num_step=num_step)
+        register_thinker(backend, num_step=num_step)
         backend.registry.record_weight_update(["X"])  # PENDING -> ACTIVE
         return backend
 
@@ -140,7 +140,7 @@ class TestControlOperations:
         backend = self.ready_backend(num_step=2)
         record = backend.registry.find("X")
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
-        backend.commit_external_batch(["X"], [])  # pin dirty
+        backend.commit_thinker_batch(["X"], [])  # pin dirty
         assert backend.registry.slot_pool.entry_of(record.tenant).pins == {"dirty-grads"}
         [op] = backend.claim_ready_control_operations()
         backend.complete_control_operations({op["operation_id"]: dict(ok=True, result={"grad_norm": 0.5})})
@@ -152,7 +152,7 @@ class TestControlOperations:
         backend = self.ready_backend()
         record = backend.registry.find("X")
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
-        backend.commit_external_batch(["X"], [])
+        backend.commit_thinker_batch(["X"], [])
         [op] = backend.claim_ready_control_operations()
         backend.complete_control_operations({op["operation_id"]: dict(ok=False, error="veto", category="server")})
         assert record.step == 0  # no clock advance
@@ -169,12 +169,12 @@ class TestControlOperations:
 
         assert backend.registry.records["X"].state is AdapterState.RETIRING
 
-    def test_commit_external_batch_completes_claimed_data_ops(self):
+    def test_commit_thinker_batch_completes_claimed_data_ops(self):
         backend = self.ready_backend()
         reg_id = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", {"samples": [{}]})
         backend.operations.claim_data_operation("X", reg_id)
-        backend.commit_external_batch(["X"], ["fb1"])
+        backend.commit_thinker_batch(["X"], ["fb1"])
         assert backend.operations.get("fb1")["state"] == "SUCCEEDED"
 
     def test_forward_backward_results_carry_row_ordered_logprobs(self):
@@ -182,5 +182,5 @@ class TestControlOperations:
         reg_id = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", {"samples": [{}, {}]})
         backend.operations.claim_data_operation("X", reg_id)
-        backend.commit_external_batch(["X"], ["fb1"], {"fb1": [[-0.1, -0.2], [-0.3]]})
+        backend.commit_thinker_batch(["X"], ["fb1"], {"fb1": [[-0.1, -0.2], [-0.3]]})
         assert backend.operations.get("fb1")["result"] == {"logprobs": [[-0.1, -0.2], [-0.3]]}

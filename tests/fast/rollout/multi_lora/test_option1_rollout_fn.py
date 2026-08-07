@@ -153,10 +153,10 @@ class TestMerge:
             actual_sample_count=4,
             actual_rollout_count=4,  # classic 1:1 — every sample is its own execution
             prompt_group_sizes=[2, 2],
-            # Native dataset batches carry no operation and keep the fused
+            # Multi-LoRA dataset batches carry no operation and keep the fused
             # step-after-backward path.
             operation_id=None,
-            operation_kind="native_train",
+            operation_kind="multi_lora_train",
             batch_id=None,
             step_after_backward=True,
             loss_spec=None,

@@ -21,7 +21,7 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "opd_reverse_kl": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
-    # Client-supplied per-token channels (external adapters); the binary
+    # Client-supplied per-token channels (thinker adapters); the binary
     # loss_masks stay int32, these carry the float semantics.
     "loss_weights": "float32",
     "advantages": "float32",
@@ -53,7 +53,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
 
 def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
     """Distill one selection's BatchPlan into conversion metadata. The plan is
-    authoritative for step decisions: accumulate-only entries (external
+    authoritative for step decisions: accumulate-only entries (thinker
     forward_backward) stay out of every step_* field but keep their
     adapter_name_by_slot row, which token routing needs."""
     stepping = [entry for entry in batch_plan if entry.get("step_after_backward", True)]
@@ -65,12 +65,12 @@ def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
         "step_adapter_actual_counts": {entry["bound_slot"]: entry["actual_rollout_count"] for entry in stepping},
         "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
     }
-    kinds = {entry.get("operation_kind", "native_train") for entry in batch_plan}
+    kinds = {entry.get("operation_kind", "multi_lora_train") for entry in batch_plan}
     # One selection is one kind: reward/advantage post-processing and loss
     # dispatch gate per train call (the selection enforces this upstream).
     assert len(kinds) == 1, f"selection mixes operation kinds {sorted(kinds)}"
-    if "native_train" not in kinds:
-        metadata["batch_kind"] = "external"
+    if "multi_lora_train" not in kinds:
+        metadata["batch_kind"] = "thinker"
         metadata["adapter_loss_by_slot"] = {entry["bound_slot"]: entry.get("loss_spec") or {} for entry in batch_plan}
         # The trainer completes these operations after the batch lands.
         metadata["operation_by_slot"] = {entry["bound_slot"]: entry["operation_id"] for entry in batch_plan}
@@ -90,9 +90,9 @@ def convert_samples_to_train_data(
     if (f := custom_convert_samples_to_train_data_func) is not None:
         return f(args, samples)
 
-    external = metadata.get("batch_kind") == "external"
-    if external:
-        # External batches carry no rewards: losses come from client-supplied
+    thinker = metadata.get("batch_kind") == "thinker"
+    if thinker:
+        # Thinker batches carry no rewards: losses come from client-supplied
         # per-token channels, never from reward post-processing.
         raw_rewards = rewards = [0.0] * len(samples)
     else:
@@ -166,7 +166,7 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
-    # Client-supplied per-token channels (external adapters). Absent tensors
+    # Client-supplied per-token channels (thinker adapters). Absent tensors
     # default to no-ops so one batch may mix CE (weights) and IS/PPO
     # (advantages) samples across adapters.
     if any(sample.loss_weights is not None for sample in samples):

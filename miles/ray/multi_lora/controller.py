@@ -116,7 +116,7 @@ class MultiLoRAController:
     def abort_bind(self, txn_id: str) -> None:
         self.backend.registry.abort_bind(txn_id)
 
-    # ---------------- external operations ----------------
+    # ---------------- thinker operations ----------------
 
     def enqueue_operation(
         self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None
@@ -153,8 +153,8 @@ class MultiLoRAController:
     def complete_control_operations(self, results: dict) -> None:
         self.backend.complete_control_operations(results)
 
-    def commit_external_batch(self, names: list, operation_ids: list, logprobs_by_op: dict | None = None) -> None:
-        self.backend.commit_external_batch(list(names), list(operation_ids), logprobs_by_op)
+    def commit_thinker_batch(self, names: list, operation_ids: list, logprobs_by_op: dict | None = None) -> None:
+        self.backend.commit_thinker_batch(list(names), list(operation_ids), logprobs_by_op)
 
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)

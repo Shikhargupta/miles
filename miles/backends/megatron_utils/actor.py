@@ -461,10 +461,10 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutcome:
-        # External batches collect per-datum logprobs for the operation result
+        # Thinker batches collect per-datum logprobs for the operation result
         # plane; the loss fills this shared side channel during the forward.
-        if rollout_data.get("batch_kind") == "external":
-            rollout_data["external_logprob_collector"] = {}
+        if rollout_data.get("batch_kind") == "thinker":
+            rollout_data["thinker_logprob_collector"] = {}
 
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -485,9 +485,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
         with inverse_timer("train_wait"), timer("train"):
-            # External batches carry client-supplied logprobs/advantages; the
+            # Thinker batches carry client-supplied logprobs/advantages; the
             # ref/old-policy passes and advantage computation are RL machinery.
-            if self.args.compute_advantages_and_returns and rollout_data.get("batch_kind") != "external":
+            if self.args.compute_advantages_and_returns and rollout_data.get("batch_kind") != "thinker":
                 if "ref" in self.weights_backuper.backup_tags:
                     self._set_replay_stage("fallthrough")
                     self._switch_model("ref")
@@ -610,7 +610,7 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @timer
     def execute_adapter_controls(self, operations: list[dict]) -> dict:
-        """Run data-less external operations on this rank; every rank receives
+        """Run data-less thinker operations on this rank; every rank receives
         the identical list, and the slot-sorted step order keeps the collective
         sequence identical. Only optim_step executes today: it applies the
         operation's AdamParams and steps the slot's accumulated gradients with

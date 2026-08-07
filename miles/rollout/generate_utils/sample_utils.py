@@ -160,7 +160,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
-            # External per-token channels: response-aligned like the OPD lists;
+            # Thinker per-token channels: response-aligned like the OPD lists;
             # zero weight/advantage over the injected observation span.
             loss_weights=_merge_optional_per_token("loss_weights"),
             advantages=_merge_optional_per_token("advantages"),

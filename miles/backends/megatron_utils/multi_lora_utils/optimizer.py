@@ -174,13 +174,13 @@ def _found_inf_anywhere(found_inf: bool) -> bool:
     return flag.item() > 0
 
 
-# Tinker-compatible per-call Adam defaults (external adapters).
+# Tinker-compatible per-call Adam defaults (thinker adapters).
 _ADAM_PARAM_DEFAULTS = dict(learning_rate=1e-4, beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.0, grad_clip_norm=0.0)
 
 
 def apply_adam_params_to_slot(optimizer, slot: int, adam_params: dict) -> dict:
     """Write one operation's AdamParams onto the slot's param groups; returns
-    the resolved values. External adapters install no scheduler, so nothing
+    the resolved values. Thinker adapters install no scheduler, so nothing
     overwrites these between operations."""
     resolved = {**_ADAM_PARAM_DEFAULTS, **{k: v for k, v in (adam_params or {}).items() if v is not None}}
     for child in _slot_children(optimizer, slot):

@@ -167,7 +167,7 @@ async def test_register_json_config_validates_to_adapter_config():
         assert Path(record.config.save) == Path("/tmp/adapters/A")
         assert record.config.input_key == "text"  # dataclass default
 
-        # 'data' is schema-optional (external mode has none) but mandatory for
+        # 'data' is schema-optional (thinker mode has none) but mandatory for
         # dataset mode, so the rejection is the backend's 400, not pydantic's 422.
         status, body = await ctl.api_post("/adapter_runs", {"name": "B", "config": {"rank": 8}})
         assert status == 400

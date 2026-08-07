@@ -1,4 +1,4 @@
-"""External per-slot loss dispatch: linear CE / importance sampling / PPO,
+"""Thinker per-slot loss dispatch: linear CE / importance sampling / PPO,
 sum-reduction (chunk-additive), per-sample slot routing, channel validation."""
 
 from tests.ci.ci_register import register_cpu_ci
@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
-from miles.backends.training_utils.loss_hub.losses import external_loss_function
+from miles.backends.training_utils.loss_hub.losses import thinker_loss_function
 
 from .loss_test_utils import make_args, make_inputs, make_parallel_state
 
@@ -52,7 +52,7 @@ def reference_log_probs(args, batch, logits):
 
 
 def run(args, batch, logits):
-    loss, metrics = external_loss_function(args, batch, logits, sum_of_sample_mean=None)
+    loss, metrics = thinker_loss_function(args, batch, logits, sum_of_sample_mean=None)
     return loss, metrics
 
 
@@ -162,7 +162,7 @@ def test_collector_captures_per_datum_logprobs_in_row_order():
     batch["loss_weights"] = [torch.ones(3), torch.ones(5)]
     batch["sample_indices"] = [0, 1]
     collector: dict = {}
-    batch["external_logprob_collector"] = collector
+    batch["thinker_logprob_collector"] = collector
 
     run(args, batch, logits)
     lp = reference_log_probs(args, batch, logits)

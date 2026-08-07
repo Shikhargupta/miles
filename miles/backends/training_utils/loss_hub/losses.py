@@ -477,20 +477,20 @@ def sft_loss_function(
     )
 
 
-def external_loss_function(
+def thinker_loss_function(
     args: Namespace,
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Client-directed per-slot losses for external batches.
+    """Client-directed per-slot losses for thinker batches.
 
     Every sample dispatches on its adapter's ``loss_spec`` from the BatchPlan:
     linear cross-entropy ``Σ(-logp·w)``, importance sampling ``-Σ(ratio·A)``,
     or the PPO clipped surrogate. Reduction is a plain token sum — chunk
     additive, so K accumulated forward_backward operations produce the same
     gradient as one, and the client's ``loss_weights`` own the scale (the
-    per-adapter 1/count step normalization never applies to external slots).
+    per-adapter 1/count step normalization never applies to thinker slots).
     """
     specs_by_slot = batch["adapter_loss_by_slot"]
     adapter_slots = batch["adapter_slots"]
@@ -514,13 +514,13 @@ def external_loss_function(
     def channel(key: str, i: int, loss_fn: str) -> torch.Tensor:
         values = batch.get(key)
         if values is None or values[i] is None:
-            raise ValueError(f"external loss '{loss_fn}' needs per-token '{key}'")
+            raise ValueError(f"thinker loss '{loss_fn}' needs per-token '{key}'")
         return values[i]
 
     # Operation result plane: per-datum target logprobs, keyed by (slot, row)
     # so one selection's adapters never collide. CP shards gather to the full
     # response; a checkpointed loss recompute overwrites idempotently.
-    collector = batch.get("external_logprob_collector")
+    collector = batch.get("thinker_logprob_collector")
     if collector is not None:
         sample_indices = batch["sample_indices"]
         for i, logp in enumerate(log_probs):
@@ -547,7 +547,7 @@ def external_loss_function(
                 surrogate = torch.minimum(surrogate, ratio.clamp(low, high) * advantages)
             sample_loss = -(surrogate * mask).sum()
         else:
-            raise ValueError(f"external adapter in slot {adapter_slots[i]} requests unknown loss_fn '{loss_fn}'")
+            raise ValueError(f"thinker adapter in slot {adapter_slots[i]} requests unknown loss_fn '{loss_fn}'")
         loss = sample_loss if loss is None else loss + sample_loss
 
     if loss is None:
