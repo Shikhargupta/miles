@@ -34,6 +34,7 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
+from miles.utils.tinker_backend import is_tinker_enabled
 from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
@@ -190,6 +191,10 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.enable_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
+    elif is_tinker_enabled(args):
+        from miles.backends.megatron_utils.tinker_backend.optimizer import build_tinker_slot_optimizer
+
+        optimizer = build_tinker_slot_optimizer(args, config, model)
     elif is_multi_lora_enabled(args):
         from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
 
@@ -415,6 +420,7 @@ def train_one_step(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    forward_only: bool = False,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Execute a single pipeline-parallel training step.
 
@@ -446,7 +452,10 @@ def train_one_step(
     multi_lora = is_multi_lora_enabled(args)
 
     if multi_lora:
-        from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
+        if is_tinker_enabled(args):
+            from miles.backends.megatron_utils.tinker_backend.optimizer import reset_grad_metadata_keep_grads
+        else:
+            from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.
@@ -558,7 +567,8 @@ def train_one_step(
             num_rollouts=num_rollouts,
         )
 
-    # Forward pass.
+    # Forward pass (tinker forward operations run the schedule forward-only:
+    # the dummy loss is never backwarded, no gradient or grad collective runs).
     forward_backward_func = get_forward_backward_func()
     losses_reduced = forward_backward_func(
         forward_step_func=forward_step,
@@ -568,7 +578,7 @@ def train_one_step(
         seq_length=args.seq_length,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
-        forward_only=False,
+        forward_only=forward_only,
     )
 
     outcome = TrainStepOutcome.NORMAL
@@ -615,7 +625,11 @@ def train_one_step(
         dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
-        if multi_lora:
+        if is_tinker_enabled(args):
+            # Tinker data batches only accumulate gradient sums; the optimizer
+            # steps when the client's optim_step operation executes.
+            grad_norm = 0.0
+        elif multi_lora:
             from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
 
             grad_norm = step_stepped_adapter_slots(
@@ -684,6 +698,7 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    forward_only: bool = False,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -698,6 +713,8 @@ def train(
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
         num_rollouts (Sequence[int]): Rollout count per step (total across DP).
+        forward_only (bool): Run the schedule without backward (tinker
+            ``forward`` operations: logprobs only, gradients untouched).
     """
     parallel_state = get_parallel_state()
     args = get_args()
@@ -791,6 +808,7 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
+            forward_only=forward_only,
         )
 
         if step_id == 0:
