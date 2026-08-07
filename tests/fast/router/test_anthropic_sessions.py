@@ -1,15 +1,15 @@
 import json
 from unittest.mock import patch
 
-# ruff: noqa: F811 -- imported pytest fixture names are injected as test arguments.
-
 import requests
 from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import router_env  # noqa: F401
 
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
-from miles.utils.types import Sample
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult
+from miles.utils.types import Sample
+
+# ruff: noqa: F811 -- imported pytest fixture names are injected as test arguments.
 
 
 def _create_session(url: str) -> str:
