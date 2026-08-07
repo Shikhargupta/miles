@@ -97,6 +97,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_router_port=None,
         sglang_router_policy=None,
         sglang_router_request_timeout_secs=600,
+        inference_weight_per_cell=None,
         sglang_dp_size=1,
         sglang_pp_size=1,
         sglang_ep_size=1,

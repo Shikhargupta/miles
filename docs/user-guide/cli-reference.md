@@ -279,6 +279,7 @@ Sections mirror the launch-script argument groups.
 |---|---|---|---|
 | `--sglang-router-ip` | str | – | Must stay unset: external router mode was removed. Miles always starts its own router. |
 | `--sglang-router-port` | int | – | Must stay unset (see `--sglang-router-ip`). |
+| `--inference-weight-per-cell` | int | GPU count | Relative serving capacity of one inference cell, reported to a weighted load balancer. |
 | `--sglang-*` | passthrough | | Any flag accepted by `python -m sglang.launch_server` works with this prefix. |
 | `--router-*` | passthrough | | Any flag accepted by the active router works with this prefix. |
 
@@ -294,6 +295,25 @@ Common `--sglang-*` flags:
 --sglang-enable-overlap-schedule
 --sglang-cuda-graph-backend-prefill       # prefill graphs default to disabled in colocate mode
 ```
+
+Weighted load balancing across inference deployments:
+
+* A deployment's weight is `sum of its serving cells' GPU counts`, or
+  `number of serving cells × --inference-weight-per-cell` when that flag is set.
+* Only serving cells count, so losing cells lowers the weight and a fully
+  degraded deployment reports `0`, which drains it at the balancer.
+* `InferenceController.get_inference_weights()` exposes one weight per model,
+  because each model sits behind its own router.
+* `SGLangRouterApiClient.set_weight` pushes a weight to a router that serves
+  `PATCH /workers/{id}`. That capability belongs to the deployed router, not to
+  the local `sglang-router` wheel, so the client does not gate on the wheel
+  version; a router without the endpoint answers 404/405. The miles router has
+  no worker API at all and is refused up front.
+* Nothing reports weights periodically yet: the loop that pushes a
+  deployment's weight to the fleet-level router lands with multi-deployment
+  support, which is where that router's address first exists.
+* Cross-deployment routing is bound to the session-server path
+  (`/v1/chat/completions`); bare `/generate` rollout traffic is single-deployment.
 
 ### MTP / speculative decoding
 

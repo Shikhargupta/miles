@@ -168,6 +168,15 @@ class RolloutServer:
         )
 
     @lock_exempt
+    def inference_weight(self) -> int:
+        return compute_inference_weight(
+            serving_cell_gpu_counts=[
+                cell.meta.num_gpus_per_engine for cell in self.server_cells.values() if cell.is_serving
+            ],
+            weight_per_cell=self.args.inference_weight_per_cell,
+        )
+
+    @lock_exempt
     def _count_startable_cells(self) -> int:
         if self.args.colocate:
             return len(self.server_cells)
@@ -177,3 +186,9 @@ class RolloutServer:
     @requires_lock
     def _router_api_client(self) -> SGLangRouterApiClient:
         return SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
+
+
+def compute_inference_weight(*, serving_cell_gpu_counts: list[int], weight_per_cell: int | None) -> int:
+    if weight_per_cell is None:
+        return sum(serving_cell_gpu_counts)
+    return len(serving_cell_gpu_counts) * weight_per_cell

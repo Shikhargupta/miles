@@ -46,6 +46,9 @@ class _Recorder:
     async def delete(self, url, **kwargs):
         return self._record("delete", url, kwargs)
 
+    async def patch(self, url, **kwargs):
+        return self._record("patch", url, kwargs)
+
     def _record(self, verb: str, url: str, kwargs: dict) -> _FakeResponse:
         self.calls.append((verb, url, kwargs))
         if self.responses:
@@ -258,6 +261,102 @@ async def test_remove_worker_tolerates_a_broken_worker_lookup(client, monkeypatc
         await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
 
     assert "Failed to fetch workers list" in caplog.text
+
+
+async def test_set_weight_resolves_the_worker_id_before_patching_it(client, monkeypatch):
+    """The router addresses workers by id, but miles only knows their urls."""
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})])
+
+    await client.set_weight(worker_url=WORKER_URL, weight=8, use_legacy_api=False)
+
+    assert rec.calls == [
+        ("get", f"{ROUTER_URL}/workers", {"timeout": ROUTER_REQUEST_TIMEOUT}),
+        ("patch", f"{ROUTER_URL}/workers/w-1", {"json": {"weight": 8}, "timeout": ROUTER_REQUEST_TIMEOUT}),
+    ]
+
+
+async def test_set_weight_percent_encodes_a_url_shaped_worker_id(client, monkeypatch):
+    """The router defaults a worker's id to its url, which is not one path segment until encoded."""
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": WORKER_URL}]})])
+
+    await client.set_weight(worker_url=WORKER_URL, weight=8, use_legacy_api=False)
+
+    assert rec.calls[1][1] == f"{ROUTER_URL}/workers/http%3A%2F%2Ffake-host%3A1234"
+
+
+@pytest.mark.parametrize("version", ["0.2.3", "0.3.2"])
+async def test_set_weight_does_not_gate_on_the_local_router_wheel(client, monkeypatch, version):
+    """The weighted router is deployed separately, so the local sglang_router version says nothing about it."""
+    monkeypatch.setattr(sglang_router, "__version__", version)
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})])
+
+    await client.set_weight(worker_url=WORKER_URL, weight=8, use_legacy_api=False)
+
+    assert [verb for verb, _url, _kwargs in rec.calls] == ["get", "patch"]
+
+
+async def test_set_weight_surfaces_a_failure_of_the_worker_lookup(client, monkeypatch):
+    """A router that cannot list its workers must not look like a router that forgot this one."""
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse(status_code=503)])
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.set_weight(worker_url=WORKER_URL, weight=8, use_legacy_api=False)
+
+    assert [verb for verb, _url, _kwargs in rec.calls] == ["get"]
+
+
+async def test_set_weight_accepts_zero_to_drain_a_worker(client, monkeypatch):
+    """Zero is the drain signal, not an invalid weight."""
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]})])
+
+    await client.set_weight(worker_url=WORKER_URL, weight=0, use_legacy_api=False)
+
+    assert rec.calls[1][2]["json"] == {"weight": 0}
+
+
+async def test_set_weight_rejects_a_negative_weight(client, recorder):
+    """A negative weight would invert the router's load comparison."""
+    with pytest.raises(AssertionError, match="must be non-negative"):
+        await client.set_weight(worker_url=WORKER_URL, weight=-1, use_legacy_api=False)
+
+    assert recorder.calls == []
+
+
+async def test_set_weight_raises_on_an_unregistered_worker(client, monkeypatch):
+    """Silently dropping the update would leave the balancer on a stale capacity forever."""
+    rec = _Recorder()
+    rec.install(monkeypatch, responses=[_FakeResponse({"workers": []})])
+
+    with pytest.raises(ValueError, match="not registered in router"):
+        await client.set_weight(worker_url=WORKER_URL, weight=8, use_legacy_api=False)
+
+
+async def test_set_weight_refuses_the_legacy_router_api(client, recorder):
+    """Neither the old sglang router nor the miles router has a per-worker weight."""
+    with pytest.raises(AssertionError, match="not supported in old router"):
+        await client.set_weight(worker_url=WORKER_URL, weight=8, use_legacy_api=True)
+
+    assert recorder.calls == []
+
+
+async def test_set_weight_surfaces_a_router_side_failure(client, monkeypatch):
+    """A rejected weight update must not look like a successful one."""
+    rec = _Recorder()
+    rec.install(
+        monkeypatch,
+        responses=[
+            _FakeResponse({"workers": [{"url": WORKER_URL, "id": "w-1"}]}),
+            _FakeResponse(status_code=404),
+        ],
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.set_weight(worker_url=WORKER_URL, weight=8, use_legacy_api=False)
 
 
 def test_the_router_timeout_bounds_the_whole_request_not_just_the_connect():

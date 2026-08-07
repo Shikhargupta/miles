@@ -1710,6 +1710,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=3,
                 help="Number of consecutive failures before marking a worker as unhealthy.",
             )
+            parser.add_argument(
+                "--inference-weight-per-cell",
+                type=int,
+                default=None,
+                help=(
+                    "Relative serving capacity of one inference cell, reported to a weighted "
+                    "load balancer. Defaults to the cell's own GPU count."
+                ),
+            )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
             return parser
 
@@ -2762,6 +2771,11 @@ def miles_validate_args(args):
             if args.ref_ckpt_step is not None:
                 args.ckpt_step = args.ref_ckpt_step
             args.start_rollout_id = 0
+
+    if args.inference_weight_per_cell is not None:
+        assert (
+            args.inference_weight_per_cell >= 0
+        ), f"'--inference-weight-per-cell' must be non-negative, got {args.inference_weight_per_cell}"
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."

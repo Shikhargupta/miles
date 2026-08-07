@@ -203,6 +203,33 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     assert args.sglang_attn_cp_size == 5
 
 
+def test_inference_weight_per_cell_defaults_to_deriving_from_gpu_count():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(REQUIRED_ARGS)
+
+    assert args.inference_weight_per_cell is None
+
+
+def test_inference_weight_per_cell_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--inference-weight-per-cell", "12"] + REQUIRED_ARGS)
+
+    assert args.inference_weight_per_cell == 12
+
+
+def test_inference_weight_per_cell_rejects_a_negative_capacity():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--inference-weight-per-cell", "-1", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="'--inference-weight-per-cell' must be non-negative"):
+        miles_validate_args(args)
+
+
 def test_custom_megatron_post_save_hook_path_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)

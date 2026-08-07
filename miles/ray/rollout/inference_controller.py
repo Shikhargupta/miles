@@ -201,6 +201,10 @@ class InferenceController:
             for cell_id, cell in list(srv.server_cells.items())
         }
 
+    @lock_exempt
+    def get_inference_weights(self) -> dict[str, int]:
+        return {model_name: srv.inference_weight() for model_name, srv in list(self.servers.items())}
+
     @with_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
