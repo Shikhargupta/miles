@@ -38,7 +38,7 @@ IMAGE=/data/home/sdong/images/miles-dev-arm64.sqsh
 TB2_TASKS=/data/home/sdong/terminal-bench-2
 PROMPT_DATA=/data/home/sdong/datasets/tbench2_train.jsonl
 DAYTONA_ENV_FILE=/data/home/sdong/.secrets_260805.env
-RUN_ID=260807-b94585b0
+RUN_ID=260807-0ef91c5a
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 C="--container-image=$IMAGE --container-mounts=/data:/data --container-name=ray"
@@ -72,7 +72,7 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
   # Bound episodes tightly: on job 1947, 28 of 31 Daytona sandboxes ended in
   # error/build_failed and the sync batch blocked forever waiting on them (GPUs idle
   # 66 min at step 1). A 20-min cap lets dead trajectories abort so the step can close.
-  export OPENENV_MAX_ROLLOUT_TIME_SECONDS=1200 OPENENV_MAX_TURNS=20
+  export OPENENV_MAX_ROLLOUT_TIME_SECONDS=3600 OPENENV_MAX_TURNS=64
   export OPENENV_DAYTONA_CREATE_CONCURRENCY=4
   export WANDB_PROJECT=glm-gb300 WANDB_TEAM=eigent_radixark_training
   cd $MILES_ROOT
