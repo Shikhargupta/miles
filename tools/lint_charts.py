@@ -61,6 +61,18 @@ VARIANTS: dict[str, list[list[str]]] = {
             '"command":["python","-m","supervisor"]},'
             '{"name":"trainer-critic","objectName":"lint-trainer-critic","command":["python","-m","supervisor"]}]',
         ],
+        [
+            "--set",
+            "run.colocate.enabled=true",
+            "--set",
+            "run.colocate.enginePool=e",
+            "--set",
+            "run.colocate.trainerPool=t",
+            "--set-json",
+            'run.inferenceEngines=[{"name":"e","objectName":"lint-e","replicas":4,"command":["python"]}]',
+            "--set-json",
+            'run.trainers=[{"name":"t","objectName":"lint-t","replicas":2,"size":2,"command":["python"]}]',
+        ],
     ],
 }
 
