@@ -142,11 +142,18 @@ class AdapterRolloutRuntime:
 
     def __init__(self, args, run: AdapterRun):
         self.run = run
-        self.data_source = _AdapterDataSource(args, run)
-        path = run.config.rollout_function_path or DEFAULT_CHILD_ROLLOUT_PATH
-        fn = load_function(path)
-        child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
-        self.child_fn = fn(child_input) if inspect.isclass(fn) else fn
+        if getattr(run.config, "input_mode", "dataset") == "external":
+            from miles.rollout.multi_lora.queue_rollout_fn import ExternalOperationSource, QueueChildRolloutFn
+
+            self.data_source = ExternalOperationSource(args, run)
+            child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
+            self.child_fn = QueueChildRolloutFn(child_input)
+        else:
+            self.data_source = _AdapterDataSource(args, run)
+            path = run.config.rollout_function_path or DEFAULT_CHILD_ROLLOUT_PATH
+            fn = load_function(path)
+            child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
+            self.child_fn = fn(child_input) if inspect.isclass(fn) else fn
         self.state = self.IDLE
         self.ready_output: RolloutFnTrainOutput | None = None
         self.task: asyncio.Task | None = None
@@ -228,10 +235,13 @@ class MultiLoRARolloutFn:
                 continue
             runtime = AdapterRolloutRuntime(self.args, run)
             self.runtimes[tenant] = runtime
-            await asyncio.to_thread(
-                ray.get,
-                get_multi_lora_controller().resolve_num_step.remote(name, len(runtime.data_source.dataset)),
-            )
+            if getattr(run.config, "input_mode", "dataset") != "external":
+                # External runs have no dataset: num_step is client-set or
+                # unbounded, never derived from num_epoch x rows.
+                await asyncio.to_thread(
+                    ray.get,
+                    get_multi_lora_controller().resolve_num_step.remote(name, len(runtime.data_source.dataset)),
+                )
             logger.info(f"[multilora] created child runtime for '{name}' ({run.registration_id[:8]})")
         self._sync_rotation()
 
@@ -401,6 +411,9 @@ class MultiLoRARolloutFn:
             run = runtime.run
             data.extend(output.samples)
             plan_entry = plan_by_tenant[runtime.tenant]
+            # Operation directives from an external queue child; native
+            # dataset batches keep the fused step-after-backward behavior.
+            op_meta = output.metadata or {}
             batch_plan.append(
                 dict(
                     name=run.name,
@@ -410,6 +423,11 @@ class MultiLoRARolloutFn:
                     actual_sample_count=leaf_sample_count(output.samples),
                     actual_rollout_count=leaf_rollout_count(output.samples),
                     prompt_group_sizes=[leaf_sample_count([group]) for group in output.samples],
+                    operation_id=op_meta.get("operation_id"),
+                    operation_kind=op_meta.get("operation_kind", "native_train"),
+                    batch_id=op_meta.get("batch_id"),
+                    step_after_backward=op_meta.get("step_after_backward", True),
+                    loss_spec=op_meta.get("loss_spec"),
                 )
             )
             for key, value in (output.metrics or {}).items():
@@ -429,7 +447,9 @@ class MultiLoRARolloutFn:
                 metrics[f"{run.name}/rollout_reward_mean"] = reward_mean
                 logger.info(f"[multilora] ({run.name}) selected batch: n={len(rewards)} reward_mean={reward_mean:.4f}")
 
-        step_names = sorted(entry["name"] for entry in batch_plan)
+        # Accumulate-only batches (external forward_backward) are selections
+        # without a step: the registry books a step only for stepping entries.
+        step_names = sorted(entry["name"] for entry in batch_plan if entry["step_after_backward"])
         await asyncio.to_thread(
             ray.get,
             get_multi_lora_controller().record_train_selection.remote(rollout_id, step_names),

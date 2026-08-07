@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from miles.ray.multi_lora.operations import OperationLedger
 from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
 from miles.utils.adapter_config import AdapterRunConfig
 from miles.utils.http_utils import router_worker_base_urls
@@ -25,6 +26,7 @@ class MultiLoRABackend:
     def __init__(self, args: Any, router_url: str) -> None:
         self.args = args
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
+        self.operations = OperationLedger()
         self.router_url = router_url.rstrip("/")
         self.client: httpx.AsyncClient | None = None
 
@@ -49,6 +51,13 @@ class MultiLoRABackend:
         """
         if config is None or not isinstance(config, AdapterRunConfig):
             return config
+
+        if config.input_mode not in ("dataset", "external"):
+            raise ValueError(f"Adapter '{name}' input_mode must be 'dataset' or 'external', got '{config.input_mode}'")
+        if config.input_mode == "external":
+            return self._resolve_external_config(name, config)
+        if config.data is None:
+            raise ValueError(f"Adapter '{name}' needs a dataset path: set 'data' (or use input_mode: external)")
 
         rank = config.rank if config.rank is not None else getattr(self.args, "lora_rank", 1)
         alpha = config.alpha if config.alpha is not None else getattr(self.args, "lora_alpha", rank)
@@ -108,11 +117,7 @@ class MultiLoRABackend:
                     f"(rollout_batch_size {rollout_batch_size} x n_samples_per_prompt {n_samples_per_prompt}), "
                     f"exceeding --multi-lora-max-adapter-global-batch-size {max_batch}"
                 )
-        save = Path(config.save) if config.save is not None else None
-        if save is None:
-            if getattr(self.args, "save", None) is None:
-                raise ValueError(f"Adapter '{name}' has no save dir: set 'save' in the adapter config or pass --save")
-            save = Path(self.args.save) / "adapters" / name
+        save = self._resolve_save(name, config)
 
         return replace(
             config,
@@ -122,6 +127,37 @@ class MultiLoRABackend:
             n_samples_per_prompt=n_samples_per_prompt,
             save=save,
         )
+
+    def _resolve_external_config(self, name: str, config: AdapterRunConfig) -> AdapterRunConfig:
+        """External adapters have no dataset, reward, or server-side batch
+        shape: clients push batches through the operation queue and end the
+        run by explicit deregistration (num_step remains an optional bound)."""
+        rank = config.rank if config.rank is not None else getattr(self.args, "lora_rank", 1)
+        alpha = config.alpha if config.alpha is not None else getattr(self.args, "lora_alpha", rank)
+        if type(rank) is not int or rank <= 0:
+            raise ValueError(f"Adapter '{name}' rank must be a positive integer")
+        if rank > getattr(self.args, "lora_rank", rank):
+            raise ValueError(f"Adapter '{name}' rank {rank} exceeds the allocated maximum rank {self.args.lora_rank}")
+        if alpha is None or alpha <= 0:
+            raise ValueError(f"Adapter '{name}' must have a positive alpha")
+        if config.data is not None:
+            raise ValueError(f"External adapter '{name}' must not set 'data'; batches arrive via operations")
+        if config.rm_type is not None or config.custom_rm_path is not None:
+            raise ValueError(f"External adapter '{name}' must not set a reward; losses come per operation")
+        if config.rollout_function_path is not None:
+            raise ValueError(f"External adapter '{name}' must not set rollout_function_path; the queue child is built in")
+        if config.num_epoch is not None:
+            raise ValueError(f"External adapter '{name}' must not set num_epoch (there is no dataset); use num_step")
+        if config.num_step is not None and (type(config.num_step) is not int or config.num_step <= 0):
+            raise ValueError(f"Adapter '{name}' num_step must be a positive integer")
+        return replace(config, rank=rank, alpha=alpha, save=self._resolve_save(name, config))
+
+    def _resolve_save(self, name: str, config: AdapterRunConfig) -> Path:
+        if config.save is not None:
+            return Path(config.save)
+        if getattr(self.args, "save", None) is None:
+            raise ValueError(f"Adapter '{name}' has no save dir: set 'save' in the adapter config or pass --save")
+        return Path(self.args.save) / "adapters" / name
 
     async def register(self, name: str, config: Any) -> dict:
         config = self.resolve_adapter_config(name, config)
@@ -140,8 +176,24 @@ class MultiLoRABackend:
         for name in names:
             record = self.registry.records.get(name)
             if record is not None:
+                # Fence before the engine abort: no operation of the dead
+                # registration may be claimed once retirement is underway.
+                self.operations.fence(name, record.registration_id)
                 await self.abort_adapter_requests(name, record.registration_id)
         return names
+
+    # ---------------- external operations ----------------
+
+    def enqueue_operation(self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None) -> dict:
+        """Enqueue one client operation against the name's CURRENT registration
+        (clients address adapters by name; the resolved registration_id rides
+        the operation, so a re-registered name can never execute stale work)."""
+        record = self.registry.find(name)
+        if record is None or record.state not in (AdapterState.PENDING, AdapterState.ACTIVE):
+            raise ValueError(f"Adapter '{name}' is not accepting operations (not registered or retiring)")
+        if getattr(record.config, "input_mode", "dataset") != "external":
+            raise ValueError(f"Adapter '{name}' is a dataset run; operations apply to input_mode: external only")
+        return self.operations.enqueue(operation_id, name, record.registration_id, ordinal, kind, payload)
 
     async def free_slot(self, name: str) -> int:
         """Free the adapter's slot after one final abort round: requests can survive the

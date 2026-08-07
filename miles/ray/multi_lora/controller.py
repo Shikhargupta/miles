@@ -116,6 +116,35 @@ class MultiLoRAController:
     def abort_bind(self, txn_id: str) -> None:
         self.backend.registry.abort_bind(txn_id)
 
+    # ---------------- external operations ----------------
+
+    def enqueue_operation(self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None) -> dict:
+        return self.backend.enqueue_operation(name, operation_id, ordinal, kind, payload)
+
+    def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
+        return self.backend.operations.claim_data_operation(name, registration_id)
+
+    def claim_control_operation(self, name: str, registration_id: str) -> dict | None:
+        return self.backend.operations.claim_control_operation(name, registration_id)
+
+    def claimable_control_tenants(self) -> list:
+        return self.backend.operations.claimable_control_tenants()
+
+    def complete_operation(self, operation_id: str, result: dict | None = None) -> None:
+        self.backend.operations.complete(operation_id, result)
+
+    def fail_operation(self, operation_id: str, error: str, category: str = "server") -> None:
+        self.backend.operations.fail(operation_id, error, category)
+
+    def cancel_operation(self, operation_id: str) -> dict:
+        return self.backend.operations.cancel(operation_id)
+
+    def get_operation(self, operation_id: str) -> dict | None:
+        return self.backend.operations.get(operation_id)
+
+    def ack_operation(self, operation_id: str) -> None:
+        self.backend.operations.ack(operation_id)
+
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)
 
