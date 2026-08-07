@@ -256,9 +256,9 @@ def anthropic_to_openai_request(request: Mapping[str, Any]) -> dict[str, Any]:
         "max_tokens": max_tokens,
         "stream": bool(request.get("stream", False)),
     }
-    for source, target in (("temperature", "temperature"), ("top_p", "top_p"), ("top_k", "top_k")):
+    for source in ("temperature", "top_p", "top_k"):
         if (value := request.get(source)) is not None:
-            converted[target] = value
+            converted[source] = value
     if (stop_sequences := request.get("stop_sequences")) is not None:
         converted["stop"] = stop_sequences
 
