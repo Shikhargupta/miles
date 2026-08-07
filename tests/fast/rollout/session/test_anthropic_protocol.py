@@ -503,7 +503,14 @@ def test_stream_has_protocol_order_for_text_and_tool_use() -> None:
 
 @pytest.mark.parametrize(
     ("status_code", "expected_type"),
-    [(400, "invalid_request_error"), (401, "authentication_error"), (403, "permission_error"), (404, "not_found_error"), (429, "rate_limit_error"), (500, "api_error")],
+    [
+        (400, "invalid_request_error"),
+        (401, "authentication_error"),
+        (403, "permission_error"),
+        (404, "not_found_error"),
+        (429, "rate_limit_error"),
+        (500, "api_error"),
+    ],
 )
 def test_error_conversion(status_code: int, expected_type: str) -> None:
     converted = openai_error_to_anthropic(status_code, {"error": {"message": "bad request"}})
