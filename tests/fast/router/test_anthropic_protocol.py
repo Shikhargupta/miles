@@ -1,9 +1,6 @@
 import pytest
 
-from miles.rollout.session.anthropic import (
-    AnthropicProtocolError,
-    anthropic_to_openai_request,
-)
+from miles.rollout.session.anthropic import AnthropicProtocolError, anthropic_to_openai_request
 
 
 def _request(**overrides: object) -> dict:
@@ -106,8 +103,14 @@ def test_request_preserves_text_tool_result_text_order() -> None:
     [
         ({"max_tokens": 0}, "max_tokens must be a positive integer"),
         ({"messages": "hello"}, "messages must be an array"),
-        ({"messages": [{"role": "user", "content": [{"type": "redacted_thinking", "data": "x"}]}]}, "redacted_thinking history is not supported"),
-        ({"tools": [{"name": "web_search", "type": "web_search_20250305"}]}, "Anthropic server-side tools are not supported"),
+        (
+            {"messages": [{"role": "user", "content": [{"type": "redacted_thinking", "data": "x"}]}]},
+            "redacted_thinking history is not supported",
+        ),
+        (
+            {"tools": [{"name": "web_search", "type": "web_search_20250305"}]},
+            "Anthropic server-side tools are not supported",
+        ),
     ],
 )
 def test_request_rejects_unrepresentable_inputs(overrides: dict, error: str) -> None:

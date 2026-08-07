@@ -114,7 +114,9 @@ def _convert_message_content(
                 raise AnthropicProtocolError("thinking blocks are only valid in assistant messages")
             thinking = block.get("thinking")
             if not isinstance(thinking, str):
-                raise AnthropicProtocolError(f"messages[{message_index}].content[{block_index}].thinking must be a string")
+                raise AnthropicProtocolError(
+                    f"messages[{message_index}].content[{block_index}].thinking must be a string"
+                )
             reasoning_parts.append(thinking)
         elif block_type == "redacted_thinking":
             raise AnthropicProtocolError("redacted_thinking history is not supported")
@@ -153,7 +155,10 @@ def _convert_message_content(
             raise AnthropicProtocolError(f"unsupported Anthropic content block type: {block_type!r}")
 
     if role == "assistant":
-        message: dict[str, Any] = {"role": "assistant", "content": _content_value(content_parts) if content_parts else ""}
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": _content_value(content_parts) if content_parts else "",
+        }
         if reasoning_parts:
             message["reasoning_content"] = "\n".join(reasoning_parts)
         if tool_calls:
@@ -194,7 +199,9 @@ def _convert_tools(tools: Any) -> list[dict[str, Any]] | None:
         name = _require_nonempty_string(tool.get("name"), f"tools[{tool_index}].name")
         schema = tool.get("input_schema")
         if not isinstance(schema, Mapping):
-            raise AnthropicProtocolError(f"tools[{tool_index}].input_schema must be an object; Anthropic server-side tools are not supported")
+            raise AnthropicProtocolError(
+                f"tools[{tool_index}].input_schema must be an object; Anthropic server-side tools are not supported"
+            )
         converted_tool: dict[str, Any] = {
             "type": "function",
             "function": {
