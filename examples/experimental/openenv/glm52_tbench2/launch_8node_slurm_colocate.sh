@@ -38,7 +38,7 @@ IMAGE=/data/home/sdong/images/miles-dev-arm64.sqsh
 TB2_TASKS=/data/home/sdong/terminal-bench-2
 PROMPT_DATA=/data/home/sdong/datasets/tbench2_train.jsonl
 DAYTONA_ENV_FILE=/data/home/sdong/.secrets_260805.env
-RUN_ID=260808-ea68b06f
+RUN_ID=260808-ea00e237
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 C="--container-image=$IMAGE --container-mounts=/data:/data --container-name=ray"
@@ -91,6 +91,19 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
   export OPENENV_DAYTONA_CREATE_CONCURRENCY=8
   export WANDB_PROJECT=glm-gb300 WANDB_TEAM=eigent_radixark_training
   cd $MILES_ROOT
+  # PR 2220 fidelity: the recipe body is unmodified from 2220, so carrying NO sglang
+  # overrides in --extra-args restores its engine config verbatim --
+  #   sglang_world_size = 8  ->  --rollout-num-gpus-per-engine 8
+  #                              --sglang-ep-size 8
+  #                              --sglang-mem-fraction-static 0.85
+  #                              --sglang-max-running-requests 512
+  # ep-size and engine width are THE SAME VARIABLE in 2220 and must never be set
+  # independently. EP=8 against a 16-GPU engine mis-maps the MoE expert shards: the
+  # model emits garbage and NOTHING CRASHES to tell you -- rollout/entropy 4.62 vs
+  # 0.19, truncation 0.98, reward 0.0, grad_norm exactly 0.0 (run 260808-ea68b06f).
+  # Only the colocate-required offload flags stay in --extra-args.
+  # Comments must live HERE, never between the python3 continuation lines below: a
+  # bare # line there ends the command and turns --extra-args into its own command.
   python3 $RECIPE train \
     --num-nodes ${#nodes[@]} \
     --num-gpus-per-node 4 \
@@ -111,7 +124,7 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
     --n-samples-per-prompt 8 \
     --global-batch-size 64 \
     --sglang-config low-latency \
-    --extra-args '--offload-train --offload-rollout --offload-train-target disk --wandb-team eigent_radixark_training --wandb-project glm-gb300 --sglang-mem-fraction-static 0.35 --rollout-num-gpus-per-engine 16 --sglang-ep-size 8 --sglang-max-running-requests 64' \
+    --extra-args '--offload-train --offload-rollout --offload-train-target disk --wandb-team eigent_radixark_training --wandb-project glm-gb300' \
     $*
 " &
 HEAD_PID=$!
