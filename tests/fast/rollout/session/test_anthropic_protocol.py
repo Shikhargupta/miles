@@ -3,6 +3,7 @@ import json
 import pytest
 
 from miles.rollout.session.anthropic import (
+    AnthropicGenerationAbortedError,
     AnthropicProtocolError,
     anthropic_to_openai_request,
     openai_error_to_anthropic,
@@ -528,9 +529,9 @@ def test_response_rejects_aborted_generation() -> None:
     response = _response()
     response["choices"][0]["finish_reason"] = "abort"
 
-    with pytest.raises(AnthropicProtocolError, match="upstream generation was aborted"):
+    with pytest.raises(AnthropicGenerationAbortedError, match="upstream generation was aborted"):
         openai_to_anthropic_response(response)
-    with pytest.raises(AnthropicProtocolError, match="upstream generation was aborted"):
+    with pytest.raises(AnthropicGenerationAbortedError, match="upstream generation was aborted"):
         render_anthropic_sse(response)
 
 

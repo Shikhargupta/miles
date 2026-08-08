@@ -17,6 +17,10 @@ class AnthropicProtocolError(ValueError):
     """Raised when an Anthropic request cannot be represented faithfully."""
 
 
+class AnthropicGenerationAbortedError(AnthropicProtocolError):
+    """Raised when Miles aborts an in-flight upstream generation."""
+
+
 _STOP_REASON_MAP = {
     "stop": "end_turn",
     "length": "max_tokens",
@@ -313,7 +317,7 @@ def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
     choice = choice if isinstance(choice, Mapping) else {}
     finish_reason = choice.get("finish_reason") or "stop"
     if finish_reason == "abort":
-        raise AnthropicProtocolError("upstream generation was aborted")
+        raise AnthropicGenerationAbortedError("upstream generation was aborted")
     message = choice.get("message")
     message = message if isinstance(message, Mapping) else {}
 
