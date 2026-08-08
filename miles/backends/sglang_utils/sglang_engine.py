@@ -478,10 +478,19 @@ class SGLangEngine(RayActor):
             raise TimeoutError(f"Timeout while flushing cache: {last_message}")
 
     def abort_all_requests(self):
-        """Abort every running and waiting request on this engine."""
+        """Abort every running and waiting request on this engine.
+
+        Deliberately NOT routed through _make_request: sglang's /abort_request
+        returns a non-JSON body, so _make_request's trailing response.json()
+        raises JSONDecodeError *after* the server has already performed the
+        abort. That turns a success into a scary "abort failed" log line and
+        hides real failures. Treat HTTP 2xx as success and ignore the body.
+        """
         if self.node_rank != 0:
             return
-        return self._make_request("abort_request", {"abort_all": True})
+        url = f"http://{self.server_host}:{self.server_port}/abort_request"
+        response = requests.post(url, json={"abort_all": True})
+        response.raise_for_status()
 
     def shutdown(self):
         if self.args.rollout_external:
