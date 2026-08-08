@@ -38,7 +38,7 @@ IMAGE=/data/home/sdong/images/miles-dev-arm64.sqsh
 TB2_TASKS=/data/home/sdong/terminal-bench-2
 PROMPT_DATA=/data/home/sdong/datasets/tbench2_train.jsonl
 DAYTONA_ENV_FILE=/data/home/sdong/.secrets_260805.env
-RUN_ID=260808-c40daa14
+RUN_ID=260808-aa9696c4
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 C="--container-image=$IMAGE --container-mounts=/data:/data --container-name=ray"
@@ -81,8 +81,14 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
   # episode-exceeded-1200s terminations forced to reward 0, and raw_reward sat at
   # 0.30-0.63. At 3600s/64 turns, job 2031 step 0 had ZERO timeouts and raw_reward
   # 0.607 on the same model and task set. Do not lower these.
-  export OPENENV_MAX_ROLLOUT_TIME_SECONDS=3600 OPENENV_MAX_TURNS=64
-  export OPENENV_DAYTONA_CREATE_CONCURRENCY=4
+  export OPENENV_MAX_ROLLOUT_TIME_SECONDS=3600 OPENENV_MAX_TURNS=40
+  # 8, not 4: the 4 was collateral from the wrong Daytona-is-the-limiter diagnosis
+  # and it is half what the recipe itself defaults to. Measured ramp-to-peak
+  # concurrency at 4 was 126-146s per rollout; the stagger lands on the critical
+  # path because each episode's 3600s clock starts when IT starts. Do not push far
+  # past 8 without evidence: Daytona rate-limits creation (ThrottlerException) and
+  # the leg then retries with backoff up to 30s, which lengthens the stagger.
+  export OPENENV_DAYTONA_CREATE_CONCURRENCY=8
   export WANDB_PROJECT=glm-gb300 WANDB_TEAM=eigent_radixark_training
   cd $MILES_ROOT
   python3 $RECIPE train \
@@ -105,7 +111,7 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
     --n-samples-per-prompt 8 \
     --global-batch-size 64 \
     --sglang-config low-latency \
-    --extra-args '--offload-train --offload-rollout --offload-train-target disk --wandb-team eigent_radixark_training --wandb-project glm-gb300 --sglang-mem-fraction-static 0.35 --rollout-num-gpus-per-engine 16 --sglang-ep-size 16 --sglang-max-running-requests 32' \
+    --extra-args '--offload-train --offload-rollout --offload-train-target disk --wandb-team eigent_radixark_training --wandb-project glm-gb300 --sglang-mem-fraction-static 0.35 --rollout-num-gpus-per-engine 16 --sglang-ep-size 16 --sglang-max-running-requests 64' \
     $*
 " &
 HEAD_PID=$!
