@@ -107,6 +107,10 @@ _MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "1200"))
 # slowest of all concurrent episodes returns). An episode exceeding this cap is
 # terminated (its coroutine cancelled) and scored reward 0.
 _MAX_ROLLOUT_TIME_S = float(os.getenv("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
+# How long a cancelled episode gets to tear down before it is abandoned. Must stay
+# small relative to _MAX_ROLLOUT_TIME_S: it is paid once per timed-out episode and
+# it is the only thing standing between a dead sandbox and a stalled rollout.
+_CLEANUP_GRACE_S = float(os.getenv("OPENENV_CLEANUP_GRACE_SECONDS", "60"))
 
 
 def _is_retryable_env_error(e: BaseException) -> bool:
@@ -415,30 +419,55 @@ async def _run_for_training(
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")
     messages = _extract_messages(prompt)
 
+    # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
+    #
+    # Deliberately NOT asyncio.wait_for. wait_for cancels the coroutine and then
+    # AWAITS the cancellation to finish before raising TimeoutError. The episode's
+    # teardown closes its Daytona session, which opens a TCP connection to the
+    # sandbox -- and when that sandbox is already dead the connect never returns.
+    # So the cancellation never completes, TimeoutError is never raised, this
+    # function never returns, and a SYNCHRONOUS rollout waits forever on a
+    # trajectory that was killed an hour earlier. That is what deadlocked job 2052:
+    # 713 CancelledErrors, zero "terminating with reward 0", and 4.6 hours with 32
+    # GPUs idle. The tell-tale signature is a rollout phase far longer than the cap
+    # while the timeout counter reads zero.
+    task = asyncio.create_task(run_episode_fn(policy, model_name, messages, request_kwargs, metadata))
     try:
-        # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
-        # wait_for cancels the coroutine, so any in-flight policy call / env.step
-        # is interrupted and the env session is closed by the env context manager
-        # during cancellation cleanup.
-        reward, agent_metrics = await asyncio.wait_for(
-            run_episode_fn(policy, model_name, messages, request_kwargs, metadata),
-            timeout=_MAX_ROLLOUT_TIME_S,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
-        # eval_report empty: the episode was cancelled before evaluate ever
-        # ran, so there is no pytest report to surface.
-        return {
-            "reward": 0.0,
-            "exit_status": "timeout",
-            "eval_report": {},
-            "agent_metrics": {"timed_out": 1},
-        }
+        done, _ = await asyncio.wait({task}, timeout=_MAX_ROLLOUT_TIME_S)
+        if not done:
+            task.cancel()
+            # Bounded grace for teardown, then abandon it. An orphaned task may keep
+            # retrying against a dead sandbox, but it can no longer hold up the batch.
+            # The sandbox leaks either way -- that is reaped out of band, not here.
+            await asyncio.wait({task}, timeout=_CLEANUP_GRACE_S)
+            if not task.done():
+                logger.error(
+                    f"OpenEnv tbench2 episode teardown did not finish {_CLEANUP_GRACE_S:.0f}s after "
+                    "cancellation; abandoning the task so the batch can close (sandbox leaked)"
+                )
+            logger.warning(
+                f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; terminating with reward 0"
+            )
+            # eval_report empty: the episode was cancelled before evaluate ever
+            # ran, so there is no pytest report to surface.
+            return {
+                "reward": 0.0,
+                "exit_status": "timeout",
+                "eval_report": {},
+                "agent_metrics": {"timed_out": 1},
+            }
+        reward, agent_metrics = task.result()
     except Exception as e:
         logger.error(f"OpenEnv tbench2 episode failed: {e}", exc_info=True)
         return None
     finally:
-        await policy.close()
+        # policy.close() is itself a network call and hangs the same way against a
+        # dead endpoint, so it needs its own bound -- an unbounded close in a finally
+        # block would reintroduce exactly the deadlock this function just escaped.
+        try:
+            await asyncio.wait_for(policy.close(), timeout=_CLEANUP_GRACE_S)
+        except Exception as e:
+            logger.warning(f"OpenEnv tbench2 policy close did not complete: {e}")
 
     # No canonical verdict (infra/harness failure or a non-canonical server,
     # not a legitimate task failure -- see the guard in _multi_turn). Drop the
