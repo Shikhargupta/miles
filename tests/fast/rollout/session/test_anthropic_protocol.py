@@ -454,7 +454,7 @@ def test_response_converts_reasoning_text_tools_and_usage() -> None:
         {"type": "text", "text": "Running a command."},
         {"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "pwd"}},
     ]
-    assert converted["stop_reason"] == "end_turn"
+    assert converted["stop_reason"] == "tool_use"
     assert converted["usage"] == {"input_tokens": 11, "output_tokens": 7}
 
 
@@ -473,6 +473,7 @@ def test_response_converts_null_content_tool_call() -> None:
     )
 
     assert converted["content"] == [{"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "pwd"}}]
+    assert converted["stop_reason"] == "tool_use"
 
 
 def test_response_skips_malformed_tool_calls_and_sanitizes_arguments() -> None:
@@ -523,6 +524,16 @@ def test_response_maps_tool_and_length_stop_reasons() -> None:
     assert openai_to_anthropic_response(length_response)["stop_reason"] == "max_tokens"
 
 
+def test_response_rejects_aborted_generation() -> None:
+    response = _response()
+    response["choices"][0]["finish_reason"] = "abort"
+
+    with pytest.raises(AnthropicProtocolError, match="upstream generation was aborted"):
+        openai_to_anthropic_response(response)
+    with pytest.raises(AnthropicProtocolError, match="upstream generation was aborted"):
+        render_anthropic_sse(response)
+
+
 def test_stream_has_protocol_order_for_text_and_tool_use() -> None:
     events = _parse_sse(
         render_anthropic_sse(
@@ -552,8 +563,28 @@ def test_stream_has_protocol_order_for_text_and_tool_use() -> None:
     ]
     assert events[4][1]["content_block"]["type"] == "tool_use"
     assert events[5][1]["delta"] == {"type": "input_json_delta", "partial_json": '{"command":"pwd"}'}
-    assert events[-2][1]["delta"]["stop_reason"] == "end_turn"
+    assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
     assert events[-2][1]["usage"] == {"output_tokens": 7}
+
+
+def test_stream_sanitizes_non_finite_tool_arguments() -> None:
+    events = _parse_sse(
+        render_anthropic_sse(
+            _response(
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "toolu_nan",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": '{"timeout":NaN}'},
+                    }
+                ],
+            )
+        )
+    )
+
+    tool_delta = next(payload["delta"] for event_type, payload in events if event_type == "content_block_delta")
+    assert tool_delta == {"type": "input_json_delta", "partial_json": "{}"}
 
 
 def test_stream_emits_thinking_delta() -> None:

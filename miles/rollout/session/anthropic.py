@@ -291,6 +291,17 @@ def _response_text_blocks(content: Any) -> list[dict[str, Any]]:
     return blocks
 
 
+def _parse_tool_input(arguments: Any) -> dict[str, Any]:
+    try:
+        tool_input = json.loads(arguments) if isinstance(arguments, str) else arguments
+        if not isinstance(tool_input, Mapping):
+            return {}
+        json.dumps(tool_input, allow_nan=False)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return dict(tool_input)
+
+
 def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
     """Convert one complete OpenAI chat-completion response to Anthropic form.
 
@@ -300,6 +311,9 @@ def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
     response = _require_mapping(response, "response")
     choice = choices[0] if isinstance(choices := response.get("choices"), list) and choices else {}
     choice = choice if isinstance(choice, Mapping) else {}
+    finish_reason = choice.get("finish_reason") or "stop"
+    if finish_reason == "abort":
+        raise AnthropicProtocolError("upstream generation was aborted")
     message = choice.get("message")
     message = message if isinstance(message, Mapping) else {}
 
@@ -314,19 +328,12 @@ def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
                 continue
             if not isinstance(function := raw_tool_call.get("function"), Mapping):
                 continue
-            arguments = function.get("arguments", "{}")
-            try:
-                tool_input = json.loads(arguments) if isinstance(arguments, str) else arguments
-            except json.JSONDecodeError:
-                tool_input = {}
-            if not isinstance(tool_input, Mapping):
-                tool_input = {}
             content.append(
                 {
                     "type": "tool_use",
                     "id": str(raw_tool_call.get("id") or f"toolu_{uuid.uuid4().hex}"),
                     "name": str(function.get("name") or ""),
-                    "input": dict(tool_input),
+                    "input": _parse_tool_input(function.get("arguments", "{}")),
                 }
             )
 
@@ -335,14 +342,16 @@ def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
 
     usage = response.get("usage")
     usage = usage if isinstance(usage, Mapping) else {}
-    finish_reason = choice.get("finish_reason") or "stop"
+    stop_reason = _STOP_REASON_MAP.get(finish_reason, "end_turn")
+    if stop_reason == "end_turn" and any(block["type"] == "tool_use" for block in content):
+        stop_reason = "tool_use"
     return {
         "id": f"msg_{uuid.uuid4().hex}",
         "type": "message",
         "role": "assistant",
         "content": content,
         "model": str(response.get("model") or ""),
-        "stop_reason": _STOP_REASON_MAP.get(finish_reason, "end_turn"),
+        "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {
             "input_tokens": int(usage.get("prompt_tokens") or 0),
