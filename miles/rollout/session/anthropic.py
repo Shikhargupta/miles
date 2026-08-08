@@ -286,8 +286,8 @@ def _response_text_blocks(content: Any) -> list[dict[str, Any]]:
         return [{"type": "text", "text": str(content)}]
     blocks: list[dict[str, Any]] = []
     for part in content:
-        if isinstance(part, Mapping) and part.get("type") == "text" and isinstance(part.get("text"), str):
-            blocks.append({"type": "text", "text": part["text"]})
+        if isinstance(part, Mapping) and part.get("type") == "text" and isinstance(text := part.get("text"), str):
+            blocks.append({"type": "text", "text": text})
     return blocks
 
 
@@ -298,25 +298,21 @@ def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
     Anthropic ``stop_sequence`` field cannot be reconstructed.
     """
     response = _require_mapping(response, "response")
-    choices = response.get("choices")
-    choice = choices[0] if isinstance(choices, list) and choices else {}
+    choice = choices[0] if isinstance(choices := response.get("choices"), list) and choices else {}
     choice = choice if isinstance(choice, Mapping) else {}
     message = choice.get("message")
     message = message if isinstance(message, Mapping) else {}
 
     content: list[dict[str, Any]] = []
-    reasoning_content = message.get("reasoning_content")
-    if isinstance(reasoning_content, str) and reasoning_content:
+    if isinstance(reasoning_content := message.get("reasoning_content"), str) and reasoning_content:
         content.append({"type": "thinking", "thinking": reasoning_content})
     content.extend(_response_text_blocks(message.get("content")))
 
-    tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list):
+    if isinstance(tool_calls := message.get("tool_calls"), list):
         for raw_tool_call in tool_calls:
             if not isinstance(raw_tool_call, Mapping):
                 continue
-            function = raw_tool_call.get("function")
-            if not isinstance(function, Mapping):
+            if not isinstance(function := raw_tool_call.get("function"), Mapping):
                 continue
             arguments = function.get("arguments", "{}")
             try:
@@ -416,8 +412,7 @@ def openai_error_to_anthropic(status_code: int, payload: Any) -> dict[str, Any]:
     """Convert an OpenAI-style error body to Anthropic's error envelope."""
     message: Any = None
     if isinstance(payload, Mapping):
-        error = payload.get("error")
-        if isinstance(error, Mapping):
+        if isinstance(error := payload.get("error"), Mapping):
             message = error.get("message")
         elif isinstance(error, str):
             message = error
