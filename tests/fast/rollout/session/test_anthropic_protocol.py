@@ -297,6 +297,66 @@ def test_restore_replayed_tool_arguments_preserves_original_json_spelling() -> N
 
 
 @pytest.mark.parametrize(
+    ("stored_arguments", "replayed_arguments", "expected"),
+    [
+        ('{"value":1}', '{"value":1}', '{"value":1}'),
+        ("{", "{}", "{}"),
+        ('{"value": 1}', '{"value": 2}', '{"value": 2}'),
+    ],
+)
+def test_restore_replayed_tool_arguments_handles_exact_and_nonmatching_json(
+    stored_arguments: str, replayed_arguments: str, expected: str
+) -> None:
+    stored_call = {
+        "id": "toolu_1",
+        "function": {"name": "bash", "arguments": stored_arguments},
+    }
+    replayed_call = {
+        "id": "toolu_1",
+        "function": {"name": "bash", "arguments": replayed_arguments},
+    }
+
+    restore_replayed_tool_arguments(
+        [{"role": "assistant", "tool_calls": [replayed_call]}],
+        [{"role": "assistant", "tool_calls": [stored_call]}],
+    )
+
+    assert replayed_call["function"]["arguments"] == expected
+
+
+@pytest.mark.parametrize("side", ["stored", "replayed"])
+@pytest.mark.parametrize(
+    "malformed_call",
+    [
+        None,
+        {"id": "toolu_1", "function": None},
+        {"id": 1, "function": {"name": "bash", "arguments": "{}"}},
+        {"id": "toolu_1", "function": {"name": 1, "arguments": "{}"}},
+        {"id": "toolu_1", "function": {"name": "bash", "arguments": {}}},
+    ],
+)
+def test_restore_replayed_tool_arguments_skips_malformed_calls(side: str, malformed_call: object) -> None:
+    valid_call = {
+        "id": "toolu_1",
+        "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+    }
+    stored_call = malformed_call if side == "stored" else valid_call
+    replayed_call = malformed_call if side == "replayed" else valid_call
+    stored_messages = [
+        {"role": "user", "content": "ignored"},
+        {"role": "assistant", "tool_calls": [stored_call]},
+    ]
+    replayed_messages = [
+        {"role": "user", "content": "ignored"},
+        {"role": "assistant", "tool_calls": [replayed_call]},
+    ]
+
+    restore_replayed_tool_arguments(replayed_messages, stored_messages)
+
+    assert replayed_messages[-1]["tool_calls"] == [replayed_call]
+
+
+@pytest.mark.parametrize(
     ("tool_choice", "expected"),
     [
         ({"type": "auto"}, "auto"),

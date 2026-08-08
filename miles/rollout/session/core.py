@@ -17,6 +17,7 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.anthropic import (
+    AnthropicGenerationAbortedError,
     AnthropicProtocolError,
     anthropic_to_openai_request,
     openai_error_to_anthropic,
@@ -476,7 +477,7 @@ class SessionCore:
                 status_code=200,
                 media_type=JSON_MEDIA_TYPE,
             )
-        except AnthropicProtocolError as exc:
+        except AnthropicGenerationAbortedError as exc:
             return _anthropic_error_response(529, {"error": str(exc)})
 
     async def proxy(

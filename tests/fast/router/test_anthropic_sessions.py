@@ -240,3 +240,40 @@ class TestAnthropicSessionRoute:
             "type": "error",
             "error": {"type": "overloaded_error", "message": "upstream generation was aborted"},
         }
+
+    def test_retry_after_aborted_generation_passes_tito_prefix_check(self, router_env) -> None:
+        session_id = _create_session(router_env.url)
+        original_chat_response = MockSGLangServer._compute_chat_completions_response
+        attempts = 0
+
+        def abort_once(self: MockSGLangServer, payload: dict) -> dict:
+            nonlocal attempts
+            response = original_chat_response(self, payload)
+            if attempts == 0:
+                response["choices"][0]["finish_reason"] = "abort"
+            attempts += 1
+            return response
+
+        first_request = _request()
+        with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=abort_once):
+            aborted = _post_messages(router_env.url, session_id, first_request)
+            assert aborted.status_code == 529
+
+            retried = _post_messages(router_env.url, session_id, first_request)
+            assert retried.status_code == 200
+
+            next_messages = [
+                *first_request["messages"],
+                {"role": "assistant", "content": retried.json()["content"]},
+                {"role": "user", "content": "continue"},
+            ]
+            continued = _post_messages(
+                router_env.url,
+                session_id,
+                _request(messages=next_messages),
+            )
+
+        assert continued.status_code == 200
+        records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+        assert len(records) == 2
+        assert records[0]["response"]["choices"][0]["finish_reason"] == "stop"
