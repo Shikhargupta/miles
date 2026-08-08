@@ -126,6 +126,10 @@ def test_sampling_params_exclude_chat_fields_rejected_by_sessions() -> None:
     assert set(request_kwargs) <= SESSION_REQUEST_OVERRIDE_KEYS
 
 
+def test_session_override_allowlist_is_supported_by_sglang() -> None:
+    assert SESSION_REQUEST_OVERRIDE_KEYS <= set(agentic_tool_call.ChatCompletionRequest.model_fields)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("empty_reason", ["no_records", "all_truncated"])
 async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):

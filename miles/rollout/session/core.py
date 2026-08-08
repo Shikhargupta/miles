@@ -33,7 +33,10 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.request_overrides import SESSION_REQUEST_OVERRIDE_KEYS
+from miles.rollout.session.request_overrides import (
+    SESSION_REQUEST_OVERRIDE_KEYS,
+    validate_session_request_override_values,
+)
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
@@ -283,6 +286,10 @@ class SessionCore:
         unsupported = sorted(set(request_overrides) - SESSION_REQUEST_OVERRIDE_KEYS)
         if unsupported:
             raise MessageValidationError(f"unsupported session request overrides: {unsupported}")
+        try:
+            validate_session_request_override_values(request_overrides)
+        except ValueError as exc:
+            raise MessageValidationError(str(exc)) from exc
 
         session_id = self.registry.create_session(request_overrides)
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)

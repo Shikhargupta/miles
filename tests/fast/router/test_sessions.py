@@ -141,6 +141,34 @@ class TestSessionRoutes:
         else:
             assert response.json()["error"] == expected_error
 
+    @pytest.mark.parametrize(
+        ("request_overrides", "expected_error"),
+        [
+            (
+                {"n": 2},
+                "unsupported session request overrides: ['n']",
+            ),
+            (
+                {"temperature": "hot"},
+                "invalid session request override 'temperature': expected number or null, got str",
+            ),
+        ],
+    )
+    def test_create_session_rejects_invalid_request_overrides(
+        self,
+        router_env,
+        request_overrides: dict[str, object],
+        expected_error: str,
+    ) -> None:
+        response = requests.post(
+            f"{router_env.url}/sessions",
+            json={"request_overrides": request_overrides},
+            timeout=5.0,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == expected_error
+
     def test_get_session_initial_state(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
 
