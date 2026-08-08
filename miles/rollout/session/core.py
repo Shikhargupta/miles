@@ -463,18 +463,21 @@ class SessionCore:
         if openai_response.status_code != 200:
             return _anthropic_error_response(openai_response.status_code, response_body)
 
-        if client_stream:
+        try:
+            if client_stream:
+                return Response(
+                    content=render_anthropic_sse(response_body),
+                    status_code=200,
+                    headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+                    media_type="text/event-stream",
+                )
             return Response(
-                content=render_anthropic_sse(response_body),
+                content=_render_json(openai_to_anthropic_response(response_body)),
                 status_code=200,
-                headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
-                media_type="text/event-stream",
+                media_type=JSON_MEDIA_TYPE,
             )
-        return Response(
-            content=_render_json(openai_to_anthropic_response(response_body)),
-            status_code=200,
-            media_type=JSON_MEDIA_TYPE,
-        )
+        except AnthropicProtocolError as exc:
+            return _anthropic_error_response(529, {"error": str(exc)})
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes

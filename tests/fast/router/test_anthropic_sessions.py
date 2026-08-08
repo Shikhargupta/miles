@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 import requests
 from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import router_env  # noqa: F401
@@ -220,3 +221,22 @@ class TestAnthropicSessionRoute:
         }
         records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
         assert records == []
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_aborted_generation_returns_retryable_error(self, router_env, stream: bool) -> None:
+        session_id = _create_session(router_env.url)
+        original_chat_response = MockSGLangServer._compute_chat_completions_response
+
+        def aborted_response(self: MockSGLangServer, payload: dict) -> dict:
+            response = original_chat_response(self, payload)
+            response["choices"][0]["finish_reason"] = "abort"
+            return response
+
+        with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=aborted_response):
+            response = _post_messages(router_env.url, session_id, _request(stream=stream))
+
+        assert response.status_code == 529
+        assert response.json() == {
+            "type": "error",
+            "error": {"type": "overloaded_error", "message": "upstream generation was aborted"},
+        }
