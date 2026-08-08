@@ -38,7 +38,7 @@ IMAGE=/data/home/sdong/images/miles-dev-arm64.sqsh
 TB2_TASKS=/data/home/sdong/terminal-bench-2
 PROMPT_DATA=/data/home/sdong/datasets/tbench2_train.jsonl
 DAYTONA_ENV_FILE=/data/home/sdong/.secrets_260805.env
-RUN_ID=260807-ca6db1cb
+RUN_ID=260808-c40daa14
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 C="--container-image=$IMAGE --container-mounts=/data:/data --container-name=ray"

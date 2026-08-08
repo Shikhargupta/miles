@@ -442,14 +442,29 @@ class SGLangEngine(RayActor):
             payload,
         )
 
-    def flush_cache(self):
-        """Flush the cache of the server."""
+    def flush_cache(self, drain_timeout_s: float = 0.0):
+        """Flush the cache of the server.
+
+        SGLang answers /flush_cache with HTTP 400 and "Flush cache failed." while
+        ANY request is still running or waiting, so this loop is really "wait for
+        the engine to go idle" with a hard 60 s ceiling. ``drain_timeout_s`` is
+        passed through to the server, which will itself wait that long for the
+        queue to drain before answering -- cheaper than burning client retries.
+        """
         if self.node_rank != 0:
             return
         last_message = None
+        url = f"http://{self.server_host}:{self.server_port}/flush_cache"
+        params = {"timeout": drain_timeout_s} if drain_timeout_s > 0 else None
         for _ in range(60):
             try:
-                response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
+                # Keep the no-timeout call shape byte-identical to the original
+                # single-argument form: test_flush_cache_sleeps_between_pending_
+                # request_retries stubs requests.get with a `lambda url:`, and an
+                # unconditional params= kwarg would make that stub raise TypeError.
+                # The except below would swallow it and the test would still go
+                # green while no longer exercising the 400-retry path it guards.
+                response = requests.get(url, params=params) if params else requests.get(url)
                 if response.status_code == 200:
                     break
                 last_message = response.text
@@ -461,6 +476,12 @@ class SGLangEngine(RayActor):
             time.sleep(1)
         else:
             raise TimeoutError(f"Timeout while flushing cache: {last_message}")
+
+    def abort_all_requests(self):
+        """Abort every running and waiting request on this engine."""
+        if self.node_rank != 0:
+            return
+        return self._make_request("abort_request", {"abort_all": True})
 
     def shutdown(self):
         if self.args.rollout_external:
@@ -516,7 +537,24 @@ class SGLangEngine(RayActor):
 
     def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
-        self.flush_cache()
+        # A sandbox that dies mid-episode orphans its generation: the episode
+        # coroutine raises, the RolloutManager counts the batch complete, but the
+        # engine keeps decoding a request nobody will ever read -- potentially all
+        # the way to --max-seq-len, which at single-stream MoE decode speed is on
+        # the order of an hour. /flush_cache is refused the whole time, so the
+        # colocate handoff blew past flush_cache's 60 s ceiling and killed the
+        # driver at step 4 of run 260807-ca6db1cb.
+        #
+        # Nothing here is worth keeping: this runs after the batch is collected and
+        # immediately before the weights are dropped, so anything still generating
+        # is by definition garbage. Abort first, then flush.
+        try:
+            self.abort_all_requests()
+        except Exception as e:
+            # Best-effort. If the endpoint is missing or rejects the payload we
+            # still want the (now longer) flush below to get its chance.
+            logger.warning(f"abort_all_requests before flush_cache failed, continuing: {e}")
+        self.flush_cache(drain_timeout_s=30.0)
         return self._make_request(
             "release_memory_occupation",
             {"tags": tags},
