@@ -4,6 +4,7 @@ import pytest
 
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.session.request_overrides import SESSION_REQUEST_OVERRIDE_KEYS
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.utils.types import Sample
 
@@ -107,6 +108,22 @@ async def test_sampling_params_are_pinned_and_forwarded_to_agent(monkeypatch):
     }
     assert tracer.request_overrides == expected
     assert seen["request_kwargs"] == expected
+
+
+def test_sampling_params_exclude_chat_fields_rejected_by_sessions() -> None:
+    unsupported_chat_fields = (
+        set(agentic_tool_call.ChatCompletionRequest.model_fields)
+        - SESSION_REQUEST_OVERRIDE_KEYS
+        - {"model", "messages"}
+    )
+    assert unsupported_chat_fields
+    sampling_params = {key: True for key in unsupported_chat_fields}
+    sampling_params["temperature"] = 0.7
+
+    request_kwargs = agentic_tool_call.build_chat_request_kwargs(sampling_params)
+
+    assert request_kwargs == {"temperature": 0.7}
+    assert set(request_kwargs) <= SESSION_REQUEST_OVERRIDE_KEYS
 
 
 @pytest.mark.asyncio

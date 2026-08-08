@@ -33,6 +33,7 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.request_overrides import SESSION_REQUEST_OVERRIDE_KEYS
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
@@ -41,33 +42,6 @@ from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 logger = logging.getLogger(__name__)
 
 JSON_MEDIA_TYPE = "application/json"
-
-SESSION_REQUEST_OVERRIDE_KEYS = frozenset(
-    {
-        "custom_logit_processor",
-        "custom_params",
-        "ebnf",
-        "frequency_penalty",
-        "ignore_eos",
-        "logit_bias",
-        "max_completion_tokens",
-        "max_tokens",
-        "min_p",
-        "min_tokens",
-        "n",
-        "presence_penalty",
-        "regex",
-        "repetition_penalty",
-        "response_format",
-        "seed",
-        "stop",
-        "stop_regex",
-        "stop_token_ids",
-        "temperature",
-        "top_k",
-        "top_p",
-    }
-)
 
 # Hop-by-hop / length-framing headers dropped from the upstream response so the
 # transport layer recomputes them from the body we actually send. "server" and

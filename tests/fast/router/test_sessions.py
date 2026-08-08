@@ -108,6 +108,39 @@ class TestSessionRoutes:
         assert "session_id" in data
         assert len(data["session_id"]) == 32
 
+    def test_create_session_rejects_invalid_json(self, router_env) -> None:
+        response = requests.post(
+            f"{router_env.url}/sessions",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+            timeout=5.0,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"].startswith("invalid JSON body:")
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_status", "expected_error"),
+        [
+            ([], 400, "session request must be an object"),
+            ({"request_overrides": None}, 200, None),
+        ],
+    )
+    def test_create_session_handles_non_object_and_null_overrides(
+        self,
+        router_env,
+        payload: object,
+        expected_status: int,
+        expected_error: str | None,
+    ) -> None:
+        response = requests.post(f"{router_env.url}/sessions", json=payload, timeout=5.0)
+
+        assert response.status_code == expected_status
+        if expected_error is None:
+            assert "session_id" in response.json()
+        else:
+            assert response.json()["error"] == expected_error
+
     def test_get_session_initial_state(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
 
