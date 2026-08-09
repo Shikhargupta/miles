@@ -38,7 +38,7 @@ IMAGE=/data/home/sdong/images/miles-dev-arm64.sqsh
 TB2_TASKS=/data/home/sdong/terminal-bench-2
 PROMPT_DATA=/data/home/sdong/datasets/tbench2_train.jsonl
 DAYTONA_ENV_FILE=/data/home/sdong/.secrets_260805.env
-RUN_ID=260809-d8fda19f
+RUN_ID=260809-c6c4a6a0
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 C="--container-image=$IMAGE --container-mounts=/data:/data --container-name=ray"
@@ -119,7 +119,7 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
     --bf16-grads \
     --eval-interval 1000 \
     --output-dir /data/home/sdong/runs \
-    --save-interval 3 \
+    --save-interval 2 \
     --rollout-batch-size 8 \
     --n-samples-per-prompt 8 \
     --global-batch-size 64 \
