@@ -12,10 +12,11 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 logger = logging.getLogger(__name__)
 
 
-# Claude Code may compact most of a 64-turn conversation into a short summary.
-# Bound rollback to one full harness turn budget so larger rewrites are still
-# rejected.
-MAX_ASSISTANT_ROLLBACK_STEPS = 64
+# Claude Code's --max-turns counts top-level turns, not every model checkpoint;
+# subagents and retries can therefore create substantially more checkpoints.
+# Keep a generous finite bound so legitimate compaction still cannot trigger an
+# unbounded rollback.
+MAX_ASSISTANT_ROLLBACK_STEPS = 256
 
 
 def assert_pretokenized_prefix(
