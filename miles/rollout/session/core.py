@@ -5,9 +5,10 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 - ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
-- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
+- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge -> encode) in a worker thread via ``asyncio.to_thread``, because that phase is seconds of CPU on a long agentic trajectory and this process serves every session route from a single event loop; deterministic assembly failures return 422 with the assertion text.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -271,32 +272,71 @@ class SessionCore:
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
 
+    def _assemble_samples_payload(
+        self,
+        records: list,
+        metadata: dict,
+        tokenizer,
+        max_seq_len: int | None,
+    ) -> bytes | None:
+        """CPU-bound trajectory assembly. Returns the encoded payload, or None if
+        truncation removed every sample.
+
+        Deliberately synchronous and always called off the event loop — see
+        ``collect_samples``. This walks every record and every output token of the
+        trajectory to reconcile ids against the accumulated prefix, then merges and
+        serializes, so on long agentic episodes it is seconds of straight-line
+        Python.
+        """
+        samples = compute_samples_from_openai_records(
+            self.args,
+            records,
+            tokenizer,
+            accumulated_token_ids=metadata.get("accumulated_token_ids"),
+            max_trim_tokens=metadata.get("max_trim_tokens", 0),
+        )
+        if max_seq_len is not None:
+            samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
+        if not samples:
+            return None
+        return encode_samples([merge_samples(samples, tokenizer)], metadata)
+
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records.
 
         Validation failures return 422; unexpected errors propagate.
+
+        The assembly itself runs in a worker thread. The session server is a single
+        process with a single event loop (see ``session/server.py``) and every route
+        — chat completions, delete, and this one — shares it. Assembling a long
+        agentic trajectory is seconds of CPU, and doing that inline stalls every
+        other in-flight request for the duration.
+
+        That stall is not merely slow, it is self-amplifying: a client-side timeout
+        on this endpoint marks the sample ABORTED, and the ``check_no_aborted``
+        dynamic-sampling filter then rejects the sample's whole group, so the
+        rollout relaunches an entire group of episodes onto the server that is
+        already behind. Observed on an 8-node GLM-5.2 run once speculative decoding
+        raised episode-completion rate ~4x: sessions created ran 2.7x the expected
+        count and generation collapsed to ~1 token/s while the rollout never
+        converged.
         """
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
         if not session.records:
             return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
+        # Snapshot: the worker thread must not observe records mutating underneath it.
+        records = list(session.records)
         try:
-            samples = compute_samples_from_openai_records(
-                self.args,
-                session.records,
-                tokenizer,
-                accumulated_token_ids=metadata.get("accumulated_token_ids"),
-                max_trim_tokens=metadata.get("max_trim_tokens", 0),
+            payload = await asyncio.to_thread(
+                self._assemble_samples_payload, records, metadata, tokenizer, max_seq_len
             )
-            if max_seq_len is not None:
-                samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
-            if not samples:
-                return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
-            samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
-        return _samples_response(encode_samples(samples, metadata))
+        if payload is None:
+            return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
+        return _samples_response(payload)
 
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)
