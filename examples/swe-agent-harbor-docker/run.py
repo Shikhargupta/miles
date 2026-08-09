@@ -12,7 +12,7 @@ import os
 import socket
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -64,7 +64,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
-    wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
+    wandb_key: str = field(
+        default=os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", "")),
+        metadata={"secret": True},
+    )
     wandb_project: str = os.environ.get("WANDB_PROJECT", "my-wandb-project")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
     wandb_run_name: str = "glm47-flash-swe-tito"

@@ -55,6 +55,11 @@ class _AllRequiredArgs:
 
 
 @dataclasses.dataclass
+class _SecretArgs:
+    api_key: str = dataclasses.field(default="secret-value", metadata={"secret": True})
+
+
+@dataclasses.dataclass
 class _SingleFieldArgs:
     value: str = "default"
 
@@ -729,6 +734,24 @@ class TestEnvVarNaming:
         result = runner.invoke(app, [], env={"MILES_SCRIPT_MY_LONG_NAME": "from_env"})
         assert result.exit_code == 0
         assert "val=from_env" in result.stdout
+
+
+class TestSecretMetadata:
+    def test_redacts_secret_in_argument_table(self) -> None:
+        received = []
+        app = typer.Typer()
+
+        @app.command()
+        @dataclass_cli
+        def cmd(args: _SecretArgs) -> None:
+            received.append(args.api_key)
+
+        result = runner.invoke(app, ["--api-key", "override-secret"])
+
+        assert result.exit_code == 0
+        assert received == ["override-secret"]
+        assert "override-secret" not in result.stdout
+        assert "[REDACTED]" in result.stdout
 
 
 # ---------------------------------------------------------------------------
