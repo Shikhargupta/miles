@@ -517,8 +517,9 @@ class TestRollback:
         assert session.token_ids == [1, 2, 3, 10, 11]
         assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1]
 
-    def test_multi_step_rollback_raises(self, registry: SessionRegistry):
-        """Rollback that discards >1 assistant raises MessageValidationError and leaves state unchanged."""
+    def test_configured_rollback_limit_raises(self, registry: SessionRegistry, monkeypatch):
+        """Rollback beyond the configured bound leaves state unchanged."""
+        monkeypatch.setattr("miles.rollout.session.linear_trajectory.MAX_ASSISTANT_ROLLBACK_STEPS", 1)
         sid = registry.create_session()
         session = registry.get_session(sid)
 
@@ -556,6 +557,38 @@ class TestRollback:
         assert session.trajectory_token_ids == prev_token_ids
         assert session.records == prev_records
         assert session.num_assistant == prev_num_assistant
+
+    def test_claude_code_compaction_discards_51_assistants(self, registry: SessionRegistry):
+        """A real Claude Code compaction can rewind nearly its full turn budget."""
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        messages = [SYS_MSG, USER_MSG]
+        checkpoint_ends = []
+        for turn in range(53):
+            messages.append({"role": "assistant", "content": f"assistant {turn}"})
+            checkpoint_ends.append(len(messages))
+            if turn < 52:
+                messages.append(
+                    {"role": "tool", "content": f'{{"turn": {turn}}}', "tool_call_id": f"call_{turn}"}
+                )
+
+        session.messages = messages
+        session.trajectory_token_ids = [[turn] for turn in range(53)]
+        session.generated_checkpoint_message_ends = checkpoint_ends
+        session.records = [MagicMock(spec=SessionRecord) for _ in range(53)]
+        session.num_assistant = 53
+
+        compacted_tool = {"role": "tool", "content": '{"compacted": true}', "tool_call_id": "compact"}
+        result = session.prepare_pretokenized(
+            messages[:5] + [compacted_tool], tito_tokenizer=registry.tito_tokenizer
+        )
+
+        assert result == [1]
+        assert session.messages == messages[:5]
+        assert session.trajectory_token_ids == [[0], [1]]
+        assert session.generated_checkpoint_message_ends == [3, 5]
+        assert len(session.records) == 2
+        assert session.num_assistant == 2
 
     def test_rollback_then_continue_full_trajectory(self, registry: SessionRegistry):
         """Rollback and then complete a full new trajectory from the checkpoint."""
