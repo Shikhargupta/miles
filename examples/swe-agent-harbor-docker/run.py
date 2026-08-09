@@ -60,7 +60,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
     session_external_base_url: str = os.environ.get("MILES_SESSION_EXTERNAL_BASE_URL", "")
-    agent_model_api_key: str = os.environ.get("AGENT_MODEL_API_KEY", "")
+    agent_model_api_key: str = field(
+        default=os.environ.get("AGENT_MODEL_API_KEY", ""), metadata={"secret": True}
+    )
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
