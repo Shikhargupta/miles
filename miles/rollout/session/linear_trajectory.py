@@ -66,9 +66,12 @@ class LinearTrajectory:
     which case the session rolls back to a bounded earlier checkpoint.
 
     Concurrency contract: all mutating methods must be called under ``self.lock``.
+    ``turn_lock`` serializes protocols that require one complete generation to
+    commit before the next turn for this session is prepared.
     """
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     request_overrides: dict[str, Any] = field(default_factory=dict, repr=False)
     messages: list[dict[str, Any]] = field(default_factory=list)
