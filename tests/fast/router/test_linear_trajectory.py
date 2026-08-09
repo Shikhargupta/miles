@@ -558,25 +558,25 @@ class TestRollback:
         assert session.records == prev_records
         assert session.num_assistant == prev_num_assistant
 
-    def test_claude_code_compaction_discards_51_assistants(self, registry: SessionRegistry):
-        """A real Claude Code compaction can rewind nearly its full turn budget."""
+    def test_claude_code_compaction_discards_177_assistants(self, registry: SessionRegistry):
+        """Claude Code subagents can create more checkpoints than its top-level turn budget."""
         sid = registry.create_session()
         session = registry.get_session(sid)
         messages = [SYS_MSG, USER_MSG]
         checkpoint_ends = []
-        for turn in range(53):
+        for turn in range(179):
             messages.append({"role": "assistant", "content": f"assistant {turn}"})
             checkpoint_ends.append(len(messages))
-            if turn < 52:
+            if turn < 178:
                 messages.append(
                     {"role": "tool", "content": f'{{"turn": {turn}}}', "tool_call_id": f"call_{turn}"}
                 )
 
         session.messages = messages
-        session.trajectory_token_ids = [[turn] for turn in range(53)]
+        session.trajectory_token_ids = [[turn] for turn in range(179)]
         session.generated_checkpoint_message_ends = checkpoint_ends
-        session.records = [MagicMock(spec=SessionRecord) for _ in range(53)]
-        session.num_assistant = 53
+        session.records = [MagicMock(spec=SessionRecord) for _ in range(179)]
+        session.num_assistant = 179
 
         compacted_tool = {"role": "tool", "content": '{"compacted": true}', "tool_call_id": "compact"}
         result = session.prepare_pretokenized(
