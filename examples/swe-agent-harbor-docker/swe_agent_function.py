@@ -107,12 +107,21 @@ async def run(
         netloc = f"{external_host}:{port}" if port else external_host
         session_url = urlunparse(parsed._replace(netloc=netloc))
 
+    if metadata.get("agent_name") == _CLAUDE_CODE_AGENT_NAME and (external_base_url := os.getenv("MILES_SESSION_EXTERNAL_BASE_URL")):
+        parsed = urlparse(session_url)
+        external = urlparse(external_base_url)
+        if not external.scheme or not external.netloc:
+            raise ValueError("MILES_SESSION_EXTERNAL_BASE_URL must be an absolute URL")
+        session_url = urlunparse(parsed._replace(scheme=external.scheme, netloc=external.netloc))
+
     request: dict[str, Any] = {
         **metadata,
         "base_url": session_url,
         "model": agent_model,
         "sampling_params": request_kwargs,
     }
+    if api_key := os.getenv("AGENT_MODEL_API_KEY"):
+        request["api_key"] = api_key
 
     max_seq_len = metadata.get("max_seq_len")
     if max_seq_len is not None:

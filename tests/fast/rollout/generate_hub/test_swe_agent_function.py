@@ -7,9 +7,7 @@ import pytest
 
 
 def _load_agent_function() -> ModuleType:
-    module_path = (
-        Path(__file__).resolve().parents[4] / "examples" / "swe-agent-harbor-docker" / "swe_agent_function.py"
-    )
+    module_path = Path(__file__).resolve().parents[4] / "examples" / "swe-agent-harbor-docker" / "swe_agent_function.py"
     spec = importlib.util.spec_from_file_location("swe_agent_function", module_path)
     assert spec is not None
     assert spec.loader is not None
@@ -105,3 +103,31 @@ async def test_run_rewrites_claude_code_endpoint_for_external_sandbox(
     assert request["max_seq_len"] == 65536
     assert request["session_server_id"] == "trainer.example.test:30123"
     assert request["session_server_instance_id"] == "session-server-1"
+
+
+@pytest.mark.asyncio
+async def test_run_uses_authenticated_public_endpoint_for_claude_code(
+    agent_function: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_MODEL_NAME", "GLM-4.7-Flash")
+    monkeypatch.setenv("MILES_ROUTER_EXTERNAL_HOST", "100.68.110.115")
+    monkeypatch.setenv("MILES_SESSION_EXTERNAL_BASE_URL", "https://policy.example.test:33001")
+    monkeypatch.setenv("AGENT_MODEL_API_KEY", "session-secret")
+    post_agent_server = AsyncMock(return_value={})
+    monkeypatch.setattr(agent_function, "_post_agent_server", post_agent_server)
+
+    await agent_function.run(
+        base_url="http://10.0.0.1:30000/sessions/session-1",
+        prompt="fix the task",
+        metadata={
+            "agent_name": "claude-code",
+            "instance_id": "task-1",
+            "session_server_id": "10.0.0.1:30000",
+        },
+    )
+
+    _, request = post_agent_server.await_args.args
+    assert request["base_url"] == "https://policy.example.test:33001/sessions/session-1"
+    assert request["api_key"] == "session-secret"
+    assert request["session_server_id"] == "100.68.110.115:30000"

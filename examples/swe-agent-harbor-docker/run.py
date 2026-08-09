@@ -42,20 +42,25 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # Training settings
     max_seq_len: int = 65536
+    rollout_max_response_len: int = 8192
     num_rollout: int = 3000
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 8
     global_batch_size: int = 32
     save_interval: int = 100
     save_traces_dir: str = ""
+    use_miles_dashboard: bool = False
+    observe_training_entropy: bool = False
+    use_rollout_entropy: bool = False
+    enable_mtp: bool = False
 
     # Agent settings
-    agent_server_url: str = os.environ.get(
-        "AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://agent_env:11000")
-    )
+    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://agent_env:11000"))
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
+    session_external_base_url: str = os.environ.get("MILES_SESSION_EXTERNAL_BASE_URL", "")
+    agent_model_api_key: str = os.environ.get("AGENT_MODEL_API_KEY", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
@@ -99,12 +104,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
-    ckpt_args = (
-        f"--hf-checkpoint {args.hf_checkpoint} "
-        f"--ref-load {args.ref_load} "
-        f"--save {args.save_dir} "
-        f"--save-interval {args.save_interval} "
-    )
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.ref_load} --save {args.save_dir} --save-interval {args.save_interval} "
 
     rollout_args = (
         f"--prompt-data {args.prompt_data} "
@@ -115,7 +115,7 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
         f"--max-seq-len {args.max_seq_len} "
         f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
@@ -138,32 +138,13 @@ def execute(args: ScriptArgs):
         "--use-precision-aware-optimizer "
     )
 
-    grpo_args = (
-        "--advantage-estimator grpo "
-        "--use-kl-loss "
-        "--kl-loss-coef 0.01 "
-        "--kl-loss-type low_var_kl "
-        "--entropy-coef 0.0 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
-    )
+    grpo_args = "--advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.01 --kl-loss-type low_var_kl --entropy-coef 0.0 --eps-clip 0.2 --eps-clip-high 0.28 "
 
-    optimizer_args = (
-        "--optimizer adam "
-        "--lr 1e-6 "
-        "--lr-decay-style constant "
-        "--weight-decay 0.1 "
-        "--adam-beta1 0.9 "
-        "--adam-beta2 0.98 "
-    )
+    optimizer_args = "--optimizer adam --lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
 
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        "--sglang-mem-fraction-static 0.7 "
-        "--sglang-tool-call-parser glm47 "
-        "--sglang-reasoning-parser glm45 "
-        "--sglang-router-port 31000 "
-    )
+    sglang_args = "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.7 --sglang-tool-call-parser glm47 --sglang-reasoning-parser glm45 --sglang-router-port 31000 "
+    if args.enable_mtp:
+        sglang_args += "--sglang-speculative-algorithm EAGLE --sglang-speculative-num-steps 2 --sglang-speculative-eagle-topk 1 --sglang-speculative-num-draft-tokens 3 "
 
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
@@ -176,57 +157,35 @@ def execute(args: ScriptArgs):
         "--session-server-port 30000 "
     )
 
-    misc_args = (
-        "--attention-dropout 0.0 "
-        "--hidden-dropout 0.0 "
-        "--accumulate-allreduce-grads-in-fp32 "
-        "--attention-softmax-in-fp32 "
-        "--attention-backend flash "
-        "--colocate "
-        f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        f"--rollout-num-gpus {args.num_gpus_per_node} "
-    )
+    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --colocate --actor-num-nodes {args.num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} --rollout-num-gpus {args.num_gpus_per_node} "
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
     trace_args = ""
     if args.save_traces_dir:
         trace_args = f"--dump-details {args.save_traces_dir} "
+    if args.use_miles_dashboard:
+        if not args.save_traces_dir:
+            raise ValueError("--use-miles-dashboard requires --save-traces-dir")
+        trace_args += "--use-miles-dashboard "
+
+    entropy_args = ""
+    if args.observe_training_entropy:
+        entropy_args += "--observe-training-entropy "
+    if args.use_rollout_entropy:
+        entropy_args += "--use-rollout-entropy "
 
     wandb_args = ""
     if args.wandb_key:
-        wandb_args = (
-            "--use-wandb "
-            f"--wandb-project {args.wandb_project} "
-            f"--wandb-group {args.wandb_run_name} "
-            f"--wandb-key {args.wandb_key} "
-        )
+        wandb_args = f"--use-wandb --wandb-project {args.wandb_project} --wandb-group {args.wandb_run_name} --wandb-key {args.wandb_key} "
         if args.wandb_team:
             wandb_args += f"--wandb-team {args.wandb_team} "
 
     prometheus_args = ""
     if args.use_prometheus:
-        prometheus_args = (
-            "--use-prometheus "
-            f"--prometheus-port {args.prometheus_port} "
-            f"--prometheus-run-name {args.prometheus_run_name} "
-        )
+        prometheus_args = f"--use-prometheus --prometheus-port {args.prometheus_port} --prometheus-run-name {args.prometheus_run_name} "
 
-    train_args = (
-        f"{ckpt_args}"
-        f"{rollout_args}"
-        f"{optimizer_args}"
-        f"{grpo_args}"
-        f"{wandb_args}"
-        f"{prometheus_args}"
-        f"{trace_args}"
-        f"{perf_args}"
-        f"{sglang_args}"
-        f"{agent_args}"
-        f"{misc_args}"
-        f"{debug_args}"
-    )
+    train_args = f"{ckpt_args}{rollout_args}{optimizer_args}{grpo_args}{wandb_args}{prometheus_args}{trace_args}{entropy_args}{perf_args}{sglang_args}{agent_args}{misc_args}{debug_args}"
 
     miles_root = U.repo_base_dir
 
@@ -238,6 +197,10 @@ def execute(args: ScriptArgs):
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
     }
+    if args.session_external_base_url:
+        extra_env_vars["MILES_SESSION_EXTERNAL_BASE_URL"] = args.session_external_base_url
+    if args.agent_model_api_key:
+        extra_env_vars["AGENT_MODEL_API_KEY"] = args.agent_model_api_key
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 

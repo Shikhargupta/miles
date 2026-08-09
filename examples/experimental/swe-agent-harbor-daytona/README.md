@@ -96,6 +96,8 @@ server colocated on the same host as the trainer:
 
 ```bash
 export WANDB_API_KEY=<your-wandb-key>
+export MILES_SESSION_EXTERNAL_BASE_URL=https://<public-session-proxy>:33001
+export AGENT_MODEL_API_KEY=<proxy-api-key>
 
 python examples/swe-agent-harbor-docker/run.py \
     --num-nodes 1 \
@@ -107,6 +109,7 @@ python examples/swe-agent-harbor-docker/run.py \
     --save-dir /path/to/checkpoints \
     --prompt-data /path/to/tb2_train.jsonl \
     --max-seq-len 65536 \
+    --rollout-max-response-len 16384 \
     --rollout-batch-size 4 \
     --n-samples-per-prompt 8 \
     --global-batch-size 32 \
@@ -115,6 +118,10 @@ python examples/swe-agent-harbor-docker/run.py \
     --agent-server-url http://127.0.0.1:11000 \
     --router-external-host <trainer-address-reachable-from-agent-server> \
     --save-traces-dir /path/to/traces \
+    --use-miles-dashboard \
+    --observe-training-entropy \
+    --use-rollout-entropy \
+    --enable-mtp \
     --wandb-project <your-wandb-project>
 ```
 
@@ -126,6 +133,13 @@ agent-server host for terminus-2, or the Daytona sandbox for Claude Code. Do not
 confuse it with `--miles-host-ip`, which is bound locally on the trainer and
 must be an address that already exists on one of its interfaces. Ports 30000
 and 31000 must be reachable from the relevant agent runtime.
+
+When the agent server can reach the trainer privately but Daytona cannot, set
+`MILES_SESSION_EXTERNAL_BASE_URL` to an authenticated public reverse proxy for
+the trainer's session port. `--router-external-host` remains the private host
+used by the agent server for heartbeats, while Claude Code receives the public
+proxy URL. Set `AGENT_MODEL_API_KEY` to the proxy credential; Harbor forwards it
+to Claude Code as `ANTHROPIC_API_KEY`.
 
 ## Sizing the per-turn response cap
 
@@ -145,10 +159,10 @@ against the cap, and keep `AGENT_MAX_INPUT_TOKENS` above the largest observed
 context.
 `--max-seq-len 65536` leaves plenty of headroom to raise both.
 
-`examples/swe-agent-harbor-docker/run.py` hardcodes `--rollout-max-response-len 8192`, so raise
-it there; `AGENT_MAX_OUTPUT_TOKENS` is an environment variable on the agent
-server and is set in `launch_agent_server.sh`. Raise the two together — leaving
-either one behind reintroduces the aborts.
+`examples/swe-agent-harbor-docker/run.py` exposes this as
+`--rollout-max-response-len`; `AGENT_MAX_OUTPUT_TOKENS` is an environment
+variable on the agent server and is set in `launch_agent_server.sh`. Raise the
+two together — leaving either one behind reintroduces the aborts.
 
 ## Verify progress
 
