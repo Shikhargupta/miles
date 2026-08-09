@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import inspect
 import logging
+import os
 import re
 import subprocess
 from collections.abc import Sequence
@@ -115,8 +116,19 @@ class SingletonMeta(type):
         SingletonMeta._instances.clear()
 
 
+_SENSITIVE_ENV_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+
+
+def _redact_command(cmd: str) -> str:
+    sensitive_values = {value for key, value in os.environ.items() if value and key.upper().endswith(_SENSITIVE_ENV_SUFFIXES)}
+    for value in sorted(sensitive_values, key=len, reverse=True):
+        cmd = cmd.replace(value, "[REDACTED]")
+    return cmd
+
+
 def exec_command(cmd: str, capture_output: bool = False) -> str | None:
-    print(f"EXEC: {cmd}", flush=True)
+    redacted_cmd = _redact_command(cmd)
+    print(f"EXEC: {redacted_cmd}", flush=True)
 
     try:
         result = subprocess.run(
@@ -127,6 +139,7 @@ def exec_command(cmd: str, capture_output: bool = False) -> str | None:
             **(dict(text=True) if capture_output else {}),
         )
     except subprocess.CalledProcessError as e:
+        e.cmd = ["bash", "-c", redacted_cmd]
         if capture_output:
             print(f"{e.stdout=} {e.stderr=}")
         raise
@@ -172,7 +185,9 @@ def exec_command_all_ray_node(
         nnodes = str(len(nodes))
 
         placeholder_pattern = re.compile(
-            "|".join(map(re.escape, ["{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}"]))
+            "|".join(
+                map(re.escape, ["{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}"])
+            )
         )
 
         refs = []

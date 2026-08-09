@@ -1,9 +1,10 @@
 import logging
 import os
+import subprocess
 
 import pytest
 
-from miles.utils.misc import FunctionRegistry, filter_keys, function_registry, load_function
+from miles.utils.misc import FunctionRegistry, exec_command, filter_keys, function_registry, load_function
 
 
 def _fn_a():
@@ -92,3 +93,36 @@ class TestFilterKeys:
             with pytest.raises(KeyError):
                 filter_keys(d, ["a", "missing"])
         assert any("filter_keys" in record.message for record in caplog.records)
+
+
+class TestExecCommand:
+    def test_redacts_environment_secret_without_changing_command(self, monkeypatch, capsys):
+        secret = "test-secret-that-must-not-be-logged"
+        calls = []
+        monkeypatch.setenv("TEST_API_KEY", secret)
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess(args, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        exec_command(f"tool --api-key {secret}")
+
+        assert secret in calls[0][0][-1]
+        assert secret not in capsys.readouterr().out
+
+    def test_redacts_environment_secret_from_failure(self, monkeypatch):
+        secret = "test-secret-that-must-not-be-logged"
+        monkeypatch.setenv("TEST_API_KEY", secret)
+
+        def fail(args, **kwargs):
+            raise subprocess.CalledProcessError(1, args)
+
+        monkeypatch.setattr(subprocess, "run", fail)
+
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
+            exec_command(f"tool --api-key {secret}")
+
+        assert secret not in str(exc_info.value.cmd)
+        assert "[REDACTED]" in str(exc_info.value.cmd)
