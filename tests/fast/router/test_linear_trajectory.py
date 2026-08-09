@@ -733,8 +733,9 @@ class TestRollback:
         assert session.token_ids == [1, 2, 99]
         assert session.messages == [USER_MSG, ASSISTANT_MSG_FINAL]
 
-    def test_rollback_to_empty_beyond_one_assistant_raises(self, registry: SessionRegistry):
+    def test_configured_rollback_to_empty_limit_raises(self, registry: SessionRegistry, monkeypatch):
         """Resetting to empty is still bounded by MAX_ASSISTANT_ROLLBACK_STEPS."""
+        monkeypatch.setattr("miles.rollout.session.linear_trajectory.MAX_ASSISTANT_ROLLBACK_STEPS", 1)
         sid = registry.create_session()
         session = registry.get_session(sid)
 
@@ -745,7 +746,7 @@ class TestRollback:
         session.update_pretokenized_state(turn2, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
         assert session.num_assistant == 2
 
-        # Discarding both assistants exceeds the single-step budget.
+        # Discarding both assistants exceeds the configured budget.
         with pytest.raises(MessageValidationError, match="exceeds max_assistant_rollback_steps"):
             session.prepare_pretokenized(turn1, tito_tokenizer=registry.tito_tokenizer)
 
