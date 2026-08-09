@@ -38,7 +38,7 @@ IMAGE=/data/home/sdong/images/miles-dev-arm64.sqsh
 TB2_TASKS=/data/home/sdong/terminal-bench-2
 PROMPT_DATA=/data/home/sdong/datasets/tbench2_train.jsonl
 DAYTONA_ENV_FILE=/data/home/sdong/.secrets_260805.env
-RUN_ID=260808-ea00e237
+RUN_ID=260809-4caad5db
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 C="--container-image=$IMAGE --container-mounts=/data:/data --container-name=ray"
@@ -48,6 +48,7 @@ COMMON="export PYTHONNOUSERSITE=1 RAY_memory_monitor_refresh_ms=0 PYTHONPATH=$PP
         export TRITON_CACHE_DIR=/var/tmp/jit-\$SLURM_JOB_ID/triton
         export TORCHINDUCTOR_CACHE_DIR=/var/tmp/jit-\$SLURM_JOB_ID/inductor
         export CUDA_CACHE_PATH=/var/tmp/jit-\$SLURM_JOB_ID/nv
+        ulimit -n 1048576 || true
         mkdir -p \$TRITON_CACHE_DIR \$TORCHINDUCTOR_CACHE_DIR \$CUDA_CACHE_PATH /var/tmp/opt_state"
 
 # Compute fabric on this cluster is 10.4.90.x; the 10.0.1.x management subnet is
