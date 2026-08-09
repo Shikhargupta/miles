@@ -57,8 +57,8 @@ def setup_session_routes(app, backend, args):
         return await core.health()
 
     @app.post("/sessions")
-    async def create_session():
-        return await core.create_session()
+    async def create_session(request: Request):
+        return await core.create_session(await request.body())
 
     @app.get("/sessions/{session_id}")
     async def get_session(session_id: str):
@@ -72,6 +72,17 @@ def setup_session_routes(app, backend, args):
     async def chat_completions(request: Request, session_id: str):
         body = await request.body()
         return await core.chat_completions(
+            session_id,
+            method=request.method,
+            query=request.url.query,
+            headers=dict(request.headers),
+            body=body,
+        )
+
+    @app.post("/sessions/{session_id}/v1/messages")
+    async def messages(request: Request, session_id: str):
+        body = await request.body()
+        return await core.messages(
             session_id,
             method=request.method,
             query=request.url.query,

@@ -115,6 +115,48 @@ class TestRequestChatTemplateKwargs:
         assert override_payload["input_ids"] != default_payload["input_ids"]
 
 
+class TestAnthropicMessages:
+    def test_route_records_on_the_active_tree_path(self, router_env) -> None:
+        session_id = _create_session(router_env.url)
+        response = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/messages",
+            json={
+                "model": "mock-model",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            timeout=10.0,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["type"] == "message"
+        session = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()
+        assert len(session["records"]) == 1
+        assert session["records"][0]["path"] == "/v1/chat/completions"
+        assert len(session["metadata"]["tree"]["nodes"]) == 1
+
+    def test_session_sampling_overrides_reach_v2_backend(self, router_env) -> None:
+        session_id = requests.post(
+            f"{router_env.url}/sessions",
+            json={"request_overrides": {"max_tokens": 96, "temperature": 0.3}},
+            timeout=5.0,
+        ).json()["session_id"]
+        response = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/messages",
+            json={
+                "model": "mock-model",
+                "max_tokens": 2048,
+                "temperature": 1.0,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            timeout=10.0,
+        )
+
+        assert response.status_code == 200
+        assert router_env.backend.request_log[-1]["max_tokens"] == 96
+        assert router_env.backend.request_log[-1]["temperature"] == 0.3
+
+
 def test_lora_adapter_reaches_backend():
     with _serve_router({"lora_rank": 8}) as env:
         session_id = _create_session(env.url)
