@@ -146,11 +146,11 @@ class TestSampling:
         with pytest.raises(UserInputError, match="non-negative"):
             translation.sampling_params_to_sglang(self.params(stop=[7, -8]))
 
-    def test_missing_max_tokens_and_seed_are_rejected(self):
+    def test_missing_max_tokens_is_rejected_and_seed_stays_out_of_base_params(self):
         with pytest.raises(UserInputError, match="max_tokens"):
             translation.sampling_params_to_sglang(wire.SamplingParams())
-        with pytest.raises(UserInputError, match="seed"):
-            translation.sampling_params_to_sglang(self.params(seed=1))
+        # seed is injected per fanned-out sample by the service, not here.
+        assert "sampling_seed" not in translation.sampling_params_to_sglang(self.params(seed=1))
 
     def test_generation_maps_tokens_logprobs_and_stop_reason(self):
         sequence = translation.generation_to_sequence(

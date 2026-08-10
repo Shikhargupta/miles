@@ -210,10 +210,11 @@ _FINISH_TO_STOP_REASON = {"stop": "stop", "length": "length"}
 
 
 def sampling_params_to_sglang(params: wire.SamplingParams) -> dict:
+    """Per-request sglang sampling_params. ``seed`` is handled by the caller
+    (each fanned-out sample i gets ``sampling_seed = seed + i``: deterministic
+    per request, still diverse across num_samples)."""
     if params.max_tokens is None or params.max_tokens < 1:
         raise UserInputError("sampling_params.max_tokens is required (>= 1) in v1")
-    if params.seed is not None:
-        raise UserInputError("sampling_params.seed is not supported in v1")
     sglang_params: dict = {
         "max_new_tokens": params.max_tokens,
         "temperature": params.temperature,

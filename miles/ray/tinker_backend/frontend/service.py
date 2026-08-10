@@ -480,14 +480,22 @@ class TinkerFrontend:
             return wire.untyped_future(request_id)
 
         task = asyncio.get_running_loop().create_task(
-            self._run_sample(record, sampler, prompt_tokens, sglang_params, request.num_samples)
+            self._run_sample(
+                record, sampler, prompt_tokens, sglang_params, request.num_samples, request.sampling_params.seed
+            )
         )
         self._sample_tasks.add(task)
         task.add_done_callback(self._sample_tasks.discard)
         return wire.untyped_future(request_id)
 
     async def _run_sample(
-        self, record: FutureRecord, sampler: SamplingSessionRecord, tokens: list[int], params: dict, num_samples: int
+        self,
+        record: FutureRecord,
+        sampler: SamplingSessionRecord,
+        tokens: list[int],
+        params: dict,
+        num_samples: int,
+        seed: int | None = None,
     ) -> None:
         try:
             payload: dict = {"input_ids": tokens, "sampling_params": params, "return_logprob": True}
@@ -509,15 +517,18 @@ class TinkerFrontend:
                     return
                 payload["lora_path"] = sampler.serving_name
                 payload["extra_key"] = cache_extra_key(sampler.name, sampler.registration_id, sampler.serving_version)
+
+            def per_sample_payload(index: int) -> dict:
+                one = dict(payload)
+                if seed is not None:
+                    # Deterministic per request, still diverse across samples.
+                    one["sampling_params"] = {**params, "sampling_seed": seed + index}
+                if sampler.name is not None:
+                    one["rid"] = make_rid(sampler.name, sampler.registration_id)
+                return one
+
             generations = await asyncio.gather(
-                *(
-                    self._post_generate(
-                        payload
-                        if sampler.name is None
-                        else {**payload, "rid": make_rid(sampler.name, sampler.registration_id)}
-                    )
-                    for _ in range(num_samples)
-                )
+                *(self._post_generate(per_sample_payload(index)) for index in range(num_samples))
             )
             if sampler.name is not None and not self._sampler_still_live(sampler):
                 # Re-checked AFTER generation: a republish that landed while

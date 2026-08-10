@@ -431,10 +431,13 @@ class TestSampling:
             )
             sampler_id = stack.frontend.create_sampling_session(request)["sampling_session_id"]
             assert stack.frontend.create_sampling_session(request)["sampling_session_id"] == sampler_id
-            future = stack.frontend.sample(self.sample_request(sampler_id))
+            future = stack.frontend.sample(self.sample_request(sampler_id, num_samples=2, seed=40))
             body = await stack.retrieve(future["request_id"])
             assert body["type"] == "sample"
             assert "lora_path" not in stack.router.requests[-1]
+            # Deterministic yet diverse: each fanned-out sample gets seed + i.
+            seeds = sorted(r["sampling_params"]["sampling_seed"] for r in stack.router.requests[-2:])
+            assert seeds == [40, 41]
             probe = self.sample_request(sampler_id, seq_id=1)
             probe.prompt_logprobs = True
             failed = await stack.retrieve(stack.frontend.sample(probe)["request_id"])
