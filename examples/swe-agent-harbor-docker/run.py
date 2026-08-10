@@ -192,6 +192,9 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        # Devbox has no ingress forwarding, so the session server must bind
+        # 0.0.0.0 or off-cluster Harbor agents get connection-refused.
+        "--session-server-ip 0.0.0.0 "
     )
 
     misc_args = (
