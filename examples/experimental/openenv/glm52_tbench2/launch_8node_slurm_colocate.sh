@@ -38,7 +38,7 @@ IMAGE=/data/home/sdong/images/miles-dev-arm64.sqsh
 TB2_TASKS=/data/home/sdong/terminal-bench-2
 PROMPT_DATA=/data/home/sdong/datasets/tbench2_train.jsonl
 DAYTONA_ENV_FILE=/data/home/sdong/.secrets_260805.env
-RUN_ID=260809-b25824a0
+RUN_ID=260810-28b055b2
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 C="--container-image=$IMAGE --container-mounts=/data:/data --container-name=ray"
@@ -124,7 +124,7 @@ srun --overlap --nodes=1 --ntasks=1 --gpus-per-node=4 -w "${nodes[0]}" $C bash -
     --n-samples-per-prompt 8 \
     --global-batch-size 64 \
     --sglang-config low-latency \
-    --extra-args '--offload-train --offload-rollout --offload-train-target disk --wandb-team eigent_radixark_training --wandb-project glm-gb300 --sglang-mem-fraction-static 0.80 --session-server-port 30000 30008 --use-session-server v2' \
+    --extra-args '--offload-train --offload-rollout --offload-train-target disk --wandb-team eigent_radixark_training --wandb-project glm-gb300 --sglang-mem-fraction-static 0.80 --session-server-port 30000 30016 --use-session-server v2' \
     $*
 " &
 HEAD_PID=$!
