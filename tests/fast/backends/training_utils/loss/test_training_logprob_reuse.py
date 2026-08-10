@@ -208,7 +208,9 @@ def test_policy_loss_rejects_invalid_reuse_contract(
         args.qkv_format,
     )
 
-    with pytest.raises(ValueError, match="old-policy log-probs"):
+    expected_error = AssertionError if use_rollout_logprobs else ValueError
+    expected_message = "rollout_log_probs must be provided" if use_rollout_logprobs else "old-policy log-probs"
+    with pytest.raises(expected_error, match=expected_message):
         policy_loss_function(
             args,
             batch,
@@ -283,7 +285,8 @@ def test_loss_dispatcher_does_not_apply_actor_skip_to_value_loss(monkeypatch):
     assert value_loss.call_args.kwargs == {}
 
 
-def test_mismatch_metrics_keep_standalone_actor_log_probs_as_training_source(process_group, monkeypatch):
+@pytest.mark.parametrize("skip_actor_forward_only", [False, True])
+def test_mismatch_metrics_keep_actor_log_probs_as_training_source(process_group, monkeypatch, skip_actor_forward_only):
     parallel_state = make_parallel_state()
     parallel_state.tp = GroupInfo(rank=0, size=1, group=dist.group.WORLD)
     args = make_args(
@@ -296,11 +299,14 @@ def test_mismatch_metrics_keep_standalone_actor_log_probs_as_training_source(pro
     )
     inputs = make_inputs(seed=29, batch_size=1, prompt_lens=[3], response_lens=[2], vocab_size=8, args=args)
     batch = make_batch(inputs, "policy_loss")
+    if skip_actor_forward_only:
+        del batch["log_probs"]
 
     def fake_tis_function(**kwargs):
-        assert kwargs["train_log_probs"] is batch["log_probs"]
+        assert kwargs["train_log_probs"] is not None
+        assert all(not log_prob.requires_grad for log_prob in kwargs["train_log_probs"])
         return kwargs["pg_loss"], kwargs["loss_masks"], {}
 
     monkeypatch.setattr(losses_module, "load_function", lambda _path: fake_tis_function)
 
-    _run_policy_loss(args, batch, inputs, skip_actor_forward_only=False)
+    _run_policy_loss(args, batch, inputs, skip_actor_forward_only=skip_actor_forward_only)

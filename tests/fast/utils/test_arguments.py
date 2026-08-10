@@ -917,6 +917,14 @@ class TestValidateSkipActorForwardOnly:
     def test_rollout_logprobs_configuration_passes(self):
         validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_rollout_logprobs=True))
 
+    def test_rollout_logprobs_with_mismatch_metrics_passes(self):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                get_mismatch_metrics=True,
+                use_rollout_logprobs=True,
+            )
+        )
+
     @pytest.mark.parametrize(
         "overrides",
         [
@@ -933,7 +941,6 @@ class TestValidateSkipActorForwardOnly:
             {"moe_router_force_load_balancing": True},
             {"moe_router_force_biased": 0.0},
             {"moe_router_load_balancing_type": ["sinkhorn"]},
-            {"get_mismatch_metrics": True},
             {"use_rollout_entropy": True},
             {"true_on_policy_mode": True},
             {"log_correct_samples": True},

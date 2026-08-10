@@ -108,8 +108,9 @@ def policy_loss_function(
             raise ValueError("training log-prob reuse requires no separate old-policy log-probs")
         old_log_probs = None
     elif args.use_rollout_logprobs:
-        if rollout_old_log_probs is None:
-            raise ValueError("policy loss requires old-policy log-probs")
+        assert (
+            rollout_old_log_probs is not None
+        ), "rollout_log_probs must be provided when --use-rollout-logprobs is set"
         old_log_probs = rollout_old_log_probs
     else:
         if scored_old_log_probs is None:
@@ -133,8 +134,10 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    if args.skip_actor_forward_only:
+        scored_old_log_probs = [log_prob.detach() for log_prob in log_probs]
     if reuse_training_log_probs_as_old:
-        old_log_probs = [log_prob.detach() for log_prob in log_probs]
+        old_log_probs = scored_old_log_probs
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 
@@ -239,11 +242,10 @@ def policy_loss_function(
         # Keep a copy of the original reducer (based on `batch["loss_masks"]`) for metric aggregation.
         sum_of_sample_mean_for_mismatch_metrics = sum_of_sample_mean
 
-        tis_train_log_probs = old_log_probs_list if reuse_training_log_probs_as_old else batch.get("log_probs")
         if args.custom_tis_function_path is not None:
             tis_func = load_function(args.custom_tis_function_path)
         else:
-            assert tis_train_log_probs is not None, "log_probs must be provided for built-in TIS"
+            assert scored_old_log_probs is not None, "log_probs must be provided for built-in TIS"
             assert rollout_old_log_probs is not None, "rollout_log_probs must be provided for built-in TIS"
             tis_func = vanilla_tis_function
 
@@ -251,8 +253,8 @@ def policy_loss_function(
         tis_kwargs = {
             "args": args,
             "pg_loss": pg_loss,
-            "train_log_probs": tis_train_log_probs,
-            "rollout_log_probs": batch.get("rollout_log_probs"),
+            "train_log_probs": scored_old_log_probs,
+            "rollout_log_probs": rollout_old_log_probs,
             "loss_masks": batch["loss_masks"],
             "total_lengths": total_lengths,
             "response_lengths": response_lengths,

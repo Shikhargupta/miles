@@ -3110,7 +3110,7 @@ def miles_validate_args(args):
             args.custom_tis_function_path is not None
         ), "custom_tis_function_path must be set when get_mismatch_metrics is set"
 
-        if args.use_rollout_logprobs:
+        if args.use_rollout_logprobs and not args.skip_actor_forward_only:
             logger.info(
                 "get_mismatch_metrics is set; For metrics calculation, the log probs will still be recomputed by training engine. One more forward pass will be applied."
             )
@@ -3508,7 +3508,6 @@ def validate_skip_actor_forward_only(args) -> None:
                 "--moe-router-load-balancing-type sinkhorn",
                 "sinkhorn" in args.moe_router_load_balancing_type,
             ),
-            ("--get-mismatch-metrics", args.get_mismatch_metrics),
             ("--use-rollout-entropy", args.use_rollout_entropy),
             ("--true-on-policy-mode", args.true_on_policy_mode),
             ("--log-correct-samples", args.log_correct_samples),

@@ -473,7 +473,6 @@ class MegatronTrainRayActor(TrainRayActor):
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         num_optimizer_steps = len(num_microbatches)
-        num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
         skip_actor_forward_only = self.args.skip_actor_forward_only
         if skip_actor_forward_only:
             option = "--skip-actor-forward-only"
@@ -567,8 +566,7 @@ class MegatronTrainRayActor(TrainRayActor):
             log_rollout_data(rollout_id, self.args, rollout_data)
 
             # Train
-            if not skip_actor_forward_only:
-                num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
+            num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
                 train_step_outcome = train(
