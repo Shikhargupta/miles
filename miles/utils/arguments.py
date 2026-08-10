@@ -1831,6 +1831,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
             )
             parser.add_argument(
+                "--tinker-frontend",
+                action="store_true",
+                default=False,
+                help="Serve the official tinker SDK REST protocol (/api/v1) on the tinker "
+                "controller's HTTP server: an unmodified `tinker` client pointed at it "
+                "(base_url + api_key) drives training and sampling",
+            )
+            parser.add_argument(
+                "--tinker-api-key",
+                type=str,
+                default=None,
+                help="API key the tinker frontend requires in X-API-Key (single-tenant; the SDK "
+                "needs a 'tml-' prefix). Falls back to $MILES_TINKER_API_KEY. Required for a "
+                "non-loopback bind (fail closed)",
+            )
+            parser.add_argument(
                 "--multi-lora-disable-service-mode",
                 action="store_false",
                 dest="multi_lora_service_mode",

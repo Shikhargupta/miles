@@ -98,7 +98,14 @@ def validate_tinker_args(args) -> None:
     validation). Tinker replaces the dataset rollout plane: operations carry
     the data, so the rollout fn and data source swap to the queue-driven pair."""
     if not getattr(args, "tinker_backend", False):
+        # The frontend flags ride on the backend; alone they would silently
+        # no-op (no frontend starts, the key guards nothing) — fail loud.
+        assert not getattr(args, "tinker_frontend", False), "--tinker-frontend requires --tinker-backend"
+        assert not getattr(args, "tinker_api_key", None), "--tinker-api-key requires --tinker-frontend"
         return
+    assert not (
+        getattr(args, "tinker_api_key", None) and not getattr(args, "tinker_frontend", False)
+    ), "--tinker-api-key requires --tinker-frontend (only the SDK frontend authenticates requests)"
     from miles.utils.environ import enable_experimental_rollout_refactor
 
     assert getattr(args, "multi_lora_n_adapters", 0) > 0, "--tinker-backend requires --multi-lora-n-adapters > 0"
@@ -106,6 +113,8 @@ def validate_tinker_args(args) -> None:
         "--tinker-backend needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
         "(and propagate it through runtime_env when submitting via Ray)"
     )
+    if getattr(args, "tinker_frontend", False) and not getattr(args, "multi_lora_http_server_path", None):
+        args.multi_lora_http_server_path = "miles.ray.tinker_backend.frontend.http_server.TinkerFrontendHTTPServer"
     if args.rollout_function_path is None:
         args.rollout_function_path = "miles.rollout.tinker_backend.rollout_fn.TinkerRolloutFn"
     if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
