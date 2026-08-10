@@ -126,7 +126,7 @@ def execute(args: ScriptArgs):
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
+        "--expert-model-parallel-size 2 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -146,6 +146,24 @@ def execute(args: ScriptArgs):
         "--entropy-coef 0.0 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
+    )
+
+    # Delightful Policy Gradient (https://arxiv.org/abs/2603.14608): gate each
+    # per-token PG term by sigmoid(advantage * surprisal). unit-gain keeps the
+    # neutral coefficient at 1.0 so the effective LR matches plain GRPO.
+    delight_args = (
+        "--use-delight "
+        "--delight-unit-gain "
+        "--delight-temperature 1.0 "
+        "--delight-max-surprisal 10.0 "
+    )
+
+    # Standing requirement: dashboard + real entropy on every launch.
+    # --use-miles-dashboard hard-asserts --dump-details, supplied via trace_args.
+    observability_args = (
+        "--use-miles-dashboard "
+        "--observe-training-entropy "
+        "--use-rollout-entropy "
     )
 
     optimizer_args = (
@@ -218,6 +236,8 @@ def execute(args: ScriptArgs):
         f"{rollout_args}"
         f"{optimizer_args}"
         f"{grpo_args}"
+        f"{delight_args}"
+        f"{observability_args}"
         f"{wandb_args}"
         f"{prometheus_args}"
         f"{trace_args}"
