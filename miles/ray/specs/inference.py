@@ -15,6 +15,7 @@ from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import (
     CommandWorkerSpec,
     LaunchCommandContext,
@@ -46,9 +47,17 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
         ctor_kwargs=lambda ctx: dict(
             args=args,
             engine_provider=ctx.capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
-            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+            router_providers=compute_router_providers(args, capability=ctx.capability),
         ),
     )
+
+
+def compute_router_providers(args, *, capability: BackendCapability) -> list[BaseWorkerProvider]:
+    config = resolve_sglang_config(args)
+    return [
+        capability.static_worker_provider(pool_id=compute_router_pool_id(model_idx))
+        for model_idx in range(len(config.models))
+    ]
 
 
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
