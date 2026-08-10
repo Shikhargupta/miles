@@ -150,6 +150,30 @@ class TinkerBackend:
                 f"re-registered ({record.registration_id[:8]}); operations from the stale handle are fenced"
             )
 
+    def reject_operation(
+        self,
+        name: str,
+        operation_id: str,
+        ordinal: int,
+        kind: str,
+        payload: dict | None,
+        error: str,
+        expected_registration_id: str | None = None,
+    ) -> dict:
+        """Record a boundary-rejected submission as terminal FAILED(user) at
+        its ordinal (see ``OperationLedger.record_rejected``): a frontend that
+        refuses a request AFTER the client spent the ordinal must still keep
+        the registration's arrival sequence gap-free. Like ``enqueue_operation``,
+        a pinned ``expected_registration_id`` fences stale handles — a rejection
+        must never consume an ordinal slot of a same-name successor."""
+        record = self.registry.find(name)
+        if record is None or record.state not in (AdapterState.PENDING, AdapterState.READY):
+            raise ValueError(f"Adapter '{name}' is not accepting operations (not registered or retiring)")
+        self._check_expected_registration(name, record, expected_registration_id)
+        return self.operations.record_rejected(
+            operation_id, name, record.registration_id, ordinal, kind, payload or {}, error
+        )
+
     def _preflight(self, name: str, kind: str, payload: dict) -> None:
         if kind in ("forward_backward", "forward"):
             samples = payload.get("samples")

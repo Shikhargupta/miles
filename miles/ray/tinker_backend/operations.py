@@ -233,6 +233,74 @@ class OperationLedger:
         self.by_id[operation_id] = op
         return op.view()
 
+    def record_rejected(
+        self,
+        operation_id: str,
+        name: str,
+        registration_id: str,
+        ordinal: int,
+        kind: str,
+        payload: dict | None,
+        error: str,
+    ) -> dict:
+        """Consume an ordinal with an operation born terminal FAILED(user).
+
+        A submission rejected at the boundary (bad payload, unsupported
+        feature) must still fill its slot in the arrival sequence: the client
+        has already spent the ordinal and moved on, so refusing to record it
+        would leave a gap no retry ever fills — every later operation of the
+        registration would buffer forever. Identity rules match ``enqueue``
+        (idempotent on an identical retry, conflict on anything else). The
+        record bypasses the PENDING cap (terminal on arrival, it never occupies
+        execution capacity) but still answers to the unacked-results budget —
+        born-terminal records hold result memory, and an invalid-request flood
+        must backpressure like any other unretrieved pile-up. The one exception
+        is a true hole-filler, whose refusal could never clear (the buffered
+        tail above it stays unclaimable, so no capacity would ever free)."""
+        fingerprint = payload_fingerprint(kind, payload)
+        if (existing := self.by_id.get(operation_id)) is not None:
+            if (
+                existing.fingerprint != fingerprint
+                or existing.tenant != (name, registration_id)
+                or existing.ordinal != ordinal
+            ):
+                raise ValueError(
+                    f"operation '{operation_id}' already exists with different content; "
+                    "retries must resend the identical request"
+                )
+            return existing.view()
+
+        queue = self.queues.setdefault((name, registration_id), _RegistrationQueue())
+        if queue.fenced:
+            raise ValueError(f"registration '{name}' ({registration_id[:8]}) is retired; operations are fenced")
+        if ordinal < 1:
+            raise ValueError(f"operation '{operation_id}' ordinal must be >= 1, got {ordinal}")
+        if (holder := queue.by_ordinal.get(ordinal)) is not None:
+            raise ValueError(
+                f"ordinal {ordinal} already taken by operation '{holder.operation_id}'; "
+                "per-registration ordinals are unique and consecutive"
+            )
+        if queue.unacked_terminal_count() >= self.max_unacked_results and not queue.fills_blocking_gap(ordinal):
+            raise OperationBackpressure(
+                f"registration '{name}' holds {self.max_unacked_results} unacknowledged results; ack or deregister"
+            )
+        op = Operation(
+            operation_id=operation_id,
+            name=name,
+            registration_id=registration_id,
+            ordinal=ordinal,
+            kind=OperationKind(kind),
+            # The payload was rejected — only its fingerprint matters (retry identity).
+            payload={},
+            fingerprint=fingerprint,
+            state=OperationState.FAILED,
+            error=error,
+            error_category="user",
+        )
+        queue.insert(op)
+        self.by_id[operation_id] = op
+        return op.view()
+
     # ------------------------------ claims ------------------------------
 
     def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
