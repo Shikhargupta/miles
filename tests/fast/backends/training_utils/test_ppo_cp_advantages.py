@@ -145,6 +145,7 @@ def _worker_bshd_layout_metadata(rank: int, world_size: int, port: int) -> None:
         args = Namespace(
             advantage_estimator="ppo",
             use_rollout_logprobs=False,
+            skip_actor_forward_only=False,
             kl_coef=0.1,
             kl_loss_type="k1",
             gamma=0.0,
@@ -255,6 +256,7 @@ def _worker_reused_zero_kl(rank: int, world_size: int, port: int) -> None:
         args = Namespace(
             advantage_estimator="grpo",
             use_rollout_logprobs=False,
+            skip_actor_forward_only=True,
             kl_coef=0.0,
             kl_loss_type="k1",
             gamma=1.0,
@@ -272,7 +274,7 @@ def _worker_reused_zero_kl(rank: int, world_size: int, port: int) -> None:
         }
 
         set_parallel_state(_parallel_state(rank=rank, world_size=world_size))
-        compute_advantages_and_returns(args, rollout_data, allow_training_logprob_reuse=True)
+        compute_advantages_and_returns(args, rollout_data)
         cp_advantages = all_gather_with_cp(rollout_data["advantages"][0], total_length, response_length)
         cp_returns = all_gather_with_cp(rollout_data["returns"][0], total_length, response_length)
 
@@ -283,6 +285,7 @@ def _worker_reused_zero_kl(rank: int, world_size: int, port: int) -> None:
         }
         baseline.pop("advantages")
         baseline.pop("returns")
+        args.skip_actor_forward_only = False
         compute_advantages_and_returns(args, baseline)
 
         torch.testing.assert_close(cp_advantages, baseline["advantages"][0])

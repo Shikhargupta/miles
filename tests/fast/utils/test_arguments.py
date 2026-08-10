@@ -721,6 +721,8 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
 class TestValidateRematerializeParamFromMasterWeight:
     def _make_args(self, **overrides) -> SimpleNamespace:
         args = SimpleNamespace(
@@ -912,13 +914,15 @@ class TestValidateSkipActorForwardOnly:
     def test_tis_configuration_passes(self):
         validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_tis=True))
 
+    def test_rollout_logprobs_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_rollout_logprobs=True))
+
     @pytest.mark.parametrize(
         "overrides",
         [
             {"train_backend": "fsdp"},
             {"loss_type": "custom_loss"},
             {"compute_advantages_and_returns": False},
-            {"use_rollout_logprobs": True},
             {"keep_old_actor": True},
             {"kl_coef": 0.1},
             {"use_opd": True},

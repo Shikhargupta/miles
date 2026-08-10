@@ -31,7 +31,8 @@ def process_group(tmp_path_factory):
         dist.destroy_process_group()
 
 
-def _run_policy_loss(args, batch, inputs, *, allow_training_logprob_reuse):
+def _run_policy_loss(args, batch, inputs, *, skip_actor_forward_only):
+    args.skip_actor_forward_only = skip_actor_forward_only
     logits = deep_clone(inputs["policy_logits"])
     logits.requires_grad_(True)
     reducer = get_sum_of_sample_mean(
@@ -47,7 +48,6 @@ def _run_policy_loss(args, batch, inputs, *, allow_training_logprob_reuse):
         batch,
         logits,
         reducer,
-        allow_training_logprob_reuse=allow_training_logprob_reuse,
     )
     loss.backward()
     return loss.detach(), metrics, logits.grad.clone()
@@ -96,7 +96,7 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
         args,
         reuse_batch,
         inputs,
-        allow_training_logprob_reuse=True,
+        skip_actor_forward_only=True,
     )
     if advantage_estimator == "gspo":
         assert gather_spy.call_count == len(inputs["response_lens"])
@@ -117,7 +117,7 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
         args,
         baseline_batch,
         inputs,
-        allow_training_logprob_reuse=False,
+        skip_actor_forward_only=False,
     )
 
     assert torch.equal(reuse_loss, baseline_loss)
@@ -130,8 +130,52 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
     assert reuse_metrics["pg_clipfrac"].item() == 0.0
 
 
+def test_skip_actor_forward_only_preserves_rollout_log_probs_as_old_policy(process_group):
+    parallel_state = make_parallel_state()
+    parallel_state.tp = GroupInfo(rank=0, size=1, group=dist.group.WORLD)
+    args = make_args(
+        entropy_coef=0.0,
+        kl_coef=0.0,
+        observe_training_entropy=False,
+        true_on_policy_mode=False,
+        use_rollout_logprobs=True,
+    )
+    inputs = make_inputs(seed=17, batch_size=2, prompt_lens=[4, 5], response_lens=[3, 4], vocab_size=16, args=args)
+    batch = make_batch(inputs, "policy_loss")
+    training_log_probs = get_log_probs_and_entropy(
+        deep_clone(inputs["policy_logits"]),
+        args=args,
+        unconcat_tokens=deep_clone(inputs["unconcat_tokens"]),
+        total_lengths=list(inputs["total_lens"]),
+        response_lengths=list(inputs["response_lens"]),
+        with_entropy=False,
+    )["log_probs"]
+    batch["rollout_log_probs"] = [log_prob.detach() + 0.25 for log_prob in training_log_probs]
+    del batch["log_probs"]
+
+    skip_loss, skip_metrics, skip_grad = _run_policy_loss(
+        args,
+        batch,
+        inputs,
+        skip_actor_forward_only=True,
+    )
+    baseline_loss, baseline_metrics, baseline_grad = _run_policy_loss(
+        args,
+        batch,
+        inputs,
+        skip_actor_forward_only=False,
+    )
+
+    assert torch.equal(skip_loss, baseline_loss)
+    assert torch.equal(skip_grad, baseline_grad)
+    assert skip_metrics.keys() == baseline_metrics.keys()
+    for key in skip_metrics:
+        assert torch.equal(skip_metrics[key], baseline_metrics[key]), key
+    assert skip_metrics["ppo_kl"].item() > 0
+
+
 @pytest.mark.parametrize(
-    ("allow_training_logprob_reuse", "use_rollout_logprobs", "remove_old"),
+    ("skip_actor_forward_only", "use_rollout_logprobs", "remove_old"),
     [
         (False, False, True),
         (True, False, False),
@@ -139,7 +183,7 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
     ],
 )
 def test_policy_loss_rejects_invalid_reuse_contract(
-    allow_training_logprob_reuse,
+    skip_actor_forward_only,
     use_rollout_logprobs,
     remove_old,
 ):
@@ -147,6 +191,7 @@ def test_policy_loss_rejects_invalid_reuse_contract(
     args = make_args(
         entropy_coef=0.0,
         observe_training_entropy=False,
+        skip_actor_forward_only=skip_actor_forward_only,
         true_on_policy_mode=False,
         use_rollout_logprobs=use_rollout_logprobs,
     )
@@ -169,7 +214,6 @@ def test_policy_loss_rejects_invalid_reuse_contract(
             batch,
             inputs["policy_logits"],
             reducer,
-            allow_training_logprob_reuse=allow_training_logprob_reuse,
         )
 
 
@@ -177,13 +221,13 @@ def test_policy_loss_rejects_invalid_reuse_contract(
 def test_reuse_synthesizes_zero_kl_only_on_the_last_pipeline_stage(is_pp_last_stage):
     parallel_state = make_parallel_state()
     parallel_state.is_pp_last_stage = is_pp_last_stage
-    args = make_args(kl_coef=0.0, true_on_policy_mode=False)
+    args = make_args(kl_coef=0.0, skip_actor_forward_only=True, true_on_policy_mode=False)
     inputs = make_inputs(seed=11, batch_size=2, prompt_lens=[4, 6], response_lens=[3, 5], vocab_size=16, args=args)
     reused = make_rollout_data(inputs)
     for key in ("log_probs", "ref_log_probs", "values"):
         del reused[key]
 
-    compute_advantages_and_returns(args, reused, allow_training_logprob_reuse=True)
+    compute_advantages_and_returns(args, reused)
 
     if not is_pp_last_stage:
         assert "advantages" not in reused
@@ -192,16 +236,21 @@ def test_reuse_synthesizes_zero_kl_only_on_the_last_pipeline_stage(is_pp_last_st
 
     baseline = make_rollout_data(inputs)
     del baseline["values"]
+    args.skip_actor_forward_only = False
     compute_advantages_and_returns(args, baseline)
     for key in ("advantages", "returns"):
         for actual, expected in zip(reused[key], baseline[key], strict=True):
             assert torch.equal(actual, expected)
 
 
-@pytest.mark.parametrize("allow_training_logprob_reuse", [False, True])
-def test_loss_dispatcher_only_binds_the_explicit_policy_permit(monkeypatch, allow_training_logprob_reuse):
+@pytest.mark.parametrize("skip_actor_forward_only", [False, True])
+def test_loss_dispatcher_uses_args_without_extra_policy_kwargs(monkeypatch, skip_actor_forward_only):
     make_parallel_state()
-    args = make_args(observe_training_entropy=False, true_on_policy_mode=False)
+    args = make_args(
+        observe_training_entropy=False,
+        skip_actor_forward_only=skip_actor_forward_only,
+        true_on_policy_mode=False,
+    )
     inputs = make_inputs(seed=19, batch_size=1, prompt_lens=[3], response_lens=[2], vocab_size=8, args=args)
     batch = make_batch(inputs, "policy_loss")
     logits = deep_clone(inputs["policy_logits"])
@@ -213,10 +262,45 @@ def test_loss_dispatcher_only_binds_the_explicit_policy_permit(monkeypatch, allo
         batch,
         1,
         logits,
-        allow_training_logprob_reuse=allow_training_logprob_reuse,
     )
 
-    if allow_training_logprob_reuse:
-        assert policy_loss.call_args.kwargs == {"allow_training_logprob_reuse": True}
-    else:
-        assert policy_loss.call_args.kwargs == {}
+    assert policy_loss.call_args.args[0] is args
+    assert policy_loss.call_args.kwargs == {}
+
+
+def test_loss_dispatcher_does_not_apply_actor_skip_to_value_loss(monkeypatch):
+    make_parallel_state()
+    args = make_args(loss_type="value_loss", skip_actor_forward_only=True)
+    inputs = make_inputs(seed=23, batch_size=1, prompt_lens=[3], response_lens=[2], vocab_size=8, args=args)
+    batch = make_batch(inputs, "value_loss")
+    logits = deep_clone(inputs["value_logits"])
+    value_loss = Mock(return_value=(logits.sum(), {"loss": logits.new_zeros(())}))
+    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args: value_loss)
+
+    loss_module.loss_function(args, batch, 1, logits)
+
+    assert value_loss.call_args.args[0] is args
+    assert value_loss.call_args.kwargs == {}
+
+
+def test_mismatch_metrics_keep_standalone_actor_log_probs_as_training_source(process_group, monkeypatch):
+    parallel_state = make_parallel_state()
+    parallel_state.tp = GroupInfo(rank=0, size=1, group=dist.group.WORLD)
+    args = make_args(
+        custom_tis_function_path="tests.fake_tis",
+        entropy_coef=0.0,
+        get_mismatch_metrics=True,
+        observe_training_entropy=False,
+        true_on_policy_mode=False,
+        use_rollout_logprobs=True,
+    )
+    inputs = make_inputs(seed=29, batch_size=1, prompt_lens=[3], response_lens=[2], vocab_size=8, args=args)
+    batch = make_batch(inputs, "policy_loss")
+
+    def fake_tis_function(**kwargs):
+        assert kwargs["train_log_probs"] is batch["log_probs"]
+        return kwargs["pg_loss"], kwargs["loss_masks"], {}
+
+    monkeypatch.setattr(losses_module, "load_function", lambda _path: fake_tis_function)
+
+    _run_policy_loss(args, batch, inputs, skip_actor_forward_only=False)

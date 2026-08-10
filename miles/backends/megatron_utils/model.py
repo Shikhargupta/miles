@@ -415,8 +415,6 @@ def train_one_step(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
-    *,
-    allow_training_logprob_reuse: bool = False,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Execute a single pipeline-parallel training step.
 
@@ -437,9 +435,6 @@ def train_one_step(
         opt_param_scheduler: LR/WD scheduler.
         num_microbatches: Number of microbatches to process.
         num_rollouts: This step's rollout count (loss normalizer + LR increment).
-        allow_training_logprob_reuse: Forward the actor's explicit reuse permit
-            to every policy-loss microbatch.
-
     Returns:
         Tuple of (reduced loss dict, gradient norm, step outcome).
     """
@@ -558,7 +553,6 @@ def train_one_step(
             num_microbatches,
             apply_megatron_loss_scaling=True,
             num_rollouts=num_rollouts,
-            allow_training_logprob_reuse=allow_training_logprob_reuse,
         )
 
     # Forward pass.
@@ -687,8 +681,6 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
-    *,
-    allow_training_logprob_reuse: bool = False,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -703,8 +695,6 @@ def train(
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
         num_rollouts (Sequence[int]): Rollout count per step (total across DP).
-        allow_training_logprob_reuse: Forward the actor's explicit reuse permit
-            through every step in this rollout.
     """
     parallel_state = get_parallel_state()
     args = get_args()
@@ -798,7 +788,6 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
-            allow_training_logprob_reuse=allow_training_logprob_reuse,
         )
 
         if step_id == 0:

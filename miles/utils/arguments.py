@@ -1512,10 +1512,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Skip the standalone Megatron actor forward-only pass by reusing detached training "
-                    "log-probs as the old-policy baseline. This requires a single optimizer step and "
-                    "makes the actor importance log-ratio exactly 0. The skipped pass's rollout/log_probs "
-                    "metric is not emitted."
+                    "Skip the standalone Megatron actor forward-only pass. With --use-rollout-logprobs, "
+                    "those log-probs remain the old-policy baseline; otherwise detached training log-probs "
+                    "are reused and the actor importance log-ratio is exactly 0. This requires a single "
+                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted."
                 ),
             )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
@@ -3495,7 +3495,6 @@ def validate_skip_actor_forward_only(args) -> None:
     incompatible_options = [
         name
         for name, enabled in (
-            ("--use-rollout-logprobs", args.use_rollout_logprobs),
             ("--keep-old-actor", args.keep_old_actor),
             ("--kl-coef", args.kl_coef != 0),
             ("--use-opd", args.use_opd),

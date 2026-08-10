@@ -1,6 +1,4 @@
 from argparse import Namespace
-from functools import partial
-
 import torch
 from torch.utils.checkpoint import checkpoint
 
@@ -30,8 +28,6 @@ def _detach_rollout_tensor_list(rollout_data: RolloutBatch, key: str) -> list[to
 def compute_advantages_and_returns(
     args: Namespace,
     rollout_data: RolloutBatch,
-    *,
-    allow_training_logprob_reuse: bool = False,
 ) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
@@ -54,9 +50,8 @@ def compute_advantages_and_returns(
             "rewards", "values", "response_lengths", "loss_masks",
             "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
-        allow_training_logprob_reuse: Whether the actor intentionally omitted
-            its standalone old-policy log-prob pass.
     """
+    reuse_training_log_probs_as_old = args.skip_actor_forward_only and not args.use_rollout_logprobs
     log_probs_key = "rollout_log_probs" if args.use_rollout_logprobs else "log_probs"
     log_probs: list[torch.Tensor] = rollout_data.get(log_probs_key)
     ref_log_probs: list[torch.Tensor] = rollout_data.get("ref_log_probs")
@@ -69,7 +64,7 @@ def compute_advantages_and_returns(
 
     # return when not the last pp stage.
     if log_probs is None and values is None:
-        if not (allow_training_logprob_reuse and get_parallel_state().is_pp_last_stage):
+        if not (reuse_training_log_probs_as_old and get_parallel_state().is_pp_last_stage):
             return
     else:
         # This is the authoritative persistence boundary: scores produced before
@@ -135,8 +130,6 @@ def loss_function(
     logits: torch.Tensor,
     apply_megatron_loss_scaling: bool = False,
     num_rollouts: int | None = None,
-    *,
-    allow_training_logprob_reuse: bool = False,
 ) -> tuple[torch.Tensor, int | torch.Tensor, dict[str, list[str] | torch.Tensor]]:
     """Dispatch to the configured loss and rescale for Megatron integration.
 
@@ -155,8 +148,6 @@ def loss_function(
         num_rollouts: This step's rollout count (total across DP), used as
             the loss normalizer; None falls back to the legacy batch/args value.
 
-        allow_training_logprob_reuse: Whether policy loss may use detached
-            training log-probs as its old-policy input.
     Returns:
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
         - `scaled_loss` is the loss tensor (scalar) rescaled for Megatron.
@@ -180,10 +171,6 @@ def loss_function(
     )
 
     func = get_loss_function(args)
-    if allow_training_logprob_reuse:
-        if args.loss_type != "policy_loss":
-            raise ValueError("training log-prob reuse is only valid for policy loss")
-        func = partial(func, allow_training_logprob_reuse=True)
 
     if args.recompute_loss_function:
         loss, log = checkpoint(

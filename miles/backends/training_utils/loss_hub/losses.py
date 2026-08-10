@@ -64,8 +64,6 @@ def policy_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
-    *,
-    allow_training_logprob_reuse: bool = False,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute policy loss (PPO/GSPO) and metrics.
 
@@ -83,9 +81,6 @@ def policy_loss_function(
             and optionally "ref_log_probs" and "rollout_log_probs".
         logits: Policy logits with shape `[1, T, V]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
-        allow_training_logprob_reuse: Derive old policy log-probs by detaching
-            current log-probs when the actor explicitly omitted that input.
-
     Returns:
         Tuple of `(loss, metrics)` where `loss` is a scalar tensor and `metrics`
         is a dict containing detached scalars: "loss", "pg_loss",
@@ -96,6 +91,7 @@ def policy_loss_function(
     parallel_state = get_parallel_state()
     advantages_list = [advantage.detach() for advantage in batch["advantages"]]
     advantages = torch.cat(advantages_list, dim=0)
+    reuse_training_log_probs_as_old = args.skip_actor_forward_only and not args.use_rollout_logprobs
     scored_old_log_probs = (
         [log_prob.detach() for log_prob in batch["log_probs"]] if batch.get("log_probs") is not None else None
     )
@@ -107,17 +103,17 @@ def policy_loss_function(
     reference_log_probs = (
         [log_prob.detach() for log_prob in batch["ref_log_probs"]] if batch.get("ref_log_probs") is not None else None
     )
-    if allow_training_logprob_reuse:
-        if args.use_rollout_logprobs or scored_old_log_probs is not None:
+    if reuse_training_log_probs_as_old:
+        if scored_old_log_probs is not None:
             raise ValueError("training log-prob reuse requires no separate old-policy log-probs")
         old_log_probs = None
     elif args.use_rollout_logprobs:
-        assert (
-            rollout_old_log_probs is not None
-        ), "rollout_log_probs must be provided when --use-rollout-logprobs is set"
+        if rollout_old_log_probs is None:
+            raise ValueError("policy loss requires old-policy log-probs")
         old_log_probs = rollout_old_log_probs
     else:
-        assert scored_old_log_probs is not None, "log_probs must be provided for policy loss"
+        if scored_old_log_probs is None:
+            raise ValueError("policy loss requires old-policy log-probs")
         old_log_probs = scored_old_log_probs
 
     response_lengths = batch["response_lengths"]
@@ -137,7 +133,7 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
-    if allow_training_logprob_reuse:
+    if reuse_training_log_probs_as_old:
         old_log_probs = [log_prob.detach() for log_prob in log_probs]
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
@@ -154,7 +150,7 @@ def policy_loss_function(
                 log_probs, total_lengths, response_lengths, strict=False
             )
         ]
-        if allow_training_logprob_reuse:
+        if reuse_training_log_probs_as_old:
             full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
         else:
             full_old_log_probs = [
@@ -243,10 +239,11 @@ def policy_loss_function(
         # Keep a copy of the original reducer (based on `batch["loss_masks"]`) for metric aggregation.
         sum_of_sample_mean_for_mismatch_metrics = sum_of_sample_mean
 
+        tis_train_log_probs = old_log_probs_list if reuse_training_log_probs_as_old else batch.get("log_probs")
         if args.custom_tis_function_path is not None:
             tis_func = load_function(args.custom_tis_function_path)
         else:
-            assert scored_old_log_probs is not None, "log_probs must be provided for built-in TIS"
+            assert tis_train_log_probs is not None, "log_probs must be provided for built-in TIS"
             assert rollout_old_log_probs is not None, "rollout_log_probs must be provided for built-in TIS"
             tis_func = vanilla_tis_function
 
@@ -254,8 +251,8 @@ def policy_loss_function(
         tis_kwargs = {
             "args": args,
             "pg_loss": pg_loss,
-            "train_log_probs": old_log_probs_list,
-            "rollout_log_probs": batch["rollout_log_probs"],
+            "train_log_probs": tis_train_log_probs,
+            "rollout_log_probs": batch.get("rollout_log_probs"),
             "loss_masks": batch["loss_masks"],
             "total_lengths": total_lengths,
             "response_lengths": response_lengths,

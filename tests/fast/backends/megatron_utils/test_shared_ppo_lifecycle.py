@@ -297,19 +297,21 @@ def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatch
 
 
 @pytest.mark.parametrize(
-    ("skip_actor_forward_only", "num_microbatches"),
+    ("skip_actor_forward_only", "use_rollout_logprobs", "num_microbatches"),
     [
-        (False, [1]),
-        (True, [1]),
-        (True, [2]),
+        (False, False, [1]),
+        (True, False, [1]),
+        (True, True, [1]),
+        (True, False, [2]),
     ],
 )
 def test_actor_logprob_forward_is_explicit_single_step_opt_in(
-    actor_module, monkeypatch, skip_actor_forward_only, num_microbatches
+    actor_module, monkeypatch, skip_actor_forward_only, use_rollout_logprobs, num_microbatches
 ):
     worker = _actor_reuse_worker(
         actor_module,
         skip_actor_forward_only=skip_actor_forward_only,
+        use_rollout_logprobs=use_rollout_logprobs,
     )
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=num_microbatches)
     rollout_data = {
@@ -319,14 +321,15 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
 
     worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only)
-    assert (
-        actor_module.compute_advantages_and_returns.call_args.kwargs["allow_training_logprob_reuse"]
-        is skip_actor_forward_only
-    )
+    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
+    actor_module.compute_advantages_and_returns.assert_called_once_with(worker.args, rollout_data)
     train_call = actor_module.train.call_args
     assert train_call.args[6] is rollout_data["num_rollouts"]
-    assert train_call.kwargs["allow_training_logprob_reuse"] is skip_actor_forward_only
+    assert train_call.kwargs == {
+        "witness_info": None,
+        "attempt": 0,
+        "ft_test_action_executor": None,
+    }
 
 
 @pytest.mark.parametrize(
