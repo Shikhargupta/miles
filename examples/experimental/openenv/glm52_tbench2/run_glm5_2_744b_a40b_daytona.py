@@ -56,6 +56,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     n_samples_per_prompt: int = 8
     global_batch_size: int = 64
     rollout_max_response_len: int = 16384
+    # Total tokens per training sample: prompt + every turn's generation and
+    # observation, summed over the whole episode. Samples longer than this are
+    # truncated. A rollout ends only when its LAST sample finishes, so this is
+    # the knob that bounds step time. Measured on run 260810-28b055b2: the
+    # single longest sample per step ran 60,883-124,270 tokens and accounted for
+    # 77-95% of the entire rollout, while scoring below average (mean reward
+    # 0.350 across the 20 longest vs 0.541 overall). 131072 is PR 2220's value.
+    max_seq_len: int = 131072
     # Max concurrently generating trajectories, decoupled from the train batch;
     # also sizes the Daytona pool so every in-flight trajectory has a sandbox.
     async_max_concurrent_samples: int = 128
@@ -168,7 +176,7 @@ def _execute_train(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
-        "--max-seq-len 131072 "
+        f"--max-seq-len {args.max_seq_len} "
         "--rollout-temperature 0.8 "
         f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
