@@ -106,6 +106,8 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
                     await handler.suspend(name)
                 else:
                     await handler.resume(name)
+            except NotImplementedError as err:
+                raise _K8sError(status_code=400, reason="BadRequest", message=str(err)) from err
             except Exception as err:
                 logger.error("Failed to patch cell %s", name, exc_info=True)
                 raise _K8sError(

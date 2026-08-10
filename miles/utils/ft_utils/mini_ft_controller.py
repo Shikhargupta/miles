@@ -73,19 +73,24 @@ class _MiniFTControllerRunner:
         return [_compute_cell_snapshot(cell) for cell in cell_list.items]
 
     async def _suspend_cell(self, name: str) -> None:
-        await self._patch_cell_suspend(name=name, suspend=True)
+        (await self._patch_cell_suspend(name=name, suspend=True)).raise_for_status()
 
     async def _resume_cell(self, name: str) -> None:
-        await self._patch_cell_suspend(name=name, suspend=False)
+        # a backend whose cells come back on their own (kubernetes) answers 400 rather than resuming;
+        # the heal already succeeded when the cell was suspended, so there is nothing left to do
+        resp = await self._patch_cell_suspend(name=name, suspend=False)
+        if resp.status_code == httpx.codes.BAD_REQUEST:
+            log_structured(logger.info, tag="ft", op="heal", phase="resume_not_needed", cell=name)
+            return
+        resp.raise_for_status()
 
-    async def _patch_cell_suspend(self, *, name: str, suspend: bool) -> None:
+    async def _patch_cell_suspend(self, *, name: str, suspend: bool) -> httpx.Response:
         patch = CellPatch(spec=CellPatchSpec(suspend=suspend))
-        resp = await self._client.patch(
+        return await self._client.patch(
             f"/api/v1/cells/{name}",
             content=patch.model_dump_json(),
             headers={"Content-Type": "application/json"},
         )
-        resp.raise_for_status()
 
 
 def _compute_cell_snapshot(cell: Cell) -> _CellSnapshot:
