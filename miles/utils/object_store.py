@@ -8,8 +8,9 @@ from types import TracebackType
 from typing import Any
 
 import ray
+from pydantic import ConfigDict
 
-from miles.utils.ray_utils import Box
+from miles.utils.pydantic_utils import StrictBaseModel
 
 _MOONCAKE_IMPORT_ERROR: ImportError | None = None
 
@@ -27,12 +28,26 @@ except ImportError as exc:
 
 # ============================== types ==============================
 
-StoreObjectRef = Box
-
 
 class ObjectStoreBackend(Enum):
     RAY = "ray"
     MOONCAKE = "mooncake"
+
+
+class StoreObjectRef(StrictBaseModel):
+    """What a producer hands a consumer so it can fetch the object.
+
+    A trainer ships this over rpc, so it has to be a value the wire can encode rather
+    than an opaque wrapper: the mooncake payload is what ``export_ref`` produced, which
+    is plain data. The ray payload is a live ``ray.ObjectRef``, which only travels
+    between processes of the same ray cluster - the reason a kubernetes-native run is
+    required to use the mooncake backend.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    backend: ObjectStoreBackend
+    payload: Any
 
 
 @dataclass(frozen=True)
@@ -115,13 +130,18 @@ class BaseObjectStore(ABC):
 
 class RayObjectStore(BaseObjectStore):
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
-        return Box(ray.put(value))
+        return StoreObjectRef(backend=ObjectStoreBackend.RAY, payload=ray.put(value))
 
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
-        return ObjectStoreGetResult(value=ray.get(ref.inner), release_fn=_release_noop)
+        return ObjectStoreGetResult(value=ray.get(_payload_of(ref, ObjectStoreBackend.RAY)), release_fn=_release_noop)
 
     def remove(self, ref: StoreObjectRef) -> None:
         pass
+
+
+def _payload_of(ref: StoreObjectRef, backend: ObjectStoreBackend) -> Any:
+    assert ref.backend == backend, f"a {ref.backend.value} reference cannot be redeemed by the {backend.value} store"
+    return ref.payload
 
 
 def _release_noop(value: Any) -> None:
@@ -155,14 +175,14 @@ class MooncakeObjectStore(BaseObjectStore):
             config=self._replicate_config(),
             field_schemas=_field_schemas_for_value(value, value_spec),
         )
-        return Box(export_ref(ref))
+        return StoreObjectRef(backend=ObjectStoreBackend.MOONCAKE, payload=export_ref(ref))
 
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
-        value = self._transfer.get(import_ref(ref.inner), type="dict")
+        value = self._transfer.get(import_ref(_payload_of(ref, ObjectStoreBackend.MOONCAKE)), type="dict")
         return ObjectStoreGetResult(value=value, release_fn=MooncakeBundleTransfer.release_result)
 
     def remove(self, ref: StoreObjectRef) -> None:
-        self._transfer.cleanup_dataproto(import_ref(ref.inner))
+        self._transfer.cleanup_dataproto(import_ref(_payload_of(ref, ObjectStoreBackend.MOONCAKE)))
 
     def _replicate_config(self) -> Any:
         if self._replica_num == 1:
