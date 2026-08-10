@@ -131,6 +131,14 @@ class TestConstructorArguments:
 
         assert spec.ctor_kwargs(_make_context())["world_size"] == 4
 
+    def test_no_quorum_store_address_is_baked_into_the_spec(self, monkeypatch):
+        """Every pod recomputes the spec, so an address minted here would give each pod its own quorum."""
+        monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
+
+        (spec,) = specs_trainer(_make_args(actor_num_gpus_per_node=8, indep_dp=True))
+
+        assert "indep_dp_store_addr" not in spec.ctor_kwargs(_make_context())
+
     def test_the_backend_selects_the_worker_class(self):
         """A run must not start Megatron workers for an fsdp job."""
         (megatron_spec,) = specs_trainer(_make_args(train_backend="megatron"))
