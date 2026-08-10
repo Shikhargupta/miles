@@ -10,9 +10,12 @@ Arrival may be OUT OF ORDER (the tinker SDK deliberately posts the first
 chunk of a large forward_backward last): operations buffer by ordinal and a
 gap below the head blocks claims until it fills. Ordinals are consecutive
 integers starting at 1 per registration.
-NOTE(frontend): when a tinker HTTP frontend lands, this arrival
-reorder/gap-buffer moves there ((model_id, seq_id) reordering); the backend
-then reverts to strictly-increasing arrival.
+NOTE(frontend): the tinker HTTP frontend forwards the SDK's per-model
+seq_id verbatim as the ordinal (the counters are the same contract), so
+this gap buffer IS the frontend's reorder point — out-of-order chunk
+arrival lands here by design. A submission the frontend rejects still
+consumes its ordinal via record_rejected (terminal on arrival), keeping
+the sequence gap-free.
 
 Retries are fingerprinted: re-enqueueing a known operation_id with an
 identical (kind, payload) returns the original operation; a different

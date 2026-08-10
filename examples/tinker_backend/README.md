@@ -7,11 +7,12 @@ sample through the shared engines — no dataset, no reward function, and no
 batch schedule on the server.
 
 ```
-client ──HTTP──> TinkerController (head node)
-                   ├─ registration plane   /adapter_runs (the only HTTP routes in v1)
-                   ├─ operation ledger     enqueue → claim → complete → ack (Ray actor API;
-                   │                       a tinker /api/v1 HTTP frontend is a later PR)
-                   └─ serving plane        sglang router (direct)
+official tinker SDK ──HTTP──> TinkerController (head node)
+                                ├─ tinker frontend      /api/v1 (--tinker-frontend; the REST
+                                │                       protocol tinker==0.24.1 speaks)
+                                ├─ registration plane   /adapter_runs (operator surface)
+                                ├─ operation ledger     enqueue → claim → complete → ack
+                                └─ serving plane        sglang router (sampling proxied)
 trainer ranks <──Ray── driver loop (train_tinker_backend.py)
 ```
 
@@ -37,6 +38,14 @@ Key flags:
 | `--multi-lora-disable-service-mode` | exit once all adapters retire (by default the service keeps serving with zero adapters) |
 | `--tinker-max-coalesce-wait-s` | how long one train call coalesces additional ready client batches |
 | `--tinker-max-empty-wait-s` | idle-queue yield back to the control phase (keep this small) |
+| `--tinker-frontend` | serve the official tinker SDK REST protocol (`/api/v1`) on the controller HTTP server (requires `--tinker-backend`) |
+| `--tinker-api-key` | X-API-Key the frontend requires (prefer `$MILES_TINKER_API_KEY` — a CLI flag shows in the process list); mandatory for a non-loopback bind |
+
+The operator plane (`/adapter_runs*`, `/info`) accepts loopback peers only,
+whatever the bind: the SDK key is a client credential and never grants the
+routes that read server-local YAML files, choose save paths, or deregister
+tenants. `/health` is liveness (the socket is up); `/api/v1/healthz` is
+readiness and answers 503 until the driver reports the trainer exists.
 
 ## Operation contract
 
@@ -64,12 +73,100 @@ normalization or scheduler ever touches a tinker slot. Result `metrics` use
 the SDK combiner's `name:reduction` keys.
 
 Operation states: `QUEUED → CLAIMED → SUCCEEDED | FAILED(user|server) | CANCELLED`;
-poll `get_operation`, then `ack_operation` to release the record. In v1 these
-verbs are the controller actor's Ray API (registration/status are the only
-HTTP routes); backpressure raises a retryable `OperationBackpressure` — the
-future tinker HTTP frontend maps it to 429 + Retry-After, never to a 4xx the
-SDK treats as fatal. Deregistering fences every open operation of that
-registration as `FAILED(user)`.
+poll `get_operation`, then `ack_operation` to release the record. These verbs
+are the controller actor's Ray API; the tinker frontend drives them over
+HTTP. Backpressure raises a retryable `OperationBackpressure` — the frontend
+maps it to 429 + Retry-After, never to a 4xx the SDK treats as fatal.
+Deregistering fences every open operation of that registration as
+`FAILED(user)`.
+
+Gradient-window poison: `optim_step` delimits a window of `forward_backward`
+operations. If any of them reached a terminal state without succeeding (a
+rejected chunk, an execution failure, a cancel), the window holds PARTIAL
+gradients — the window's `optim_step` executes as a discard (all ranks clear
+the slot's gradient sum), terminal-fails `FAILED(user)`, and moves neither
+the step clock nor the serving version. The consumed poison resets the
+window; resubmit the batch and step again.
+
+## Tinker SDK frontend (tinker==0.24.1 JSON subset)
+
+With `--tinker-frontend` the controller's HTTP server also speaks the REST
+protocol of the official [`tinker`](https://pypi.org/project/tinker/) SDK —
+exactly the **`tinker==0.24.1` JSON core-loop subset** (wheel source and
+captured traffic; pure JSON, no protobuf: `/api/v1/client/config` pins the
+SDK to its own default JSON path). Other SDK versions are rejected at
+bootstrap (`/client/config` and `create_session` fail fast on the reported
+`sdk_version`): 0.25+ switches `forward_backward` to protobuf, and the
+current cookbook's canonical final checkpoint needs named sampler
+checkpoints — neither is served here, so this is NOT "current
+Tinker/cookbook compatible". An unmodified 0.24.1 client drives training
+and sampling:
+
+```python
+import tinker
+sc = tinker.ServiceClient(base_url="http://127.0.0.1:8068", api_key="tml-...")
+tc = sc.create_lora_training_client(base_model=..., rank=32)
+tc.forward_backward(data, "cross_entropy")
+tc.optim_step(tinker.types.AdamParams(learning_rate=1e-4)).result()
+sampler = tc.save_weights_and_get_sampling_client()
+future = sampler.sample(                   # sample()/sample_async() submit /api/v1/asample;
+    prompt=tinker.types.ModelInput.from_ints(prompt_tokens),
+    num_samples=4,
+    sampling_params=tinker.types.SamplingParams(max_tokens=128, temperature=0.7),
+)
+response = future.result()                 # .sequences[i].tokens / .logprobs / .stop_reason
+```
+
+Mapping: one training client = one registration (`create_model` registers,
+`unload_model` deregisters), and every operation is pinned to its
+`(name, registration_id)` — a stale handle fences instead of binding to a
+same-name successor; every training verb forwards its SDK `seq_id` as the
+registration ordinal (chunks posted out of order gap-buffer); futures poll
+`/api/v1/retrieve_future` and terminal bodies replay until delivered (an
+evicted delivered result leaves a fingerprint tombstone that answers a typed
+410 — the 0.24.1 SDK surfaces it as a retryable "promise expired", it does
+not re-run the original request); `save_state` mints `tinker://` paths
+(resolved from an in-memory catalog; failures echo the public URI, not the
+trainer filesystem); the ephemeral `save_weights_and_get_sampling_client`
+publish binds `(name, registration_id, serving_version)` and samples through
+the sglang router — a republish makes older sampling clients fail loud, and
+the version is re-checked after generation so a publish landing mid-flight
+fails the in-flight sample instead of returning cross-version output (the
+identity is versioned, not leased: a publish committing between that check
+and delivery is a documented residual race). Frontend rejections on a spent
+`seq_id` become terminal `FAILED(user)` futures so the ordinal is still
+consumed — bounded by the same unacked-results budget as every other record
+(429 past it).
+
+Frontend-level v1 rejections (beyond the backend matrix): non-0.24.x SDK
+versions, LoRA `seed` and per-module `train_*` flags (deployment-wide),
+weights-only restore (`load_state` / `create_training_client_from_state` —
+the backend restores the full training state; use the `_with_optimizer`
+variants), named persistent sampler checkpoints
+(`save_weights_for_sampler(name)` / `create_sampling_client(model_path=...)`),
+`ttl_seconds` (no reaper runs; a recorded TTL would be a false promise),
+`prompt_logprobs` / `topk_prompt_logprobs`, sparse-CSR tensors, and negative
+token ids anywhere (targets, inputs, prompts, stop tokens). A sampling
+`seed` maps to sglang `sampling_seed`, offset per sample so
+`num_samples > 1` stays diverse.
+
+Sampling architecture: `/asample` returns its future immediately and a
+background task posts one router `/generate` per sample, carrying the
+server-derived serving identity (`rid`/`lora_path`/`extra_key` are never
+client-controllable — the wire models drop unknown fields and the sglang
+params are rebuilt from an allowlist). SGLang's continuous batching is the
+only sampling batcher: the frontend never coalesces prompts, and the
+training-operation scheduler (`TinkerRolloutFn`) never sees a sampling
+request. The legacy datasource rollout pipeline
+(`RolloutManager.generate()`: datasets, rewards, training-data conversion)
+is not on this path — the frontend shares only the router the rollout
+engines already serve.
+
+Trust boundary (v1): the frontend authenticates clients but does not meter
+them — token ids are not checked against the vocabulary (upper bound), and
+request/fan-out/output quotas (`num_samples`, `max_tokens`, body bytes) are
+not enforced. Run it loopback/VPN-facing for trusted clients; per-tenant
+quotas are future work.
 
 ## v1 compatibility matrix
 
