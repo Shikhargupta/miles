@@ -31,7 +31,7 @@ def fake_components():
     controller_handle = MagicMock(name="inference_controller")
     controller_handle.init = AsyncMock(return_value=None)
 
-    async def resolve_router_addrs(args, *, provider) -> dict:
+    async def resolve_router_addrs(args, *, router_providers) -> dict:
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
         return {}

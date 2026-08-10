@@ -11,7 +11,7 @@ from tests.fast.ray.rollout.conftest import make_args
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.capability import get_backend_capability
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id
+from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_providers
 from miles.utils.workers.worker_spec import HostAndPort
 
 pytest.skip(
@@ -106,7 +106,7 @@ async def _init_controller(args) -> InferenceController:
     controller = InferenceController(
         args,
         engine_provider=capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
-        router_provider=capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+        router_providers=compute_router_providers(args, capability=capability),
     )
     await controller.init()
     return controller
