@@ -2,7 +2,7 @@ import argparse
 
 from sglang_router.launch_router import RouterArgs
 
-from miles.utils.workers.argv_utils import render_cli_argv
+from miles.utils.workers.argv_utils import dataclass_to_values, render_cli_argv
 
 _ROUTER_FIELD_TO_DEST = {
     "server_cert_path": "tls_cert_path",
@@ -33,7 +33,8 @@ def compute_sglang_router_args(
 
 def router_args_to_argv(router_args: RouterArgs) -> list[str]:
     return render_cli_argv(
-        router_args,
+        dataclass_to_values(router_args),
+        wanted_obj=router_args,
         make_parser=_make_cli_parser,
         from_parsed=RouterArgs.from_cli_args,
         field_to_dest=_ROUTER_FIELD_TO_DEST,
