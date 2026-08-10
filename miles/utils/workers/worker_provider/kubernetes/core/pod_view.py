@@ -29,6 +29,7 @@ class ParsedPod(FrozenStrictBaseModel):
     pool_id: str
     pod_in_cell_index: int
     ready: bool
+    deleting: bool
     pod_ip: str | None
     uid: str
     restart_count: int
@@ -60,6 +61,7 @@ def parse_pod(pod: Pod, keys: CellLabelKeys) -> ParsedPod | None:
         pool_id=pool_id,
         pod_in_cell_index=int(labels.get(keys.pod_in_cell_index, 0)),
         ready=_is_ready(status),
+        deleting=metadata.deletion_timestamp is not None,
         pod_ip=status.pod_ip,
         uid=metadata.uid,
         restart_count=sum(container.restart_count for container in status.container_statuses),
@@ -71,7 +73,7 @@ def parse_pod(pod: Pod, keys: CellLabelKeys) -> ParsedPod | None:
 
 
 def cell_members_hash(pods: list[ParsedPod]) -> str:
-    parts = [f"{pod.name}:{pod.uid}:{pod.restart_count}" for pod in sorted_by_pod_in_cell_index(pods)]
+    parts = [f"{pod.name}:{pod.uid}:{pod.restart_count}:{pod.deleting}" for pod in sorted_by_pod_in_cell_index(pods)]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
