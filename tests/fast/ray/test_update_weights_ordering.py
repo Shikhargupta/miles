@@ -61,7 +61,7 @@ class _ServerStub:
 
 
 def _make_inference_controller(**arg_overrides: object) -> InferenceController:
-    return InferenceController(make_args(**arg_overrides), engine_provider=None, router_provider=None)
+    return InferenceController(make_args(**arg_overrides), engine_provider=None, router_providers=[])
 
 
 @pytest.mark.asyncio
@@ -154,7 +154,7 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
     """Each weight-update phase finishes on every engine before the next phase starts on any."""
     from unittest.mock import patch
 
-    from miles.backends.experimental.fsdp_utils.update_weight_utils import UpdateWeightFromTensor
+    from miles.backends.fsdp_utils.update_weight_utils import UpdateWeightFromTensor
 
     order: list[str] = []
     pause_modes: list[str] = []
@@ -186,7 +186,7 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
     updater.model.state_dict.return_value = {}
     updater.rollout_engines = [_Client(0), _Client(1)]
 
-    module = "miles.backends.experimental.fsdp_utils.update_weight_utils"
+    module = "miles.backends.fsdp_utils.update_weight_utils"
     with patch(f"{module}.dist") as dist_mock, patch(f"{module}.get_gloo_group", return_value=MagicMock()):
         dist_mock.get_rank.return_value = 0
         updater.update_weights()
