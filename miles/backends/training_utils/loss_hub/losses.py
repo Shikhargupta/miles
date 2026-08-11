@@ -92,9 +92,6 @@ def policy_loss_function(
     parallel_state = get_parallel_state()
     advantages_list = [advantage.detach() for advantage in batch["advantages"]]
     advantages = torch.cat(advantages_list, dim=0)
-    standalone_log_probs = (
-        [log_prob.detach() for log_prob in batch["log_probs"]] if batch.get("log_probs") is not None else None
-    )
     rollout_old_log_probs = (
         [log_prob.detach() for log_prob in batch["rollout_log_probs"]]
         if batch.get("rollout_log_probs") is not None
@@ -107,7 +104,7 @@ def policy_loss_function(
         assert (
             rollout_old_log_probs is not None
         ), "rollout_log_probs must be provided when --use-rollout-logprobs is set"
-    elif not args.skip_actor_forward_only and standalone_log_probs is None:
+    elif not args.skip_actor_forward_only and batch.get("log_probs") is None:
         raise ValueError("policy loss requires old-policy log-probs")
 
     response_lengths = batch["response_lengths"]
@@ -127,9 +124,12 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
-    trainer_scored_log_probs = (
-        [log_prob.detach() for log_prob in log_probs] if args.skip_actor_forward_only else standalone_log_probs
-    )
+    if args.skip_actor_forward_only:
+        trainer_scored_log_probs = [log_prob.detach() for log_prob in log_probs]
+    else:
+        trainer_scored_log_probs = (
+            [log_prob.detach() for log_prob in batch["log_probs"]] if batch.get("log_probs") is not None else None
+        )
     if args.use_rollout_logprobs:
         old_log_probs = rollout_old_log_probs
     else:
