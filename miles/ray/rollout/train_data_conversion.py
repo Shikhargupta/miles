@@ -39,6 +39,9 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "metadata": ValueSpec(codec="msgpack_ragged"),
     "weight_versions": ValueSpec(codec="msgpack_ragged"),
     "raw_reward": ValueSpec(codec="auto"),
+    # Centered-only (no group-std division) per-sequence advantage, used by
+    # the Delightful-PG gate so its scale does not depend on group homogeneity.
+    "delight_rewards": ValueSpec(codec="ndarray", dtype="float32"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
     "num_microbatches": ValueSpec(codec="auto"),
@@ -60,7 +63,7 @@ def convert_samples_to_train_data(
     if (f := custom_convert_samples_to_train_data_func) is not None:
         return f(args, samples)
 
-    raw_rewards, rewards = _post_process_rewards(
+    raw_rewards, rewards, delight_rewards = _post_process_rewards(
         args,
         samples,
         custom_reward_post_process_func=custom_reward_post_process_func,
@@ -77,6 +80,7 @@ def convert_samples_to_train_data(
         # we could use key to select the reward.
         "rewards": rewards,
         "raw_reward": raw_rewards,
+        "delight_rewards": delight_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
@@ -176,7 +180,13 @@ def _post_process_rewards(
     prompt_group_sizes: list[int] | None = None,
 ):
     if (f := custom_reward_post_process_func) is not None:
-        return f(args, samples)
+        result = f(args, samples)
+        if len(result) == 2:
+            # Custom hooks predate delight_rewards; reuse their normalized
+            # rewards so the gate still gets a per-sequence advantage.
+            raw_rewards, rewards = result
+            return raw_rewards, rewards, rewards
+        return result
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
@@ -189,8 +199,10 @@ def _post_process_rewards(
                 raw_rewards
             ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(raw_rewards)} rewards"
             normalized_groups = []
+            centered_groups = []
             for group_rewards in rewards.split(prompt_group_sizes):
                 centered = group_rewards - group_rewards.mean()
+                centered_groups.append(centered.clone())
                 if (
                     args.advantage_estimator in ["grpo", "gspo"]
                     and args.grpo_std_normalization
@@ -198,7 +210,11 @@ def _post_process_rewards(
                 ):
                     centered = centered / (group_rewards.std() + 1e-6)
                 normalized_groups.append(centered)
-            return raw_rewards, torch.cat(normalized_groups).tolist()
+            return (
+                raw_rewards,
+                torch.cat(normalized_groups).tolist(),
+                torch.cat(centered_groups).tolist(),
+            )
         if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
             rewards = rewards.reshape(-1, args.n_samples_per_prompt)
         else:
@@ -206,14 +222,16 @@ def _post_process_rewards(
             rewards = rewards.view(-1, rewards.shape[-1])
         mean = rewards.mean(dim=-1, keepdim=True)
         rewards = rewards - mean
+        # Snapshot before the optional std division; this is the paper's U = R - b.
+        centered_rewards = rewards.clone()
 
         if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization:
             std = rewards.std(dim=-1, keepdim=True)
             rewards = rewards / (std + 1e-6)
 
-        return raw_rewards, rewards.flatten().tolist()
+        return raw_rewards, rewards.flatten().tolist(), centered_rewards.flatten().tolist()
 
-    return raw_rewards, raw_rewards
+    return raw_rewards, raw_rewards, raw_rewards
 
 
 def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):

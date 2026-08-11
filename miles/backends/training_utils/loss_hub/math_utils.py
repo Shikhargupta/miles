@@ -276,9 +276,18 @@ def compute_delight_gate(
         gate = 2.0 * gate
     gate = torch.where(active_tokens, gate, gate.new_ones(()))
 
+    # The masked MEAN of the gate is ~1.0 whenever advantages are zero-mean,
+    # regardless of how hard the gate is working, so also log the mean of
+    # squares (std = sqrt(mean_sq - mean^2)) and the off-neutral fractions.
+    neutral = 1.0 if args.delight_unit_gain else 0.5
+    lo, hi = 0.9 * neutral, 1.1 * neutral
     metrics = {
         "delight_gate": gate.clone().detach(),
+        "delight_gate_sq": (gate * gate).clone().detach(),
+        "delight_gate_frac_low": (gate < lo).float().detach(),
+        "delight_gate_frac_high": (gate > hi).float().detach(),
         "delight": delight.clone().detach(),
+        "delight_abs": delight.abs().clone().detach(),
         "delight_surprisal": surprisal.clone().detach(),
     }
     return gate.detach().to(dtype=log_probs.dtype), metrics

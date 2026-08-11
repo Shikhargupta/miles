@@ -5,6 +5,7 @@ from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
+from miles.backends.training_utils.loss_hub.math_utils import get_grpo_returns
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
@@ -108,6 +109,16 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
 
     if args.normalize_advantages:
         advantages = normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)
+
+    # Delightful-PG gate input: per-sequence advantage WITHOUT the group-std
+    # division, and deliberately without normalize_advantages, so the gate
+    # scale is comparable across groups. Falls back to `advantages` when the
+    # field is absent (custom reward hooks, non-GRPO estimators).
+    if getattr(args, "use_delight", False):
+        delight_rewards = rollout_data.get("delight_rewards")
+        if delight_rewards is not None and args.advantage_estimator in ["grpo", "gspo"]:
+            delight_rewards = torch.tensor(delight_rewards, dtype=torch.float32, device=kl[0].device)
+            rollout_data["delight_advantages"] = get_grpo_returns(delight_rewards, kl)
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns

@@ -223,10 +223,22 @@ def policy_loss_function(
     # by a sigmoid of delight (advantage x surprisal).  Applied to the already
     # clipped `pg_loss` so it composes with GRPO/GSPO rather than replacing them.
     if args.use_delight:
+        # Prefer the centered-only advantage; group-std-normalized advantages
+        # make the gate depend on group homogeneity rather than the sequence.
+        gate_adv = batch.get('delight_advantages')
+        if gate_adv is not None:
+            gate_adv = torch.cat([a.detach() for a in gate_adv], dim=0)
+            gate_adv = torch.where(
+                active_tokens,
+                torch.nan_to_num(gate_adv, nan=0.0, posinf=0.0, neginf=0.0),
+                gate_adv.new_zeros(()),
+            )
+        else:
+            gate_adv = advantages
         delight_gate, delight_metrics = compute_delight_gate(
             args=args,
             log_probs=log_probs,
-            advantages=advantages,
+            advantages=gate_adv,
             active_tokens=active_tokens,
         )
         pg_loss = pg_loss * delight_gate
