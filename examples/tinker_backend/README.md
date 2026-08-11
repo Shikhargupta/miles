@@ -16,11 +16,29 @@ official tinker SDK ──HTTP──> TinkerController (head node)
 trainer ranks <──Ray── driver loop (train_tinker_backend.py)
 ```
 
-## Launch
+## Start the Miles engine
+
+For the documented SDK flow, start both the operation backend and the Tinker
+frontend. The helper starts the shared training and sampling engines in
+service mode; add `--tinker-frontend` through `--extra-args` so that the
+official SDK can use the controller's `/api/v1` endpoint:
+
+```bash
+# Once per node: download the example checkpoint.
+python examples/tinker_backend/run_tinker_backend.py prepare
+
+# Start Miles in service mode, with both the backend and frontend enabled.
+python examples/tinker_backend/run_tinker_backend.py serve \
+  --extra-args "--tinker-frontend"
+```
+
+The following lower-level command is useful when deploying with custom
+Megatron and SGLang flags:
 
 ```bash
 python train_tinker_backend.py \
   --tinker-backend \
+  --tinker-frontend \
   --multi-lora-n-adapters 4 \
   --lora-rank 32 --lora-alpha 64 \
   --target-modules all-linear \
@@ -116,6 +134,81 @@ future = sampler.sample(                   # sample()/sample_async() submit /api
 )
 response = future.result()                 # .sequences[i].tokens / .logprobs / .stop_reason
 ```
+
+### Client-owned RL loop
+
+After the engine reports ready, connect the official SDK client to the
+frontend endpoint and run the loop below. The backend executes each requested
+operation; rollout generation, scoring, and `Datum` construction remain in
+the client.
+
+Start the driver with both `--tinker-backend` and `--tinker-frontend`.  The
+backend then owns execution and serving, while the client owns data
+preparation and the training loop.  In particular, the client can run the
+same pattern as the [target-flow example](https://github.com/radixark/miles/issues/2258):
+
+```python
+import tinker
+from transformers import AutoTokenizer
+
+service = tinker.ServiceClient(base_url="http://127.0.0.1:8068", api_key="tml-...")
+base_model = service.get_server_capabilities().supported_models[0].model_name
+training = service.create_lora_training_client(base_model=base_model, rank=16)
+tokenizer = AutoTokenizer.from_pretrained(base_model)
+
+# Publish the initial LoRA so the first rollout has a policy to sample.
+sampler = training.save_weights_and_get_sampling_client()
+
+rl_prompts = ["Solve: If a train travels 60 km in 2 hours, what is its speed?"]
+prompt_ids = [tokenizer(p).input_ids for p in rl_prompts]
+
+for update_idx in range(num_rl_updates):
+    # Option 1 -- SFT data preparation (client-owned; replace the RL batch
+    # below and train with loss_fn="cross_entropy").
+    # batch = [
+    #     datum_from_sft_example(example["prompt"], example["completion"])
+    #     for example in sft_examples
+    # ]
+
+    # Option 2 -- RL data preparation (client-owned). sample() returns a
+    # future; .result() carries sequences with tokens and logprobs.
+    futures = [
+        sampler.sample(
+            prompt=tinker.types.ModelInput.from_ints(ids),
+            num_samples=4,
+            sampling_params=tinker.types.SamplingParams(max_tokens=256, temperature=1.0),
+        )
+        for ids in prompt_ids
+    ]
+    rollouts = [future.result() for future in futures]
+    scored = score_rollouts(rl_prompts, rollouts)  # rewards -> advantages, client-owned
+    batch = [
+        datum_from_scored_rollout(ids, sequence, advantage)
+        for ids, response, advantages in zip(prompt_ids, rollouts, scored)
+        for sequence, advantage in zip(response.sequences, advantages)
+    ]
+
+    fb = training.forward_backward(batch, "importance_sampling")
+    step = training.optim_step(tinker.types.AdamParams(learning_rate=1e-4))
+    fb.result()
+    step.result()
+
+    # Publish explicitly so the next rollout samples the new policy.
+    # Serving is latest-only: the publish supersedes the previous sampling
+    # client, so re-acquire it here every update.
+    sampler = training.save_weights_and_get_sampling_client()
+```
+
+`datum_from_sft_example`, `score_rollouts`, and `datum_from_scored_rollout`
+are application code: they define the task data, rollout scoring, and the
+per-token loss channels. An RL datum pairs `model_input` (prompt + sampled
+tokens, shifted) with `loss_fn_inputs` `target_tokens`, the sampler's
+returned `logprobs`, and per-token `advantages`; an SFT datum needs
+`target_tokens` plus 0/1 `weights`. The frontend translates the resulting
+SDK requests to operations; the backend executes them in order and only
+changes the sampler's policy on the explicit publish. The complete runnable
+version of this loop is `tests/e2e/tinker_backend/tinker_sdk_rl_quality.py`
+(GRPO on GSM8K, four concurrent adapters through one deployment).
 
 Mapping: one training client = one registration (`create_model` registers,
 `unload_model` deregisters), and every operation is pinned to its
