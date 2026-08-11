@@ -212,6 +212,7 @@
          "advanced/fp8-low-precision",
          "advanced/int4-qat",
          "advanced/speculative-decoding",
+         "advanced/on-policy-distillation",
          "advanced/lora"
         ],
         "expanded": false
@@ -272,6 +273,16 @@
        "developer/versions",
        "developer/debug",
        "developer/experimental-features"
+      ]
+     },
+     {
+      "group": "CI",
+      "pages": [
+       "ci/contributor-guide",
+       "ci/00-stage",
+       "ci/01-label",
+       "ci/02-docker-build",
+       "ci/03-metric-history-gate"
       ]
      }
     ]
