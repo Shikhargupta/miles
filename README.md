@@ -19,4 +19,4 @@
 
 </div>
 
-Miles is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **large-scale post-training**. Miles bridges the gap between research-grade RL and production-grade reliability by integrating **SGLang** for high-throughput rollout and **Megatron-LM** for scalable training.
+Miles is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **large-scale post-training**. Miles bridges the gap between research-grade flexibility and production-grade reliability by integrating **SGLang** for high-throughput rollout and **Megatron-LM** for scalable training.
