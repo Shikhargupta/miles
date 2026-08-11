@@ -178,6 +178,10 @@ def execute(args: ScriptArgs):
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.7 "
+        # Hard context ceiling: the engine rejects anything longer, so an
+        # unbounded agent loop cannot melt decode throughput or generate
+        # tokens beyond the trainable --max-seq-len window.
+        "--sglang-context-length 65536 "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
