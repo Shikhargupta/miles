@@ -187,20 +187,37 @@ class TestSelectionKindLock:
         with pytest.raises(EmptyBatchTimeoutError):
             asyncio.run(fn._select())
 
-    def test_merge_builds_the_batch_plan(self):
+    def test_merge_ships_the_converted_plan_and_pad_policy(self):
+        """Refactor equivalence (codex-rollout-fullparameter-design-0810 §4.4):
+        the expected dict below is byte-for-byte what the PRE-refactor manager
+        merged for this selection via its ``batch_plan`` sniff —
+        ``batch_plan_to_metadata([{name=A, registration_id=r-A, bound_slot=0,
+        operation_id=op-A, operation_kind=forward_backward, loss_spec=None,
+        sample_count=1}])`` — and ``pad_to_dp`` was True exactly because the
+        metadata carried a ``batch_plan`` key. The fn now declares both
+        directly; the manager merges them without recognizing tinker keys."""
         fn = make_fn()
         first = ready_runtime(fn, "A", 0, "forward_backward")
         selected = asyncio.run(fn._select())
         output = fn._merge(selected)
-        assert output.metadata["batch_plan"] == [
-            dict(
-                name="A",
-                registration_id="r-A",
-                bound_slot=0,
-                operation_id="op-A",
-                operation_kind="forward_backward",
-                loss_spec=None,
-                sample_count=1,
-            )
-        ]
+        assert output.conversion_metadata == {
+            "batch_kind": "tinker",
+            "adapter_name_by_slot": {0: "A"},
+            "tinker_loss_by_slot": {0: {}},
+            "operation_by_slot": {0: "op-A"},
+        }
+        assert output.postprocess.pad_to_dp is True
         assert first.state == AdapterRolloutRuntime.IDLE and first.ready_output is None
+
+    def test_merge_of_a_forward_selection_marks_forward_only(self):
+        """Pre-refactor capture, forward kind: the same composition with
+        ``tinker_forward_only`` set — the flag that keeps forward operations
+        gradient-free must survive the contract move."""
+        fn = make_fn()
+        ready_runtime(fn, "A", 0, "forward")
+        ready_runtime(fn, "B", 1, "forward")
+        selected = asyncio.run(fn._select())
+        output = fn._merge(selected)
+        assert output.conversion_metadata["tinker_forward_only"] is True
+        assert output.conversion_metadata["operation_by_slot"] == {0: "op-A", 1: "op-B"}
+        assert output.postprocess.pad_to_dp is True

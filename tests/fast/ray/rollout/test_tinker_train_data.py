@@ -11,7 +11,8 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 import pytest
 
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
-from miles.ray.rollout.train_data_conversion import batch_plan_to_metadata, convert_samples_to_train_data
+from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
+from miles.rollout.tinker_backend.rollout_fn import batch_plan_to_metadata
 from miles.utils.types import AdapterRef, Sample
 
 

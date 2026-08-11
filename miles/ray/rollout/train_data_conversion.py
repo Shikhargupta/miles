@@ -51,26 +51,6 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
 }
 
 
-def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
-    """Distill one tinker selection's BatchPlan into conversion metadata.
-    Selections are homogeneous: exactly one data-operation kind — mixed
-    forward/forward_backward batches are structurally impossible, which is
-    what keeps forward operations gradient-free without loss surgery."""
-    kinds = {entry["operation_kind"] for entry in batch_plan}
-    if len(kinds) != 1 or not kinds <= {"forward_backward", "forward"}:
-        raise ValueError(f"tinker selection must be one homogeneous data kind, got {sorted(kinds)}")
-    metadata: dict[str, Any] = {
-        "batch_kind": "tinker",
-        "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
-        "tinker_loss_by_slot": {entry["bound_slot"]: entry.get("loss_spec") or {} for entry in batch_plan},
-        # The trainer completes these operations after the batch lands.
-        "operation_by_slot": {entry["bound_slot"]: entry["operation_id"] for entry in batch_plan},
-    }
-    if kinds == {"forward"}:
-        metadata["tinker_forward_only"] = True
-    return metadata
-
-
 def convert_samples_to_train_data(
     args,
     samples: list[Sample] | list[list[Sample]],

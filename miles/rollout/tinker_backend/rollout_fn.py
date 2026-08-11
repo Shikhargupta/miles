@@ -1,8 +1,9 @@
 """Tinker rollout frontend: one child per registration, each child turning one
 claimed client operation into one complete batch. The wrapper selects whole
 child batches with a persistent round-robin under a KIND LOCK — a selection is
-all forward_backward or all forward, never mixed — and the BatchPlan
-(``RolloutFnTrainOutput.metadata``) is the only rollout-to-train control plane.
+all forward_backward or all forward, never mixed — and the BatchPlan, shipped
+already converted as the output's conversion-metadata contribution, is the
+only rollout-to-train control plane.
 
 Nothing here generates: data operations arrive fully tokenized from the
 client, and sampling happens against the router directly.
@@ -13,6 +14,7 @@ import copy
 import logging
 import time
 from collections import deque
+from typing import Any
 
 import ray
 
@@ -23,11 +25,33 @@ from miles.rollout.base_types import (
     RolloutFnInput,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
+    RolloutPostprocessOptions,
 )
 from miles.utils.tinker_backend import EmptyBatchTimeoutError
 from miles.utils.types import AdapterRef, Sample
 
 logger = logging.getLogger(__name__)
+
+
+def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
+    """Distill one tinker selection's BatchPlan into conversion metadata.
+    Selections are homogeneous: exactly one data-operation kind — mixed
+    forward/forward_backward batches are structurally impossible, which is
+    what keeps forward operations gradient-free without loss surgery."""
+    kinds = {entry["operation_kind"] for entry in batch_plan}
+    if len(kinds) != 1 or not kinds <= {"forward_backward", "forward"}:
+        raise ValueError(f"tinker selection must be one homogeneous data kind, got {sorted(kinds)}")
+    metadata: dict[str, Any] = {
+        "batch_kind": "tinker",
+        "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
+        "tinker_loss_by_slot": {entry["bound_slot"]: entry.get("loss_spec") or {} for entry in batch_plan},
+        # The trainer completes these operations after the batch lands.
+        "operation_by_slot": {entry["bound_slot"]: entry["operation_id"] for entry in batch_plan},
+    }
+    if kinds == {"forward"}:
+        metadata["tinker_forward_only"] = True
+    return metadata
+
 
 _CLAIM_POLL_S = 0.5
 
@@ -372,4 +396,14 @@ class TinkerRolloutFn:
                 )
             )
             metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
-        return RolloutFnTrainOutput(samples=data, metrics=metrics, metadata={"batch_plan": batch_plan})
+        return RolloutFnTrainOutput(
+            samples=data,
+            metrics=metrics,
+            # Converted HERE, not in the manager: the generic rollout plane
+            # never recognizes tinker keys.
+            conversion_metadata=batch_plan_to_metadata(batch_plan),
+            # Whole client batches: zero-weight pads round the selection up to
+            # the DP grid so the multi-LoRA dynamic-GBS branch sizes the step
+            # to the batch instead of trimming it.
+            postprocess=RolloutPostprocessOptions(pad_to_dp=True),
+        )
