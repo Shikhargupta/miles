@@ -58,6 +58,8 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
 COPY wheel[s]/ /tmp/wheels/
 
+# Do not cache rolling-release downloads unless they are resolved to an
+# immutable asset manifest and validated against it.
 RUN case "${TARGETARCH}" in \
       amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
       arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
