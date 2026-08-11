@@ -126,13 +126,13 @@ def execute(args: ScriptArgs):
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 2 "
+        "--expert-model-parallel-size 8 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 8192 "
+        "--max-tokens-per-gpu 16384 "
         "--optimizer-cpu-offload "
         "--overlap-cpu-optimizer-d2h-h2d "
         "--use-precision-aware-optimizer "
@@ -176,8 +176,8 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 4 "
-        "--sglang-mem-fraction-static 0.55 "
+        "--rollout-num-gpus-per-engine 1 "
+        "--sglang-mem-fraction-static 0.7 "
         # Hard context ceiling: the engine rejects anything longer, so an
         # unbounded agent loop cannot melt decode throughput or generate
         # tokens beyond the trainable --max-seq-len window.
@@ -194,6 +194,7 @@ def execute(args: ScriptArgs):
         "--rollout-function-path generate.RolloutFn "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model glm47 "
+        "--tito-allowed-append-roles user tool "
         "--use-session-server "
         "--session-server-port 30000 "
         # Devbox has no ingress forwarding, so the session server must bind
