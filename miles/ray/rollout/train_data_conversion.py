@@ -169,6 +169,63 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
     return [totals[rid] for rid in rollout_ids]
 
 
+def _reward_group_ids(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[int]:
+    """Resolve each row's reward-normalization group without assuming fixed fanout."""
+    if prompt_group_sizes is not None:
+        assert sum(prompt_group_sizes) == len(
+            samples
+        ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(samples)} rewards"
+        return [group_id for group_id, size in enumerate(prompt_group_sizes) for _ in range(size)]
+
+    group_indices = [sample.group_index for sample in samples]
+    if all(group_index is not None for group_index in group_indices):
+        return [int(group_index) for group_index in group_indices]
+
+    expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
+    group_size = args.n_samples_per_prompt if len(samples) == expected_samples else len(samples)
+    return [row_index // group_size for row_index in range(len(samples))]
+
+
+def _normalize_rewards_by_rollout(
+    args: Any,
+    samples: list[Sample],
+    raw_rewards: list[float],
+    prompt_group_sizes: list[int] | None,
+) -> list[float]:
+    """Normalize one reward per rollout, then broadcast its advantage to sibling rows."""
+    if not samples:
+        return []
+
+    group_ids = _reward_group_ids(args, samples, prompt_group_sizes)
+    row_keys: list[tuple[int, int | tuple[str, int]]] = []
+    rollout_rewards: dict[tuple[int, int | tuple[str, int]], float] = {}
+    group_rollout_keys: dict[int, list[tuple[int, int | tuple[str, int]]]] = {}
+
+    for row_index, (sample, reward, group_id) in enumerate(zip(samples, raw_rewards, group_ids, strict=True)):
+        rollout_id = sample.rollout_id if sample.rollout_id is not None else sample.index
+        rollout_key = rollout_id if rollout_id is not None else ("row", row_index)
+        key = (group_id, rollout_key)
+        if key in rollout_rewards:
+            if rollout_rewards[key] != reward:
+                raise ValueError(
+                    f"samples in reward group {group_id} with rollout_id={rollout_id} must share one reward; got {rollout_rewards[key]} and {reward}"
+                )
+        else:
+            rollout_rewards[key] = reward
+            group_rollout_keys.setdefault(group_id, []).append(key)
+        row_keys.append(key)
+
+    normalized_by_rollout: dict[tuple[int, int | tuple[str, int]], float] = {}
+    for keys in group_rollout_keys.values():
+        rewards = torch.tensor([rollout_rewards[key] for key in keys], dtype=torch.float)
+        normalized = rewards - rewards.mean()
+        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(keys) > 1:
+            normalized = normalized / (rewards.std() + 1e-6)
+        normalized_by_rollout.update(zip(keys, normalized.tolist(), strict=True))
+
+    return [normalized_by_rollout[key] for key in row_keys]
+
+
 def _post_process_rewards(
     args,
     samples: list[Sample] | list[list[Sample]],
@@ -180,38 +237,8 @@ def _post_process_rewards(
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
-        # group norm
-        rewards = torch.tensor(raw_rewards, dtype=torch.float)
-        if prompt_group_sizes is not None:
-            # Multi-LoRA: groups may have heterogeneous sizes (per-adapter
-            # n_samples_per_prompt), so normalize within explicit boundaries.
-            assert sum(prompt_group_sizes) == len(
-                raw_rewards
-            ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(raw_rewards)} rewards"
-            normalized_groups = []
-            for group_rewards in rewards.split(prompt_group_sizes):
-                centered = group_rewards - group_rewards.mean()
-                if (
-                    args.advantage_estimator in ["grpo", "gspo"]
-                    and args.grpo_std_normalization
-                    and group_rewards.numel() > 1
-                ):
-                    centered = centered / (group_rewards.std() + 1e-6)
-                normalized_groups.append(centered)
-            return raw_rewards, torch.cat(normalized_groups).tolist()
-        if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
-            rewards = rewards.reshape(-1, args.n_samples_per_prompt)
-        else:
-            # when samples count are not equal in each group
-            rewards = rewards.view(-1, rewards.shape[-1])
-        mean = rewards.mean(dim=-1, keepdim=True)
-        rewards = rewards - mean
-
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization:
-            std = rewards.std(dim=-1, keepdim=True)
-            rewards = rewards / (std + 1e-6)
-
-        return raw_rewards, rewards.flatten().tolist()
+        normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
+        return raw_rewards, normalized_rewards
 
     return raw_rewards, raw_rewards
 
