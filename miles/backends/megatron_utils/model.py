@@ -435,6 +435,7 @@ def train_one_step(
         opt_param_scheduler: LR/WD scheduler.
         num_microbatches: Number of microbatches to process.
         num_rollouts: This step's rollout count (loss normalizer + LR increment).
+
     Returns:
         Tuple of (reduced loss dict, gradient norm, step outcome).
     """

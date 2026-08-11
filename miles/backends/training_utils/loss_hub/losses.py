@@ -81,6 +81,7 @@ def policy_loss_function(
             and optionally "ref_log_probs" and "rollout_log_probs".
         logits: Policy logits with shape `[1, T, V]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
+
     Returns:
         Tuple of `(loss, metrics)` where `loss` is a scalar tensor and `metrics`
         is a dict containing detached scalars: "loss", "pg_loss",
