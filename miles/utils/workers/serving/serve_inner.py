@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -32,14 +33,14 @@ def main() -> None:
     worker = create_worker(spec, specs_fn=args.specs, worker_argv=worker_argv)
     _log(f"pool_id={args.pool_id} worker_class={spec.worker_class}")
 
-    port = _rpc_port_of(spec) + read_worker_in_pod_index()
+    port = _rpc_port_of(spec) + read_worker_in_pod_index(os.environ)
     app = create_rpc_app(worker)
     _log(f"serve host={DEFAULT_HOST} port={port}")
     uvicorn.run(app, host=DEFAULT_HOST, port=port)
 
 
 def create_worker(spec: ServeWorkerSpec, *, specs_fn: str, worker_argv: list[str]) -> Any:
-    identity = read_worker_identity(scheduling=spec.scheduling)
+    identity = read_worker_identity(scheduling=spec.scheduling, environ=os.environ)
     _log(f"identity={identity}")
     capability = DeferredBackendCapability(create=lambda: _backend_capability(specs_fn, worker_argv))
     return load_function(spec.worker_class)(**spec.ctor_kwargs(identity.ctor_context(capability=capability)))

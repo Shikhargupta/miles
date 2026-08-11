@@ -17,7 +17,7 @@ def main() -> None:
     _log(f"start own_argv={own_argv} worker_argv={worker_argv}")
 
     spec = compute_serve_worker_spec(specs_fn=args.specs, pool_id=args.pool_id, worker_argv=worker_argv)
-    identity = read_worker_identity(scheduling=spec.scheduling)
+    identity = read_worker_identity(scheduling=spec.scheduling, environ=os.environ)
     env_vars = spec.env_var(
         WorkerLaunchContext(
             cell_index=identity.cell_index,

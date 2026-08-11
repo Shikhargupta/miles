@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from miles.utils.workers.k8s_types import ContainerStatus, Pod, PodMetadata, PodStatus
 from miles.utils.workers.reconcile.k8s_api import PodWatchEvent, exception_rejects_cursor
-from miles.utils.workers.reconcile.k8s_types import ContainerStatus, Pod, PodMetadata, PodStatus
 
 
 def make_exception(**fields: Any) -> Exception:

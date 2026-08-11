@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, Protocol
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.reconcile.k8s_types import Pod, WatchFrame
+from miles.utils.workers.k8s_types import Pod, WatchFrame
 
 logger = logging.getLogger(__name__)
 

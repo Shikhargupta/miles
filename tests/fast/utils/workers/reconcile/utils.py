@@ -6,8 +6,8 @@ from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
 
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import PodListPage, PodWatchEvent
-from miles.utils.workers.reconcile.k8s_types import Pod
 from miles.utils.workers.reconcile.source_event import ParentKey, ReplaceEvent, SourceEvent
 
 

@@ -69,6 +69,13 @@ class ReconcileLoop:
         self._start_called = False
         self._tasks: list[asyncio.Task[None]] = []
 
+    async def __aenter__(self) -> ReconcileLoop:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.stop()
+
     async def start(self) -> None:
         assert not self._start_called, "ReconcileLoop.start() must be called exactly once"
         self._start_called = True

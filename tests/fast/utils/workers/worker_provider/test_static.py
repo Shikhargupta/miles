@@ -9,7 +9,7 @@ from miles.utils.workers.worker_provider.kubernetes.helm import naming
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
 
-RELEASE = "miles-run-c0ffee"
+_RELEASE = "miles-run-c0ffee"
 
 
 class FakeController:
@@ -39,7 +39,7 @@ def _command_spec() -> CommandWorkerSpec:
 
 
 def _provider(spec=None) -> StaticWorkerProvider:
-    return StaticWorkerProvider(release=RELEASE, spec=spec or _served_spec())
+    return StaticWorkerProvider(release=_RELEASE, spec=spec or _served_spec())
 
 
 class TestAddresses:
@@ -47,14 +47,14 @@ class TestAddresses:
         """The launcher and the pod run the same naming function, so no address has to be shipped between them."""
         addrs = asyncio.run(_provider().get_addrs("trainer-controller-0-0"))
 
-        assert addrs["primary"].host == naming.static_worker_host(RELEASE, "trainer-controller", 0)
+        assert addrs["primary"].host == naming.static_worker_host(_RELEASE, "trainer-controller", 0)
         assert addrs["primary"].port == 7000
 
     def test_each_cell_answers_on_its_own_host(self):
         """Every cell of a static pool is its own workload object, so cell index selects the hostname."""
         second = asyncio.run(_provider().get_addrs("trainer-controller-1-0"))
 
-        assert second["primary"].host == naming.static_worker_host(RELEASE, "trainer-controller", 1)
+        assert second["primary"].host == naming.static_worker_host(_RELEASE, "trainer-controller", 1)
 
     def test_carries_every_port_the_spec_declares(self):
         """A caller that asked for a port the spec declares must not have to know its number."""
@@ -99,7 +99,7 @@ class TestReleaseNaming:
 
     def test_a_release_that_fits_is_left_alone(self):
         """A readable name is worth keeping, and nothing is lost when nothing is truncated."""
-        assert naming.component_name(RELEASE, "trainer-controller") == f"{RELEASE}-trainer-controller"
+        assert naming.component_name(_RELEASE, "trainer-controller") == f"{_RELEASE}-trainer-controller"
 
 
 class TestHandles:

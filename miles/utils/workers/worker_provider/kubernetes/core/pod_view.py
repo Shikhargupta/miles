@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.k8s_types import Pod, PodStatus
 from miles.utils.workers.naming import compute_cell_id
-from miles.utils.workers.reconcile.k8s_types import Pod, PodStatus
 
 
 class CellLabelKeys(FrozenStrictBaseModel):

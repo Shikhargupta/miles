@@ -43,15 +43,15 @@ class TestGetHandle:
 
     def test_the_handle_of_the_named_worker_is_returned(self):
         """A cell holds several workers, so the one whose name matches must come back, not merely the first."""
-        provider = _RecordingProvider("trainer-actor-0-0", "trainer-actor-0-1")
+        provider = _RecordingProvider("trainer-engine-actor-0-0", "trainer-engine-actor-0-1")
 
-        handle = provider.get_handle("trainer-actor-0-1")
+        handle = provider.get_handle("trainer-engine-actor-0-1")
 
         assert handle is provider._infos[1].handle
 
     def test_a_worker_the_cell_does_not_hold_is_rejected(self):
         """Answering with a handle to some other worker would silently drive the wrong process."""
-        provider = _RecordingProvider("trainer-actor-0-0")
+        provider = _RecordingProvider("trainer-engine-actor-0-0")
 
         with pytest.raises(AssertionError, match="worker_name="):
-            provider.get_handle("trainer-actor-0-1")
+            provider.get_handle("trainer-engine-actor-0-1")

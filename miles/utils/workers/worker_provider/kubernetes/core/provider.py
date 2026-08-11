@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import NamedTuple
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi
 from miles.utils.workers.reconcile.k8s_reflector import KubernetesReflector
-from miles.utils.workers.reconcile.k8s_types import Pod
-from miles.utils.workers.reconcile.loop import DEFAULT_RESYNC_PERIOD, ReconcileLoop
+from miles.utils.workers.reconcile.loop import ReconcileLoop
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core import cell_view, pod_view
@@ -26,9 +26,7 @@ class KubernetesRunInfo(FrozenStrictBaseModel):
 
 
 class KubernetesWorkerProvider(BaseWorkerProvider):
-    def __init__(
-        self, *, run: KubernetesRunInfo, pool_ids: list[str], resync_period: float | None = DEFAULT_RESYNC_PERIOD
-    ) -> None:
+    def __init__(self, *, run: KubernetesRunInfo, pool_ids: list[str], resync_period: float | None) -> None:
         self._run = run
         self._pool_ids = pool_ids
         self._resync_period = resync_period
@@ -52,34 +50,25 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
             info = self.cell_info(cell_id)
             return reconcile(cell_id, info if info is not None and info.alive else None)
 
-        client = _create_kubernetes_client()
-        reflector = KubernetesReflector(
-            kube_client=client.api,
-            namespace=self._run.namespace,
-            label_selector=_watched_pods_selector(
-                base_selector=self._run.label_selector,
-                pool_label_key=self._run.label_keys.pool_id,
-                pool_ids=self._pool_ids,
-            ),
-        )
-        loop = ReconcileLoop(
-            source=reflector.watch,
-            reconcile=notify_cell,
-            key_map=self._cell_id_of_pod,
-            resync_period=self._resync_period,
-        )
-
-        async def stop_watching() -> None:
-            await loop.stop()
-            await client.close()
-
-        try:
-            await loop.start()
-        except BaseException:
-            await stop_watching()
-            raise
-        self._loop = loop
-        return stop_watching
+        async with AsyncExitStack() as watching:
+            reflector = KubernetesReflector(
+                kube_client=await watching.enter_async_context(_kubernetes_pod_api()),
+                namespace=self._run.namespace,
+                label_selector=_watched_pods_selector(
+                    base_selector=self._run.label_selector,
+                    pool_label_key=self._run.label_keys.pool_id,
+                    pool_ids=self._pool_ids,
+                ),
+            )
+            self._loop = await watching.enter_async_context(
+                ReconcileLoop(
+                    source=reflector.watch,
+                    reconcile=notify_cell,
+                    key_map=self._cell_id_of_pod,
+                    resync_period=self._resync_period,
+                )
+            )
+            return watching.pop_all().aclose
 
     def cell_ids(self) -> list[str]:
         return sorted(self._loop_or_fail().parent_keys())
@@ -107,21 +96,14 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
         return self._loop
 
 
-class _KubernetesClient(NamedTuple):
-    api: KubernetesAsyncioPodApi
-    close: Callable[[], Awaitable[None]]
-
-
-def _create_kubernetes_client() -> _KubernetesClient:
+@asynccontextmanager
+async def _kubernetes_pod_api() -> AsyncIterator[KubernetesAsyncioPodApi]:
     from kubernetes_asyncio import client as kubernetes_client
     from kubernetes_asyncio import config as kubernetes_config
 
     kubernetes_config.load_incluster_config()
-    api_client = kubernetes_client.ApiClient()
-    return _KubernetesClient(
-        api=KubernetesAsyncioPodApi(core_v1_api=kubernetes_client.CoreV1Api(api_client)),
-        close=api_client.close,
-    )
+    async with kubernetes_client.ApiClient() as api_client:
+        yield KubernetesAsyncioPodApi(core_v1_api=kubernetes_client.CoreV1Api(api_client))
 
 
 def _watched_pods_selector(*, base_selector: str, pool_label_key: str, pool_ids: list[str]) -> str:

@@ -9,8 +9,8 @@ from tests.ci.ci_register import register_cpu_ci
 from tests.e2e.k8s_apiserver.reflector_utils import pod_names_of, running_reconcile_loop
 from tests.e2e.k8s_apiserver.utils import BUSYBOX_IMAGE, CELL_LABEL, pod_body, wait_until
 
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi, PodWatchEvent
-from miles.utils.workers.reconcile.k8s_types import Pod
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 
 register_cpu_ci(est_time=660, suite="stage-b-cpu", labels=[])

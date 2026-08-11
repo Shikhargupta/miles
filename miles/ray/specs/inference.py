@@ -26,6 +26,8 @@ from miles.utils.workers.worker_spec import (
 
 logger = logging.getLogger(__name__)
 
+POOL_CATEGORY_INFERENCE_ENGINE = "inference_engine"
+
 INFERENCE_CONTROLLER_POOL_ID = "inference-controller"
 SESSION_SERVER_POOL_ID = "session-server"
 INFERENCE_CONTROLLER_WORKER_CLASS = "miles.ray.rollout.inference_controller.InferenceController"
@@ -137,13 +139,14 @@ def spec_session_server(args) -> CommandWorkerSpec:
     _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
+        (router_addrs,) = ctx.spec_addrs[compute_router_pool_id(0)]
         config = compute_session_server_config(
             args,
             host=args.session_server_ip or ctx.self_addrs["primary"].host,
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
-            backend_url=ctx.spec_addrs[compute_router_pool_id(0)][0]["primary"].addr,
+            backend_url=router_addrs["primary"].addr,
         )
         launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
         return shlex.join(launch_argv)
@@ -249,6 +252,7 @@ def _compute_spec_inference_engine(
 
     return CommandWorkerSpec(
         name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
+        category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
             PortInfo(

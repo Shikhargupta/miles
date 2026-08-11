@@ -1,0 +1,68 @@
+infra:
+  image:
+    repository: radixark/miles
+    tag: dev
+    pullPolicy: Always
+    pullSecrets: []
+  sharedStorage:
+    type: hostPath
+    hostPath: /cluster-storage
+    pvcClaimName: ""
+    mountPath: /cluster-storage
+  paths:
+    runsSubPath: miles_data
+    repos:
+      miles: ""
+      megatron: ""
+      sglang: ""
+  nodeLocalStorage:
+    hostPath: ""
+    mountPath: /scratch
+  scheduling:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  env: {}
+
+run:
+  id: unset
+  stateFile: /cluster-storage/miles_data/miles-runs/unset/state/orchestrator.state
+  objectNames:
+    orchestrator: miles-run-orchestrator
+    mooncakeMaster: miles-run-mooncake-master
+    colocatePairing: miles-run-colocate-pairing
+    uninstall: miles-run-uninstall
+    uninstallManifest: miles-run-uninstall-manifest
+  orchestrator:
+    command: []
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits: {}
+  staticWorkers: []
+  inferenceEngines: []
+  trainerEngines: []
+  env: {}
+  autoUninstall:
+    enabled: true
+    serviceAccount: miles-uninstaller
+  mooncake:
+    enabled: false
+    rpcPort: 50051
+    metricsPort: 50052
+    resources:
+      requests:
+        cpu: "2"
+        memory: 16Gi
+      limits: {}
+
+commandJob:
+  enabled: false
+  name: ""
+  objectName: ""
+  command: []
+  completions: 1
+  gpusPerPod: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 3600

@@ -98,6 +98,7 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 | Resync period | Level-triggered backstop | **Kept**, on by default at Go's 10 h, re-enqueues parents that still have members | Go defaults it on for the same reason we need it: insurance against this controller, or something it depends on, failing to requeue. Go's own limit is kept too, in that a parent which lost its last member is not re-driven. The 10 percent jitter is **dropped**: it spreads the LIST storm of many controllers, and there is one loop here whose resync only adds keys to a dedup set |
 | `MaxConcurrentReconciles` | Overlap reconcile I/O | **Dropped**; one worker | controller-runtime's default. No I/O to overlap |
 | Predicates | Save reconciles at scale | **Dropped** | Reconcile is cheap |
+| Lifecycle | Never leak a running loop | **`async with loop:`** | `start()` and `stop()` stay public, because `stop()` sometimes has to be scheduled from inside reconcile. Every caller that owns both ends writes the `async with` instead, and a caller that hands teardown back to someone else keeps the pairing with `AsyncExitStack.enter_async_context(loop)` |
 
 ### Dropped wholesale
 

@@ -54,7 +54,7 @@ class TestKubernetesBackendCapability:
         capability = _kubernetes_capability()
 
         with pytest.raises(AssertionError, match="not pool_ids of this run"):
-            capability.dynamic_worker_provider(pool_ids=["engine", "trainer-actor"])
+            capability.dynamic_worker_provider(pool_ids=["engine", "trainer-engine-actor"])
 
     def test_a_static_worker_is_answered_from_the_address_book(self) -> None:
         """A statically addressed worker has no cell to observe, only a predicted address."""

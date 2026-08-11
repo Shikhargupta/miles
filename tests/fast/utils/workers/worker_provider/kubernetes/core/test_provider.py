@@ -41,7 +41,7 @@ class FakePodApi:
 @pytest.fixture(autouse=True)
 def _fake_pod_api(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_pod_api.reset()
-    monkeypatch.setattr(core_provider, "_create_kubernetes_client", fake_pod_api.installed)
+    monkeypatch.setattr(core_provider, "_kubernetes_pod_api", fake_pod_api.installed)
 
 
 def _run(api, *, ports, worker_classes=None, spec_metas=None, workers_per_pod=None) -> KubernetesRunInfo:

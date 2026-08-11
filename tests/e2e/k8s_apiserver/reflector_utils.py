@@ -7,9 +7,9 @@ from dataclasses import dataclass
 
 from tests.e2e.k8s_apiserver.utils import CELL_LABEL
 
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import KubernetesPodApi, PodListPage, PodWatchEvent
 from miles.utils.workers.reconcile.k8s_reflector import KubernetesReflector
-from miles.utils.workers.reconcile.k8s_types import Pod
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 
 

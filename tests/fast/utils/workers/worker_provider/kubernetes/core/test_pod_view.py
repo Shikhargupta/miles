@@ -1,4 +1,4 @@
-from miles.utils.workers.reconcile.k8s_types import ContainerStatus, Pod, PodCondition, PodMetadata, PodSpec, PodStatus
+from miles.utils.workers.k8s_types import ContainerStatus, Pod, PodCondition, PodMetadata, PodSpec, PodStatus
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
 from miles.utils.workers.worker_provider.kubernetes.helm import env as helm_env
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
@@ -63,7 +63,7 @@ class TestParsePod:
 
     def test_reads_the_pool_a_pod_was_deployed_for(self):
         """Every consumer addresses cells by pool_id, and only this label says which pool_id a pod serves."""
-        assert parse(make_pod(pool_id="trainer-actor")).pool_id == "trainer-actor"
+        assert parse(make_pod(pool_id="trainer-engine-actor")).pool_id == "trainer-engine-actor"
 
     def test_ignores_a_pod_that_names_a_pool_but_no_cell(self):
         """A static worker of the chart carries the pool label with no group index, and belongs to no cell."""

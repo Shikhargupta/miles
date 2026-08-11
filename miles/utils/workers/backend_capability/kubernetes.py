@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.reconcile.loop import DEFAULT_RESYNC_PERIOD
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo, KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
@@ -27,7 +28,7 @@ class KubernetesBackendCapability(BackendCapability):
     def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
         unknown = [name for name in pool_ids if name not in self._run.specs]
         assert not unknown, f"{unknown} are not pool_ids of this run, which deploys {sorted(self._run.specs)}"
-        return KubernetesWorkerProvider(run=self._run, pool_ids=list(pool_ids))
+        return KubernetesWorkerProvider(run=self._run, pool_ids=list(pool_ids), resync_period=DEFAULT_RESYNC_PERIOD)
 
     def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
         spec = self._static_specs.get(pool_id)

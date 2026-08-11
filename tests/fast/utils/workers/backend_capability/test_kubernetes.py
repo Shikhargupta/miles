@@ -4,7 +4,7 @@ import asyncio
 import sys
 
 import pytest
-from tests.fast.fixtures.kubernetes_fixtures import NAMESPACE, RELEASE, ROUTER_HOST, install_workers
+from tests.fast.fixtures.kubernetes_fixtures import _RELEASE, NAMESPACE, ROUTER_HOST, install_workers
 from tests.fast.utils.workers.worker_provider.kubernetes import fake_pod_api
 from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view import make_pod
 
@@ -31,13 +31,13 @@ def deleted(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[str]]]:
 @pytest.fixture(autouse=True)
 def _fake_pod_api(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_pod_api.reset()
-    monkeypatch.setattr(core_provider, "_create_kubernetes_client", fake_pod_api.installed)
+    monkeypatch.setattr(core_provider, "_kubernetes_pod_api", fake_pod_api.installed)
 
 
 @pytest.fixture(autouse=True)
 def _release_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(NAMESPACE_ENV_VAR, NAMESPACE)
-    monkeypatch.setenv(RELEASE_ENV_VAR, RELEASE)
+    monkeypatch.setenv(RELEASE_ENV_VAR, _RELEASE)
 
 
 class TestKubernetesAssembly:

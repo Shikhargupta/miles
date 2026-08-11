@@ -15,6 +15,7 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-yaml
+        args: ['--allow-multiple-documents']
         exclude: '^charts/.*/templates/'
       - id: check-case-conflict
       - id: detect-private-key
@@ -55,7 +56,7 @@ repos:
       - id: helm-lint
         name: helm lint every chart
         language: system
-        entry: python3 tools/lint_charts.py
+        entry: python3 tools/kubernetes/lint_charts.py
         pass_filenames: false
         files: '^charts/'
 

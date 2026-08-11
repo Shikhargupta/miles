@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from tests.fast.fixtures.kubernetes_fixtures import NAMESPACE, RELEASE, install_workers
+from tests.fast.fixtures.kubernetes_fixtures import _RELEASE, NAMESPACE, install_workers
 
 from miles.utils.function_registry import function_registry
 from miles.utils.workers.serving import serve_inner
@@ -16,7 +16,7 @@ from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorke
 SPECS_FN = "test:specs"
 WORKER_FN = "test:worker"
 
-POOL_ID = "trainer-actor"
+POOL_ID = "trainer-engine-actor"
 RPC_PORT = 8000
 
 
@@ -56,7 +56,7 @@ class TestCreateWorker:
         worker = worker_of(["--rollout-num-gpus", "8"])
 
         assert isinstance(worker, KeywordOnlyWorker)
-        assert worker.args == "trainer-actor:--rollout-num-gpus 8"
+        assert worker.args == "trainer-engine-actor:--rollout-num-gpus 8"
 
     def test_refuses_a_pool_the_run_does_not_describe(self, registered_functions):
         """The pod and the launcher would otherwise disagree silently about what this process serves."""
@@ -77,7 +77,7 @@ class TestDeferredCapability:
             return install_workers()
 
         monkeypatch.setenv(NAMESPACE_ENV_VAR, NAMESPACE)
-        monkeypatch.setenv(RELEASE_ENV_VAR, RELEASE)
+        monkeypatch.setenv(RELEASE_ENV_VAR, _RELEASE)
         monkeypatch.setattr(serve_inner, "get_backend_capability", _install)
         monkeypatch.setattr(serve_inner, "parse_args", lambda: SimpleNamespace(cluster_backend="ray"))
 

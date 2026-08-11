@@ -5,6 +5,7 @@ import hashlib
 from miles.utils.workers.worker_spec import BaseWorkerSpec, HostAndPort, NamedHostAndPorts
 
 CHART_NAME = "miles-run"
+UNINSTALLER_SERVICE_ACCOUNT = "miles-uninstaller"
 
 MAX_OBJECT_NAME_LENGTH = 63
 LONGEST_CELL_INDEX_SUFFIX = "-999"
@@ -33,16 +34,15 @@ def static_worker_host(release: str, component: str, cell_index: int) -> str:
 
 def component_name(release: str, component: str) -> str:
     budget = COMPONENT_NAME_BUDGET - (len(component) + 1)
-    prefix = _release_prefix(release)
-    if len(prefix) > budget:
-        digest = hashlib.blake2b(release.encode(), digest_size=RELEASE_DIGEST_LENGTH).hexdigest()
-        kept = _trim_suffix(prefix[: budget - (len(digest) + 1)], "-")
-        prefix = f"{kept}-{digest}"
-    return f"{prefix}-{component}"
+    return f"{release_prefix(release, chart_name=CHART_NAME, budget=budget)}-{component}"
 
 
-def _release_prefix(release: str) -> str:
-    return release if CHART_NAME in release else f"{release}-{CHART_NAME}"
+def release_prefix(release: str, *, chart_name: str, budget: int) -> str:
+    name = release if chart_name in release else f"{release}-{chart_name}"
+    if len(name) <= budget:
+        return name
+    digest = hashlib.blake2b(release.encode(), digest_size=RELEASE_DIGEST_LENGTH).hexdigest()
+    return f"{_trim_suffix(name[: budget - (len(digest) + 1)], '-')}-{digest}"
 
 
 def _trim_suffix(value: str, suffix: str) -> str:

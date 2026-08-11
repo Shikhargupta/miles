@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 _INSTALLED: list[Any] = []
@@ -11,16 +13,15 @@ def install(api: object) -> object:
     return api
 
 
-def installed() -> Any:
+@asynccontextmanager
+async def installed() -> AsyncIterator[Any]:
     assert _INSTALLED, "no fake pod api was installed, so this test would talk to a real cluster"
-    from miles.utils.workers.worker_provider.kubernetes.core.provider import _KubernetesClient
 
     api = _INSTALLED[-1]
-
-    async def close() -> None:
+    try:
+        yield api
+    finally:
         CLOSE_CALLS.append(api)
-
-    return _KubernetesClient(api=api, close=close)
 
 
 def reset() -> None:

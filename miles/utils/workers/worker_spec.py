@@ -52,6 +52,9 @@ class SchedulingSpec(FrozenStrictBaseModel):
             return 1
         return exact_div(gpus_per_cell, self.num_gpus_per_node)
 
+    def gpus_per_pod(self) -> int:
+        return exact_div(self.gpus_per_cell(), self.pods_per_cell())
+
     def workers_per_pod(self) -> int:
         return exact_div(self.num_workers_per_cell, self.pods_per_cell())
 
@@ -87,6 +90,7 @@ SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
 
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
+    category: str | None = None
     port_infos: list[PortInfo]
     env_var: Callable[[WorkerLaunchContext], dict[str, str]]
     scheduling: SchedulingSpec
