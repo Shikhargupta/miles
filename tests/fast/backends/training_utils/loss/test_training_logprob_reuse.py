@@ -178,11 +178,10 @@ def test_skip_actor_forward_only_preserves_rollout_log_probs_as_old_policy(proce
     ("skip_actor_forward_only", "use_rollout_logprobs", "remove_old"),
     [
         (False, False, True),
-        (True, False, False),
         (True, True, True),
     ],
 )
-def test_policy_loss_rejects_invalid_reuse_contract(
+def test_policy_loss_rejects_missing_old_policy_log_probs(
     skip_actor_forward_only,
     use_rollout_logprobs,
     remove_old,
@@ -220,7 +219,7 @@ def test_policy_loss_rejects_invalid_reuse_contract(
 
 
 @pytest.mark.parametrize("is_pp_last_stage", [False, True])
-def test_reuse_synthesizes_zero_kl_only_on_the_last_pipeline_stage(is_pp_last_stage):
+def test_skip_actor_forward_only_synthesizes_zero_kl_only_on_the_last_pipeline_stage(is_pp_last_stage):
     parallel_state = make_parallel_state()
     parallel_state.is_pp_last_stage = is_pp_last_stage
     args = make_args(kl_coef=0.0, skip_actor_forward_only=True, true_on_policy_mode=False)
@@ -301,10 +300,22 @@ def test_mismatch_metrics_keep_actor_log_probs_as_training_source(process_group,
     batch = make_batch(inputs, "policy_loss")
     if skip_actor_forward_only:
         del batch["log_probs"]
+        expected_train_log_probs = get_log_probs_and_entropy(
+            deep_clone(inputs["policy_logits"]),
+            args=args,
+            unconcat_tokens=deep_clone(inputs["unconcat_tokens"]),
+            total_lengths=list(inputs["total_lens"]),
+            response_lengths=list(inputs["response_lens"]),
+            with_entropy=False,
+        )["log_probs"]
+    else:
+        expected_train_log_probs = batch["log_probs"]
 
     def fake_tis_function(**kwargs):
         assert kwargs["train_log_probs"] is not None
         assert all(not log_prob.requires_grad for log_prob in kwargs["train_log_probs"])
+        for actual, expected in zip(kwargs["train_log_probs"], expected_train_log_probs, strict=True):
+            assert torch.equal(actual, expected)
         return kwargs["pg_loss"], kwargs["loss_masks"], {}
 
     monkeypatch.setattr(losses_module, "load_function", lambda _path: fake_tis_function)

@@ -92,8 +92,7 @@ def policy_loss_function(
     parallel_state = get_parallel_state()
     advantages_list = [advantage.detach() for advantage in batch["advantages"]]
     advantages = torch.cat(advantages_list, dim=0)
-    reuse_training_log_probs_as_old = args.skip_actor_forward_only and not args.use_rollout_logprobs
-    scored_old_log_probs = (
+    standalone_log_probs = (
         [log_prob.detach() for log_prob in batch["log_probs"]] if batch.get("log_probs") is not None else None
     )
     rollout_old_log_probs = (
@@ -104,19 +103,12 @@ def policy_loss_function(
     reference_log_probs = (
         [log_prob.detach() for log_prob in batch["ref_log_probs"]] if batch.get("ref_log_probs") is not None else None
     )
-    if reuse_training_log_probs_as_old:
-        if scored_old_log_probs is not None:
-            raise ValueError("training log-prob reuse requires no separate old-policy log-probs")
-        old_log_probs = None
-    elif args.use_rollout_logprobs:
+    if args.use_rollout_logprobs:
         assert (
             rollout_old_log_probs is not None
         ), "rollout_log_probs must be provided when --use-rollout-logprobs is set"
-        old_log_probs = rollout_old_log_probs
-    else:
-        if scored_old_log_probs is None:
-            raise ValueError("policy loss requires old-policy log-probs")
-        old_log_probs = scored_old_log_probs
+    elif not args.skip_actor_forward_only and standalone_log_probs is None:
+        raise ValueError("policy loss requires old-policy log-probs")
 
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
@@ -135,10 +127,13 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
-    if args.skip_actor_forward_only:
-        scored_old_log_probs = [log_prob.detach() for log_prob in log_probs]
-    if reuse_training_log_probs_as_old:
-        old_log_probs = scored_old_log_probs
+    trainer_scored_log_probs = (
+        [log_prob.detach() for log_prob in log_probs] if args.skip_actor_forward_only else standalone_log_probs
+    )
+    if args.use_rollout_logprobs:
+        old_log_probs = rollout_old_log_probs
+    else:
+        old_log_probs = trainer_scored_log_probs
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 
@@ -154,7 +149,7 @@ def policy_loss_function(
                 log_probs, total_lengths, response_lengths, strict=False
             )
         ]
-        if reuse_training_log_probs_as_old:
+        if args.skip_actor_forward_only and not args.use_rollout_logprobs:
             full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
         else:
             full_old_log_probs = [
@@ -246,7 +241,7 @@ def policy_loss_function(
         if args.custom_tis_function_path is not None:
             tis_func = load_function(args.custom_tis_function_path)
         else:
-            assert scored_old_log_probs is not None, "log_probs must be provided for built-in TIS"
+            assert trainer_scored_log_probs is not None, "log_probs must be provided for built-in TIS"
             assert rollout_old_log_probs is not None, "rollout_log_probs must be provided for built-in TIS"
             tis_func = vanilla_tis_function
 
@@ -254,7 +249,7 @@ def policy_loss_function(
         tis_kwargs = {
             "args": args,
             "pg_loss": pg_loss,
-            "train_log_probs": scored_old_log_probs,
+            "train_log_probs": trainer_scored_log_probs,
             "rollout_log_probs": rollout_old_log_probs,
             "loss_masks": batch["loss_masks"],
             "total_lengths": total_lengths,

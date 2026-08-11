@@ -51,7 +51,7 @@ def compute_advantages_and_returns(
             "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
     """
-    reuse_training_log_probs_as_old = args.skip_actor_forward_only and not args.use_rollout_logprobs
+    allow_missing_log_probs = args.skip_actor_forward_only and not args.use_rollout_logprobs
     log_probs_key = "rollout_log_probs" if args.use_rollout_logprobs else "log_probs"
     log_probs: list[torch.Tensor] = rollout_data.get(log_probs_key)
     ref_log_probs: list[torch.Tensor] = rollout_data.get("ref_log_probs")
@@ -64,7 +64,7 @@ def compute_advantages_and_returns(
 
     # return when not the last pp stage.
     if log_probs is None and values is None:
-        if not (reuse_training_log_probs_as_old and get_parallel_state().is_pp_last_stage):
+        if not (allow_missing_log_probs and get_parallel_state().is_pp_last_stage):
             return
     else:
         # This is the authoritative persistence boundary: scores produced before
