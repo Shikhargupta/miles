@@ -176,7 +176,7 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
+        "--rollout-num-gpus-per-engine 4 "
         "--sglang-mem-fraction-static 0.55 "
         # Hard context ceiling: the engine rejects anything longer, so an
         # unbounded agent loop cannot melt decode throughput or generate
