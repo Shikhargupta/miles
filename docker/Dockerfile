@@ -188,8 +188,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install multi-storage-client --no-deps
 
 COPY requirements.txt /tmp/requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
+RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
 # The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
 # so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
