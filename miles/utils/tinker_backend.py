@@ -88,9 +88,28 @@ def cache_extra_key(adapter_name: str, registration_id: str, serving_version: in
     return f"{adapter_name}:{registration_id}:v{serving_version}"
 
 
+def uses_tinker_operation_semantics(args) -> bool:
+    """Protocol mode: the run is driven by explicit client operations, so the
+    trainer keeps accumulated gradients across train calls and steps the
+    optimizer only when a client optim_step executes. This is a property of
+    the tinker operation protocol, not of the parameterization; validation
+    currently rejects it without multi-LoRA slots, so for every launched
+    config it coincides with ``uses_multi_lora_tinker_executor``
+    (tests/fast/utils/test_tinker_predicates.py witnesses that equivalence)."""
+    return bool(getattr(args, "tinker_backend", False))
+
+
+def uses_multi_lora_tinker_executor(args) -> bool:
+    """Parameter executor: tinker operations execute on multi-LoRA trainer
+    slots (per-slot optimizer children, adapter routing, slot publish). The
+    only executor implemented; a future full-parameter executor would satisfy
+    ``uses_tinker_operation_semantics`` without this predicate."""
+    return uses_tinker_operation_semantics(args) and getattr(args, "multi_lora_n_adapters", 0) > 0
+
+
 def is_tinker_enabled(args) -> bool:
     """Tinker mode: multi-LoRA slots driven by the tinker operation backend."""
-    return bool(getattr(args, "tinker_backend", False)) and getattr(args, "multi_lora_n_adapters", 0) > 0
+    return uses_multi_lora_tinker_executor(args)
 
 
 def validate_tinker_args(args) -> None:

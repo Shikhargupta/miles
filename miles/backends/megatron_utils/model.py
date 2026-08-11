@@ -34,7 +34,7 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
-from miles.utils.tinker_backend import is_tinker_enabled
+from miles.utils.tinker_backend import uses_multi_lora_tinker_executor, uses_tinker_operation_semantics
 from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
@@ -191,7 +191,7 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.enable_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
-    elif is_tinker_enabled(args):
+    elif uses_multi_lora_tinker_executor(args):
         from miles.backends.megatron_utils.tinker_backend.optimizer import build_tinker_slot_optimizer
 
         optimizer = build_tinker_slot_optimizer(args, config, model)
@@ -445,9 +445,12 @@ def train_one_step(
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
-    multi_lora = is_multi_lora_enabled(args)
+    # Tinker operation semantics, not a LoRA property: the client owns the
+    # optimizer boundary, so a train call accumulates gradients and never
+    # steps inline (the optimizer runs when a client optim_step executes).
+    explicit_optim_step = uses_tinker_operation_semantics(args)
 
-    if multi_lora:
+    if explicit_optim_step:
         from miles.backends.megatron_utils.tinker_backend.optimizer import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
@@ -593,7 +596,11 @@ def train_one_step(
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
             valid_step = False
 
-    if (not disable_optimizer) and (not multi_lora) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
+    if (
+        (not disable_optimizer)
+        and (not explicit_optim_step)
+        and (not getattr(args, "check_for_nan_in_loss_and_grad", True))
+    ):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False
@@ -618,7 +625,7 @@ def train_one_step(
         dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
-        if multi_lora:
+        if explicit_optim_step:
             # Tinker data batches only accumulate gradient sums; the optimizer
             # steps when the client's optim_step operation executes.
             grad_norm = 0.0
@@ -630,9 +637,9 @@ def train_one_step(
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
 
-    # release grad (multi-LoRA retains accumulated grads; stepped slots were
-    # zeroed selectively inside step_adapter_slots)
-    if not multi_lora:
+    # release grad (tinker runs retain accumulated grads across train calls;
+    # stepped slots were zeroed selectively inside step_adapter_slots)
+    if not explicit_optim_step:
         _zero_grads(model, optimizer, disable_optimizer)
 
     log_structured(
