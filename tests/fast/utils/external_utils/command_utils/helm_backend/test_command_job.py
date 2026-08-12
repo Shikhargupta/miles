@@ -87,6 +87,7 @@ def _job(**overrides: Any) -> command_job._CommandJob:
     fields: dict[str, Any] = {
         "context": _context(gpus_per_node=8, **context_fields),
         "step": "convert",
+        "attempt": "260101-000000-000001",
         "completions": 1,
         "gpus_per_pod": 8,
         **overrides,
@@ -135,11 +136,28 @@ def _render(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> list[str]:
 class TestNaming:
     def test_names_the_job_the_way_the_chart_does(self):
         """The launcher has to address an object it did not name itself."""
-        assert _job().object_name == "miles-run-command-convert"
+        assert _job().object_name == "miles-run-command-convert-260101-000000-000001"
 
     def test_addresses_rank_zero_through_the_headless_service(self):
         """A multi-node step needs one address every pod agrees on before any of them is scheduled."""
-        assert _job().master_address == ("miles-run-command-convert-0.miles-run-command-convert.rl.svc.cluster.local")
+        name = "miles-run-command-convert-260101-000000-000001"
+        assert _job().master_address == f"{name}-0.{name}.rl.svc.cluster.local"
+
+    def test_gives_every_attempt_a_name_of_its_own(self, monkeypatch):
+        """Two commands sharing one name delete each other's job and read each other's logs."""
+        tokens = iter(["token-a", "token-b"])
+        monkeypatch.setattr(command_job.naming, "new_launch_token", lambda: next(tokens))
+        calls = _record_run_job(monkeypatch)
+
+        for _ in range(2):
+            command_job.run_on_nodes(
+                _context(gpus_per_node=1), "true", capture_output=False, completions=1, step="convert"
+            )
+
+        assert [call["job"].object_name for call in calls] == [
+            "miles-run-command-convert-token-a",
+            "miles-run-command-convert-token-b",
+        ]
 
     def test_installs_command_jobs_under_their_own_release(self):
         """A step sharing a training run's release would be torn down with it, or collide with its objects."""
@@ -314,21 +332,13 @@ class TestExecCommandMultiNode:
 
 
 class TestRunJob:
-    def test_clears_a_previous_attempt_before_submitting(self, monkeypatch):
-        """apply would refuse an existing Job, and its logs would describe the wrong run."""
+    def test_submits_the_rendered_manifest_without_deleting_anything_first(self, monkeypatch):
+        """Every attempt owns its name, so a delete here could only remove somebody else's job."""
         kubectl = FakeKubectl(statuses=["complete"])
 
         _run(monkeypatch, kubectl)
 
-        assert kubectl.verbs()[0] == "delete"
-
-    def test_submits_the_rendered_manifest(self, monkeypatch):
-        """A step whose manifest never reached the cluster would wait for a Job nobody created."""
-        kubectl = FakeKubectl(statuses=["complete"])
-
-        _run(monkeypatch, kubectl)
-
-        assert kubectl.verbs()[1] == "apply"
+        assert kubectl.verbs()[0] == "apply"
 
     def test_polls_until_the_job_finishes(self, monkeypatch):
         """An command job takes minutes, so one status read would always find it running."""

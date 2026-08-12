@@ -35,12 +35,13 @@ class CommandJobContext(FrozenStrictBaseModel):
 class _CommandJob(FrozenStrictBaseModel):
     context: CommandJobContext
     step: str
+    attempt: str
     completions: int
     gpus_per_pod: int
 
     @property
     def object_name(self) -> str:
-        return naming.component_name(_RELEASE, self.step)
+        return naming.component_name(_RELEASE, f"{self.step}-{self.attempt}")
 
     @property
     def master_address(self) -> str:
@@ -59,7 +60,13 @@ def run_on_nodes(
     completions: int,
     step: str,
 ) -> list[str | None]:
-    job = _CommandJob(context=context, step=step, completions=completions, gpus_per_pod=context.gpus_per_node)
+    job = _CommandJob(
+        context=context,
+        step=step,
+        attempt=naming.new_launch_token(),
+        completions=completions,
+        gpus_per_pod=context.gpus_per_node,
+    )
     prepared = substitute_placeholders(
         cmd,
         node_rank="${JOB_COMPLETION_INDEX}",
@@ -73,7 +80,6 @@ def run_on_nodes(
 def _run_job(job: _CommandJob, *, command: list[str], capture_output: bool) -> list[str | None]:
     manifest = _render_job(job, command=command)
 
-    Kubectl.delete_job(job.object_name, namespace=job.context.namespace)
     Kubectl.apply(manifest, namespace=job.context.namespace)
 
     with with_observability(namespace=job.context.namespace, selector=job.pod_selector):

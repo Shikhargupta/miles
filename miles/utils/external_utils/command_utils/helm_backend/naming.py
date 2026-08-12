@@ -46,15 +46,15 @@ class RunFiles:
 
     @staticmethod
     def new_values_file(*, run_directory: str | Path) -> Path:
-        return Path(run_directory) / _VALUES_DIR_NAME / f"values-{_new_launch_token()}.yaml"
+        return Path(run_directory) / _VALUES_DIR_NAME / f"values-{new_launch_token()}.yaml"
 
     @staticmethod
     def new_state_file(*, run_directory: str | Path) -> Path:
-        return _orchestrator_state_path(run_directory, _new_launch_token())
+        return _orchestrator_state_path(run_directory, new_launch_token())
 
     @staticmethod
     def latest_state_file(*, run_directory: str | Path) -> Path | None:
-        """The newest launch's file, by the launch token in its name; see _new_launch_token."""
+        """The newest launch's file, by the launch token in its name; see new_launch_token."""
         written = sorted((Path(run_directory) / _STATE_DIR_NAME).glob(_STATE_FILE_GLOB))
         return written[-1] if written else None
 
@@ -63,5 +63,5 @@ def _orchestrator_state_path(run_directory: str | Path, launch_token: str) -> Pa
     return Path(run_directory) / _STATE_DIR_NAME / f"orchestrator-{launch_token}.state"
 
 
-def _new_launch_token() -> str:
+def new_launch_token() -> str:
     return f"{time.strftime('%y%m%d-%H%M%S')}-{random.Random().randint(0, 999999):06d}"
