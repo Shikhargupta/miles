@@ -86,7 +86,7 @@ def _run_job(job: _CommandJob, *, command: list[str], capture_output: bool) -> l
         outcome = _wait(job)
 
     if outcome != "complete":
-        raise RuntimeError(f"Job {job.object_name} {outcome}; last log lines:\n{_joined(_readable_logs(job))}")
+        raise RuntimeError(f"Job {job.object_name} {outcome}; last log lines:\n{_joined(_logs_or_fallback(job))}")
 
     logs = _logs_per_completion(job) if capture_output else [None] * job.completions
     Kubectl.delete_job(job.object_name, namespace=job.context.namespace)
@@ -155,7 +155,7 @@ def _logs_per_completion(job: _CommandJob) -> list[str]:
     ]
 
 
-def _readable_logs(job: _CommandJob) -> list[str]:
+def _logs_or_fallback(job: _CommandJob) -> list[str]:
     try:
         return _logs_per_completion(job)
     except RuntimeError as error:
