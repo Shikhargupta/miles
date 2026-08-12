@@ -79,6 +79,9 @@ async def train(args):
         # Sync the last generation
         if rollout_data_next_future is not None:
             rollout_data_curr_ref = await rollout_data_next_future
+            assert (
+                not rollout_data_curr_ref.empty_batch_timeout
+            ), "only the multi-LoRA driver waits for a non-empty batch"
 
         # Start the next rollout early.
         if rollout_id + 1 < args.num_rollout:

@@ -16,6 +16,7 @@ from miles.utils.workers.rpc.common.protocol import (
     EXPECTED_BOOT_UUID_HEADER,
     HEALTH_PATH,
     SUBMIT_PATH,
+    AbandonResponse,
     CallStatusResponse,
     HealthResponse,
     SubmitRequest,
@@ -77,5 +78,9 @@ def create_rpc_app(worker: object) -> FastAPI:
         call_id: str, timeout: float = Query(default=DEFAULT_POLL_TIMEOUT_SECONDS, ge=0.0)
     ) -> CallStatusResponse:
         return await server.query_call(call_id=call_id, timeout=timeout)
+
+    @app.delete(CALL_STATUS_PATH)
+    async def abandon_call(call_id: str) -> AbandonResponse:
+        return server.abandon_call(call_id=call_id)
 
     return app

@@ -12,6 +12,7 @@ from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.rpc.common.protocol import (
     MAX_POLL_TIMEOUT_SECONDS,
+    AbandonResponse,
     CallStatusResponse,
     SubmitRequest,
     SubmitResponse,
@@ -20,6 +21,8 @@ from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 from miles.utils.workers.rpc.server.store import CallStore, DuplicateCallError
 
 logger = logging.getLogger(__name__)
+
+PENDING_CALL_STATUS = CallStatusResponse(status="pending")
 
 
 class RpcServer:
@@ -57,6 +60,13 @@ class RpcServer:
         if spec is None:
             reject(status_code=404, reason="unknown_method", detail=f"unknown rpc method {method_name!r}")
 
+        if self._executor.has_abandoned_call(method_name=method_name):
+            reject(
+                status_code=409,
+                reason="superseded_call_running",
+                detail=f"a {method_name} call this worker was told to abandon is still running",
+            )
+
         try:
             kwargs = spec.serializer.decode_query(request.query)
         except ValidationError as e:
@@ -83,5 +93,16 @@ class RpcServer:
 
         outcome = await self._store.wait(call_id=call_id, timeout=min(timeout, MAX_POLL_TIMEOUT_SECONDS))
         if outcome is None:
-            return CallStatusResponse(status="pending")
-        return CallStatusResponse(status=outcome.status, result=outcome.result, error=outcome.error)
+            return PENDING_CALL_STATUS
+        return outcome
+
+    def abandon_call(self, *, call_id: str) -> AbandonResponse:
+        if not self._store.contains(call_id):
+            log_structured(
+                logger.warning, tag="rpc", op="abandon", phase="reject", reason="unknown_call", call=call_id
+            )
+            raise HTTPException(status_code=404, detail=f"unknown call id {call_id!r}")
+
+        was_in_flight = self._executor.abandon(call_id=call_id)
+        log_structured(logger.warning, tag="rpc", op="abandon", phase="accept", call=call_id, in_flight=was_in_flight)
+        return AbandonResponse()

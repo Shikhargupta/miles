@@ -1,3 +1,4 @@
+import base64
 import os
 from abc import ABC, abstractmethod
 from argparse import Namespace
@@ -5,10 +6,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from types import TracebackType
-from typing import Any
+from typing import Annotated, Any
 
 import ray
-from pydantic import ConfigDict
+import ray._private.internal_api
+from pydantic import (
+    BeforeValidator,
+    ConfigDict,
+    ModelWrapValidatorHandler,
+    PlainSerializer,
+    PrivateAttr,
+    model_validator,
+)
 
 from miles.utils.pydantic_utils import StrictBaseModel
 
@@ -34,10 +43,53 @@ class ObjectStoreBackend(Enum):
     MOONCAKE = "mooncake"
 
 
+RAY_OBJECT_REF_TAG = "__miles_ray_object_ref__"
+
+
+def _encode_payload(payload: Any) -> Any:
+    if not isinstance(payload, ray.ObjectRef):
+        return payload
+    return {RAY_OBJECT_REF_TAG: base64.b64encode(ray.cloudpickle.dumps(payload)).decode()}
+
+
+def _decode_payload(payload: Any) -> Any:
+    if (encoded := _encoded_ray_ref_of(payload)) is None:
+        return payload
+    return ray.cloudpickle.loads(base64.b64decode(encoded))
+
+
+def _encoded_ray_ref_of(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    return payload.get(RAY_OBJECT_REF_TAG)
+
+
+WirePayload = Annotated[Any, BeforeValidator(_decode_payload), PlainSerializer(_encode_payload)]
+
+
 class StoreObjectRef(StrictBaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
-    payload: Any
+    payload: WirePayload
+
+    _decoded_from_the_wire: bool = PrivateAttr(default=False)
+
+    @property
+    def decoded_from_the_wire(self) -> bool:
+        return self._decoded_from_the_wire
+
+    def forget_wire_origin(self) -> None:
+        self._decoded_from_the_wire = False
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _remember_wire_origin(
+        cls, data: Any, handler: ModelWrapValidatorHandler["StoreObjectRef"]
+    ) -> "StoreObjectRef":
+        ref = handler(data)
+        if isinstance(data, dict) and _encoded_ray_ref_of(data.get("payload")) is not None:
+            ref._decoded_from_the_wire = True
+        return ref
 
 
 @dataclass(frozen=True)
@@ -126,7 +178,10 @@ class RayObjectStore(BaseObjectStore):
         return ObjectStoreGetResult(value=ray.get(ref.payload), release_fn=_release_noop)
 
     def remove(self, ref: StoreObjectRef) -> None:
-        pass
+        if not ref.decoded_from_the_wire:
+            return
+        ray._private.internal_api.free([ref.payload])
+        ref.forget_wire_origin()
 
 
 def _release_noop(value: Any) -> None:

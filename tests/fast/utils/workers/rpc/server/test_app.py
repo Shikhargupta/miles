@@ -10,6 +10,7 @@ import pytest
 from fastapi.responses import JSONResponse
 
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
 from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER, CallStatusResponse
 from miles.utils.workers.rpc.server.app import create_rpc_app
@@ -40,6 +41,9 @@ class _Worker:
 
     def demo_raises(self, message: str) -> None:
         raise RuntimeError(message)
+
+    def demo_refuses(self, message: str) -> None:
+        raise NonRetryableError(message)
 
     @rpc(concurrency_group="serial")
     def demo_slow(self, tag: str) -> str:
@@ -117,13 +121,30 @@ class TestRoundtrip:
         """A sync method roundtrips its typed result through submit + query."""
         async with _client(_Worker()) as client:
             body = await _call(client, "demo_sync", {"a": 1, "b": 2})
-            assert body == {"status": "success", "result": 3, "error": None}
+            assert body == {"status": "success", "result": 3, "error": None, "non_retryable": False}
 
     async def test_async_method_success(self):
         """An async method runs on the event loop and returns a model result."""
         async with _client(_Worker()) as client:
             body = await _call(client, "demo_async_model", {"name": "abc"})
-            assert body == {"status": "success", "result": {"name": "abc", "value": 3}, "error": None}
+            assert body == {
+                "status": "success",
+                "result": {"name": "abc", "value": 3},
+                "error": None,
+                "non_retryable": False,
+            }
+
+    async def test_a_refusal_says_so_on_the_wire(self):
+        """The client raises a non-retryable error from this field, and fault tolerance stops the run on it."""
+        async with _client(_Worker()) as client:
+            body = await _call(client, "demo_refuses", {"message": "never retry this"})
+            assert body["status"] == "failed" and body["non_retryable"] is True
+
+    async def test_the_response_carries_every_field_the_outcome_has(self):
+        """A response rebuilt field by field drops whichever field was added last, silently."""
+        async with _client(_Worker()) as client:
+            body = await _call(client, "demo_sync", {"a": 1, "b": 2})
+            assert set(body) == set(CallStatusResponse.model_fields)
 
     async def test_business_exception_becomes_failed_envelope(self):
         """Worker exceptions surface as 200 + failed envelope with a traceback."""
@@ -293,7 +314,7 @@ class TestPendingAndCompletion:
 
             worker.release_slow.set()
             body = await _poll_until_done(client, submitted.call_id)
-            assert body == {"status": "success", "result": "s", "error": None}
+            assert body == {"status": "success", "result": "s", "error": None, "non_retryable": False}
 
     async def test_sync_call_completes_without_polling(self):
         """A submitted sync call runs to completion even if never polled."""

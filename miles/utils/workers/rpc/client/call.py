@@ -15,6 +15,7 @@ from miles.utils.workers.rpc.client.misc import (
     RETRY_INITIAL_DELAY_SECONDS,
     RETRY_MAX_DELAY_SECONDS,
     RETRYABLE_ERRORS,
+    NonRetryableRpcWorkerCallError,
     RetryableResponseError,
     RpcTransport,
     RpcWorkerCallError,
@@ -24,6 +25,7 @@ from miles.utils.workers.rpc.common.protocol import (
     CALL_STATUS_PATH,
     DEFAULT_POLL_TIMEOUT_SECONDS,
     SUBMIT_PATH,
+    AbandonResponse,
     CallStatusResponse,
     SubmitRequest,
     SubmitResponse,
@@ -35,6 +37,7 @@ logger = logging.getLogger(__name__)
 SUBMIT_RETRY_WINDOW_SECONDS = 60.0
 SUBMIT_ATTEMPT_TIMEOUT_SECONDS = 10.0
 POLL_SLACK_SECONDS = 5.0
+ABANDON_TIMEOUT_SECONDS = 10.0
 
 
 class _CallStillPendingError(Exception):
@@ -70,8 +73,15 @@ class RpcCall:
         ok = outcome.status != "failed"
         log_structured(logger.debug, op="call", phase="end", ok=ok, **self._log_fields, elapsed_s=round(elapsed, 3))
         if not ok:
-            raise RpcWorkerCallError(f"{self._method_label} failed remotely:\n{outcome.error}")
-        return self._spec.serializer.decode_result(outcome.result)
+            error_cls = NonRetryableRpcWorkerCallError if outcome.non_retryable else RpcWorkerCallError
+            raise error_cls(f"{self._method_label} failed remotely:\n{outcome.error}")
+
+        try:
+            return self._spec.serializer.decode_result(outcome.result)
+        except Exception as e:
+            raise NonRetryableRpcWorkerCallError(
+                f"{self._method_label} already ran, but its result does not match what it declares: {e!r}"
+            ) from e
 
     async def _submit(self) -> None:
         request = SubmitRequest(call_id=self._call_id, query=self._query)
@@ -116,9 +126,22 @@ class RpcCall:
                 **self._log_fields,
                 timeout_s=self._call_timeout_seconds,
             )
+            await self._abandon()
             raise TimeoutError(
                 f"{self._method_label} (call id {self._call_id}) still pending after {self._call_timeout_seconds}s"
             ) from None
+
+    async def _abandon(self) -> None:
+        try:
+            await self._transport.request(
+                "DELETE",
+                CALL_STATUS_PATH.format(call_id=self._call_id),
+                seconds=ABANDON_TIMEOUT_SECONDS,
+                response_model=AbandonResponse,
+            )
+            log_structured(logger.warning, op="abandon", phase="accepted", **self._log_fields)
+        except Exception:
+            log_structured(logger.warning, op="abandon", phase="failed", **self._log_fields, exc_info=True)
 
     async def _poll_once(self, remaining: float) -> CallStatusResponse:
         poll_seconds = min(DEFAULT_POLL_TIMEOUT_SECONDS, remaining)

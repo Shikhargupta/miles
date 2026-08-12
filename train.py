@@ -95,6 +95,7 @@ async def train(args):
 
         await inference_controller.prepare_rollout(rollout_id)
         rollout_data_pack = await rollout_executor.get(rollout_id)
+        assert not rollout_data_pack.empty_batch_timeout, "only the multi-LoRA driver waits for a non-empty batch"
 
         if args.offload_rollout:
             offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
