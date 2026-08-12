@@ -55,8 +55,19 @@ def _objects() -> list[dict[str, Any]]:
     return [_leader_worker_set(), _config_map(), _stateful_set()]
 
 
-def _manifest_after(mutate: Callable[[list[dict[str, Any]]], None]) -> Manifest:
-    objects = copy.deepcopy(_objects())
+def _service() -> dict[str, Any]:
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "myrun-miles-run-orchestrator"},
+        "spec": {"ports": [{"port": 8000}]},
+    }
+
+
+def _manifest_after(
+    mutate: Callable[[list[dict[str, Any]]], None], *, objects: list[dict[str, Any]] | None = None
+) -> Manifest:
+    objects = copy.deepcopy(_objects() if objects is None else objects)
     mutate(objects)
     return _manifest(objects)
 
@@ -186,3 +197,82 @@ class TestManifestRefusals:
 
         assert not diff.is_allowed
         assert diff.scaled == ["LeaderWorkerSet/myrun-miles-run-engine: replicas 2 -> 6"]
+
+
+class TestHotRestartWhitelist:
+    def test_a_replaced_object_may_change_in_any_field(self):
+        """Changing the orchestration script's arguments is exactly what a hot restart is for."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+            rebuilt_object_keys=frozenset({"StatefulSet/myrun-miles-run-orchestrator"}),
+        )
+
+        assert diff.is_allowed
+
+    def test_every_other_object_must_still_diff_to_zero(self):
+        """'I thought I was hot restarting but I changed the trainer' is the mistake this refusal catches."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(lambda objects: _worker_container(objects).update(image="miles:other")),
+            rebuilt_object_keys=frozenset({"StatefulSet/myrun-miles-run-orchestrator"}),
+        )
+
+        assert not diff.is_allowed
+        assert diff.changed == [
+            "LeaderWorkerSet/myrun-miles-run-engine: "
+            "spec.leaderWorkerTemplate.workerTemplate.spec.containers.[0].image"
+        ]
+
+    def test_the_whitelist_matches_on_the_kind_as_well_as_the_name(self):
+        """A component's Service, ServiceAccount, Role and RoleBinding share its name, and none of them may move."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects() + [_service()]),
+            after=_manifest_after(
+                lambda objects: objects[3]["spec"].update(ports=[{"port": 9999}]),
+                objects=_objects() + [_service()],
+            ),
+            rebuilt_object_keys=frozenset({"StatefulSet/myrun-miles-run-orchestrator"}),
+        )
+
+        assert not diff.is_allowed
+        assert diff.changed == ["Service/myrun-miles-run-orchestrator: spec.ports.[0].port"]
+
+    def test_the_stateful_set_of_that_same_name_is_still_exempt(self):
+        """Changing the orchestration script's arguments is exactly what the exemption is for."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects() + [_service()]),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other"),
+                objects=_objects() + [_service()],
+            ),
+            rebuilt_object_keys=frozenset({"StatefulSet/myrun-miles-run-orchestrator"}),
+        )
+
+        assert diff.is_allowed
+
+    def test_an_added_object_is_refused_even_under_a_hot_restart(self):
+        """A hot restart replaces two components; it never grows a run behind the user's back."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects.append(_leader_worker_set() | {"metadata": {"name": "new"}})
+            ),
+            rebuilt_object_keys=frozenset({"StatefulSet/myrun-miles-run-orchestrator"}),
+        )
+
+        assert not diff.is_allowed
+        assert diff.added == ["LeaderWorkerSet/new"]
+
+    def test_an_empty_whitelist_keeps_the_old_behaviour(self):
+        """Every ordinary launch passes no whitelist, and must be gated exactly as before."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+        )
+
+        assert not diff.is_allowed

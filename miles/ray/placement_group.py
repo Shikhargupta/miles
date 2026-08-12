@@ -7,6 +7,11 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.ray.hot_restart import (
+    init_or_resume_inference_controller,
+    init_or_resume_trainer,
+    wait_until_rollout_executor_is_free,
+)
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
@@ -22,7 +27,13 @@ from miles.ray.specs.static_addrs import (
     inference_controller_urls,
     trainer_controller_urls,
 )
-from miles.ray.specs.train import compute_critic_args, compute_trainer_gpu_budget, create_trainer_controller_handle
+from miles.ray.specs.train import (
+    compute_critic_args,
+    compute_trainer_gpu_budget,
+    create_composite_trainer_controller,
+    create_trainer_controller_handle,
+)
+from miles.ray.train.update_weights_liveness import UPDATE_WEIGHTS_STOP_CONFIRMATION_TIMEOUT_SECONDS
 from miles.ray.wiring import get_backend_capability
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -32,8 +43,6 @@ from miles.utils.workers.types import DeployComponent, DeploySelector
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
-
-UPDATE_WEIGHTS_STOP_CONFIRMATION_TIMEOUT_SECONDS = 600.0
 
 
 @ray.remote(num_gpus=1)
@@ -163,12 +172,12 @@ async def create_training_models(
 
     actor_model = create_trainer_controller_handle(args, capability=capability, role="actor")
     await _assert_trainer_names_this_run(args, trainer_controller=actor_model, role="actor")
-    actor_start_rollout_ids = await actor_model.init(args)
+    actor_start_rollout_ids = await init_or_resume_trainer(actor_model, args)
 
     if args.use_critic:
         critic_model = create_trainer_controller_handle(args, capability=capability, role="critic")
         await _assert_trainer_names_this_run(args, trainer_controller=critic_model, role="critic")
-        critic_start_rollout_ids = await critic_model.init(compute_critic_args(args))
+        critic_start_rollout_ids = await init_or_resume_trainer(critic_model, compute_critic_args(args))
     else:
         critic_model = None
 
@@ -216,6 +225,12 @@ async def update_weights(
 
     if weight_version is not None:
         await rollout_executor.set_weight_version(weight_version, trainer_model_id=model_id)
+    if rollout_id is None:
+        logger.info(
+            f"Pushed the trainer's weights into the rollout engines at startup, so both sides now agree on weight "
+            f"version {weight_version}; a trainer that outlived the orchestration script keeps counting from where it "
+            f"was, so this number does not restart at zero"
+        )
 
 
 async def _abort_update_weights(
@@ -308,10 +323,14 @@ async def create_rollout_components(args) -> RolloutComponents:
         await wait_session_server_ready(args, provider=session_server_provider)
 
     inference_controller = create_inference_controller_handle(args, capability=capability)
-    await inference_controller.init()
+    await init_or_resume_inference_controller(
+        inference_controller,
+        trainer_factory=lambda: create_composite_trainer_controller(args, capability=capability),
+    )
     await _assert_inference_names_this_run(args, inference_controller=inference_controller)
 
     rollout_executor = create_rollout_executor_handle(capability=capability)
+    await wait_until_rollout_executor_is_free(rollout_executor)
     await rollout_executor.init()
 
     # calculate num_rollout from num_epoch

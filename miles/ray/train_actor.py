@@ -21,6 +21,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.init_once import InitOnce
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
@@ -53,6 +54,7 @@ class TrainRayActor(NodeProbeMixin):
     ):
         self.args = args
 
+        self._init_once = InitOnce(component=f"{type(self).__name__}(role={role}, rank={rank})")
         self._heartbeat = SimpleHeartbeat()
         self._update_weights_liveness = UpdateWeightsLiveness()
         self._world_size = world_size
@@ -100,6 +102,7 @@ class TrainRayActor(NodeProbeMixin):
         raise NotImplementedError
 
     def _init_common(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> None:
+        self._init_once.enter()
         self.args = args
         self.role = role
         self.with_ref = with_ref
@@ -179,6 +182,12 @@ class TrainRayActor(NodeProbeMixin):
         print_memory("before TrainRayActor.clear_memory")
         clear_memory()
         print_memory("after TrainRayActor.clear_memory")
+
+    def is_initialized(self) -> bool:
+        return self._init_once.is_initialized
+
+    def load_state(self) -> int:
+        raise NotImplementedError(f"{type(self).__name__} cannot reload its state without restarting")
 
     @abc.abstractmethod
     def sleep(self) -> None:

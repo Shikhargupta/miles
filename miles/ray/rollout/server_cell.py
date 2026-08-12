@@ -349,6 +349,9 @@ class ServerCell:
     async def onload(self, tags: list[str] | None):
         return await _with_timeout(self.api_client.resume_memory_occupation(tags=tags), what="onloading")
 
+    async def abort_all(self):
+        return await self.api_client.abort_all_requests()
+
     async def check_weights(self, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None):
         return await _with_timeout(
             self.api_client.check_weights(

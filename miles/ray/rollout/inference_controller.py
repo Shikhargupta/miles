@@ -12,7 +12,7 @@ from miles.ray.rollout.eval_fleet import EvalFleet, EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers, dispose_uncommitted_cell
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, compute_server_cell_meta_from_info
-from miles.ray.rollout.updatable_engines import UpdatableEngines
+from miles.ray.rollout.updatable_engines import OpenUpdateWeightsWindow, UpdatableEngines
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
@@ -25,6 +25,7 @@ from miles.utils.context_lock import (
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.init_once import InitOnce
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin, SimpleTicker
 from miles.utils.workers.registration.models import (
@@ -71,6 +72,7 @@ class InferenceController(NodeProbeMixin):
         registration_provider: RegistrationWorkerProvider | None = None,
     ) -> None:
         self.args = args
+        self._init_once = InitOnce(component="InferenceController")
         self._engine_provider = engine_provider
         self._router_providers = router_providers
         self._registration_provider = registration_provider
@@ -83,11 +85,13 @@ class InferenceController(NodeProbeMixin):
         self._ticker: SimpleTicker | None = None
         self._update_weights_window_counter = 0
         self._open_update_weights_window_id: int | None = None
+        self._open_update_weights_model_id: str | None = None
         self._cell_reconcile_slots: dict[str, _CellReconcileSlot] = {}
         self._applied_observation_seq: dict[str, int] = {}
 
     @lock_exempt
     async def init(self) -> None:
+        self._init_once.enter()
         configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
 
         if self.args.debug_train_only:
@@ -114,6 +118,34 @@ class InferenceController(NodeProbeMixin):
         await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
 
     # -------------------------- rollout lifecycle hooks -----------------------------
+
+    @lock_exempt
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized
+
+    @lock_exempt
+    async def wait_expected_num_cells(self, timeout: float) -> None:
+        await asyncio.gather(*[srv.wait_expected_num_cells(timeout=timeout) for srv in self.servers.values()])
+
+    @lock_exempt
+    async def is_update_weights_window_open(self) -> bool:
+        """Answer whether a `start_update_weights` is still holding the lock its `end_update_weights` never closed."""
+        return self.context_lock.detached
+
+    @lock_exempt
+    async def update_weights_window(self) -> OpenUpdateWeightsWindow:
+        """Answer the open window together with the model it updates, so its confirmation reaches that trainer."""
+        return OpenUpdateWeightsWindow(
+            window_id=self._open_update_weights_window_id, model_id=self._open_update_weights_model_id
+        )
+
+    @with_lock
+    async def abort_all(self) -> list[str]:
+        """Drop every in-flight generation, and answer the cells that refused, so a take-over knows what it left."""
+        refused: list[str] = []
+        for srv in self.servers.values():
+            refused += await srv.abort_all()
+        return refused
 
     @with_lock
     async def prepare_rollout(self, rollout_id: int) -> None:
@@ -192,7 +224,7 @@ class InferenceController(NodeProbeMixin):
         try:
             return await self._open_update_weights_window(model_id=model_id)
         except BaseException:
-            self._open_update_weights_window_id = None
+            self._forget_update_weights_window()
             await self._health_monitoring_resume()
             raise
 
@@ -203,6 +235,8 @@ class InferenceController(NodeProbeMixin):
         self._update_weights_window_counter += 1
         window_id = self._update_weights_window_counter
         self._open_update_weights_window_id = window_id
+
+        self._open_update_weights_model_id = model_id
 
         srv = self._get_updatable_server(model_id)
         if not srv:
@@ -241,7 +275,12 @@ class InferenceController(NodeProbeMixin):
             f"{self._open_update_weights_window_id}: an action of a window that is already closed is refused, so "
             f"that it cannot release the lock or resume the health checking of the window that replaced it"
         )
+        self._forget_update_weights_window()
+
+    @lock_exempt
+    def _forget_update_weights_window(self) -> None:
         self._open_update_weights_window_id = None
+        self._open_update_weights_model_id = None
 
     @releases_lock
     async def _resume_after_update_weights(self) -> None:

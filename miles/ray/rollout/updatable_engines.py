@@ -4,6 +4,12 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 
 
 @dataclass(frozen=True)
+class OpenUpdateWeightsWindow:
+    window_id: int | None
+    model_id: str | None
+
+
+@dataclass(frozen=True)
 class UpdatableEngines:
     window_id: int
     rollout_engines: list[SGLangApiClient]

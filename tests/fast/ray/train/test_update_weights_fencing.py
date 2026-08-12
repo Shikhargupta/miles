@@ -7,6 +7,7 @@ from tests.fast.fixtures.controller_fixtures import make_trainer_controller
 from tests.fast.ray.train.conftest import make_cell
 
 from miles.ray.train import cell as cell_module
+from miles.ray.train import group as group_module
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.group import TrainerController, _counts_as_broadcasting
 from miles.ray.train.update_weights_liveness import UpdateWeightsLiveness, marks_update_weights_in_flight
@@ -169,6 +170,49 @@ async def test_the_wait_returns_once_the_cell_reports_the_broadcast_ended() -> N
     cell.per_worker_answers = [False]
 
     assert await asyncio.wait_for(waiting, timeout=_WAIT_TIMEOUT_SECONDS)
+
+
+async def test_a_cell_marked_not_alive_mid_broadcast_does_not_end_the_wait() -> None:
+    """A cell whose processes were not confirmed dead may still be writing into the engines it broadcasts to."""
+    cell = _FakeTrainerCell("trainer-engine-actor-0")
+    cell.per_worker_answers = [True]
+    cell.is_alive = False
+    controller = _make_controller(cell)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(controller.wait_update_weights_finished(window_id=11), timeout=0.05)
+
+
+async def test_the_wait_gives_up_instead_of_polling_a_broadcast_forever(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller that timed out leaves this poll behind on the trainer, so it has to end on its own."""
+    cell = _FakeTrainerCell("trainer-engine-actor-0")
+    cell.per_worker_answers = [True]
+    controller = _make_controller(cell)
+    monkeypatch.setattr(group_module, "UPDATE_WEIGHTS_LIVENESS_DEADLINE_SECONDS", 0.01)
+
+    answer = await asyncio.wait_for(
+        controller.wait_update_weights_finished(window_id=11), timeout=_WAIT_TIMEOUT_SECONDS
+    )
+
+    assert answer is False
+
+
+async def test_the_deadline_bounds_the_whole_wait_and_not_only_one_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single cell whose rpc never returns must not sail past a deadline checked between iterations."""
+
+    class _NeverAnsweringCell(_FakeTrainerCell):
+        async def is_update_weights_in_flight_per_worker(self) -> list[bool | BaseException]:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    controller = _make_controller(_NeverAnsweringCell("trainer-engine-actor-0"))
+    monkeypatch.setattr(group_module, "UPDATE_WEIGHTS_LIVENESS_DEADLINE_SECONDS", 0.01)
+
+    answer = await asyncio.wait_for(
+        controller.wait_update_weights_finished(window_id=11), timeout=_WAIT_TIMEOUT_SECONDS
+    )
+
+    assert answer is False
 
 
 def test_a_running_broadcast_body_marks_itself_in_flight() -> None:

@@ -36,6 +36,7 @@ def _make_args(**overrides) -> Namespace:
 @pytest.fixture
 def fake_components():
     controller_handle = MagicMock(name="inference_controller")
+    controller_handle.is_initialized = AsyncMock(return_value=False)
     controller_handle.init = AsyncMock(return_value=None)
     controller_handle.get_eval_fleet = AsyncMock(return_value=None)
 
@@ -51,6 +52,7 @@ def fake_components():
         events.append("session_servers_ready")
 
     executor_handle = MagicMock(name="rollout_executor")
+    executor_handle.is_initialized = AsyncMock(return_value=False)
     executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
     executor_handle.set_eval_fleet = AsyncMock(return_value=None)

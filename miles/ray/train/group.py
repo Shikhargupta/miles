@@ -11,6 +11,7 @@ from miles.ray.rollout.updatable_engines import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.ray.train.update_weights_liveness import UPDATE_WEIGHTS_LIVENESS_DEADLINE_SECONDS
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -25,6 +26,7 @@ from miles.utils.data import RolloutDataPack, remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
+from miles.utils.init_once import InitOnce
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
@@ -70,6 +72,7 @@ class TrainerController(NodeProbeMixin):
         with_opd_teacher: bool = False,
     ) -> None:
         self._launch_args = args
+        self._init_once = InitOnce(component=f"TrainerController({role})")
         self._role = role
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
@@ -320,6 +323,7 @@ class TrainerController(NodeProbeMixin):
         model, optimzier, local ckpt, etc.
         """
         self._assert_model_id(model_id)
+        self._init_once.enter()
         self.args = _adopt_launch_level_args(args, launch_args=self._launch_args)
         configure_logger(self.args, source=TrainerControllerProcessIdentity(role=self._role))
 
@@ -358,6 +362,18 @@ class TrainerController(NodeProbeMixin):
         )
         return [item for sublist in cell_results for item in sublist]
 
+    async def is_initialized(self, model_id: str | None = None) -> bool:
+        self._assert_model_id(model_id)
+        return self._init_once.is_initialized
+
+    async def load_state(self, model_id: str | None = None) -> list[Any]:
+        """Reload every cell's state from the checkpoint, in place, and answer the rollout id to resume at."""
+        self._assert_model_id(model_id)
+        self._init_once.assert_initialized()
+
+        cell_results = await asyncio.gather(*[cell.load_state() for cell in self._cells])
+        return [item for sublist in cell_results for item in sublist]
+
     async def save_model(self, rollout_id: int, force_sync: bool = False, model_id: str | None = None) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         self._assert_model_id(model_id)
@@ -391,7 +407,27 @@ class TrainerController(NodeProbeMixin):
 
     async def wait_update_weights_finished(self, window_id: int) -> bool:
         """Answer from the cells that run the broadcast, so a cancelled controller call cannot look finished."""
+        last_broadcasting: list[str] = []
+        try:
+            await asyncio.wait_for(
+                self._poll_until_no_cell_broadcasts(window_id=window_id, last_broadcasting=last_broadcasting),
+                timeout=UPDATE_WEIGHTS_LIVENESS_DEADLINE_SECONDS,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.error(
+                f"The cells {sorted(last_broadcasting)} of {self._role} did not report that they stopped "
+                f"broadcasting into update weights window {window_id} within "
+                f"{UPDATE_WEIGHTS_LIVENESS_DEADLINE_SECONDS:.0f}s, so this answers that the broadcast is still "
+                f"running rather than polling them forever behind a caller that may already be gone; the window "
+                f"keeps its lock and its paused health checking until those cells answer or their workers are "
+                f"confirmed dead, so a run that stays here needs those cells reclaimed and then a cold restart"
+            )
+            return False
+        return True
+
+    async def _poll_until_no_cell_broadcasts(self, *, window_id: int, last_broadcasting: list[str]) -> None:
         while broadcasting := await self._cell_ids_broadcasting_weights():
+            last_broadcasting[:] = broadcasting
             log_structured(
                 logger.info,
                 tag="ft",
@@ -401,7 +437,6 @@ class TrainerController(NodeProbeMixin):
                 cells=broadcasting,
             )
             await asyncio.sleep(_UPDATE_WEIGHTS_LIVENESS_POLL_INTERVAL_SECONDS)
-        return True
 
     async def _cell_ids_broadcasting_weights(self) -> list[str]:
         allocated_cells = [cell for cell in self._cells if cell.is_allocated]

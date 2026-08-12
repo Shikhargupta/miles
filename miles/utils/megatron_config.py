@@ -150,8 +150,17 @@ def compute_model_args(args, model_id: str) -> Namespace:
 
     if config.is_multi_policy:
         ans.save = compute_policy_checkpoint_dir(args.save, model_id)
-        ans.load = compute_policy_checkpoint_dir(args.load, model_id)
+        _rebase_checkpoint_source_on_the_policy_dir(ans, model_id=model_id)
     return ans
+
+
+def _rebase_checkpoint_source_on_the_policy_dir(args: Namespace, *, model_id: str) -> None:
+    from miles.utils.arguments import resolve_checkpoint_source
+
+    requested = dict(args.requested_checkpoint_source)
+    requested["load"] = compute_policy_checkpoint_dir(requested["load"], model_id)
+    args.requested_checkpoint_source = requested
+    resolve_checkpoint_source(args)
 
 
 def compute_model_arg_overrides(config: MegatronConfig, model_id: str) -> dict[str, Any]:
