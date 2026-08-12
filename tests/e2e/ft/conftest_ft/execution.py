@@ -189,7 +189,7 @@ def run_training(
     extra_env_vars: dict[str, str] | None = None,
     config: command_utils.ExecuteTrainConfig | None = None,
 ) -> None:
-    U = command_utils.default_config().create_backend()
+    U = (config or command_utils.default_config()).create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     merged_env_vars = {
