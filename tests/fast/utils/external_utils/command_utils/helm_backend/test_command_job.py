@@ -305,6 +305,13 @@ class TestExecCommandMultiNode:
 
         assert (calls[0]["job"].completions, calls[0]["job"].gpus_per_pod) == (2, 4)
 
+    def test_refuses_to_guess_how_many_nodes_the_caller_meant(self, monkeypatch):
+        """num_nodes=None means every node alive to ray; a job that silently ran one pod would look fine."""
+        _record_run_job(monkeypatch)
+
+        with pytest.raises(AssertionError, match="num_nodes"):
+            _gpu_backend().exec_command_multi_node("torchrun --nnodes={{nnodes}}", num_nodes=None)
+
 
 class TestRunJob:
     def test_clears_a_previous_attempt_before_submitting(self, monkeypatch):

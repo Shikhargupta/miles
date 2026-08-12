@@ -27,6 +27,10 @@ class KubernetesCommandBackend(BaseCommandBackend):
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
         assert self.config.namespace, "Set ExecuteTrainConfig.namespace to run a command somewhere"
+        assert num_nodes is not None, (
+            "A kubernetes job runs the number of pods it is told to; the ray meaning of num_nodes=None, "
+            "'every node alive', has no counterpart here, so ask for a number"
+        )
         return command_job.run_on_nodes(
             command_job.CommandJobContext(
                 namespace=self.config.namespace,
@@ -36,7 +40,7 @@ class KubernetesCommandBackend(BaseCommandBackend):
             ),
             cmd,
             capture_output=capture_output,
-            completions=num_nodes or 1,
+            completions=num_nodes,
             step="command",
         )
 
