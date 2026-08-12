@@ -155,17 +155,20 @@ def get_batch(
     assert "tokens" in keys
     # get_batch consumes adapter_slots itself (per-adapter token counts below);
     # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
-    if "adapter_slots" not in keys:
-        keys = [*keys, "adapter_slots"]
+    # tinker_operation_lanes rides along per sample: the tinker loss dispatches
+    # on the batch-local lane, never on the physical slot.
+    for auto_key in ("adapter_slots", "tinker_operation_lanes"):
+        if auto_key not in keys:
+            keys = [*keys, auto_key]
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
 
-    # Tinker batches dispatch the loss per slot; the spec map and forward-only
-    # flag are batch-level, and the logprob collector is a shared mutable side
-    # channel the loss fills for the operation result plane.
-    for key in ("tinker_loss_by_slot", "tinker_forward_only", "tinker_logprob_collector"):
+    # Tinker batches dispatch the loss per operation lane; the spec map and
+    # forward-only flag are batch-level, and the logprob collector is a shared
+    # mutable side channel the loss fills for the operation result plane.
+    for key in ("tinker_loss_by_lane", "tinker_forward_only", "tinker_logprob_collector"):
         if key in data_iterator.rollout_data:
             batch[key] = data_iterator.rollout_data[key]
 

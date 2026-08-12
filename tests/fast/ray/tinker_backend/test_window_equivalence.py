@@ -90,7 +90,7 @@ class TestForwardBackwardWindow:
         )
 
         assert backend.operations.claim_data_operation("A", rid)["operation_id"] == "fb1"
-        backend.commit_tinker_batch(["A"], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([("A", rid)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         assert window_state(backend, "A") == dict(
             state="READY", slot=0, step=0, start_step=0, serving_version=0, dirty=True
         )
@@ -138,7 +138,7 @@ class TestPoisonWindow:
         backend.operations.fail("fb1", "bad chunk", "user")
         backend.enqueue_operation("A", "fb2", 2, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("A", rid)
-        backend.commit_tinker_batch(["A"], ["fb2"], {"fb2": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([("A", rid)], ["fb2"], {"fb2": [[-0.1, -0.2]]})
         assert window_state(backend, "A") == dict(
             state="READY", slot=0, step=0, start_step=0, serving_version=0, dirty=True
         )
@@ -165,7 +165,7 @@ class TestPoisonWindow:
         # The executed (poison-consuming) optim delimits: the next window is clean.
         backend.enqueue_operation("A", "fb4", 4, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("A", rid)
-        backend.commit_tinker_batch(["A"], ["fb4"], {"fb4": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([("A", rid)], ["fb4"], {"fb4": [[-0.1, -0.2]]})
         backend.enqueue_operation("A", "opt5", 5, "optim_step")
         [clean] = backend.claim_ready_control_operations()
         assert clean["operation_id"] == "opt5" and "poison" not in clean
@@ -213,7 +213,7 @@ class TestPoisonWindow:
         rid = ready(backend, "A")
         backend.enqueue_operation("A", "fb1", 1, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("A", rid)
-        backend.commit_tinker_batch(["A"], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([("A", rid)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         backend.enqueue_operation("A", "opt2", 2, "optim_step")
         [op] = backend.claim_ready_control_operations()
         backend.complete_control_operations(
@@ -234,7 +234,7 @@ class TestStepClockLifecycle:
         rid = ready(backend, "A", num_step=1)
         backend.enqueue_operation("A", "fb1", 1, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("A", rid)
-        backend.commit_tinker_batch(["A"], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([("A", rid)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         backend.enqueue_operation("A", "opt2", 2, "optim_step")
         [op] = backend.claim_ready_control_operations()
         backend.complete_control_operations({"opt2": dict(ok=True, result={"grad_norm": 0.5})})
@@ -257,7 +257,7 @@ class TestStepClockLifecycle:
         rid = ready(backend, "A")
         backend.enqueue_operation("A", "fb1", 1, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("A", rid)
-        backend.commit_tinker_batch(["A"], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([("A", rid)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
 
         backend.enqueue_operation("A", "save2", 2, "save_state", {"tag": "t0"})
         assert backend.claim_ready_control_operations() == []
@@ -289,7 +289,7 @@ class TestIndependentWindows:
 
         backend.enqueue_operation("B", "b-fb1", 1, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("B", rid_b)
-        backend.commit_tinker_batch(["B"], ["b-fb1"], {"b-fb1": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([("B", rid_b)], ["b-fb1"], {"b-fb1": [[-0.1, -0.2]]})
 
         backend.enqueue_operation("A", "a-opt2", 2, "optim_step")
         backend.enqueue_operation("B", "b-opt2", 2, "optim_step")

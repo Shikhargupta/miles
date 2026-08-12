@@ -169,8 +169,8 @@ class TestGatherAndCommit:
     def test_gather_groups_rows_per_operation_in_order(self):
         rollout_data = {
             # (0, -1) is a zero-weight DP pad: filtered from the result plane.
-            "tinker_logprob_collector": {(0, 1): [-2.0], (0, 0): [-1.0], (3, 0): [-9.0], (0, -1): [-7.0]},
-            "operation_by_slot": {0: "fb1", 3: "fb2", 5: None},
+            "tinker_logprob_collector": {(0, 1): [-2.0], (0, 0): [-1.0], (1, 0): [-9.0], (0, -1): [-7.0]},
+            "operation_by_lane": {0: "fb1", 1: "fb2", 2: None},
         }
         assert trainer._gather_logprobs(rollout_data) == {"fb1": [[-1.0], [-2.0]], "fb2": [[-9.0]]}
 
@@ -192,12 +192,13 @@ class TestGatherAndCommit:
         )
 
         rollout_data = {
-            "adapter_name_by_slot": {0: "A", 3: "B"},
-            "operation_by_slot": {0: "fb1", 3: None},
+            "registration_by_lane": {0: ("A", "r-A"), 1: ("B", "r-B")},
+            "operation_by_lane": {0: "fb1", 1: None},
             "tinker_logprob_collector": {(0, 0): [-1.0]},
         }
         trainer.commit_batch(rollout_data, pending_push=set())
-        assert committed["accumulated"] == ["A", "B"]
+        # Exact registration keys, never a bare name list.
+        assert committed["accumulated"] == [("A", "r-A"), ("B", "r-B")]
         assert committed["operation_ids"] == ["fb1"]
         assert committed["logprobs_by_op"] == {"fb1": [[-1.0]]}
 

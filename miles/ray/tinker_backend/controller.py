@@ -104,7 +104,9 @@ class TinkerController:
         self.backend.complete_control_operations(results)
 
     def commit_tinker_batch(self, accumulated: list, operation_ids: list, logprobs_by_op: dict | None = None) -> None:
-        self.backend.commit_tinker_batch(list(accumulated), list(operation_ids), logprobs_by_op)
+        # ``accumulated`` is a list of exact (name, registration_id) keys;
+        # normalize sequence types that crossed the Ray boundary.
+        self.backend.commit_tinker_batch([tuple(key) for key in accumulated], list(operation_ids), logprobs_by_op)
 
     def complete_operation(self, operation_id: str, result: dict | None = None) -> None:
         self.backend.operations.complete(operation_id, result)

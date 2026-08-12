@@ -321,22 +321,29 @@ def _execute_state_op(op: dict, args, model, optimizer, loaded_adapters, pending
 
 
 def commit_batch(rollout_data, pending_push: set) -> None:
-    """A tinker train/forward call landed: pin the accumulating adapters dirty
-    and complete the batch's operations with their gathered logprobs. Data
-    batches step nothing and publish nothing — pending_push is untouched."""
+    """A tinker train/forward call landed: mark the accumulating registration
+    streams dirty and complete the batch's operations with their gathered
+    logprobs. The commit carries EXACT registration keys from the BatchPlan
+    (never a trainer-reported name list), so a stale batch can never dirty a
+    same-name successor. Data batches step nothing and publish nothing —
+    pending_push is untouched."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     logprobs_by_op = _gather_logprobs(rollout_data)
     if is_first_replica_megatron_main_rank():
-        name_by_slot = rollout_data.get("adapter_name_by_slot", {})
-        # Forward batches accumulate nothing: no dirty pins.
-        accumulated = [] if rollout_data.get("tinker_forward_only") else sorted(name_by_slot.values())
-        operation_ids = [op_id for op_id in rollout_data.get("operation_by_slot", {}).values() if op_id]
+        registration_by_lane = rollout_data.get("registration_by_lane", {})
+        # Forward batches accumulate nothing: no dirty streams.
+        accumulated = (
+            []
+            if rollout_data.get("tinker_forward_only")
+            else sorted({tuple(key) for key in registration_by_lane.values()})
+        )
+        operation_ids = [op_id for op_id in rollout_data.get("operation_by_lane", {}).values() if op_id]
         ray.get(get_tinker_controller().commit_tinker_batch.remote(accumulated, operation_ids, logprobs_by_op))
 
 
 def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:
-    """Merge every rank's (slot, row) logprob shards and group them per
+    """Merge every rank's (lane, row) logprob shards and group them per
     operation in row order. TP/CP duplicates carry identical values, so the
     merge is an idempotent dict union; rows live on exactly one DP rank."""
     collector = rollout_data.get("tinker_logprob_collector") or {}
@@ -349,13 +356,13 @@ def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:
     else:
         merged = dict(collector)
 
-    op_by_slot = rollout_data.get("operation_by_slot", {})
+    op_by_lane = rollout_data.get("operation_by_lane", {})
     logprobs_by_op: dict[str, list[list[float]]] = {}
-    for op_slot, op_id in op_by_slot.items():
+    for op_lane, op_id in op_by_lane.items():
         if op_id is None:
             continue
         # row -1 is DP padding: never part of the operation's result plane.
-        rows = sorted((row, lp) for (slot, row), lp in merged.items() if slot == op_slot and row >= 0)
+        rows = sorted((row, lp) for (lane, row), lp in merged.items() if lane == op_lane and row >= 0)
         logprobs_by_op[op_id] = [lp for _, lp in rows]
     return logprobs_by_op
 

@@ -9,12 +9,13 @@ driven through the REAL production pipeline —
 references: the exact loss value, the per-operation row-ordered logprobs, the
 operation results (logprobs + metrics), and the dirty pins.
 
-The batch-internal correlation keys (today slot-keyed: ``tinker_loss_by_slot``,
-``operation_by_slot``) are deliberately forwarded key-agnostically between the
-pipeline stages, exactly as ``miles/backends/training_utils/data.py`` forwards
-them: a refactor that re-keys the correlation plane (e.g. batch-local
-operation lanes) changes the key names but MUST reproduce every assertion in
-this file unchanged — these are the invariants the tinker SDK observes.
+The batch-internal correlation keys (slot-keyed when this capture was written:
+``tinker_loss_by_slot``/``operation_by_slot``; lane-keyed since §3.3 landed)
+are deliberately forwarded key-agnostically between the pipeline stages,
+exactly as ``miles/backends/training_utils/data.py`` forwards them: a refactor
+that re-keys the correlation plane changes the key names but MUST reproduce
+every assertion in this file unchanged — these are the invariants the tinker
+SDK observes.
 
 The plan's ``bound_slot`` values (5 and 1) deliberately differ from any real
 registry slot: the result plane must correlate through the plan, never through
@@ -211,7 +212,8 @@ class TestResultPlanePipeline:
         # -- commit: operations complete with row-ordered logprobs + metrics,
         #    and exactly the forward_backward registrations pin dirty --
         backend = self.make_backend_with_claimed_ops(logprobs_by_op)
-        backend.commit_tinker_batch(["A", "B"], ["op-A", "op-B"], logprobs_by_op)
+        accumulated = [(name, backend.registry.find(name).registration_id) for name in ("A", "B")]
+        backend.commit_tinker_batch(accumulated, ["op-A", "op-B"], logprobs_by_op)
         result_a = backend.operations.get("op-A")["result"]
         assert result_a["logprobs"] == logprobs_by_op["op-A"]
         expected_loss_sum = sum(

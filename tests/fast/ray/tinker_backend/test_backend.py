@@ -40,6 +40,11 @@ def ready_backend(num_step=None):
     return backend
 
 
+def reg_key(backend, name="X"):
+    """The exact registration key batch commits carry."""
+    return (name, backend.registry.find(name).registration_id)
+
+
 def fb_payload(n=1, loss_fn="cross_entropy"):
     return {
         "samples": [
@@ -196,7 +201,7 @@ class TestControlClaims:
 
     def test_dirty_slot_fails_state_moves_but_allows_publish(self):
         backend = ready_backend()
-        backend.commit_tinker_batch(["X"], [])
+        backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "save1", 1, "save_state", {"tag": "t0"})
         assert backend.claim_ready_control_operations() == []
         view = backend.operations.get("save1")
@@ -208,7 +213,7 @@ class TestControlClaims:
 
     def test_success_advances_step_and_releases_pin(self):
         backend = ready_backend(num_step=2)
-        backend.commit_tinker_batch(["X"], [])
+        backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
         [op] = backend.claim_ready_control_operations()
         backend.complete_control_operations({op["operation_id"]: dict(ok=True, result={"grad_norm": 0.5})})
@@ -217,7 +222,7 @@ class TestControlClaims:
 
     def test_veto_fails_without_advancing(self):
         backend = ready_backend()
-        backend.commit_tinker_batch(["X"], [])
+        backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
         [op] = backend.claim_ready_control_operations()
         backend.complete_control_operations({op["operation_id"]: dict(ok=False, error="veto", category="server")})
@@ -241,7 +246,7 @@ class TestControlClaims:
         # The executed (poison-consuming) optim delimits: the next round is clean.
         backend.enqueue_operation("X", "fb3", 3, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("X", rid)
-        backend.commit_tinker_batch(["X"], ["fb3"], {"fb3": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([reg_key(backend)], ["fb3"], {"fb3": [[-0.1, -0.2]]})
         backend.enqueue_operation("X", "opt4", 4, "optim_step")
         [clean] = backend.claim_ready_control_operations()
         assert clean["operation_id"] == "opt4" and "poison" not in clean
@@ -290,7 +295,7 @@ class TestCommitAndFence:
         reg_id = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("X", reg_id)
-        backend.commit_tinker_batch(["X"], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([reg_key(backend)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         result = backend.operations.get("fb1")["result"]
         assert result["logprobs"] == [[-0.1, -0.2]]
         assert result["metrics"]["loss:sum"] == pytest.approx(0.1 + 0.2)  # unit loss_weights

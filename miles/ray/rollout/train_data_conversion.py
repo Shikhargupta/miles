@@ -154,12 +154,26 @@ def convert_samples_to_train_data(
             for sample in samples
         ]
 
+    if tinker:
+        # Generic tinker identity/correlation plane — batch-local lanes carry
+        # operation identity and loss/result correlation for ANY
+        # parameterization; nothing here depends on samples carrying adapters
+        # (codex-rollout-fullparameter-design-0810 §3.3).
+        train_data["batch_kind"] = "tinker"
+        train_data["tinker_operation_lanes"] = _tinker_sample_lanes(metadata["tinker_operation_lanes"], len(samples))
+        train_data["tinker_loss_by_lane"] = metadata["tinker_loss_by_lane"]
+        train_data["operation_by_lane"] = metadata["operation_by_lane"]
+        train_data["registration_by_lane"] = metadata["registration_by_lane"]
+        if metadata.get("tinker_forward_only"):
+            train_data["tinker_forward_only"] = True
+
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
         if (name_by_slot := metadata.get("adapter_name_by_slot")) is not None:
             # The BatchPlan's registration-bound slot is authoritative; a
             # stamped slot could be stale, and a name missing from the plan
-            # must fail loudly.
+            # must fail loudly. Slots are physical Multi-LoRA model routing
+            # ONLY: loss/result correlation rides the lanes above.
             slot_by_name = {name: slot for slot, name in name_by_slot.items()}
             missing = {sample.adapter.name for sample in samples if sample.adapter.name not in slot_by_name}
             if missing:
@@ -168,12 +182,6 @@ def convert_samples_to_train_data(
             train_data["adapter_name_by_slot"] = name_by_slot
         else:
             train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
-        if tinker:
-            train_data["batch_kind"] = "tinker"
-            train_data["tinker_loss_by_slot"] = metadata["tinker_loss_by_slot"]
-            train_data["operation_by_slot"] = metadata["operation_by_slot"]
-            if metadata.get("tinker_forward_only"):
-                train_data["tinker_forward_only"] = True
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
@@ -187,6 +195,17 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _tinker_sample_lanes(lanes: list[int], num_samples: int) -> list[int]:
+    """Align the plan's per-sample lanes to the (possibly DP-padded) sample
+    list: pads clone the LAST sample (``_pad_samples_to_dp``) and append at
+    the tail, so the tail lane extends over them. Padded rows keep the ``-1``
+    sample index, which the result-plane gather filters out — a pad row can
+    share a lane but never reaches the SDK."""
+    if not lanes or len(lanes) > num_samples:
+        raise ValueError(f"tinker selection has {len(lanes)} planned rows but {num_samples} samples")
+    return lanes + [lanes[-1]] * (num_samples - len(lanes))
 
 
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
@@ -352,6 +371,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
+            # Per-sample batch-local operation lane (tinker correlation plane).
+            "tinker_operation_lanes",
         ]:
             if key not in data:
                 continue
@@ -363,8 +384,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "total_lengths",
             "dynamic_global_batch_size",
             "adapter_name_by_slot",
-            "tinker_loss_by_slot",
-            "operation_by_slot",
+            "tinker_loss_by_lane",
+            "operation_by_lane",
+            "registration_by_lane",
             "tinker_forward_only",
             "batch_kind",
             "prompt_group_sizes",

@@ -354,18 +354,25 @@ class TinkerBackend:
                     self.registry.clear_dirty(operation["name"])
 
     def commit_tinker_batch(
-        self, accumulated: list[str], operation_ids: list[str], logprobs_by_op: dict[str, list] | None = None
+        self,
+        accumulated: list[tuple[str, str]],
+        operation_ids: list[str],
+        logprobs_by_op: dict[str, list] | None = None,
     ) -> None:
-        """A data selection landed: forward_backward adapters now hold
-        unstepped gradients (pin them); every listed operation completes with
-        its per-datum target logprobs in the operation's row order, plus
-        backend-computed metrics in the SDK combiner's name:reduction format."""
-        for name in accumulated:
+        """A data selection landed: forward_backward registrations now hold
+        unstepped gradients — ``accumulated`` carries their EXACT registration
+        keys from the BatchPlan, and a key whose registration is gone (or was
+        re-registered) is skipped, never inherited by a successor. Every
+        listed operation completes with its per-datum target logprobs in the
+        operation's row order, plus backend-computed metrics in the SDK
+        combiner's name:reduction format."""
+        for name, registration_id in accumulated:
             record = self.registry.find(name)
-            if record is not None:
-                self.gradient_windows.mark_forward_backward_succeeded(record.tenant)
-        # Multi-LoRA mirror: pin the accumulating slots' state immovable.
-        self.registry.mark_accumulated(accumulated)
+            if record is None or record.registration_id != registration_id:
+                continue
+            self.gradient_windows.mark_forward_backward_succeeded(record.tenant)
+            # Multi-LoRA mirror: pin the accumulating slot's state immovable.
+            self.registry.mark_accumulated([name])
         logprobs_by_op = logprobs_by_op or {}
         for operation_id in operation_ids:
             operation = self.operations.get(operation_id)
