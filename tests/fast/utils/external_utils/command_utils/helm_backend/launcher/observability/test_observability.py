@@ -17,6 +17,12 @@ class TestFarewell:
         assert "statefulset/r-miles-run-orchestrator" in message
         assert f"--selector {INSTANCE_LABEL}=miles-run-x" in message
 
+    def test_the_release_command_asks_for_the_whole_log_of_every_container(self):
+        """kubectl defaults to the last ten lines once a selector is given, hiding the early failure."""
+        message = observability.farewell(namespace="rl", release="miles-run-x", workload="r-miles-run-orchestrator")
+
+        assert "--tail=-1" in message
+
     def test_the_farewell_always_says_where_this_summary_stops(self):
         """A user who mistakes a vanilla launcher for monitoring will not notice what it never reported."""
         message = observability.farewell(namespace="rl", release="miles-run-x", workload="r-miles-run-orchestrator")

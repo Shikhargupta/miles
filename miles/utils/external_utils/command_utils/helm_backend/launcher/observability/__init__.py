@@ -47,5 +47,5 @@ def _orchestrator_log_command(*, namespace: str, workload: str) -> str:
 def _release_log_command(*, namespace: str, release: str) -> str:
     return (
         f"kubectl logs --follow --namespace {namespace} --selector {Kubectl.release_selector(release)} "
-        f"--all-containers --prefix --max-log-requests {_MAX_LOG_REQUESTS}"
+        f"--all-containers --prefix --tail=-1 --max-log-requests {_MAX_LOG_REQUESTS}"
     )
