@@ -42,7 +42,6 @@ def test_every_tinker_conversion_key_is_handled(monkeypatch):
         "loss_weights": [torch.tensor([1.0, 1.0])],
         "advantages": [torch.tensor([0.0, 0.0])],
         "adapter_slots": [0],
-        "adapter_name_by_slot": {0: "A"},
         "batch_kind": "tinker",
         "tinker_operation_lanes": [0],
         "tinker_loss_by_lane": {0: {"loss_fn": "cross_entropy"}},

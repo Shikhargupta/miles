@@ -155,7 +155,11 @@ class TestPoisonedWindow:
         self.fail_fb(ledger, "fb1", 1)
         enqueue(ledger, "opt2", 2, "optim_step")
         ledger.claim_control_operation("A", "ra")
-        ledger.fail("opt2", "window poisoned", "user")  # executed: it cleared the grads
+        ledger.fail("opt2", "window poisoned", "user")
+        # Terminal alone is not enough: only the executor's confirmation that
+        # the gradients were consumed (step/discard/veto) makes a delimiter.
+        assert ledger.poisoned_window_blocker("A", "ra", 4) is not None
+        ledger.mark_window_consumed("opt2")  # executed: it cleared the grads
         self.complete_fb(ledger, "fb3", 3)
         assert ledger.poisoned_window_blocker("A", "ra", 4) is None
 

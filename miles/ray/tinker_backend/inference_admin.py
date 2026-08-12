@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 class InferenceAdminPort(Protocol):
+    async def init(self) -> None:
+        """Open the transport. The backend's lifecycle calls this — it is
+        part of the declared contract, so a fake implementing the port never
+        surprises the backend with an AttributeError."""
+        ...
+
+    async def close(self) -> None:
+        """Release the transport (idempotent)."""
+        ...
+
     async def abort_registration(self, rid_prefix: str) -> None:
         """Abort every in-flight engine request whose rid carries this
         registration's prefix (anti-ABA: the prefix embeds the registration

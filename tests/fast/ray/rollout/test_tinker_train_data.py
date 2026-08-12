@@ -51,34 +51,38 @@ def plan_entry(name="A", slot=0, kind="forward_backward", op_id="op-A", loss=Non
 
 class TestBatchPlanToMetadata:
     def test_forward_backward_plan(self):
-        metadata = batch_plan_to_metadata(
-            [plan_entry("A", 0, loss={"loss_fn": "ppo"}), plan_entry("B", 3, op_id="op-B")]
-        )
+        plan = [plan_entry("A", 0, loss={"loss_fn": "ppo"}), plan_entry("B", 3, op_id="op-B")]
+        metadata = batch_plan_to_metadata(plan, plan_lease(plan))
         assert metadata["batch_kind"] == "tinker"
         # Correlation is batch-local: lanes follow SELECTION order, and the
-        # physical slots (0, 3) appear only in the routing helper.
+        # physical slots (0, 3) appear only inside the lease bindings.
         assert metadata["tinker_operation_lanes"] == [0, 1]
         assert metadata["tinker_loss_by_lane"] == {0: {"loss_fn": "ppo"}, 1: {}}
         assert metadata["operation_by_lane"] == {0: "op-A", 1: "op-B"}
         assert metadata["registration_by_lane"] == {0: ("A", "r-A"), 1: ("B", "r-B")}
-        assert metadata["adapter_name_by_slot"] == {0: "A", 3: "B"}
+        assert metadata["batch_execution_lease"]["bindings_by_operation"] == [
+            ["op-A", ["A", "r-A", 0]],
+            ["op-B", ["B", "r-B", 3]],
+        ]
         assert "tinker_forward_only" not in metadata
 
     def test_lanes_expand_per_sample_counts(self):
-        metadata = batch_plan_to_metadata(
-            [plan_entry("A", 0, sample_count=2), plan_entry("B", 3, op_id="op-B", sample_count=3)]
-        )
+        plan = [plan_entry("A", 0, sample_count=2), plan_entry("B", 3, op_id="op-B", sample_count=3)]
+        metadata = batch_plan_to_metadata(plan, plan_lease(plan))
         assert metadata["tinker_operation_lanes"] == [0, 0, 1, 1, 1]
 
     def test_all_forward_sets_the_flag(self):
-        metadata = batch_plan_to_metadata([plan_entry(kind="forward")])
+        plan = [plan_entry(kind="forward")]
+        metadata = batch_plan_to_metadata(plan, plan_lease(plan))
         assert metadata["tinker_forward_only"] is True
 
     def test_mixed_kinds_are_structurally_rejected(self):
+        plan = [plan_entry("A", 0), plan_entry("B", 1, kind="forward")]
         with pytest.raises(ValueError, match="homogeneous"):
-            batch_plan_to_metadata([plan_entry("A", 0), plan_entry("B", 1, kind="forward")])
+            batch_plan_to_metadata(plan, plan_lease(plan))
+        plan = [plan_entry(kind="optim_step")]
         with pytest.raises(ValueError, match="homogeneous"):
-            batch_plan_to_metadata([plan_entry(kind="optim_step")])
+            batch_plan_to_metadata(plan, plan_lease(plan))
 
 
 def make_sample(name="A", index=0, stale_slot=9, loss_weights=None, advantages=None):
@@ -144,6 +148,24 @@ class TestConvert:
         metadata = plan_metadata([plan_entry("A", 5)])
         with pytest.raises(ValueError, match="batch lease binds"):
             convert([make_sample("ghost")], metadata)
+
+    def test_stale_same_name_registration_is_rejected_before_slot_routing(self):
+        """Anti-ABA (external review): a Datum stamped by an OLD registration
+        of the same name must fail loudly, never route onto the same-name
+        successor's slot — the name alone is not the tenant identity."""
+        metadata = plan_metadata([plan_entry("A", 5)])
+        stale = make_sample("A")
+        stale.adapter = AdapterRef(name="A", registration_id="r-old", serving_version=1, slot=9)
+        with pytest.raises(ValueError, match="registration"):
+            convert([stale], metadata)
+
+    def test_lease_binding_no_lane_references_is_a_plan_mismatch(self):
+        """Exact set agreement: a lease carrying a binding no lane uses is as
+        much of a mismatch as a lane the lease never bound."""
+        metadata = plan_metadata([plan_entry("A", 5)])
+        metadata["batch_execution_lease"]["bindings_by_operation"].append(["op-ghost", ["G", "r-G", 7]])
+        with pytest.raises(ValueError, match="disagree"):
+            convert([make_sample("A")], metadata)
 
     def test_adapter_less_samples_keep_the_generic_tinker_contract(self):
         """Contract only (no full-param runtime exists): the identity /

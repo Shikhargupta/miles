@@ -109,7 +109,7 @@ class TestStep:
     def test_gradient_sum_is_never_count_normalized(self, torch_clip_grads, no_slot_traversal):
         child = FakeChild([[3.0, 4.0]])
         chained = FakeChained({0: [child]})
-        norms, vetoed = step_adapter_slots(chained, model=None, adam_params_by_slot={0: {}})
+        norms, vetoed, norm_blind = step_adapter_slots(chained, model=None, adam_params_by_slot={0: {}})
         assert vetoed == set()
         assert norms[0] == pytest.approx(5.0)  # raw sum's norm, no 1/count anywhere
         assert child.stepped == 1 and chained.allgathered == 1
@@ -117,7 +117,7 @@ class TestStep:
     def test_per_call_clip_scales_the_update(self, torch_clip_grads, no_slot_traversal):
         child = FakeChild([[3.0, 4.0]])
         chained = FakeChained({0: [child]})
-        norms, _ = step_adapter_slots(chained, None, {0: {"grad_clip_norm": 1.0}})
+        norms, _, _ = step_adapter_slots(chained, None, {0: {"grad_clip_norm": 1.0}})
         assert norms[0] == pytest.approx(5.0)  # reported norm is pre-clip
         assert torch.allclose(child.params[0].grad, torch.tensor([0.6, 0.8]), atol=1e-4)
 
@@ -131,7 +131,7 @@ class TestStep:
         bad = FakeChild([[float("nan"), 1.0]])
         good = FakeChild([[1.0, 0.0]])
         chained = FakeChained({0: [bad], 1: [good]})
-        norms, vetoed = step_adapter_slots(chained, None, {0: {}, 1: {}})
+        norms, vetoed, _ = step_adapter_slots(chained, None, {0: {}, 1: {}})
         assert vetoed == {0} and bad.stepped == 0
         assert list(norms) == [1] and good.stepped == 1
         assert chained.allgathered == 1  # slot 1 still publishes
@@ -139,7 +139,7 @@ class TestStep:
     def test_found_inf_from_prepare_grads_vetoes(self, torch_clip_grads, no_slot_traversal):
         child = FakeChild([[1.0]], found_inf=True)
         chained = FakeChained({0: [child]})
-        norms, vetoed = step_adapter_slots(chained, None, {0: {}})
+        norms, vetoed, _ = step_adapter_slots(chained, None, {0: {}})
         assert vetoed == {0} and norms == {} and child.stepped == 0
         assert chained.allgathered == 0  # nothing stepped, nothing published
 
@@ -149,6 +149,42 @@ class TestStep:
         step_adapter_slots(chained, None, {0: {}})
         assert retained.stepped == 0
         assert torch.allclose(retained.params[0].grad, torch.tensor([7.0]))
+
+    def test_norm_blind_slot_is_refused_not_silently_stepped(self, torch_clip_grads, no_slot_traversal):
+        """CPU repro of the GPT-OSS expert-LoRA failure shape (external
+        review + H200 diagnosis): children whose
+        get_main_grads_for_grad_norm() contributes NOTHING on any rank while
+        their parameters hold real gradients. The old behavior computed norm
+        0.0, reported it, silently no-op'ed the clip, and stepped anyway —
+        the contract now refuses the step (norm-blind veto) so a
+        parameter-flagging bug upstream can never train unclipped under a
+        lying grad_norm."""
+
+        class NormBlindChild(FakeChild):
+            def get_main_grads_for_grad_norm(self):
+                return []
+
+        child = NormBlindChild([[3.0, 4.0]])
+        chained = FakeChained({0: [child]})
+        norms, vetoed, norm_blind = step_adapter_slots(chained, None, {0: {"grad_clip_norm": 1.0}})
+        assert norm_blind == {0} and vetoed == set() and norms == {}
+        assert child.stepped == 0
+
+    def test_truly_zero_gradients_step_with_a_truthful_zero_norm(self, torch_clip_grads, no_slot_traversal):
+        """The contrast case: an empty norm collection over ALL-ZERO
+        gradients is truthful (nothing to clip, nothing to lose) — the step
+        proceeds and reports 0.0 instead of failing a legitimate no-signal
+        optim_step."""
+
+        class NormBlindChild(FakeChild):
+            def get_main_grads_for_grad_norm(self):
+                return []
+
+        child = NormBlindChild([[0.0, 0.0]])
+        chained = FakeChained({0: [child]})
+        norms, vetoed, norm_blind = step_adapter_slots(chained, None, {0: {}})
+        assert norms == {0: 0.0} and vetoed == set() and norm_blind == set()
+        assert child.stepped == 1
 
 
 def test_found_inf_passthrough_without_dist():

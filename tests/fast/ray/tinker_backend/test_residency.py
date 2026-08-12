@@ -2,7 +2,7 @@
 (codex-rollout-fullparameter-design-0810 §5.3/§3.6/§8.2).
 
 The port only snapshots/validates what fixed residency already established:
-binding_for is the claim gate (exact READY + slot), acquire/validate are the
+binding_for is the claim gate (exact READY + slot), acquire is the
 dispatch gates (exact ownership; RETIRING allowed for in-flight work),
 release_batch is a no-op. Nothing here binds, evicts, or moves state, and
 active never exceeds slots."""
@@ -144,7 +144,7 @@ class TestClaimAndBind:
 
 
 class TestBatchLease:
-    def test_acquire_validate_release_roundtrip(self):
+    def test_acquire_release_roundtrip(self):
         registry = make_registry(2)
         key_a = register_ready(registry, "A")
         key_b = register_ready(registry, "B")
@@ -158,7 +158,6 @@ class TestBatchLease:
         assert lease.binding_of("op-A").training_slot == 0
         assert lease.binding_of("op-B").training_slot == 1
         assert lease.binding_of("op-unknown") is None
-        assert residency.validate(lease)
         before = copy.deepcopy(registry.snapshot())
         residency.release_batch(lease)  # no-op lifecycle hook
         assert registry.snapshot() == before
@@ -168,8 +167,9 @@ class TestBatchLease:
     def test_retiring_after_claim_keeps_the_receipt_valid(self):
         """Race characterization (§8.2): claimed at READY, deregistered before
         acquire — the exact registration still owns and loads the slot, so
-        acquire AND validate must succeed and the in-flight operation
-        completes; only cleanup/reassign invalidates."""
+        acquire must succeed and the in-flight operation completes; only
+        cleanup/reassign invalidates (acquire refuses). Trainer-side lease
+        validation is validate_batch_lease — the sole validator."""
         registry = make_registry(1)
         key = register_ready(registry, "A")
         residency = FixedSlotResidency(registry)
@@ -177,12 +177,11 @@ class TestBatchLease:
 
         registry.deregister("A")  # READY -> RETIRING mid-flight
         lease = residency.acquire_batch((("op-A", binding),))
-        assert residency.validate(lease)
+        assert lease.binding_of("op-A") is binding
 
         # Full cleanup reassigns the slot: the receipt dies with the tenancy.
         registry.retire_adapters()
         registry.free_slot("A")
-        assert not residency.validate(lease)
         with pytest.raises(ValueError, match="no longer owns trainer slot"):
             residency.acquire_batch((("op-A", binding),))
 

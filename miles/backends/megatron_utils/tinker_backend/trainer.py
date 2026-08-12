@@ -267,8 +267,19 @@ def _execute_state_op(op: dict, lease, args, model, optimizer, loaded_adapters, 
         return dict(
             ok=False, error=f"operation '{op['operation_id']}' has no binding in the batch lease", category="server"
         )
+    bound_name, bound_registration_id = binding.registration_key
+    if bound_name != name:
+        # The complete (name, registration, slot) tuple must match: an
+        # operation whose lease binding names ANOTHER tenant must never
+        # mutate this one's storage/publish state.
+        return dict(
+            ok=False,
+            error=f"operation '{op['operation_id']}' names adapter '{name}' but its lease binding "
+            f"names '{bound_name}'",
+            category="server",
+        )
     run = loaded_adapters.get(name)
-    if run is None or run.registration_id != binding.registration_key[1] or run.slot != binding.training_slot:
+    if run is None or run.registration_id != bound_registration_id or run.slot != binding.training_slot:
         return dict(
             ok=False, error=f"adapter '{name}' is not resident in slot {binding.training_slot}", category="server"
         )

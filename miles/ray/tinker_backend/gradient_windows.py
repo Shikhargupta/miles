@@ -27,8 +27,6 @@ from miles.utils.tinker_backend import RegistrationKey
 @dataclass
 class TrainingStreamState:
     step: int = 0
-    # Baseline for the relative num_step bound (supports state resume).
-    start_step: int = 0
     # True while the stream holds unstepped accumulated gradients.
     dirty: bool = False
 
@@ -58,10 +56,6 @@ class GradientWindowTracker:
         stream = self._streams.get(key)
         return stream.step if stream is not None else 0
 
-    def start_step_of(self, key: RegistrationKey) -> int:
-        stream = self._streams.get(key)
-        return stream.start_step if stream is not None else 0
-
     def is_dirty(self, key: RegistrationKey) -> bool:
         stream = self._streams.get(key)
         return stream is not None and stream.dirty
@@ -88,8 +82,8 @@ class GradientWindowTracker:
         return stream.step
 
     def restore_step(self, key: RegistrationKey, step: int) -> None:
-        """A load_state (or registration resume) repositioned the stream: both
-        the clock and the num_step baseline move to the restored step."""
+        """A load_state (or registration resume) repositioned the stream's
+        clock. The num_step baseline (``start_step``) is the registry's
+        authority — the tracker keeps no duplicate copy of it."""
         stream = self._stream(key)
         stream.step = step
-        stream.start_step = step

@@ -230,7 +230,11 @@ class TestControlClaims:
         backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
         [op] = backend.claim_ready_control_operations()["operations"]
-        backend.complete_control_operations({op["operation_id"]: dict(ok=False, error="veto", category="server")})
+        # The executor's veto zeroed the gradients on every rank, so its
+        # outcome carries the consumed bit — only then is the pin released.
+        backend.complete_control_operations(
+            {op["operation_id"]: dict(ok=False, error="veto", category="server", gradient_window_consumed=True)}
+        )
         assert backend.registry.find("X").step == 0
         assert not backend.registry.is_dirty("X")
 
@@ -244,8 +248,11 @@ class TestControlClaims:
         backend.enqueue_operation("X", "opt2", 2, "optim_step")
         [op] = backend.claim_ready_control_operations()["operations"]
         assert "gradient window" in op["poison"] and "discarded" in op["poison"]
-        # The trainer runs the discard on every rank and reports a user failure.
-        backend.complete_control_operations({"opt2": dict(ok=False, error=op["poison"], category="user")})
+        # The trainer runs the discard on every rank and reports a user
+        # failure whose outcome confirms the window was consumed.
+        backend.complete_control_operations(
+            {"opt2": dict(ok=False, error=op["poison"], category="user", gradient_window_consumed=True)}
+        )
         assert backend.registry.find("X").step == 0
 
         # The executed (poison-consuming) optim delimits: the next round is clean.
@@ -255,6 +262,33 @@ class TestControlClaims:
         backend.enqueue_operation("X", "opt4", 4, "optim_step")
         [clean] = backend.claim_ready_control_operations()["operations"]
         assert clean["operation_id"] == "opt4" and "poison" not in clean
+
+    def test_pre_mutation_refusal_keeps_dirty_and_poison(self):
+        """External review P1: an optimizer outcome without the consumed bit
+        (executor refusal before any gradient mutation — stale binding,
+        missing result) must neither release the dirty pin nor delimit the
+        poison window: the partial gradients still physically exist and the
+        next optim_step must still be routed to a discard."""
+        backend = ready_backend()
+        rid = backend.registry.find("X").registration_id
+        backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
+        backend.claim_data_operation("X", rid)
+        backend.commit_tinker_batch([reg_key(backend)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.enqueue_operation("X", "fb2", 2, "forward_backward", fb_payload())
+        backend.claim_data_operation("X", rid)
+        backend.operations.fail("fb2", "partial backward failed", "server")
+
+        backend.enqueue_operation("X", "opt3", 3, "optim_step")
+        [poisoned] = backend.claim_ready_control_operations()["operations"]
+        assert poisoned.get("poison")
+        backend.complete_control_operations(
+            {"opt3": dict(ok=False, error="stale binding: no gradients were cleared", category="server")}
+        )
+
+        backend.enqueue_operation("X", "opt4", 4, "optim_step")
+        [next_optim] = backend.claim_ready_control_operations()["operations"]
+        assert backend.gradient_windows.is_dirty(("X", rid))
+        assert next_optim.get("poison"), "a refused optimizer dispatch is not a window delimiter"
 
     def test_stale_registration_handle_is_fenced(self):
         backend = ready_backend()

@@ -41,33 +41,76 @@ class MultiLoraParameterExecutor:
             targets.append((slot, operation_id))
         for slot, operation_id in sorted(targets):
             zero_adapter_slot_grads(self.model, slot)
-            outcomes[operation_id] = dict(ok=True)
+            outcomes[operation_id] = dict(ok=True, gradient_window_consumed=True)
         return outcomes
 
     def step_many(self, lease: BatchExecutionLease[ResidentBinding], requests: list[StepRequest]) -> dict[str, dict]:
         """Apply each operation's AdamParams and step its slot's accumulated
         gradient sum (step_adapter_slots owns the slot-sorted collective order
-        and the unanimous non-finite veto)."""
+        and the unanimous non-finite veto). Every outcome carries
+        ``gradient_window_consumed``: True for a step or a veto (both leave
+        the slot's gradients cleared on every rank), absent for a refusal
+        that never touched them."""
         outcomes: dict[str, dict] = {}
         adam_by_slot: dict[int, dict] = {}
         operation_by_slot: dict[int, str] = {}
+        duplicate_slots: set[int] = set()
         for request in requests:
             slot, refusal = self._resolve_slot(lease, request.operation_id)
             if refusal is not None:
                 outcomes[request.operation_id] = refusal
                 continue
+            if slot in operation_by_slot:
+                # Two operations bound to one physical slot in one batch: the
+                # generic lease contract has no answer for which AdamParams
+                # win, and rekeying by slot would silently drop one. Refuse
+                # every operation on that slot deterministically (same
+                # decision on every rank), with no gradient mutation.
+                duplicate_slots.add(slot)
+                continue
             adam_by_slot[slot] = request.adam_params
             operation_by_slot[slot] = request.operation_id
+        if duplicate_slots:
+            for slot in duplicate_slots:
+                adam_by_slot.pop(slot, None)
+                operation_by_slot.pop(slot, None)
+            for request in requests:
+                binding = lease.binding_of(request.operation_id)
+                if binding is not None and binding.training_slot in duplicate_slots:
+                    outcomes[request.operation_id] = dict(
+                        ok=False,
+                        error=(
+                            f"operation '{request.operation_id}' shares physical slot "
+                            f"{binding.training_slot} with another operation in this batch; "
+                            "refusing every operation on that slot"
+                        ),
+                        category="server",
+                    )
         if adam_by_slot:
-            grad_norms, vetoed = step_adapter_slots(self.optimizer, self.model, adam_by_slot)
+            grad_norms, vetoed, norm_blind = step_adapter_slots(self.optimizer, self.model, adam_by_slot)
             for slot, operation_id in operation_by_slot.items():
                 if slot in vetoed:
                     outcomes[operation_id] = dict(
-                        ok=False, error="non-finite gradients; step vetoed and gradients cleared", category="server"
+                        ok=False,
+                        error="non-finite gradients; step vetoed and gradients cleared",
+                        category="server",
+                        gradient_window_consumed=True,
+                    )
+                elif slot in norm_blind:
+                    outcomes[operation_id] = dict(
+                        ok=False,
+                        error=(
+                            "gradient-norm collection is structurally empty while gradients exist "
+                            "(parameter-flagging bug in the parameterization); step refused and "
+                            "gradients cleared"
+                        ),
+                        category="server",
+                        gradient_window_consumed=True,
                     )
                 else:
                     outcomes[operation_id] = dict(
                         ok=True,
+                        gradient_window_consumed=True,
                         result=dict(
                             grad_norm=grad_norms.get(slot),
                             learning_rate=adam_by_slot[slot].get("learning_rate", 1e-4),

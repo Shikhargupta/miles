@@ -34,6 +34,14 @@ class InferenceEndpoint:
 class InferenceControllerPort(Protocol):
     async def get_inference_endpoint(self) -> InferenceEndpoint: ...
 
+    async def prepare_rollout(self, rollout_id: int) -> None:
+        """Per-rollout engine preparation/health handling (the PR #1842
+        InferenceController responsibility). The driver calls this before
+        every ``rollout_executor.generate(rollout_id)``; the legacy combined
+        manager prepares inside ``generate()`` itself, so its adapter's
+        implementation is a no-op."""
+        ...
+
 
 class RolloutExecutorPort(Protocol):
     async def generate(self, rollout_id: int): ...
@@ -44,17 +52,23 @@ class RolloutLifecyclePort(Protocol):
 
 
 class LegacyInferenceControllerAdapter:
-    """Inference-owner role view over the combined RolloutManager. ``manager``
-    stays reachable for the engine/weight-update plumbing that still wires the
-    raw actor handle into the training actors (create_training_models);
-    PR #1842's controller will own that wiring itself."""
+    """Inference-owner role view over the combined RolloutManager. The raw
+    actor handle is private: the training-side weight-update wiring reaches
+    it through ``RolloutComponents.weight_update_owner`` (an opaque factory
+    product), never through this role object."""
 
     def __init__(self, manager) -> None:
-        self.manager = manager
+        self._manager = manager
 
     async def get_inference_endpoint(self) -> InferenceEndpoint:
-        host, port = await self.manager.get_router_address.remote()
+        host, port = await self._manager.get_router_address.remote()
         return InferenceEndpoint(host=host, port=port)
+
+    async def prepare_rollout(self, rollout_id: int) -> None:
+        """No-op today: the combined ``RolloutManager.generate()`` performs
+        its own per-rollout preparation internally. The PR #1842 controller
+        moves that preparation here, and the driver already calls it in the
+        right place."""
 
 
 class LegacyRolloutExecutorAdapter:
@@ -87,7 +101,11 @@ class RolloutComponents:
     inference_controller: InferenceControllerPort
     rollout_executor: RolloutExecutorPort
     lifecycle: RolloutLifecyclePort
-    num_rollout_per_epoch: int | None
+    # Opaque owner/target the training actors wire their weight-update push
+    # against (today: the combined RolloutManager actor handle). The driver
+    # passes it to create_training_models verbatim and never introspects it;
+    # PR #1842's factory hands out its real controller-owned target here.
+    weight_update_owner: object
 
     async def dispose(self) -> None:
         await self.lifecycle.dispose_once()
@@ -96,13 +114,14 @@ class RolloutComponents:
 def create_rollout_components(args, pg) -> RolloutComponents:
     """The one construction seam: today it builds one RolloutManager and two
     role views over it; after PR #1842 it builds the real controller/executor
-    pair — call sites never change."""
+    pair — call sites never change. The tinker driver has no epochs, so the
+    manager's num_rollout_per_epoch is deliberately not carried."""
     from miles.ray.placement_group import create_rollout_manager
 
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pg)
+    rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pg)
     return RolloutComponents(
         inference_controller=LegacyInferenceControllerAdapter(rollout_manager),
         rollout_executor=LegacyRolloutExecutorAdapter(rollout_manager),
         lifecycle=LegacyRolloutLifecycle(rollout_manager),
-        num_rollout_per_epoch=num_rollout_per_epoch,
+        weight_update_owner=rollout_manager,
     )
