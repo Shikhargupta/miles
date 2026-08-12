@@ -179,7 +179,6 @@ def convert_samples_to_train_data(
             train_data["adapter_slots"] = _adapter_slots_from_lease(
                 metadata, train_data["tinker_operation_lanes"], samples
             )
-            train_data["adapter_name_by_slot"] = metadata["adapter_name_by_slot"]
         else:
             train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
 
@@ -206,19 +205,25 @@ def _adapter_slots_from_lease(metadata: dict, sample_lanes: list[int], samples: 
     lease = metadata["batch_execution_lease"]
     binding_by_op = {op_id: tuple(binding) for op_id, binding in lease["bindings_by_operation"]}
     operation_by_lane = metadata["operation_by_lane"]
-    missing = [op_id for op_id in operation_by_lane.values() if op_id not in binding_by_op]
-    if missing or len(binding_by_op) != len(operation_by_lane):
+    lane_ops = list(operation_by_lane.values())
+    # Exact agreement: unique operation ids, and the lane plan and the lease
+    # must reference the SAME operation set — a lease binding no lane uses is
+    # as much of a plan mismatch as a lane the lease never bound.
+    if len(set(lane_ops)) != len(lane_ops) or set(lane_ops) != set(binding_by_op):
         raise ValueError(
-            f"batch lease and lane plan disagree: lanes carry {sorted(operation_by_lane.values())}, "
+            f"batch lease and lane plan disagree: lanes carry {sorted(lane_ops)}, "
             f"lease carries {sorted(binding_by_op)}"
         )
     slots = []
     for sample, lane in zip(samples, sample_lanes, strict=True):
-        name, _registration_id, slot = binding_by_op[operation_by_lane[lane]]
-        if sample.adapter.name != name:
+        name, registration_id, slot = binding_by_op[operation_by_lane[lane]]
+        if sample.adapter.name != name or sample.adapter.registration_id != registration_id:
+            # The anti-ABA check: a Datum stamped by an OLD registration of
+            # the same name must never route onto the successor's slot.
             raise ValueError(
-                f"sample stamped for adapter '{sample.adapter.name}' rides lane {lane}, "
-                f"which the batch lease binds to '{name}'"
+                f"sample stamped for adapter '{sample.adapter.name}' "
+                f"(registration '{sample.adapter.registration_id}') rides lane {lane}, "
+                f"which the batch lease binds to '{name}' (registration '{registration_id}')"
             )
         slots.append(slot)
     return slots
@@ -410,7 +415,6 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "raw_reward",
             "total_lengths",
             "dynamic_global_batch_size",
-            "adapter_name_by_slot",
             "tinker_loss_by_lane",
             "operation_by_lane",
             "registration_by_lane",

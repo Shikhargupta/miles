@@ -55,10 +55,6 @@ from miles.utils.tinker_backend import cache_extra_key, make_rid, serving_lora_n
 logger = logging.getLogger(__name__)
 
 _LEDGER_CONFLICT_MARKS = ("different content", "already taken")
-# This frontend serves exactly the 0.24.x JSON wire protocol. 0.25+ posts
-# protobuf forward_backward bodies mid-run (an opaque 400); reject the SDK at
-# bootstrap instead, where the version travels with the request.
-_SUPPORTED_SDK_PREFIX = "0.24."
 
 
 class ApiError(Exception):
@@ -98,10 +94,21 @@ class TinkerFrontend:
         self.checkpoints = CheckpointCatalog()
         self.samplers = SamplingSessionStore()
         self._sample_tasks: set[asyncio.Task] = set()
+        self._closing = False
 
     async def close(self) -> None:
-        for task in list(self._sample_tasks):
+        """Idempotent shutdown barrier: gate new samples, cancel AND await
+        every in-flight sample task (so the transport observes cancellation
+        before it is closed under it), then close the transport."""
+        self._closing = True
+        tasks = list(self._sample_tasks)
+        for task in tasks:
             task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # The done-callbacks discard too, but only on a later loop tick;
+            # close() must return with the set verifiably drained.
+            self._sample_tasks.difference_update(tasks)
         await self.sampling_transport.close()
 
     # ---------------- bootstrap ----------------
@@ -114,11 +121,15 @@ class TinkerFrontend:
         return {"status": "ok"}
 
     def _check_sdk_version(self, sdk_version: str) -> None:
-        if not sdk_version.startswith(_SUPPORTED_SDK_PREFIX):
+        # Exact pin: this frontend mirrors the request shapes tinker==0.24.1
+        # actually POSTs. A different patch of 0.24.x is untested wire surface
+        # (and 0.25+ switches forward_backward to protobuf mid-run) — reject
+        # at bootstrap, where the version travels with the request.
+        if sdk_version != wire.TINKER_SDK_VERSION_PIN:
             raise ApiError(
                 400,
-                f"unsupported tinker SDK version '{sdk_version}': this deployment serves the tinker==0.24.1 "
-                "JSON protocol only (0.25+ switches forward_backward to protobuf). Pin tinker==0.24.1.",
+                f"unsupported tinker SDK version '{sdk_version}': this deployment serves exactly "
+                f"tinker=={wire.TINKER_SDK_VERSION_PIN}. Pin tinker=={wire.TINKER_SDK_VERSION_PIN}.",
             )
 
     def client_config(self, request: wire.ClientConfigRequest) -> dict:
@@ -330,8 +341,24 @@ class TinkerFrontend:
             short = session.short if session is not None else model.session_id[:12]
             record.sampling_session_id = f"samp-{short}-ss{request.sampling_session_seq_id}"
 
+        # The official 0.24.1 client increments its sampling counter INSIDE
+        # the HTTP retry closure (training_client.py: _send_request mints a
+        # fresh sampling_session_seq_id per attempt) while the operation
+        # seq_id stays fixed. A response lost on the wire therefore retries
+        # the SAME operation identity with a different sampling sequence —
+        # fingerprinting that field would turn the retry into a fatal 422.
+        # The operation seq_id remains authoritative; replay returns the
+        # originally minted sampler id.
+        fingerprint_dump = request.model_dump(mode="json")
+        fingerprint_dump.pop("sampling_session_seq_id", None)
         return self._submit_operation(
-            request, request.model_id, request.seq_id, "save_weights_for_sampler", build, prepare=prepare
+            request,
+            request.model_id,
+            request.seq_id,
+            "save_weights_for_sampler",
+            build,
+            prepare=prepare,
+            fingerprint_dump=fingerprint_dump,
         )
 
     def _existing(self, request_id: str, fingerprint: str) -> FutureRecord | None:
@@ -350,12 +377,16 @@ class TinkerFrontend:
         kind: str,
         build_payload: Callable[[], dict],
         prepare: Callable[[FutureRecord, dict], None] | None = None,
+        fingerprint_dump: dict | None = None,
     ) -> dict:
         model = self._model_for(model_id)
         if seq_id is None or seq_id < 1:
             raise ApiError(400, f"{kind} needs a seq_id >= 1")
         request_dump = request.model_dump(mode="json")
-        fingerprint = fingerprint_of(request_dump)
+        # ``fingerprint_dump`` lets a verb exclude fields the official SDK
+        # regenerates per retry attempt (save_weights_for_sampler's
+        # sampling_session_seq_id) from the retry-identity fingerprint.
+        fingerprint = fingerprint_of(fingerprint_dump if fingerprint_dump is not None else request_dump)
         request_id = f"{model.name}.{model.rid8}:op{seq_id}"
         if self._existing(request_id, fingerprint) is not None:
             return wire.untyped_future(request_id, model.model_id)
@@ -462,6 +493,8 @@ class TinkerFrontend:
         return {"sampler_id": sampler.sampling_session_id, "base_model": sampler.base_model, "model_path": None}
 
     def sample(self, request: wire.SampleRequest) -> dict:
+        if self._closing:
+            raise ApiError(503, "the service is shutting down; no new samples are accepted")
         if request.sampling_session_id is None:
             raise ApiError(400, "asample requires sampling_session_id (create a sampling session first)")
         sampler = self.samplers.get(request.sampling_session_id)
@@ -473,6 +506,21 @@ class TinkerFrontend:
         request_id = f"{sampler.sampling_session_id}:s{request.seq_id}"
         if self._existing(request_id, fingerprint) is not None:
             return wire.untyped_future(request_id)
+        if sampler.is_spent(request.seq_id):
+            # The replay bytes AND the fingerprint tombstone are gone (bounded
+            # retention rolled over), but the per-session spent-sequence fence
+            # still knows this identity executed: answer a typed terminal
+            # failure instead of silently re-running the generation.
+            record = self.futures.put(FutureRecord(request_id=request_id, kind="sample", fingerprint=fingerprint))
+            record.resolve(
+                wire.terminal_failure(
+                    f"sample seq {request.seq_id} of '{sampler.sampling_session_id}' was already executed "
+                    "and its result expired from the replay window; it cannot be re-run",
+                    "user",
+                )
+            )
+            return wire.untyped_future(request_id)
+        sampler.mark_spent(request.seq_id)
 
         record = self.futures.put(FutureRecord(request_id=request_id, kind="sample", fingerprint=fingerprint))
         try:
@@ -536,9 +584,21 @@ class TinkerFrontend:
                     one["rid"] = make_rid(sampler.name, sampler.registration_id)
                 return one
 
-            generations = await asyncio.gather(
-                *(self._post_generate(per_sample_payload(index)) for index in range(num_samples))
-            )
+            # Not a bare gather: the first exception must not leave siblings
+            # running untracked — cancel them and AWAIT their cancellation
+            # before this future turns terminal, so no generation outlives
+            # its request's resolution.
+            generation_tasks = [
+                asyncio.get_running_loop().create_task(self.sampling_transport.generate(per_sample_payload(index)))
+                for index in range(num_samples)
+            ]
+            try:
+                generations = await asyncio.gather(*generation_tasks)
+            except BaseException:
+                for task in generation_tasks:
+                    task.cancel()
+                await asyncio.gather(*generation_tasks, return_exceptions=True)
+                raise
             if sampler.name is not None and not self._sampler_still_live(sampler):
                 # Re-checked AFTER generation: a republish that landed while
                 # the request was in flight swapped the engine-side weights
@@ -557,6 +617,11 @@ class TinkerFrontend:
                 return
             sequences = [translation.generation_to_sequence(generation) for generation in generations]
             record.resolve(translation.sequences_to_sample_response(sequences))
+        except asyncio.CancelledError:
+            # Shutdown cancellation: resolve so a client polling the future
+            # sees a typed terminal instead of an identity that never lands.
+            record.resolve(wire.terminal_failure("sampling cancelled: the service is shutting down", "server"))
+            raise
         except Exception as exc:  # noqa: BLE001 — every failure must resolve the future
             record.resolve(wire.terminal_failure(f"sampling failed: {exc}", "server"))
 
@@ -567,9 +632,6 @@ class TinkerFrontend:
             and live["registration_id"] == sampler.registration_id
             and live["serving_version"] == sampler.serving_version
         )
-
-    async def _post_generate(self, payload: dict) -> dict:
-        return await self.sampling_transport.generate(payload)
 
     # ---------------- future retrieval ----------------
 
@@ -658,6 +720,18 @@ class TinkerFrontend:
         if kind == "load_state":
             return translation.load_weights_result_to_response(record.tinker_path, model.model_id)
         if kind == "save_weights_for_sampler":
+            existing = self.samplers.get(record.sampling_session_id)
+            if existing is not None and existing.fingerprint != record.fingerprint:
+                # Never overwrite a live sampler identity: a base sampler (or
+                # another publish) already owns this namespace, and silently
+                # rebinding it would swap the weights under an existing
+                # client. The weights are live (the publish itself landed);
+                # only the sampler minting fails, typed.
+                return wire.terminal_failure(
+                    f"sampling session '{record.sampling_session_id}' already exists; publish with a fresh "
+                    "sampling_session_seq_id to mint a new sampler",
+                    "user",
+                )
             self.samplers.add(
                 SamplingSessionRecord(
                     sampling_session_id=record.sampling_session_id,

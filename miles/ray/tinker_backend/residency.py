@@ -71,9 +71,6 @@ class FixedSlotResidency:
             bindings_by_operation=tuple(bindings_by_operation),
         )
 
-    def validate(self, lease: BatchExecutionLease[ResidentBinding]) -> bool:
-        return all(self._owns_slot(binding) for _, binding in lease.bindings_by_operation)
-
     def release_batch(self, lease: BatchExecutionLease[ResidentBinding]) -> None:
         """No-op lifecycle hook (nothing to free under fixed residency)."""
 

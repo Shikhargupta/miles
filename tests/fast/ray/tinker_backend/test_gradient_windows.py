@@ -71,11 +71,11 @@ class TestStreamIdentity:
 
 
 class TestRestore:
-    def test_restore_moves_both_clocks(self):
+    def test_restore_moves_the_clock(self):
+        # The num_step baseline (start_step) is the registry's authority;
+        # the tracker deliberately keeps no duplicate copy of it.
         tracker = GradientWindowTracker()
         tracker.restore_step(KEY_A, 42)
         assert tracker.step_of(KEY_A) == 42
-        assert tracker.start_step_of(KEY_A) == 42
-        # The next commit counts from the restored baseline.
+        # The next commit counts from the restored clock.
         assert tracker.commit_step(KEY_A) == 43
-        assert tracker.start_step_of(KEY_A) == 42

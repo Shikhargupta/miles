@@ -153,6 +153,18 @@ def _found_inf_anywhere(found_inf: bool) -> bool:
     return flag.item() > 0
 
 
+def _norm_source_flags_anywhere(has_norm_source: bool, has_grads: bool) -> tuple[bool, bool]:
+    """Global (any-rank) view of the two structural facts the norm-source veto
+    compares; all-reduced so the decision is unanimous across ranks."""
+    if not dist.is_initialized():
+        return has_norm_source, has_grads
+    flags = torch.tensor(
+        [1.0 if has_norm_source else 0.0, 1.0 if has_grads else 0.0], device=torch.cuda.current_device()
+    )
+    dist.all_reduce(flags, op=dist.ReduceOp.MAX)
+    return bool(flags[0].item() > 0), bool(flags[1].item() > 0)
+
+
 def apply_adam_params_to_slot(optimizer, slot: int, adam_params: dict | None) -> dict:
     """Write one optim_step's AdamParams onto the slot's param groups; returns
     the resolved values (SDK defaults come from the parameterization-neutral
@@ -172,11 +184,15 @@ def step_adapter_slots(
     optimizer,
     model,
     adam_params_by_slot: dict[int, dict | None],
-) -> tuple[dict[int, float], set[int]]:
+) -> tuple[dict[int, float], set[int], set[int]]:
     """Step exactly the slots in ``adam_params_by_slot`` (slot -> that
     operation's AdamParams), retaining all other slots' gradients. Returns
-    (grad norms, vetoed slots): a found-inf/NaN slot is not stepped, its grads
-    are cleared, and the caller must fail — not commit or publish — it.
+    (grad norms, vetoed slots, norm-blind slots): a found-inf/NaN slot is not
+    stepped, its grads are cleared, and the caller must fail — not commit or
+    publish — it; a norm-blind slot (nonzero gradients somewhere, but NO rank
+    contributed a norm source — a parameter-flagging bug upstream) is treated
+    the same way, because its computed norm is a lie and stepping would apply
+    the update with the clip silently bypassed.
 
     The gradient sum is never count-normalized (the client's loss_weights own
     the scale) and the clip is the per-call ``grad_clip_norm`` (0.0 = none).
@@ -185,6 +201,7 @@ def step_adapter_slots(
 
     grad_norms: dict[int, float] = {}
     vetoed: set[int] = set()
+    norm_blind: set[int] = set()
 
     for slot in sorted(adam_params_by_slot):
         children = _slot_children(optimizer, slot)
@@ -214,6 +231,26 @@ def step_adapter_slots(
             zero_adapter_slot_grads(model, slot)
             continue
 
+        # Structural norm-source check: nonzero gradients on SOME rank with
+        # an empty norm collection on EVERY rank means the per-parameter
+        # filters (tensor_model_parallel/shared flags) excluded the whole
+        # slot — the 0.0 above is a lie and the clip would silently no-op.
+        # A single rank's empty list is NORMAL (duplicated params count on
+        # one rank only), so both facts are all-reduced before deciding.
+        has_norm_source, has_grads = _norm_source_flags_anywhere(
+            bool(grads_for_norm),
+            any(param.grad is not None and bool((param.grad != 0).any().item()) for param in slot_params),
+        )
+        if has_grads and not has_norm_source:
+            logger.error(
+                f"[tinker] slot {slot}: gradients exist but NO rank contributed a grad-norm source — "
+                "the slot's parameters are mis-flagged for norm collection (upstream parameter-attribute "
+                "bug); step refused, grads cleared"
+            )
+            norm_blind.add(slot)
+            zero_adapter_slot_grads(model, slot)
+            continue
+
         if adam["grad_clip_norm"] > 0.0 and slot_params:
             clip_grad_by_total_norm_fp32(slot_params, adam["grad_clip_norm"], slot_norm, False)
         grad_norms[slot] = float(slot_norm)
@@ -226,4 +263,4 @@ def step_adapter_slots(
     if grad_norms:
         optimizer.allgather_params()
 
-    return grad_norms, vetoed
+    return grad_norms, vetoed, norm_blind

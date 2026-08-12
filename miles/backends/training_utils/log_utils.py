@@ -205,7 +205,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "num_rollouts",
                 "n_adapters",
                 "adapter_slots",
-                "adapter_name_by_slot",
                 "tinker_operation_lanes",
                 "tinker_loss_by_lane",
                 "operation_by_lane",

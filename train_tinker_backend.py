@@ -125,9 +125,10 @@ async def main(args):
     api_port = await controller.api_port.remote()
     logger.info(f"Tinker control API listening on http://{host}:{api_port} (head node)")
 
-    # Engine/weight-update plumbing still wires the combined manager handle
-    # into the training actors; the inference-owner role holds it.
-    actor_model, _ = await create_training_models(args, pgs, inference_controller.manager)
+    # Engine/weight-update plumbing wires the factory's opaque weight-update
+    # owner into the training actors; the driver never reaches through the
+    # controller role for it.
+    actor_model, _ = await create_training_models(args, pgs, rollout_components.weight_update_owner)
     weight_publisher = ActorGroupWeightPublisher(actor_model)
 
     # CLI-registered adapters; loaded and marked READY by the first reconcile.
@@ -164,6 +165,10 @@ async def main(args):
         if not post_control["ready"]:
             continue
 
+        # Per-rollout engine preparation (the PR #1842 controller boundary):
+        # a no-op behind today's combined manager, the real health/prepare
+        # step once the split controller lands.
+        await inference_controller.prepare_rollout(rollout_id)
         try:
             rollout_data = await rollout_executor.generate(rollout_id)
         except ray.exceptions.RayTaskError as e:

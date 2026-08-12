@@ -68,26 +68,43 @@ class Stack:
         )
 
 
+class RouterSamplingTransport:
+    """SamplingTransport-shaped fake: the tests exercise the REAL transport
+    seam (no method monkeypatching), routing /generate to the FakeRouter."""
+
+    def __init__(self, router):
+        self.router = router
+        self.closed = False
+
+    async def generate(self, payload: dict) -> dict:
+        self.router.requests.append(payload)
+        return self.router.response_for(payload)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def run(scenario, poll_window_s=5.0, **backend_overrides):
     async def main():
         router = FakeRouter()
         backend = make_backend(**backend_overrides)
         await backend.init()
         driver = FakeDriver(backend)
-        frontend = TinkerFrontend(backend, poll_window_s=poll_window_s, poll_interval_s=0.002)
+        frontend = TinkerFrontend(
+            backend,
+            poll_window_s=poll_window_s,
+            poll_interval_s=0.002,
+            sampling_transport=RouterSamplingTransport(router),
+        )
         stack = Stack(frontend, driver, router)
-        frontend._post_generate = lambda payload: _respond(router, payload)  # engine boundary only
         driver_task = asyncio.create_task(driver.run(interval=0.002))
         try:
             await asyncio.wait_for(scenario(stack), timeout=30)
         finally:
             driver_task.cancel()
+            await asyncio.gather(driver_task, return_exceptions=True)
             await frontend.close()
             await backend.close()
-
-    async def _respond(router, payload):
-        router.requests.append(payload)
-        return router.response_for(payload)
 
     asyncio.run(main())
 
@@ -397,13 +414,14 @@ class TestSampling:
             name = stack.frontend.samplers.get(sampler_id).name
 
             gate = asyncio.Event()
-            original = stack.frontend._post_generate
+            transport = stack.frontend.sampling_transport
+            original = transport.generate
 
             async def delayed(payload):
                 await gate.wait()
                 return await original(payload)
 
-            stack.frontend._post_generate = delayed
+            transport.generate = delayed
             future = stack.frontend.sample(self.sample_request(sampler_id))
             await asyncio.sleep(0.02)  # the sample task is awaiting /generate
             stack.frontend.backend.registry.record_weight_update([name])  # republish lands mid-flight
