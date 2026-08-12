@@ -170,7 +170,7 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
 
 
 def _reward_group_ids(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[int]:
-    """Resolve each row's reward-normalization group without assuming fixed fanout."""
+    """Map each flattened leaf row to the prompt group normalized with it."""
     if prompt_group_sizes is not None:
         assert sum(prompt_group_sizes) == len(
             samples
@@ -182,8 +182,9 @@ def _reward_group_ids(args: Any, samples: list[Sample], prompt_group_sizes: list
         return [int(group_index) for group_index in group_indices]
 
     expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
-    group_size = args.n_samples_per_prompt if len(samples) == expected_samples else len(samples)
-    return [row_index // group_size for row_index in range(len(samples))]
+    if len(samples) == expected_samples:
+        return [row_index // args.n_samples_per_prompt for row_index in range(len(samples))]
+    return [0] * len(samples)
 
 
 def _normalize_rewards_by_rollout(
@@ -192,38 +193,49 @@ def _normalize_rewards_by_rollout(
     raw_rewards: list[float],
     prompt_group_sizes: list[int] | None,
 ) -> list[float]:
-    """Normalize one reward per rollout, then broadcast its advantage to sibling rows."""
+    """Give each rollout equal weight in prompt-group reward statistics."""
     if not samples:
         return []
 
     group_ids = _reward_group_ids(args, samples, prompt_group_sizes)
-    row_keys: list[tuple[int, int | tuple[str, int]]] = []
-    rollout_rewards: dict[tuple[int, int | tuple[str, int]], float] = {}
-    group_rollout_keys: dict[int, list[tuple[int, int | tuple[str, int]]]] = {}
+    rollout_rewards_by_group: dict[int, dict[int | tuple[str, int], list[float]]] = {}
+    row_indices_by_group: dict[int, list[int]] = {}
 
     for row_index, (sample, reward, group_id) in enumerate(zip(samples, raw_rewards, group_ids, strict=True)):
-        rollout_id = sample.rollout_id if sample.rollout_id is not None else sample.index
-        rollout_key = rollout_id if rollout_id is not None else ("row", row_index)
-        key = (group_id, rollout_key)
-        if key in rollout_rewards:
-            if rollout_rewards[key] != reward:
-                raise ValueError(
-                    f"samples in reward group {group_id} with rollout_id={rollout_id} must share one reward; got {rollout_rewards[key]} and {reward}"
-                )
+        if sample.rollout_id is not None:
+            rollout_key = sample.rollout_id
+        elif sample.index is not None:
+            rollout_key = sample.index
         else:
-            rollout_rewards[key] = reward
-            group_rollout_keys.setdefault(group_id, []).append(key)
-        row_keys.append(key)
+            rollout_key = ("row", row_index)
 
-    normalized_by_rollout: dict[tuple[int, int | tuple[str, int]], float] = {}
-    for keys in group_rollout_keys.values():
-        rewards = torch.tensor([rollout_rewards[key] for key in keys], dtype=torch.float)
-        normalized = rewards - rewards.mean()
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(keys) > 1:
-            normalized = normalized / (rewards.std() + 1e-6)
-        normalized_by_rollout.update(zip(keys, normalized.tolist(), strict=True))
+        rewards_by_rollout = rollout_rewards_by_group.setdefault(group_id, {})
+        rewards_by_rollout.setdefault(rollout_key, []).append(reward)
+        row_indices_by_group.setdefault(group_id, []).append(row_index)
 
-    return [normalized_by_rollout[key] for key in row_keys]
+    leaf_rewards = torch.tensor(raw_rewards, dtype=torch.float)
+    normalized_rewards = torch.empty_like(leaf_rewards)
+    for group_id, rewards_by_rollout in rollout_rewards_by_group.items():
+        rollout_means = torch.tensor(
+            [
+                sum(rewards_for_rollout) / len(rewards_for_rollout)
+                for rewards_for_rollout in rewards_by_rollout.values()
+            ],
+            dtype=torch.float,
+        )
+        row_indices = row_indices_by_group[group_id]
+        normalized_group_rewards = leaf_rewards[row_indices] - rollout_means.mean()
+        if (
+            args.advantage_estimator in ["grpo", "gspo"]
+            and args.grpo_std_normalization
+            and len(rewards_by_rollout) > 1
+        ):
+            rollout_std = rollout_means.std()
+            if rollout_std > 0:
+                normalized_group_rewards = normalized_group_rewards / (rollout_std + 1e-6)
+        normalized_rewards[row_indices] = normalized_group_rewards
+
+    return normalized_rewards.tolist()
 
 
 def _post_process_rewards(
