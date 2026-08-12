@@ -22,9 +22,7 @@ def loaded(name="A", registration_id="r-A", slot=0):
 
 
 def make_executor(loaded_adapters=None):
-    return MultiLoraParameterExecutor(
-        model=object(), optimizer=object(), loaded_adapters=loaded_adapters or loaded()
-    )
+    return MultiLoraParameterExecutor(model=object(), optimizer=object(), loaded_adapters=loaded_adapters or loaded())
 
 
 def lease_of(*bindings):
