@@ -9,7 +9,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 import asyncio
 from types import SimpleNamespace
 
-from train_tinker_backend import run_control_phase
+from train_tinker_backend import ActorGroupWeightPublisher, run_control_phase
 
 
 class Remote:
@@ -54,7 +54,7 @@ def test_control_phase_completes_deferred_publishes_only_after_the_push():
         log.append(("update_weights", ()))
 
     actor_model = SimpleNamespace(execute_tinker_controls=execute, update_weights=update_weights)
-    asyncio.run(run_control_phase(actor_model, controller))
+    asyncio.run(run_control_phase(actor_model, controller, ActorGroupWeightPublisher(actor_model)))
 
     order = [name for name, _ in log]
     # A deferred batch holds its lease through the publish barrier: release
@@ -90,7 +90,7 @@ def test_immediate_only_batch_releases_at_its_completion_boundary():
         log.append(("update_weights", ()))
 
     actor_model = SimpleNamespace(execute_tinker_controls=execute, update_weights=update_weights)
-    asyncio.run(run_control_phase(actor_model, controller))
+    asyncio.run(run_control_phase(actor_model, controller, ActorGroupWeightPublisher(actor_model)))
     # Immediate controls release after controller completion, before the push.
     assert [name for name, _ in log] == ["claim", "execute", "complete", "release", "update_weights"]
 
@@ -109,7 +109,7 @@ def test_control_phase_still_pushes_with_no_operations():
         log.append(("update_weights", ()))
 
     actor_model = SimpleNamespace(execute_tinker_controls=None, update_weights=update_weights)
-    asyncio.run(run_control_phase(actor_model, controller))
+    asyncio.run(run_control_phase(actor_model, controller, ActorGroupWeightPublisher(actor_model)))
     assert [name for name, _ in log] == ["claim", "update_weights"]
 
 
