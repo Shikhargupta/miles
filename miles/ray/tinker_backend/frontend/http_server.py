@@ -71,8 +71,15 @@ class TinkerFrontendHTTPServer(TinkerHTTPServer):
         await super().start()
 
     async def stop(self) -> None:
-        await self.frontend.close()
+        # Order matters: stop ACCEPTING first (uvicorn), then drain the
+        # frontend (cancel + await in-flight samples, close the transport).
+        # Closing the frontend first would let a late request lazily reopen
+        # the transport it just closed. Idempotent: a second stop is a no-op.
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
         await super().stop()
+        await self.frontend.close()
 
     def create_app(self) -> FastAPI:
         app = super().create_app()

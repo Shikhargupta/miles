@@ -233,6 +233,25 @@ class SamplingSessionRecord:
     registration_id: str | None = None
     serving_name: str | None = None
     serving_version: int | None = None
+    # Compact spent-sequence fence: sample identities outlive the bounded
+    # future/tombstone retention. Every seq <= spent_fence has executed;
+    # spent_sparse holds executed seqs above the fence (out-of-order arrival
+    # gaps only, so it stays tiny for the SDK's monotonic counters). A retry
+    # of a spent seq whose bytes and tombstone are both gone gets a typed
+    # terminal failure instead of silently re-running the generation.
+    spent_fence: int = -1
+    spent_sparse: set = field(default_factory=set)
+
+    def is_spent(self, seq_id: int) -> bool:
+        return seq_id <= self.spent_fence or seq_id in self.spent_sparse
+
+    def mark_spent(self, seq_id: int) -> None:
+        if self.is_spent(seq_id):
+            return
+        self.spent_sparse.add(seq_id)
+        while self.spent_fence + 1 in self.spent_sparse:
+            self.spent_fence += 1
+            self.spent_sparse.discard(self.spent_fence)
 
 
 class SamplingSessionStore:

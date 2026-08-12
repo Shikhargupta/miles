@@ -47,8 +47,11 @@ def stack(tmp_path_factory):
         uvicorn.Config(router.app(), host="127.0.0.1", port=0, log_level="warning", access_log=False)
     )
 
+    router_task: dict = {}
+
     async def start_router():
         task = asyncio.get_running_loop().create_task(router_server.serve())
+        router_task["serve"] = task
         while not router_server.started:
             if task.done():
                 task.result()
@@ -78,7 +81,16 @@ def stack(tmp_path_factory):
         router=router,
         run=run,
     )
-    driver_task.cancel()
+    # Teardown must AWAIT what it cancels: dropping the driver/router tasks
+    # pending prints "Task was destroyed but it is pending!" and can mask
+    # exactly the shutdown/task-leak bug class these tests exist to catch.
+    async def stop_background_tasks():
+        driver_task.cancel()
+        await asyncio.gather(driver_task, return_exceptions=True)
+        router_server.should_exit = True
+        await asyncio.gather(router_task["serve"], return_exceptions=True)
+
+    run(stop_background_tasks())
     run(server.stop())
     run(backend.close())
     loop.call_soon_threadsafe(loop.stop)
