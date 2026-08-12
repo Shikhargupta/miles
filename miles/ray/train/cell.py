@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 KILL_RPC_TIMEOUT_S = 10.0
 CONFIRM_DEAD_TIMEOUT_S = 120.0
+RECONFIRM_DEAD_TIMEOUT_S = 1.0
 
 
 class TrainerCell:
@@ -53,6 +54,7 @@ class TrainerCell:
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
         self._state: CellState = StateAllocatedUninitialized(worker_handles=[info.handle for info in worker_infos])
+        self._workers_confirmed_dead: bool = False
 
     # ------------------------ API ------------------------
 
@@ -144,13 +146,14 @@ class TrainerCell:
         )
         start = time.monotonic()
         await asyncio.gather(*[_kill_worker(handle) for handle in handles])
-        await asyncio.gather(*[handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_S) for handle in handles])
+        confirmed = await self._probe_workers_dead(handles=handles, timeout=CONFIRM_DEAD_TIMEOUT_S)
         log_structured(
             logger.info,
             tag="ft",
             op="confirm_dead",
             phase="end",
             cell=self.cell_id,
+            confirmed=confirmed,
             elapsed_s=round(time.monotonic() - start, 1),
         )
 
@@ -207,6 +210,27 @@ class TrainerCell:
         )
 
     # ------------------------ API :: directly forward calls to actors ------------------------
+
+    async def is_update_weights_in_flight_per_worker(self) -> list[bool | BaseException]:
+        handles = self._get_worker_handles()
+        return await asyncio.gather(
+            *[handle.is_update_weights_in_flight() for handle in handles], return_exceptions=True
+        )
+
+    async def confirm_workers_dead(self) -> bool:
+        if self._workers_confirmed_dead:
+            return True
+        handles = self._get_worker_handles() if self.is_allocated else []
+        return await self._probe_workers_dead(handles=handles, timeout=RECONFIRM_DEAD_TIMEOUT_S)
+
+    async def _probe_workers_dead(self, *, handles: list[BaseWorkerHandle], timeout: float) -> bool:
+        confirmations = await asyncio.gather(
+            *[handle.wait_dead(timeout=timeout) for handle in handles], return_exceptions=True
+        )
+        self._workers_confirmed_dead = self._workers_confirmed_dead or (
+            len(handles) > 0 and all(confirmation is True for confirmation in confirmations)
+        )
+        return self._workers_confirmed_dead
 
     async def execute(self, fn_name: str, *, kill_on_failure: bool = True, **kwargs) -> list:
         return await self._execute_raw(
@@ -266,6 +290,10 @@ class TrainerCell:
     @property
     def is_alive(self) -> bool:
         return isinstance(self._state, StateAllocatedAlive)
+
+    @property
+    def broadcast_certainly_stopped(self) -> bool:
+        return self._workers_confirmed_dead
 
     @property
     def is_errored(self) -> bool:

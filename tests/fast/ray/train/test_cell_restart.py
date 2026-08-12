@@ -14,7 +14,8 @@ pytestmark = pytest.mark.asyncio
 class _HangingKillSelfHandle(BaseWorkerHandle):
     """A worker handle whose kill_self never returns, so _kill_worker has to time it out."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, is_dead: bool = True) -> None:
+        self.is_dead = is_dead
         self.kill_self_call_count: int = 0
         self.wait_dead_call_count: int = 0
 
@@ -25,11 +26,12 @@ class _HangingKillSelfHandle(BaseWorkerHandle):
     async def wait_ready(self, *, timeout: float) -> None:
         raise NotImplementedError
 
-    async def wait_dead(self, *, timeout: float) -> None:
+    async def wait_dead(self, *, timeout: float) -> bool:
         self.wait_dead_call_count += 1
+        return self.is_dead
 
     async def _probe_is_dead(self) -> bool:
-        raise NotImplementedError
+        return self.is_dead
 
 
 class TestCellKillAndRestart:
@@ -85,4 +87,25 @@ class TestKillRpcTimeout:
 
         assert [handle.wait_dead_call_count for handle in hanging_handles] == [1, 1]
         assert [handle.kill_self_call_count for handle in hanging_handles] == [1, 1]
-        assert [handle.wait_dead_call_count for handle in hanging_handles] == [1, 1]
+        assert cell.broadcast_certainly_stopped
+
+    async def test_a_worker_that_never_dies_leaves_the_broadcast_unconfirmed(self, monkeypatch: pytest.MonkeyPatch):
+        """One rank that survived the kill may still be writing weights, so the whole cell stays unconfirmed."""
+        monkeypatch.setattr(cell_module, "KILL_RPC_TIMEOUT_S", 0.05)
+        cell = make_cell(2)
+        hanging_handles = [_HangingKillSelfHandle(is_dead=True), _HangingKillSelfHandle(is_dead=False)]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: hanging_handles)
+
+        await asyncio.wait_for(cell._kill_workers_and_confirm_dead(), timeout=10.0)
+
+        assert not cell.broadcast_certainly_stopped
+
+    async def test_a_cell_with_no_worker_left_is_never_confirmed_dead(self, monkeypatch: pytest.MonkeyPatch):
+        """An answer nobody gave is not a confirmation, so an empty handle list must not release the window."""
+        monkeypatch.setattr(cell_module, "KILL_RPC_TIMEOUT_S", 0.05)
+        cell = make_cell(2)
+        monkeypatch.setattr(cell, "_get_worker_handles", list)
+
+        await asyncio.wait_for(cell._kill_workers_and_confirm_dead(), timeout=10.0)
+
+        assert not cell.broadcast_certainly_stopped

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -6,16 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.ray.rollout.updatable_engines import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
-from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
-    InferenceEngineWeightChecksumEvent,
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
@@ -32,7 +32,7 @@ from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecuto
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.rpc.common.wire_types import WireNamespace
-from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 
 _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
+_UPDATE_WEIGHTS_LIVENESS_POLL_INTERVAL_SECONDS = 1.0
+
+_LAUNCH_LEVEL_ARG_NAMES: tuple[str, ...] = (
+    "deploy_component",
+    "trainer_controller_addrs",
+    "inference_controller_addrs",
+    "inference_router_addrs",
+    "api_server_port",
+)
 
 
 def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> SimpleHealthCheckerConfig | None:
@@ -52,15 +61,15 @@ def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> S
 class TrainerController(NodeProbeMixin):
     def __init__(
         self,
+        args,
         *,
         cell_provider: BaseWorkerProvider,
         cell_operations: BaseCellOperations,
-        inference_controller: BaseWorkerHandle | None,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
-        self._inference_controller = inference_controller
+        self._launch_args = args
         self._role = role
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
@@ -301,8 +310,8 @@ class TrainerController(NodeProbeMixin):
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
-        self.args = args
-        configure_logger(args, source=TrainerControllerProcessIdentity(role=self._role))
+        self.args = _adopt_launch_level_args(args, launch_args=self._launch_args)
+        configure_logger(self.args, source=TrainerControllerProcessIdentity(role=self._role))
 
         if self._expected_num_cells > 1:
             self._indep_dp_store, self._indep_dp_store_addr = create_tcp_store()
@@ -354,35 +363,63 @@ class TrainerController(NodeProbeMixin):
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, rollout_id: int | None = None) -> int | None:
-        """Broadcast weights to rollout engines and answer the version they now serve."""
+    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> int | None:
+        """Broadcast weights to the engines the orchestration script snapshotted, and answer the version served."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Fetch the updatable engines once (like V1 RayActorGroup) so all
-        # ranks observe a consistent engine set.
-        info = await self._inference_controller.start_update_weights()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         weight_versions = await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
-
-        await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
-
         return weight_versions[0]
 
-    async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
-        if not is_event_logger_initialized():
-            return
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
+    async def wait_update_weights_finished(self, window_id: int) -> bool:
+        """Answer from the cells that run the broadcast, so a cancelled controller call cannot look finished."""
+        while broadcasting := await self._cell_ids_broadcasting_weights():
+            log_structured(
+                logger.info,
+                tag="ft",
+                op="update_weights",
+                phase="wait_finished",
+                window=window_id,
+                cells=broadcasting,
+            )
+            await asyncio.sleep(_UPDATE_WEIGHTS_LIVENESS_POLL_INTERVAL_SECONDS)
+        return True
 
-        check_weights_result = await self._inference_controller.check_weights(action="checksum")
-        engine_checksums = flatten_inference_engine_checksums(check_weights_result)
-        get_event_logger().log(
-            InferenceEngineWeightChecksumEvent,
-            dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+    async def _cell_ids_broadcasting_weights(self) -> list[str]:
+        allocated_cells = [cell for cell in self._cells if cell.is_allocated]
+        answers = await asyncio.gather(
+            *[cell.is_update_weights_in_flight_per_worker() for cell in allocated_cells], return_exceptions=True
+        )
+        verdicts = await asyncio.gather(
+            *[
+                _is_cell_broadcasting_weights(cell=cell, answers=answer)
+                for cell, answer in zip(allocated_cells, answers, strict=True)
+            ],
+            return_exceptions=True,
+        )
+        broadcasting = [
+            cell.cell_id
+            for cell, verdict in zip(allocated_cells, verdicts, strict=True)
+            if _counts_as_broadcasting(cell=cell, verdict=verdict)
+        ]
+        log_structured(
+            logger.debug,
+            tag="ft",
+            op="update_weights",
+            phase="liveness_poll",
+            cells=[cell.cell_id for cell in allocated_cells],
+            broadcasting=broadcasting,
+        )
+        return broadcasting
+
+    async def get_deployment_identity(self) -> DeploymentIdentity:
+        return DeploymentIdentity(
+            run_uuid=self._launch_args.run_uuid,
+            deploy_component=self._launch_args.deploy_component,
+            router_addrs={},
         )
 
     async def onload(self) -> None:
@@ -622,5 +659,48 @@ class TrainerController(NodeProbeMixin):
         return len(self._cells)
 
 
+def _counts_as_broadcasting(*, cell: TrainerCell, verdict: bool | BaseException) -> bool:
+    if isinstance(verdict, BaseException):
+        logger.error(
+            f"Reading whether cell {cell.cell_id} is still broadcasting weights failed, so it counts as broadcasting "
+            f"until it can answer",
+            exc_info=verdict,
+        )
+        return True
+    return verdict
+
+
+async def _is_cell_broadcasting_weights(
+    *, cell: TrainerCell, answers: list[bool | BaseException] | BaseException
+) -> bool:
+    per_worker = answers if isinstance(answers, list) else [answers]
+    if any(answer is True for answer in per_worker):
+        return True
+
+    unanswered = [answer for answer in per_worker if isinstance(answer, BaseException)]
+    if not unanswered:
+        return not (len(per_worker) > 0 and all(answer is False for answer in per_worker))
+
+    logger.error(
+        f"Cell {cell.cell_id} could not answer for {len(unanswered)} of its workers whether they are still "
+        f"broadcasting weights, so it counts as broadcasting until its workers are confirmed dead; probing them "
+        f"for their death once more",
+        exc_info=unanswered[0],
+    )
+    return not await cell.confirm_workers_dead()
+
+
 def _first_exception(results) -> BaseException | None:
     return next((result for result in results if isinstance(result, BaseException)), None)
+
+
+def _adopt_launch_level_args(args: WireNamespace, *, launch_args) -> WireNamespace:
+    component = DeployComponent(args.deploy_component)
+    assert component.selects(DeployComponent.PRIMARY), (
+        f"the orchestration script hands the trainer controller the arguments of its own launch, and a launch that "
+        f"deploys {component.value} carries no orchestration script"
+    )
+    adopted = copy.copy(args)
+    for name in _LAUNCH_LEVEL_ARG_NAMES:
+        setattr(adopted, name, getattr(launch_args, name))
+    return adopted

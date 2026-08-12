@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
+from tests.fast.fixtures.controller_fixtures import make_trainer_controller
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
 from miles.ray.train.group import TrainerController
@@ -10,10 +11,10 @@ pytestmark = pytest.mark.asyncio
 
 
 def _make_controller(cells: list) -> TrainerController:
-    group = object.__new__(TrainerController)
-    group._cells_by_id = {cell.cell_id: cell for cell in cells}
-    group.args = SimpleNamespace()
-    return group
+    return make_trainer_controller(
+        _cells_by_id={cell.cell_id: cell for cell in cells},
+        args=SimpleNamespace(),
+    )
 
 
 def _reconcile_calls_of(cell) -> list:

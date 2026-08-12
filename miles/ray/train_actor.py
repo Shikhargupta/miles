@@ -13,6 +13,7 @@ import torch.distributed as dist
 import miles.utils.eval_config
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.ray.rollout.updatable_engines import UpdatableEngines
+from miles.ray.train.update_weights_liveness import UPDATE_WEIGHTS_LIVENESS_CONCURRENCY_GROUP, UpdateWeightsLiveness
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -52,6 +53,7 @@ class TrainRayActor(NodeProbeMixin):
         self.args = args
 
         self._heartbeat = SimpleHeartbeat()
+        self._update_weights_liveness = UpdateWeightsLiveness()
         self._world_size = world_size
         self._rank = rank
 
@@ -150,6 +152,11 @@ class TrainRayActor(NodeProbeMixin):
     @rpc(concurrency_group="heartbeat_status")
     def get_heartbeat_status(self) -> HeartbeatStatus:
         return self._heartbeat.status()
+
+    @ray.method(concurrency_group=UPDATE_WEIGHTS_LIVENESS_CONCURRENCY_GROUP)
+    @rpc(concurrency_group=UPDATE_WEIGHTS_LIVENESS_CONCURRENCY_GROUP)
+    def is_update_weights_in_flight(self) -> bool:
+        return self._update_weights_liveness.is_in_flight()
 
     @ray.method(concurrency_group="fault_injector")
     @rpc(concurrency_group="fault_injector")

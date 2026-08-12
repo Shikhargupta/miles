@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.fixtures.controller_fixtures import make_inference_controller
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -15,7 +16,6 @@ from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.worker_info import WorkerInfo
@@ -136,14 +136,12 @@ class _RecordingEvalFleet:
 
 
 def _make_controller(servers: dict, *, engine_provider: _FakeWorkerProvider | None = None) -> InferenceController:
-    controller = InferenceController.__new__(InferenceController)
-    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False)
-    controller.servers = servers
-    controller.context_lock = ContextLock("InferenceController")
-    controller._health_checker_activeness = ActivenessTracker(active=True)
-    controller._engine_provider = engine_provider if engine_provider is not None else _FakeWorkerProvider([])
-    controller._router_providers = [_FakeWorkerProvider([])]
-    return controller
+    return make_inference_controller(
+        make_args(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False),
+        engine_provider=engine_provider if engine_provider is not None else _FakeWorkerProvider([]),
+        router_providers=[_FakeWorkerProvider([])],
+        servers=servers,
+    )
 
 
 class TestHealthCheckerActiveness:
@@ -164,7 +162,9 @@ class TestHealthCheckerActiveness:
         controller = _make_controller({"default": _RecordingServer()})
 
         info = await controller.start_update_weights()
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            window_id=info.window_id, snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
+        )
 
         assert not controller._health_checker_activeness.get().active
 
@@ -456,7 +456,9 @@ class TestUpdateWeightsLockWindow:
         info = await controller.start_update_weights()
         assert controller.context_lock.locked
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            window_id=info.window_id, snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
+        )
         assert not controller.context_lock.locked
 
     @pytest.mark.asyncio
@@ -470,7 +472,9 @@ class TestUpdateWeightsLockWindow:
             await asyncio.sleep(0)
         assert not reconcile_task.done()
 
-        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await controller.end_update_weights(
+            window_id=info.window_id, snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
+        )
         await reconcile_task
 
     @pytest.mark.asyncio

@@ -216,16 +216,15 @@ class MockTrainerCell:
 
 
 def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-engine-actor") -> object:
-    from miles.ray.train.group import TrainerController
+    from tests.fast.fixtures.controller_fixtures import make_trainer_controller
 
-    group = object.__new__(TrainerController)
     for cell_index, cell in enumerate(cells):
         cell.cell_index = cell_index
         cell.cell_id = f"{pool_id}-{cell_index}"
-    group._cells_by_id = {cell.cell_id: cell for cell in cells}
-    group._pool_id = pool_id
-    group._indep_dp_quorum_id = 0
-    return group
+    return make_trainer_controller(
+        _cells_by_id={cell.cell_id: cell for cell in cells},
+        _pool_id=pool_id,
+    )
 
 
 @pytest.fixture

@@ -6,6 +6,7 @@ import torch
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.fsdp_utils import update_weight_utils
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.ray.train.update_weights_liveness import UpdateWeightsLiveness
 
 
 class _SessionEngine:
@@ -182,6 +183,7 @@ def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, ci_test=False)
     updater = _RecordingWeightUpdater()
+    actor._update_weights_liveness = UpdateWeightsLiveness()
     actor.weight_updater = updater
     engines: list[object] = [object(), object()]
 

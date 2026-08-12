@@ -4,9 +4,11 @@ import asyncio
 
 from types import SimpleNamespace
 
+from tests.fast.fixtures.controller_fixtures import make_inference_controller
+from tests.fast.ray.rollout.conftest import make_args
+
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.utils.context_lock import ContextLock
 from miles.utils.misc import SimpleTicker
 
 
@@ -39,12 +41,7 @@ class _StubServer:
 
 
 def _make_controller(servers: dict) -> InferenceController:
-    controller = InferenceController.__new__(InferenceController)
-    controller.servers = servers
-    controller.context_lock = ContextLock("InferenceController")
-    controller._watcher_disposers = []
-    controller._ticker = None
-    return controller
+    return make_inference_controller(make_args(), servers=servers)
 
 
 def _start_ticker(controller: InferenceController) -> None:

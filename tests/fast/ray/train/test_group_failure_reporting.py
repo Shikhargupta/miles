@@ -2,10 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 import ray
+from tests.fast.fixtures.controller_fixtures import make_trainer_controller
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
 from miles.ray.train.group import TrainerController
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import NonRetryableError
 
 
@@ -19,14 +19,12 @@ _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
 def _make_controller(cells: list) -> TrainerController:
-    group = object.__new__(TrainerController)
-    group._cells_by_id = {cell.cell_id: cell for cell in cells}
-    group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
-    group._witness_allocator = None
-    group._indep_dp_quorum_id = 0
-    group._health_checker_activeness = ActivenessTracker(active=True)
-    group._test_action_executor = SimpleNamespace(run_after_step=_noop_run_after_step)
-    return group
+    return make_trainer_controller(
+        _cells_by_id={cell.cell_id: cell for cell in cells},
+        args=SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None),
+        _witness_allocator=None,
+        _test_action_executor=SimpleNamespace(run_after_step=_noop_run_after_step),
+    )
 
 
 def _make_failing_controller(fn_name: str) -> TrainerController:

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import socket
 from typing import NamedTuple
@@ -13,12 +14,26 @@ from miles.ray.specs.inference import (
     create_inference_controller_handle,
 )
 from miles.ray.specs.rollout import create_rollout_executor_handle
+from miles.ray.specs.static_addrs import (
+    INFERENCE_CONTROLLER_ADDRS_FLAG,
+    TRAINER_CONTROLLER_ADDRS_FLAG,
+    assert_deployment_names_this_run,
+    assert_routers_belong_to_inference_deployment,
+    inference_controller_urls,
+    trainer_controller_urls,
+)
 from miles.ray.specs.train import compute_critic_args, create_trainer_controller_handle
 from miles.ray.wiring import get_backend_capability
+from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.ft_utils.api_server.server import start_api_server
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
+
+UPDATE_WEIGHTS_STOP_CONFIRMATION_TIMEOUT_SECONDS = 600.0
 
 
 @ray.remote(num_gpus=1)
@@ -98,6 +113,16 @@ def _create_placement_group(num_gpus) -> PlacementGroupInfo:
 def _get_placement_group_layout(args) -> tuple[int, int]:
     actor_num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
 
+    component = DeployComponent(args.deploy_component)
+    if component is DeployComponent.PRIMARY:
+        return 0, 0
+    if component is DeployComponent.TRAINER:
+        return actor_num_gpus, 0
+    if component is DeployComponent.INFERENCE:
+        if args.debug_train_only or args.rollout_external:
+            return 0, 0
+        return args.rollout_num_gpus + args.eval_num_gpus, 0
+
     if args.debug_train_only:
         return actor_num_gpus, 0
     if args.rollout_external:
@@ -136,11 +161,13 @@ async def create_training_models(
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
     capability = get_backend_capability(args)
 
-    actor_model = create_trainer_controller_handle(capability=capability, role="actor")
+    actor_model = create_trainer_controller_handle(args, capability=capability, role="actor")
+    await _assert_trainer_names_this_run(args, trainer_controller=actor_model, role="actor")
     actor_start_rollout_ids = await actor_model.init(args)
 
     if args.use_critic:
-        critic_model = create_trainer_controller_handle(capability=capability, role="critic")
+        critic_model = create_trainer_controller_handle(args, capability=capability, role="critic")
+        await _assert_trainer_names_this_run(args, trainer_controller=critic_model, role="critic")
         critic_start_rollout_ids = await critic_model.init(compute_critic_args(args))
     else:
         critic_model = None
@@ -158,9 +185,89 @@ async def create_training_models(
 
 
 # TODO: move (when reorganizing files)
-async def update_weights(actor_model, rollout_executor, *, rollout_id: int | None = None) -> None:
-    if (weight_version := await actor_model.update_weights(rollout_id=rollout_id)) is not None:
+async def update_weights(
+    args,
+    *,
+    actor_model: BaseWorkerHandle,
+    rollout_executor: BaseWorkerHandle,
+    inference_controller: BaseWorkerHandle,
+    rollout_id: int | None = None,
+) -> None:
+    """Sequence the weight update: the controllers never call each other, the orchestration script does."""
+    info = await inference_controller.start_update_weights()
+    try:
+        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    except BaseException:
+        await _abort_update_weights(
+            actor_model=actor_model, inference_controller=inference_controller, window_id=info.window_id
+        )
+        raise
+    await inference_controller.end_update_weights(
+        window_id=info.window_id, snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes
+    )
+
+    await _maybe_log_inference_engine_weight_checksums(
+        args, inference_controller=inference_controller, rollout_id=rollout_id
+    )
+
+    if weight_version is not None:
         await rollout_executor.set_weight_version(weight_version)
+
+
+async def _abort_update_weights(
+    *, actor_model: BaseWorkerHandle, inference_controller: BaseWorkerHandle, window_id: int
+) -> None:
+    try:
+        confirmed = await asyncio.wait_for(
+            actor_model.wait_update_weights_finished(window_id=window_id),
+            timeout=UPDATE_WEIGHTS_STOP_CONFIRMATION_TIMEOUT_SECONDS,
+        )
+    except BaseException:
+        logger.exception(
+            f"The trainer never confirmed that it stopped broadcasting in update weights window {window_id}, so the "
+            f"inference controller keeps the window's lock and its paused health checking rather than let an engine "
+            f"the broadcast may still be writing to be restarted"
+        )
+        return
+    if not confirmed:
+        logger.error(
+            f"The trainer answered that it is still broadcasting in update weights window {window_id}, so the "
+            f"inference controller keeps the window's lock and its paused health checking rather than let an engine "
+            f"the broadcast is still writing to be restarted"
+        )
+        return
+    await inference_controller.abort_update_weights(window_id=window_id)
+
+
+async def _assert_trainer_names_this_run(args, *, trainer_controller: BaseWorkerHandle, role: str) -> None:
+    if trainer_controller_urls(args, role=role) is None:
+        return
+    assert_deployment_names_this_run(
+        await trainer_controller.get_deployment_identity(), args=args, flag=TRAINER_CONTROLLER_ADDRS_FLAG
+    )
+
+
+async def _assert_inference_names_this_run(args, *, inference_controller: BaseWorkerHandle) -> None:
+    if inference_controller_urls(args) is None:
+        return
+    identity = await inference_controller.get_deployment_identity()
+    assert_deployment_names_this_run(identity, args=args, flag=INFERENCE_CONTROLLER_ADDRS_FLAG)
+    assert_routers_belong_to_inference_deployment(identity, args=args)
+
+
+async def _maybe_log_inference_engine_weight_checksums(
+    args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None
+) -> None:
+    if not is_event_logger_initialized():
+        return
+    if args.debug_train_only or args.debug_rollout_only:
+        return
+
+    check_weights_result = await inference_controller.check_weights(action="checksum")
+    get_event_logger().log(
+        InferenceEngineWeightChecksumEvent,
+        dict(rollout_id=rollout_id, engine_checksums=flatten_inference_engine_checksums(check_weights_result)),
+    )
 
 
 # TODO: move (when reorganizing files)
@@ -196,8 +303,9 @@ async def create_rollout_components(args) -> RolloutComponents:
         )
         await wait_session_server_ready(args, provider=session_server_provider)
 
-    inference_controller = create_inference_controller_handle(capability=capability)
+    inference_controller = create_inference_controller_handle(args, capability=capability)
     await inference_controller.init()
+    await _assert_inference_names_this_run(args, inference_controller=inference_controller)
 
     rollout_executor = create_rollout_executor_handle(capability=capability)
     await rollout_executor.init()

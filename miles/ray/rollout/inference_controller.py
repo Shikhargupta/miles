@@ -26,6 +26,7 @@ from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin, SimpleTicker
+from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -56,6 +57,8 @@ class InferenceController(NodeProbeMixin):
         self._watcher_disposers: list[StopWatchFn] = []
         self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
+        self._update_weights_window_counter = 0
+        self._open_update_weights_window_id: int | None = None
 
     @lock_exempt
     async def init(self) -> None:
@@ -139,11 +142,25 @@ class InferenceController(NodeProbeMixin):
     async def start_update_weights(self) -> UpdatableEngines:
         """Return engines eligible for weight updates."""
         await self._health_monitoring_pause()
+        try:
+            return await self._open_update_weights_window()
+        except BaseException:
+            self._open_update_weights_window_id = None
+            await self._health_monitoring_resume()
+            raise
+
+    @requires_lock
+    async def _open_update_weights_window(self) -> UpdatableEngines:
         await self._ensure_cells_ready()
+
+        self._update_weights_window_counter += 1
+        window_id = self._update_weights_window_counter
+        self._open_update_weights_window_id = window_id
 
         srv = self._get_updatable_server()
         if not srv:
             return UpdatableEngines(
+                window_id=window_id,
                 rollout_engines=[],
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
@@ -151,14 +168,38 @@ class InferenceController(NodeProbeMixin):
             )
 
         return UpdatableEngines(
+            window_id=window_id,
             rollout_engines=srv.api_clients,
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
             snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
         )
 
+    @lock_exempt
+    async def abort_update_weights(self, window_id: int) -> None:
+        self._close_update_weights_window(window_id=window_id, action="abort_update_weights")
+        await self._resume_after_update_weights()
+
+    @lock_exempt
+    async def end_update_weights(self, window_id: int, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        self._close_update_weights_window(window_id=window_id, action="end_update_weights")
+        await self._mark_snapshot_weights_ready(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes)
+
+    @lock_exempt
+    def _close_update_weights_window(self, *, window_id: int, action: str) -> None:
+        assert self._open_update_weights_window_id == window_id, (
+            f"{action} carries update weights window {window_id}, but the open window is "
+            f"{self._open_update_weights_window_id}: an action of a window that is already closed is refused, so "
+            f"that it cannot release the lock or resume the health checking of the window that replaced it"
+        )
+        self._open_update_weights_window_id = None
+
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+    async def _resume_after_update_weights(self) -> None:
+        await self._health_monitoring_resume()
+
+    @releases_lock
+    async def _mark_snapshot_weights_ready(self, *, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
         await asyncio.gather(
             *[
                 cell.mark_weights_ready()
@@ -168,6 +209,16 @@ class InferenceController(NodeProbeMixin):
                 and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
                 and cell.is_pending_weights
             ]
+        )
+
+    @lock_exempt
+    async def get_deployment_identity(self) -> DeploymentIdentity:
+        return DeploymentIdentity(
+            run_uuid=self.args.run_uuid,
+            deploy_component=self.args.deploy_component,
+            router_addrs={
+                name: f"{host}:{port}" for name, (host, port) in (self.args.sglang_model_routers or {}).items()
+            },
         )
 
     @requires_lock

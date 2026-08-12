@@ -15,6 +15,7 @@ from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_co
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.updatable_engines import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
+from miles.ray.train.update_weights_liveness import marks_update_weights_in_flight
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
@@ -726,6 +727,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
+    @marks_update_weights_in_flight
     def update_weights(self, info: UpdatableEngines) -> int | None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:

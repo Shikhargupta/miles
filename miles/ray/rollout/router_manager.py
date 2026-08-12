@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Sequence
 
@@ -7,8 +8,10 @@ from miles.ray.specs.inference import (
     compute_session_server_instance_id,
     session_server_worker_name,
 )
+from miles.ray.specs.static_addrs import static_router_addrs
 from miles.utils.http_utils import wait_tcp_ready
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.simple import wait_static_addrs_ready
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
@@ -27,6 +30,12 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
         )
         return {name: HostAndPort(host=host, port=port) for name, (host, port) in args.sglang_model_routers.items()}
 
+    if (static_addrs := static_router_addrs(args)) is not None:
+        await asyncio.to_thread(wait_static_addrs_ready, static_addrs.values())
+        logger.info(f"Statically addressed routers ready at {static_addrs}")
+        _record_router_addrs(args, router_addrs=static_addrs)
+        return static_addrs
+
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     assert len(router_providers) == len(config.models), (
         f"every model is served by its own router, so it needs its own provider "
@@ -37,12 +46,16 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
         for model_idx, model_cfg in enumerate(config.models)
     }
 
-    primary = router_addrs[config.models[0].name]
+    _record_router_addrs(args, router_addrs=router_addrs)
+
+    return router_addrs
+
+
+def _record_router_addrs(args, *, router_addrs: dict[str, HostAndPort]) -> None:
+    primary = next(iter(router_addrs.values()))
     args.sglang_router_ip = primary.host
     args.sglang_router_port = primary.port
     args.sglang_model_routers = {name: (addr.host, addr.port) for name, addr in router_addrs.items()}
-
-    return router_addrs
 
 
 async def wait_router_ready(*, model_idx: int, provider: BaseWorkerProvider) -> HostAndPort:

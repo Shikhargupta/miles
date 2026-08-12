@@ -101,6 +101,25 @@ class TestResolveRouterAddrs:
         assert args.sglang_model_routers == {"actor": ("10.0.0.9", 30000), "ref": ("10.0.0.9", 30001)}
         assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.9", 30000)
 
+    async def test_a_statically_addressed_router_is_waited_for_only_the_first_time(self, monkeypatch):
+        """A second resolve answers from the record; re-dialling would block the caller for up to ten minutes."""
+        args = make_args(
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            sglang_model_routers=None,
+            inference_router_addrs=["10.0.0.7:8000"],
+        )
+        dialled: list[list[HostAndPort]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_static_addrs_ready", lambda addrs: dialled.append(list(addrs))
+        )
+
+        first = await resolve_router_addrs(args, router_providers=[])
+        second = await resolve_router_addrs(args, router_providers=[])
+
+        assert first == second == {"default": HostAndPort(host="10.0.0.7", port=8000)}
+        assert dialled == [[HostAndPort(host="10.0.0.7", port=8000)]]
+
     async def test_an_externally_configured_router_is_rejected(self):
         """External router mode was removed, so a pre-set router address means a misconfigured run."""
         args = make_args(sglang_router_ip="10.0.0.1", sglang_router_port=3000, sglang_model_routers=None)

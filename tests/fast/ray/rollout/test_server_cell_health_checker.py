@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.controller_fixtures import make_inference_controller
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
@@ -13,10 +14,8 @@ from miles.ray.rollout.cell_state import CellAddrInfo, StatePendingWeights, Stat
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
-    ActivenessTracker,
     NoopHealthChecker,
     SimpleHealthChecker,
     SimpleHealthCheckerConfig,
@@ -251,10 +250,7 @@ class TestRolloutCellHealthCheckerDisposal:
 
 async def _make_controller_with_serving_cell() -> tuple[InferenceController, ServerCell]:
     args: Any = make_args(ft_components=["rollout"], colocate=True)
-    controller = InferenceController.__new__(InferenceController)
-    controller.args = args
-    controller.context_lock = ContextLock("InferenceController")
-    controller._health_checker_activeness = ActivenessTracker(active=True)
+    controller = make_inference_controller(args)
 
     srv = RolloutServer(
         server_cells={},

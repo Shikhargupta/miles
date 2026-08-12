@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from argparse import Namespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +22,10 @@ def _make_args(**overrides) -> Namespace:
         sglang_router_ip=None,
         sglang_router_port=None,
         cluster_backend="ray",
+        deploy_component="all",
+        trainer_controller_addrs=None,
+        inference_controller_addrs=None,
+        inference_router_addrs=None,
         eval_num_gpus=0,
         debug_train_only=False,
         use_session_server=False,
@@ -55,7 +60,8 @@ def fake_components():
     capability = FakeBackendCapability(static_provider=object())
 
     with patch(
-        "miles.ray.placement_group.create_inference_controller_handle", lambda *, capability: controller_handle
+        "miles.ray.placement_group.create_inference_controller_handle",
+        lambda _args, *, capability: controller_handle,
     ), patch("miles.ray.placement_group.resolve_router_addrs", resolve_router_addrs), patch(
         "miles.ray.placement_group.wait_session_server_ready", fake_wait_session_server_ready
     ), patch(
@@ -161,6 +167,7 @@ class TestCreatePlacementGroups:
     @staticmethod
     def _args(**overrides) -> Namespace:
         defaults = dict(
+            deploy_component="all",
             debug_train_only=False,
             debug_rollout_only=False,
             rollout_external=False,
@@ -183,6 +190,8 @@ class TestCreatePlacementGroups:
 
         def _fake_create(num_gpus):
             requested.append(num_gpus)
+            if num_gpus == 0:
+                return PlacementGroupInfo(pg=None, pg_reordered_bundle_indices=[], pg_reordered_gpu_ids=[])
             return PlacementGroupInfo(
                 pg="pg-sentinel",
                 pg_reordered_bundle_indices=[(index * 3 + 1) % num_gpus for index in range(num_gpus)],
@@ -207,6 +216,35 @@ class TestCreatePlacementGroups:
         assert pgs["rollout"].pg_reordered_gpu_ids == [102, 103, 104]
         assert pgs["rollout"].pg_reordered_bundle_indices == pgs["actor"].pg_reordered_bundle_indices[2:]
 
+    @pytest.mark.parametrize(
+        ("deploy_component", "expected_num_gpus"),
+        [("primary", 0), ("trainer", 2), ("inference", 3), ("all", 5)],
+    )
+    def test_each_component_asks_for_the_gpus_of_the_workers_it_deploys(
+        self, monkeypatch, deploy_component, expected_num_gpus
+    ):
+        """A split launch installs one part of the run, so it must not reserve the other parts' gpus."""
+        from miles.ray.placement_group import create_placement_groups
+
+        requested: list[int] = []
+        self._patched(monkeypatch, requested)
+
+        create_placement_groups(self._args(deploy_component=deploy_component))
+
+        assert requested == [expected_num_gpus]
+
+    @pytest.mark.parametrize("engineless", ["debug_train_only", "rollout_external"])
+    def test_an_inference_deployment_without_engines_asks_for_no_gpus(self, monkeypatch, engineless):
+        """These flags deploy no engine at all, so reserved gpus would leave the launch pending forever."""
+        from miles.ray.placement_group import create_placement_groups
+
+        requested: list[int] = []
+        self._patched(monkeypatch, requested)
+
+        create_placement_groups(self._args(deploy_component="inference", **{engineless: True}))
+
+        assert requested == [0]
+
     def test_a_disabled_critic_gets_no_entry_at_all(self, monkeypatch):
         """Without a critic the role map simply omits it, so consumers never see a None placement group."""
         from miles.ray.placement_group import create_placement_groups
@@ -223,29 +261,345 @@ class TestCreatePlacementGroups:
 
 class TestUpdateWeights:
     def _fakes(self, *, weight_version: int | None):
+        order: list[str] = []
+        info = MagicMock(name="updatable_engines")
+        info.window_id = 11
+
         actor_model = MagicMock()
-        actor_model.update_weights = AsyncMock(return_value=weight_version)
+
+        async def _update_weights(**_kwargs):
+            order.append("update_weights")
+            return weight_version
+
+        async def _wait_update_weights_finished(**_kwargs) -> bool:
+            order.append("wait_update_weights_finished")
+            return True
+
+        actor_model.update_weights = AsyncMock(side_effect=_update_weights)
+        actor_model.wait_update_weights_finished = AsyncMock(side_effect=_wait_update_weights_finished)
+
         rollout_executor = MagicMock()
-        rollout_executor.set_weight_version.remote = AsyncMock()
-        return actor_model, rollout_executor
+        rollout_executor.set_weight_version = AsyncMock()
+
+        inference_controller = MagicMock()
+        inference_controller.start_update_weights = AsyncMock(
+            side_effect=lambda: (order.append("start_update_weights"), info)[1]
+        )
+        inference_controller.end_update_weights = AsyncMock(
+            side_effect=lambda **_kwargs: order.append("end_update_weights")
+        )
+        inference_controller.abort_update_weights = AsyncMock(
+            side_effect=lambda **_kwargs: order.append("abort_update_weights")
+        )
+        return Namespace(
+            actor_model=actor_model,
+            rollout_executor=rollout_executor,
+            inference_controller=inference_controller,
+            info=info,
+            order=order,
+        )
 
     async def test_the_executor_is_told_which_version_the_engines_now_serve(self):
         """Without this the executor stamps every sample it collects with weight_version=None."""
         from miles.ray.placement_group import update_weights
 
-        actor_model, rollout_executor = self._fakes(weight_version=7)
+        fakes = self._fakes(weight_version=7)
 
-        await update_weights(actor_model, rollout_executor, rollout_id=3)
+        await update_weights(
+            _make_args(debug_rollout_only=False),
+            actor_model=fakes.actor_model,
+            rollout_executor=fakes.rollout_executor,
+            inference_controller=fakes.inference_controller,
+            rollout_id=3,
+        )
 
-        actor_model.update_weights.assert_awaited_once_with(rollout_id=3)
-        rollout_executor.set_weight_version.remote.assert_awaited_once_with(7)
+        fakes.actor_model.update_weights.assert_awaited_once_with(info=fakes.info, rollout_id=3)
+        fakes.rollout_executor.set_weight_version.assert_awaited_once_with(7)
 
     async def test_a_trainer_that_skipped_the_broadcast_publishes_nothing(self):
         """--debug-skip-weight-update leaves the engines on their old weights, so the version must not move."""
         from miles.ray.placement_group import update_weights
 
-        actor_model, rollout_executor = self._fakes(weight_version=None)
+        fakes = self._fakes(weight_version=None)
 
-        await update_weights(actor_model, rollout_executor)
+        await update_weights(
+            _make_args(debug_rollout_only=False),
+            actor_model=fakes.actor_model,
+            rollout_executor=fakes.rollout_executor,
+            inference_controller=fakes.inference_controller,
+        )
 
-        rollout_executor.set_weight_version.remote.assert_not_awaited()
+        fakes.rollout_executor.set_weight_version.assert_not_awaited()
+
+    async def test_the_orchestration_script_brackets_the_broadcast_with_the_update_window(self):
+        """The star topology puts the sequencing here: the trainer never calls the inference controller."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+
+        await update_weights(
+            _make_args(debug_rollout_only=False),
+            actor_model=fakes.actor_model,
+            rollout_executor=fakes.rollout_executor,
+            inference_controller=fakes.inference_controller,
+        )
+
+        assert fakes.order == ["start_update_weights", "update_weights", "end_update_weights"]
+
+    async def test_the_snapshot_the_window_opened_with_is_handed_back_unchanged(self):
+        """end_update_weights only promotes the cells start_update_weights saw, so the snapshot must survive."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+
+        await update_weights(
+            _make_args(debug_rollout_only=False),
+            actor_model=fakes.actor_model,
+            rollout_executor=fakes.rollout_executor,
+            inference_controller=fakes.inference_controller,
+        )
+
+        fakes.inference_controller.end_update_weights.assert_awaited_once_with(
+            window_id=11, snapshot_cell_id_to_hashes=fakes.info.snapshot_cell_id_to_hashes
+        )
+
+    async def test_a_failed_broadcast_closes_the_window_it_opened(self):
+        """The inference release outlives this script, so a leaked lock would block every later update."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+        fakes.actor_model.update_weights = AsyncMock(side_effect=RuntimeError("the broadcast died"))
+
+        with pytest.raises(RuntimeError, match="the broadcast died"):
+            await update_weights(
+                _make_args(debug_rollout_only=False),
+                actor_model=fakes.actor_model,
+                rollout_executor=fakes.rollout_executor,
+                inference_controller=fakes.inference_controller,
+            )
+
+        assert fakes.order == [
+            "start_update_weights",
+            "wait_update_weights_finished",
+            "abort_update_weights",
+        ]
+
+    async def test_a_failed_broadcast_never_marks_the_engines_as_updated(self):
+        """end_update_weights promotes the snapshot to weights-ready, which a failed broadcast never reached."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+        fakes.actor_model.update_weights = AsyncMock(side_effect=RuntimeError("the broadcast died"))
+
+        with pytest.raises(RuntimeError):
+            await update_weights(
+                _make_args(debug_rollout_only=False),
+                actor_model=fakes.actor_model,
+                rollout_executor=fakes.rollout_executor,
+                inference_controller=fakes.inference_controller,
+            )
+
+        fakes.inference_controller.end_update_weights.assert_not_awaited()
+        fakes.rollout_executor.set_weight_version.assert_not_awaited()
+
+    async def test_a_cancelled_broadcast_closes_the_window_too(self):
+        """A cancelled orchestration script leaves the same held lock behind as a failed one."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+        fakes.actor_model.update_weights = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await update_weights(
+                _make_args(debug_rollout_only=False),
+                actor_model=fakes.actor_model,
+                rollout_executor=fakes.rollout_executor,
+                inference_controller=fakes.inference_controller,
+            )
+
+        fakes.inference_controller.abort_update_weights.assert_awaited_once_with(window_id=11)
+
+    async def test_the_abort_waits_for_the_trainer_to_confirm_it_stopped_broadcasting(self):
+        """A failed rpc means the client gave up; the trainer may still be writing weights into the engines."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+        fakes.actor_model.update_weights = AsyncMock(side_effect=RuntimeError("the connection died"))
+
+        with pytest.raises(RuntimeError):
+            await update_weights(
+                _make_args(debug_rollout_only=False),
+                actor_model=fakes.actor_model,
+                rollout_executor=fakes.rollout_executor,
+                inference_controller=fakes.inference_controller,
+            )
+
+        fakes.actor_model.wait_update_weights_finished.assert_awaited_once_with(window_id=11)
+
+    async def test_an_unconfirmed_broadcast_leaves_the_window_open_instead_of_resuming_health_checks(self):
+        """Resuming while the broadcast may still run lets an engine be restarted mid-broadcast."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+        fakes.actor_model.update_weights = AsyncMock(side_effect=RuntimeError("the connection died"))
+        fakes.actor_model.wait_update_weights_finished = AsyncMock(side_effect=RuntimeError("unreachable"))
+
+        with pytest.raises(RuntimeError, match="the connection died"):
+            await update_weights(
+                _make_args(debug_rollout_only=False),
+                actor_model=fakes.actor_model,
+                rollout_executor=fakes.rollout_executor,
+                inference_controller=fakes.inference_controller,
+            )
+
+        fakes.inference_controller.abort_update_weights.assert_not_awaited()
+
+    async def test_a_trainer_that_is_still_broadcasting_leaves_the_window_open_too(self):
+        """The trainer answering 'still broadcasting' is a refusal to abort, not a confirmation."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+        fakes.actor_model.update_weights = AsyncMock(side_effect=RuntimeError("the connection died"))
+        fakes.actor_model.wait_update_weights_finished = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="the connection died"):
+            await update_weights(
+                _make_args(debug_rollout_only=False),
+                actor_model=fakes.actor_model,
+                rollout_executor=fakes.rollout_executor,
+                inference_controller=fakes.inference_controller,
+            )
+
+        fakes.inference_controller.abort_update_weights.assert_not_awaited()
+
+    async def test_a_task_cancelled_mid_broadcast_still_confirms_the_trainer_stopped_first(self):
+        """Cancelling the script does not cancel the trainer, which keeps broadcasting into the live engines."""
+        from miles.ray.placement_group import update_weights
+
+        fakes = self._fakes(weight_version=7)
+        broadcasting = asyncio.Event()
+
+        async def _hang(**_kwargs):
+            broadcasting.set()
+            await asyncio.Event().wait()
+
+        fakes.actor_model.update_weights = AsyncMock(side_effect=_hang)
+
+        task = asyncio.create_task(
+            update_weights(
+                _make_args(debug_rollout_only=False),
+                actor_model=fakes.actor_model,
+                rollout_executor=fakes.rollout_executor,
+                inference_controller=fakes.inference_controller,
+            )
+        )
+        await broadcasting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert fakes.order == [
+            "start_update_weights",
+            "wait_update_weights_finished",
+            "abort_update_weights",
+        ]
+
+
+def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
+    return [
+        {
+            "success": True,
+            "message": "ok",
+            "ranks": [{"checksums": checksums, "parallelism_info": [{"role": "target", "rank": 0}]}],
+        }
+        for checksums in engine_checksums
+    ]
+
+
+class TestMaybeLogInferenceEngineWeightChecksums:
+    @staticmethod
+    def _controller(response: list | None = None) -> MagicMock:
+        controller = MagicMock()
+        controller.check_weights = MagicMock() if response is None else AsyncMock(return_value=response)
+        return controller
+
+    async def test_no_event_logger_does_not_call_check_weights(self):
+        """Without an initialized event logger, no check_weights request is issued."""
+        from miles.ray.placement_group import _maybe_log_inference_engine_weight_checksums
+
+        controller = self._controller()
+
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=False):
+            await _maybe_log_inference_engine_weight_checksums(
+                _make_args(debug_rollout_only=False), inference_controller=controller, rollout_id=0
+            )
+
+        controller.check_weights.assert_not_called()
+
+    async def test_none_rollout_id_logs_event(self):
+        """The initial out-of-loop sync (rollout_id=None) still logs an event with rollout_id=None."""
+        from miles.ray.placement_group import _maybe_log_inference_engine_weight_checksums
+
+        controller = self._controller(_checksum_response([{"w": "e0"}]))
+
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True), patch(
+            "miles.ray.placement_group.get_event_logger"
+        ) as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+
+            await _maybe_log_inference_engine_weight_checksums(
+                _make_args(debug_rollout_only=False), inference_controller=controller, rollout_id=None
+            )
+
+        mock_logger.log.assert_called_once()
+        assert mock_logger.log.call_args.args[1] == dict(rollout_id=None, engine_checksums=[{"rank0/w": "e0"}])
+
+    async def test_debug_train_only_skips_collection(self):
+        """Without real rollout engines (debug_train_only), no check_weights request is issued."""
+        from miles.ray.placement_group import _maybe_log_inference_engine_weight_checksums
+
+        controller = self._controller()
+
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True):
+            await _maybe_log_inference_engine_weight_checksums(
+                _make_args(debug_train_only=True, debug_rollout_only=False),
+                inference_controller=controller,
+                rollout_id=0,
+            )
+
+        controller.check_weights.assert_not_called()
+
+    async def test_debug_rollout_only_skips_collection(self):
+        """Without real train engines pushing weights (debug_rollout_only), no check_weights request is issued."""
+        from miles.ray.placement_group import _maybe_log_inference_engine_weight_checksums
+
+        controller = self._controller()
+
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True):
+            await _maybe_log_inference_engine_weight_checksums(
+                _make_args(debug_rollout_only=True), inference_controller=controller, rollout_id=0
+            )
+
+        controller.check_weights.assert_not_called()
+
+    async def test_enabled_logs_one_event_per_rollout(self):
+        """With event logger on and real engines, one event holds every engine's checksums."""
+        from miles.ray.placement_group import _maybe_log_inference_engine_weight_checksums
+
+        controller = self._controller(_checksum_response([{"w": "e0"}, {"w": "e1"}]))
+
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True), patch(
+            "miles.ray.placement_group.get_event_logger"
+        ) as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+
+            await _maybe_log_inference_engine_weight_checksums(
+                _make_args(debug_rollout_only=False), inference_controller=controller, rollout_id=3
+            )
+
+        controller.check_weights.assert_awaited_once_with(action="checksum")
+        assert mock_logger.log.call_args.args[1] == dict(
+            rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}]
+        )

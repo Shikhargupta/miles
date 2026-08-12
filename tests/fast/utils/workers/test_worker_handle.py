@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -261,3 +262,35 @@ class TestRpcWorkerHandleWaitDead:
         handle = RpcWorkerHandle(_ProbeableWorker, server_url="http://127.0.0.1:1")
 
         await handle.wait_dead(timeout=1.0)
+
+
+_SLOW_PROBE_SECONDS = 5.0
+_PROBE_BUDGET_SECONDS = 0.05
+
+
+class _SlowProbeHandle(BaseWorkerHandle):
+    def __init__(self) -> None:
+        self.probe_count = 0
+
+    async def wait_ready(self, *, timeout: float) -> None:
+        raise NotImplementedError
+
+    async def _probe_is_dead(self) -> bool:
+        self.probe_count += 1
+        await asyncio.sleep(_SLOW_PROBE_SECONDS)
+        return True
+
+
+class TestWaitDeadProbeBudget:
+    @pytest.mark.asyncio
+    async def test_a_probe_that_cannot_answer_in_time_leaves_the_death_unconfirmed(self) -> None:
+        """The caller's budget bounds the whole wait, so a probe with a timeout of its own cannot outrun it."""
+        handle = _SlowProbeHandle()
+
+        start = time.monotonic()
+        confirmed = await handle.wait_dead(timeout=_PROBE_BUDGET_SECONDS)
+        elapsed = time.monotonic() - start
+
+        assert confirmed is False
+        assert handle.probe_count == 1
+        assert elapsed < _SLOW_PROBE_SECONDS

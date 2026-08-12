@@ -12,6 +12,7 @@ import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.ray.train.update_weights_liveness import UpdateWeightsLiveness
 from miles.utils import object_store
 from miles.utils.ray_utils import Box
 
@@ -182,10 +183,12 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     )
     worker._asleep = asleep
     worker._heartbeat = Mock()
+    worker._update_weights_liveness = UpdateWeightsLiveness()
     worker.weight_updater = Mock()
     worker.weight_updater.conn_status = Mock(spec=ConnStatusManager)
     worker.weight_updater.conn_status.needs_reconnect.return_value = False
     info = UpdatableEngines(
+        window_id=1,
         rollout_engines=[],
         engine_gpu_counts=[],
         engine_gpu_offsets=[],

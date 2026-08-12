@@ -7,19 +7,17 @@ from typing import Any
 
 import pytest
 from tests.e2e.ft.conftest_ft import fault_injection as fi
+from tests.fast.fixtures.controller_fixtures import make_inference_controller
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import CellAddrInfo
-from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell
-from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ft_utils.mini_ft_controller import _compute_cell_snapshot, _MiniFTController
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -164,12 +162,7 @@ class _Harness:
         monkeypatch.setattr(inference_controller_module, "CELLS_READY_POLL_INTERVAL_SECONDS", 0.0)
 
         self.args = make_args(colocate=True, use_fault_tolerance=True, ft_components=["rollout"])
-        self.controller = InferenceController.__new__(InferenceController)
-        self.controller.args = self.args
-        self.controller.context_lock = ContextLock("InferenceController")
-        self.controller._watcher_disposers = []
-        self.controller._ticker = None
-        self.controller._health_checker_activeness = ActivenessTracker(active=True)
+        self.controller = make_inference_controller(self.args, engine_provider=_StubProvider())
         self.controller.servers = {
             "default": RolloutServer(
                 server_cells={},
@@ -206,7 +199,10 @@ class _Harness:
         tick_task = asyncio.create_task(self._tick_forever())
         try:
             engines = await asyncio.wait_for(self.controller.start_update_weights(), timeout=5)
-            await self.controller.end_update_weights(engines.snapshot_cell_id_to_hashes if mark_weights_ready else {})
+            await self.controller.end_update_weights(
+                window_id=engines.window_id,
+                snapshot_cell_id_to_hashes=engines.snapshot_cell_id_to_hashes if mark_weights_ready else {},
+            )
         finally:
             tick_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

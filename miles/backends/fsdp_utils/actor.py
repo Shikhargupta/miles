@@ -20,6 +20,7 @@ from miles.backends.training_utils.log_utils import (
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.ray.rollout.updatable_engines import UpdatableEngines
+from miles.ray.train.update_weights_liveness import marks_update_weights_in_flight
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils, train_metric_utils
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -579,6 +580,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
+    @marks_update_weights_in_flight
     def update_weights(self, info: UpdatableEngines) -> int | None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:

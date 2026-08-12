@@ -85,6 +85,10 @@ class DummyTrainActor:
     def update_weights(self) -> None:
         self._record("update_weights", (), {})
 
+    def is_update_weights_in_flight(self) -> bool:
+        self._record("is_update_weights_in_flight", (), {})
+        return False
+
     def kill_self(self) -> None:
         self._record("kill_self", (), {})
         os._exit(1)

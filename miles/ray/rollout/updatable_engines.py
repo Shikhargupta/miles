@@ -5,6 +5,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 
 @dataclass(frozen=True)
 class UpdatableEngines:
+    window_id: int
     rollout_engines: list[SGLangApiClient]
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]

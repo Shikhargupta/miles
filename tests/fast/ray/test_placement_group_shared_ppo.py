@@ -9,6 +9,7 @@ from miles.ray.placement_group import _get_placement_group_layout
 
 def _layout_args(**overrides):
     values = {
+        "deploy_component": "all",
         "actor_num_nodes": 1,
         "actor_num_gpus_per_node": 2,
         "rollout_num_gpus": 4,
@@ -80,7 +81,7 @@ def _patch_train_controller_handles(monkeypatch) -> list:
             return {"dp_size": 2 if self.role == "actor" else 99}
 
     monkeypatch.setattr(
-        placement_group_module, "create_trainer_controller_handle", lambda *, capability, role: _Handle(role)
+        placement_group_module, "create_trainer_controller_handle", lambda _args, *, capability, role: _Handle(role)
     )
     return handles
 
@@ -99,6 +100,7 @@ def _training_models_args(**overrides):
         "disable_param_buffers_cpu_backup": True,
         "start_rollout_id": None,
         "rollout_global_dataset": False,
+        "trainer_controller_addrs": None,
     }
     values.update(overrides)
     return Namespace(**values)

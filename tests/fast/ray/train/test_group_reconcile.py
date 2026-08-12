@@ -2,12 +2,12 @@ from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.controller_fixtures import make_trainer_controller
 from tests.fast.ray.train.conftest import make_provider
 
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.group import TrainerController
 from miles.utils import retry_utils
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.workers.worker_provider.base import CellInfo
 
 pytestmark = pytest.mark.asyncio
@@ -16,25 +16,20 @@ _POOL_ID = compute_trainer_pool_id("actor")
 
 
 def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerController:
-    group = object.__new__(TrainerController)
-    group.args = SimpleNamespace(
-        indep_dp=indep_dp,
-        actor_num_nodes=1,
-        actor_num_gpus_per_node=num_cells,
-        tensor_model_parallel_size=1,
-        pipeline_model_parallel_size=1,
-        context_parallel_size=1,
-        train_backend="megatron",
+    return make_trainer_controller(
+        role="actor",
+        cell_provider=make_provider(),
+        args=SimpleNamespace(
+            indep_dp=indep_dp,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=num_cells,
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            context_parallel_size=1,
+            train_backend="megatron",
+        ),
+        _health_checker_config=None,
     )
-    group._role = "actor"
-    group._with_ref = False
-    group._with_opd_teacher = False
-    group._pool_id = _POOL_ID
-    group._health_checker_config = None
-    group._health_checker_activeness = ActivenessTracker(active=True)
-    group._provider = make_provider()
-    group._cells_by_id = {}
-    return group
 
 
 def _make_cell_info(cell_index: int, *, workers_hash: str = "pseudo-hash-1") -> CellInfo:
