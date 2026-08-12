@@ -81,8 +81,9 @@ class FakeDriver:
             if kind == "optim_step":
                 if op.get("poison"):
                     # Mirror the trainer: discard the poisoned window (no real
-                    # grads here) and fail the step as a user error.
-                    result = dict(ok=False, error=op["poison"], category="user")
+                    # grads here) and fail the step as a user error whose
+                    # outcome confirms the window was physically consumed.
+                    result = dict(ok=False, error=op["poison"], category="user", gradient_window_consumed=True)
                 else:
                     adam = payload.get("adam_params") or {}
                     result = dict(ok=True, result=dict(grad_norm=0.125, learning_rate=adam.get("learning_rate", 1e-4)))
