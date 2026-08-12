@@ -18,7 +18,7 @@ _ENV_KEYS = {"propertyNames": {"pattern": "^[ -<>-~]+$", "not": {"const": "PYTHO
 
 _POOL_NAME_MAX = 40
 _OBJECT_NAME_MAX = 63
-_PORT_NAME_MAX = 15
+PORT_NAME_MAX = 15
 _KUBERNETES_NAME_MAX = 253
 WORKBENCH_OBJECT_NAME_MAX = 52
 
@@ -41,7 +41,7 @@ class ValuesModel(FrozenStrictBaseModel):
 
 
 class PortEntry(ValuesModel):
-    name: Annotated[str, Field(min_length=1, max_length=_PORT_NAME_MAX)]
+    name: Annotated[str, Field(min_length=1, max_length=PORT_NAME_MAX, pattern=_DNS_LABEL)]
     port: _Port
 
 

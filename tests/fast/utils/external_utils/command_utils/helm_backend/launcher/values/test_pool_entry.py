@@ -48,6 +48,10 @@ class TestBuildEntry:
 
         assert command[command.index("--dist-init-addr") + 1] == f"{pool_entry._LEADER_ADDRESS_PLACEHOLDER}:9000"
 
+    def test_never_ends_a_truncated_port_name_on_the_separator(self):
+        """Kubernetes rejects a port name whose first or last character is not alphanumeric."""
+        assert pool_entry._port_name("disaggregation_bootstrap") == "disaggregation"
+
     def test_allows_a_command_that_never_mentions_its_rank(self):
         """Some engines do not take one; what matters is that no sentinel survives into the command."""
         spec = engine().model_copy(update={"launch_command": lambda ctx: "python -m sglang.launch_server"})

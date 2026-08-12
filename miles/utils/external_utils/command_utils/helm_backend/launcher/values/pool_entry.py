@@ -6,6 +6,7 @@ import sys
 from miles.utils.external_utils.command_utils.base_backend import TRAINER_ROLE
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
+    PORT_NAME_MAX,
     PoolEntry,
     PortEntry,
 )
@@ -167,4 +168,4 @@ def _with_worker_index(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
 
 
 def _port_name(name: str) -> str:
-    return name.replace("_", "-")[:15]
+    return name.replace("_", "-")[:PORT_NAME_MAX].strip("-")
