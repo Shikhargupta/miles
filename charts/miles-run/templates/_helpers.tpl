@@ -48,8 +48,11 @@ nodeSelector:
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- $affinity := deepCopy ($scheduling.affinity | default dict) -}}
+{{- $configured := deepCopy (get $affinity "podAntiAffinity" | default dict) -}}
+{{- $required := concat (get $configured "requiredDuringSchedulingIgnoredDuringExecution" | default list) .podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution -}}
 affinity:
-  {{- toYaml (merge (dict "podAntiAffinity" .podAntiAffinity) (deepCopy ($scheduling.affinity | default dict))) | nindent 2 }}
+  {{- toYaml (merge (dict "podAntiAffinity" (merge (dict "requiredDuringSchedulingIgnoredDuringExecution" $required) $configured)) $affinity) | nindent 2 }}
 {{- end }}
 
 {{- /* Every container of the release: the run's own identity, from which a worker that has to

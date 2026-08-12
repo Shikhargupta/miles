@@ -91,6 +91,24 @@ class TestCommandJob:
         assert job["spec"]["activeDeadlineSeconds"] == 10800
         assert job["spec"]["ttlSecondsAfterFinished"] == 3600
 
+    def test_spreads_its_pods_without_dropping_the_cluster_own_anti_affinity(self):
+        """A merge that let one list win would silently undo the isolation the cluster asked for."""
+        job = single_object_of_kind(
+            render_run(
+                *ENABLE_COMMAND_JOB,
+                "--set",
+                "commandJob.completions=4",
+                "--set-json",
+                'infra.scheduling={"affinity":{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":'
+                '[{"topologyKey":"kubernetes.io/zone"}]}}}',
+            ),
+            "Job",
+        )
+
+        anti_affinity = job["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"]
+        rules = anti_affinity["requiredDuringSchedulingIgnoredDuringExecution"]
+        assert [rule["topologyKey"] for rule in rules] == ["kubernetes.io/zone", "kubernetes.io/hostname"]
+
     def test_carries_the_cluster_environment_like_every_other_pod(self):
         """A proxy the cluster needs is as necessary for a download here as it is inside the run."""
         job = single_object_of_kind(
