@@ -156,7 +156,6 @@ def _logs_per_completion(job: _CommandJob) -> list[str]:
 
 
 def _readable_logs(job: _CommandJob) -> list[str]:
-    """The logs of a job that already failed, where losing them must not replace the failure itself."""
     try:
         return _logs_per_completion(job)
     except RuntimeError as error:

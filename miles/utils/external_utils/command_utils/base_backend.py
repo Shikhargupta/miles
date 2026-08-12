@@ -52,7 +52,6 @@ class ExecuteTrainConfig:
 
 
 def default_config(config_class: type = ExecuteTrainConfig, **overrides: Any) -> ExecuteTrainConfig:
-    """The environment decides everything a caller does not name, so a script never pins its own backend."""
     return replace(dataclass_from_env(config_class), **overrides)
 
 
