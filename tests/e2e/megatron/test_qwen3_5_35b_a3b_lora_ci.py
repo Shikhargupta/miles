@@ -5,7 +5,6 @@ from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
 
-
 # Smoke test for scripts/run_qwen3_5_35b_a3b_lora.py on the full Qwen3.5-35B-A3B
 # checkpoint, like the other Qwen3.5 e2e tests (full rollout -> train -> save loop;
 # LoRA targets include the GDN projections). Runs the MoE-expert LoRA matrix —
@@ -23,7 +22,8 @@ _CONFIGS = [
 
 
 def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
-    return ScriptArgs(
+    return command_utils.default_config(
+        ScriptArgs,
         model_name="Qwen3.5-35B-A3B",
         num_nodes=1,
         num_gpus_per_node=8,

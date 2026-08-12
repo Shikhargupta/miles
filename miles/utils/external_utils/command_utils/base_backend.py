@@ -5,9 +5,10 @@ import os
 import shlex
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
@@ -50,8 +51,9 @@ class ExecuteTrainConfig:
                 return RayCommandBackend(self)
 
 
-def default_config(config_class: type = ExecuteTrainConfig) -> ExecuteTrainConfig:
-    return dataclass_from_env(config_class)
+def default_config(config_class: type = ExecuteTrainConfig, **overrides: Any) -> ExecuteTrainConfig:
+    """The environment decides everything a caller does not name, so a script never pins its own backend."""
+    return replace(dataclass_from_env(config_class), **overrides)
 
 
 class ExecuteTrainRequest(FrozenStrictBaseModel):

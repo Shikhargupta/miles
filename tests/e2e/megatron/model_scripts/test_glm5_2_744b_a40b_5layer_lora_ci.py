@@ -5,7 +5,6 @@ from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
 
-
 # Smoke test for scripts/run_glm5_2_744b_a40b_lora.py on the 5-layer toy (DSA cross-layer
 # path, full rollout -> train -> save loop). Runs the MoE-expert LoRA matrix — {shared-outer +
 # virtual-experts, per-expert + no-virtual-experts} x {tilelang, megatron} — and every
@@ -30,7 +29,8 @@ _CONFIGS = [
 
 
 def _args(dsa: str, shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
-    return ScriptArgs(
+    return command_utils.default_config(
+        ScriptArgs,
         model_name="GLM-5.2_5layer",
         num_nodes=1,
         num_gpus_per_node=4,
