@@ -68,13 +68,13 @@ class Stack:
         )
 
 
-def run(scenario):
+def run(scenario, poll_window_s=5.0, **backend_overrides):
     async def main():
         router = FakeRouter()
-        backend = make_backend()
+        backend = make_backend(**backend_overrides)
         await backend.init()
         driver = FakeDriver(backend)
-        frontend = TinkerFrontend(backend, poll_window_s=5.0, poll_interval_s=0.002)
+        frontend = TinkerFrontend(backend, poll_window_s=poll_window_s, poll_interval_s=0.002)
         stack = Stack(frontend, driver, router)
         frontend._post_generate = lambda payload: _respond(router, payload)  # engine boundary only
         driver_task = asyncio.create_task(driver.run(interval=0.002))
@@ -633,6 +633,59 @@ class TestLifecycle:
             assert info["model_data"]["model_name"] == BASE
 
         run(scenario)
+
+
+async def until_terminal(stack, request_id):
+    while (body := await stack.retrieve(request_id)).get("type") == "try_again":
+        pass
+    return body
+
+
+class TestCapacityQueue:
+    def test_unbound_create_reports_paused_capacity_until_the_slot_frees(self):
+        # Fixed residency, SDK-visible: with one trainer slot, a second
+        # registration queues UNBOUND — its create future long-polls as
+        # 'paused_capacity' (never an early success), its operations enqueue
+        # into the ordered ledger but never execute, and only the incumbent's
+        # full retirement/cleanup binds the queued registration, resolves the
+        # create future, and drains the queued work.
+        async def scenario(stack):
+            model_a = await stack.create_model(model_seq_id=0)
+            future_b = await stack.frontend.create_model(
+                wire.CreateModelRequest(
+                    session_id=stack.session_id,
+                    model_seq_id=1,
+                    base_model=BASE,
+                    lora_config=wire.LoraConfig(rank=8),
+                )
+            )
+            model_b = f"{stack.session_id}:train:1"
+            paused = {"type": "try_again", "queue_state": "paused_capacity"}
+            assert await stack.retrieve(future_b["request_id"]) == paused
+
+            # The paused registration accepts operations, but nothing runs:
+            # the forward_backward future stays pending, and the create future
+            # still reports paused_capacity (no early create success).
+            fb_b = stack.frontend.forward_backward(stack.fb_request(model_b, 1))
+            assert (await stack.retrieve(fb_b["request_id"]))["type"] == "try_again"
+            assert await stack.retrieve(future_b["request_id"]) == paused
+
+            # A's retirement frees the slot: the driver binds and loads B, the
+            # create future resolves, and the queued forward_backward executes.
+            unload = await stack.frontend.unload_model(wire.UnloadModelRequest(model_id=model_a))
+            assert await until_terminal(stack, unload["request_id"]) == {
+                "type": "unload_model",
+                "model_id": model_a,
+            }
+            assert await until_terminal(stack, future_b["request_id"]) == {
+                "type": "create_model",
+                "model_id": model_b,
+            }
+            body = await until_terminal(stack, fb_b["request_id"])
+            (row,) = [output["logprobs"]["data"] for output in body["loss_fn_outputs"]]
+            assert row == [-0.5, -0.5, -0.5]  # executed at B's fresh step clock
+
+        run(scenario, poll_window_s=0.2, multi_lora_n_adapters=1)
 
 
 def test_seq_to_ordinal_documented_mapping():
