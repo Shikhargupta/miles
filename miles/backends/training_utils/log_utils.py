@@ -210,6 +210,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "tinker_loss_by_lane",
                 "operation_by_lane",
                 "registration_by_lane",
+                "batch_execution_lease",
                 "batch_kind",
                 "tinker_forward_only",
                 "tinker_logprob_collector",
