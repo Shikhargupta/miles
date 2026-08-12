@@ -92,6 +92,8 @@ def expected_partial_sample(
     status: Sample.Status = Sample.Status.COMPLETED,
 ) -> Sample:
     return Sample(
+        group_index=0,
+        index=0,
         prompt=prompt,
         response=response,
         response_length=response_length,
@@ -105,16 +107,20 @@ def expected_partial_sample(
     )
 
 
-def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleInfo]):
+def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleInfo], *, variant: str):
     actual = listify(actual)
     assert len(actual) == len(expected)
+
+    expected_rollout_id = 0 if is_agentic_variant(variant) else None
 
     for actual_item, expected_item in zip(actual, expected, strict=True):
         actual_chunks = parse_sample_into_chunks(actual_item, TOKENIZER)
         assert actual_chunks == expected_item.chunks
+        assert actual_item.rollout_id == expected_rollout_id
 
         actual_partial = replace(
             deepcopy(actual_item),
+            rollout_id=None,
             tokens=[],
             loss_mask=[],
             rollout_log_probs=[],
@@ -210,6 +216,7 @@ class TestBasicMultiTurn:
                     ),
                 ),
             ],
+            variant=variant,
         )
 
     def test_two_turns_with_tool_call(self, variant, generation_env):
@@ -243,7 +250,7 @@ class TestBasicMultiTurn:
                 ),
             ),
         ]
-        verify_samples(result.sample, expected)
+        verify_samples(result.sample, expected, variant=variant)
 
 
 class TestExitConditions:
@@ -304,6 +311,7 @@ class TestExitConditions:
                     ),
                 ),
             ],
+            variant=variant,
         )
 
     def test_finish_reason_length_exits_and_preserves_content(self, variant, generation_env):
@@ -329,6 +337,7 @@ class TestExitConditions:
                     ),
                 ),
             ],
+            variant=variant,
         )
 
     @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"generate_max_turns": 1}}], indirect=True)
@@ -367,7 +376,7 @@ class TestExitConditions:
                     ),
                 ),
             ]
-        verify_samples(result.sample, expected)
+        verify_samples(result.sample, expected, variant=variant)
 
 
 class TestRespectMaxContextLen:
@@ -387,7 +396,7 @@ class TestRespectMaxContextLen:
                 ),
             )
         ]
-        verify_samples(result.sample, expected)
+        verify_samples(result.sample, expected, variant=variant)
 
     @pytest.mark.parametrize(
         "generation_env",
@@ -426,7 +435,7 @@ class TestRespectMaxContextLen:
                 ),
             ),
         ]
-        verify_samples(result.sample, expected)
+        verify_samples(result.sample, expected, variant=variant)
 
     @pytest.mark.parametrize(
         "generation_env,expected_max_new_tokens",
@@ -495,7 +504,7 @@ class TestThreeTurn:
                 ),
             ),
         ]
-        verify_samples(result.sample, expected)
+        verify_samples(result.sample, expected, variant=variant)
 
 
 class TestRoutedExpertsMultiTurn:

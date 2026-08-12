@@ -88,8 +88,8 @@ def expected_sample(
         loss_mask = [1] * actual_response_length if variant == "multi_turn" else None
 
     return Sample(
-        group_index=None,
-        index=None,
+        group_index=0,
+        index=0,
         prompt=prompt,
         tokens=PROMPT_TOKENS + RESPONSE_TOKENS if isinstance(tokens, _Unset) else tokens,
         multimodal_inputs=multimodal_inputs,

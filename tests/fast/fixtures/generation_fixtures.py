@@ -74,6 +74,8 @@ def listify(x):
 
 def make_sample(
     *,
+    group_index: int | None = 0,
+    index: int | None = 0,
     prompt: str | list[dict] = "What is 1+7?",
     tokens: list[int] | None = None,
     response: str = "",
@@ -82,6 +84,8 @@ def make_sample(
     multimodal_inputs: dict | None = None,
 ) -> Sample:
     return Sample(
+        group_index=group_index,
+        index=index,
         prompt=prompt,
         tokens=tokens or [],
         response=response,
