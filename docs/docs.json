@@ -244,6 +244,13 @@
          "advanced/miles-router"
         ],
         "expanded": false
+       },
+       {
+        "group": "Cluster & Deployment",
+        "pages": [
+         "advanced/cluster-backend"
+        ],
+        "expanded": false
        }
       ]
      }
