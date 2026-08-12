@@ -11,11 +11,33 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 import pytest
 
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
-from miles.ray.rollout.train_data_conversion import batch_plan_to_metadata, convert_samples_to_train_data
+from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
+from miles.ray.tinker_backend.residency import ResidentBinding
+from miles.rollout.tinker_backend.rollout_fn import batch_plan_to_metadata
+from miles.utils.tinker_backend import BatchExecutionLease
 from miles.utils.types import AdapterRef, Sample
 
 
-def plan_entry(name="A", slot=0, kind="forward_backward", op_id="op-A", loss=None):
+def plan_lease(batch_plan) -> BatchExecutionLease:
+    """The dispatch receipt the adapter acquires after selection: one binding
+    per planned operation."""
+    return BatchExecutionLease(
+        dispatch_id="lease-test",
+        bindings_by_operation=tuple(
+            (
+                entry["operation_id"],
+                ResidentBinding((entry["name"], entry["registration_id"]), entry["bound_slot"]),
+            )
+            for entry in batch_plan
+        ),
+    )
+
+
+def plan_metadata(batch_plan) -> dict:
+    return batch_plan_to_metadata(batch_plan, plan_lease(batch_plan))
+
+
+def plan_entry(name="A", slot=0, kind="forward_backward", op_id="op-A", loss=None, sample_count=1):
     return dict(
         name=name,
         registration_id=f"r-{name}",
@@ -23,7 +45,7 @@ def plan_entry(name="A", slot=0, kind="forward_backward", op_id="op-A", loss=Non
         operation_id=op_id,
         operation_kind=kind,
         loss_spec=loss,
-        sample_count=1,
+        sample_count=sample_count,
     )
 
 
@@ -33,10 +55,20 @@ class TestBatchPlanToMetadata:
             [plan_entry("A", 0, loss={"loss_fn": "ppo"}), plan_entry("B", 3, op_id="op-B")]
         )
         assert metadata["batch_kind"] == "tinker"
+        # Correlation is batch-local: lanes follow SELECTION order, and the
+        # physical slots (0, 3) appear only in the routing helper.
+        assert metadata["tinker_operation_lanes"] == [0, 1]
+        assert metadata["tinker_loss_by_lane"] == {0: {"loss_fn": "ppo"}, 1: {}}
+        assert metadata["operation_by_lane"] == {0: "op-A", 1: "op-B"}
+        assert metadata["registration_by_lane"] == {0: ("A", "r-A"), 1: ("B", "r-B")}
         assert metadata["adapter_name_by_slot"] == {0: "A", 3: "B"}
-        assert metadata["tinker_loss_by_slot"] == {0: {"loss_fn": "ppo"}, 3: {}}
-        assert metadata["operation_by_slot"] == {0: "op-A", 3: "op-B"}
         assert "tinker_forward_only" not in metadata
+
+    def test_lanes_expand_per_sample_counts(self):
+        metadata = batch_plan_to_metadata(
+            [plan_entry("A", 0, sample_count=2), plan_entry("B", 3, op_id="op-B", sample_count=3)]
+        )
+        assert metadata["tinker_operation_lanes"] == [0, 0, 1, 1, 1]
 
     def test_all_forward_sets_the_flag(self):
         metadata = batch_plan_to_metadata([plan_entry(kind="forward")])
@@ -76,7 +108,7 @@ def convert(samples, metadata):
 
 class TestConvert:
     def test_tinker_batch_skips_rewards_and_routes_by_plan_slot(self):
-        metadata = batch_plan_to_metadata([plan_entry("A", 5)])
+        metadata = plan_metadata([plan_entry("A", 5, sample_count=2)])
         samples = [make_sample("A", i, stale_slot=9, loss_weights=[0.5, 1.5]) for i in range(2)]
         data = convert(samples, metadata)
         assert data["rewards"] == [0.0, 0.0]
@@ -84,17 +116,55 @@ class TestConvert:
         assert data["loss_weights"] == [[0.5, 1.5], [0.5, 1.5]]
         assert data["sample_indices"] == [0, 1]
         assert data["batch_kind"] == "tinker"
-        assert data["tinker_loss_by_slot"] == {5: {}}
-        assert data["operation_by_slot"] == {5: "op-A"}
+        assert data["tinker_operation_lanes"] == [0, 0]
+        assert data["tinker_loss_by_lane"] == {0: {}}
+        assert data["operation_by_lane"] == {0: "op-A"}
+        assert data["registration_by_lane"] == {0: ("A", "r-A")}
+        assert data["batch_execution_lease"]["bindings_by_operation"] == [["op-A", ["A", "r-A", 5]]]
         assert "step_slots" not in data  # tinker never steps in-batch
 
+    def test_two_operations_may_share_one_physical_slot(self):
+        """Lanes + lease join make same-slot selections structurally safe: two
+        operation IDs bound to ONE physical slot keep distinct lanes, loss
+        specs, and result identities (impossible under the old slot-keyed
+        plane, where the second entry silently overwrote the first)."""
+        plan = [
+            plan_entry("A", 5, op_id="op-A1"),
+            plan_entry("A", 5, op_id="op-A2", loss={"loss_fn": "ppo"}),
+        ]
+        metadata = plan_metadata(plan)
+        assert metadata["operation_by_lane"] == {0: "op-A1", 1: "op-A2"}
+        assert metadata["tinker_loss_by_lane"] == {0: {}, 1: {"loss_fn": "ppo"}}
+        samples = [make_sample("A", 0, loss_weights=[1.0, 1.0]), make_sample("A", 0, loss_weights=[2.0, 2.0])]
+        data = convert(samples, metadata)
+        assert data["adapter_slots"] == [5, 5]
+        assert data["tinker_operation_lanes"] == [0, 1]
+
     def test_unplanned_adapter_fails_loudly(self):
-        metadata = batch_plan_to_metadata([plan_entry("A", 5)])
-        with pytest.raises(ValueError, match="no BatchPlan slot"):
+        metadata = plan_metadata([plan_entry("A", 5)])
+        with pytest.raises(ValueError, match="batch lease binds"):
             convert([make_sample("ghost")], metadata)
 
+    def test_adapter_less_samples_keep_the_generic_tinker_contract(self):
+        """Contract only (no full-param runtime exists): the identity /
+        correlation plane — batch_kind, lanes, loss map, operation map,
+        forward-only — is parameterization-free, so a synthetic adapter-less
+        batch still carries all of it; only the Multi-LoRA routing keys
+        (adapter_slots) depend on samples carrying adapters."""
+        metadata = plan_metadata([plan_entry("A", 0, kind="forward")])
+        sample = make_sample("A", 0, loss_weights=[1.0, 1.0])
+        sample.adapter = None
+        data = convert([sample], metadata)
+        assert data["batch_kind"] == "tinker"
+        assert data["tinker_operation_lanes"] == [0]
+        assert data["tinker_loss_by_lane"] == {0: {}}
+        assert data["operation_by_lane"] == {0: "op-A"}
+        assert data["registration_by_lane"] == {0: ("A", "r-A")}
+        assert data["tinker_forward_only"] is True
+        assert "adapter_slots" not in data
+
     def test_mixed_channels_default_to_zeros(self):
-        metadata = batch_plan_to_metadata([plan_entry("A", 0), plan_entry("B", 1, op_id="op-B")])
+        metadata = plan_metadata([plan_entry("A", 0), plan_entry("B", 1, op_id="op-B")])
         samples = [
             make_sample("A", 0, loss_weights=[1.0, 1.0]),
             make_sample("B", 0, advantages=[0.5, -0.5]),
@@ -108,7 +178,7 @@ class TestConvert:
         # silently reaches the loss as None ("needs per-token 'loss_weights'").
         from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 
-        metadata = batch_plan_to_metadata([plan_entry("A", 0)])
+        metadata = plan_metadata([plan_entry("A", 0, sample_count=2)])
         samples = [make_sample("A", i, loss_weights=[0.5, 1.5], advantages=[1.0, -1.0]) for i in range(2)]
         data = convert(samples, metadata)
         args = SimpleNamespace(balance_data=False, multi_lora_n_adapters=2)
@@ -116,6 +186,11 @@ class TestConvert:
         for shard in shards:
             assert shard["loss_weights"] == [[0.5, 1.5]]
             assert shard["advantages"] == [[1.0, -1.0]]
+            # The per-sample lane and the batch-level correlation maps ship
+            # with every shard: the loss dispatches on them rank-locally.
+            assert shard["tinker_operation_lanes"] == [0]
+            assert shard["tinker_loss_by_lane"] == {0: {}}
+            assert shard["operation_by_lane"] == {0: "op-A"}
 
 
 class TestPadding:

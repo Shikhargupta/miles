@@ -17,12 +17,14 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.tinker_backend.checkpoint import load_slot_state, named_state_dir, save_slot_state
+from miles.backends.megatron_utils.tinker_backend.executor import MultiLoraParameterExecutor
 from miles.backends.megatron_utils.tinker_backend.optimizer import (
     reload_adapter_slot_model_params,
-    step_adapter_slots,
     zero_adapter_slot_grads,
 )
+from miles.backends.training_utils.tinker_execution import run_optim_controls
 from miles.ray.tinker_backend.controller import get_tinker_controller
+from miles.ray.tinker_backend.residency import lease_from_metadata
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -216,48 +218,35 @@ def reconcile_adapters(args, model, optimizer, loaded_adapters: dict, pending_pu
             ray.get(get_tinker_controller().free_slot.remote(name))
 
 
-def execute_controls(args, model, optimizer, loaded_adapters, pending_push, weights_backuper, operations) -> dict:
+def execute_controls(
+    args, model, optimizer, loaded_adapters, pending_push, weights_backuper, operations, lease_metadata
+) -> dict:
     """Run data-less tinker operations on this rank; every rank receives the
-    identical list, and the fixed per-kind, slot-sorted order keeps the
-    collective sequence identical. optim_step applies the operation's
-    AdamParams and steps the slot's accumulated gradient sum;
-    save_weights_for_sampler stages the adapter for the next weight push (the
-    driver completes it after the push lands); save_state/load_state move the
-    slot's full training state through named immutable checkpoints."""
-    results: dict[str, dict] = {}
-    all_optim_ops = sorted((op for op in operations if op["kind"] == "optim_step"), key=lambda op: op["slot"])
-    # A poisoned window (a failed forward_backward chunk, #2258 §5) must never
-    # step: discard the slot's partial gradient sum on every rank and fail the
-    # operation as a user error. Step clock and serving version stay put; the
-    # discard itself resets the window to clean.
-    poisoned_ops = [op for op in all_optim_ops if op.get("poison")]
-    for op in poisoned_ops:
-        zero_adapter_slot_grads(model, op["slot"])
-        results[op["operation_id"]] = dict(ok=False, error=op["poison"], category="user")
-    optim_ops = [op for op in all_optim_ops if not op.get("poison")]
-    if optim_ops:
-        adam_by_slot = {op["slot"]: (op.get("payload") or {}).get("adam_params") or {} for op in optim_ops}
-        grad_norms, vetoed = step_adapter_slots(optimizer, model, adam_by_slot)
-        for op in optim_ops:
-            slot = op["slot"]
-            if slot in vetoed:
-                results[op["operation_id"]] = dict(
-                    ok=False, error="non-finite gradients; step vetoed and gradients cleared", category="server"
-                )
-            else:
-                results[op["operation_id"]] = dict(
-                    ok=True,
-                    result=dict(
-                        grad_norm=grad_norms.get(slot),
-                        learning_rate=adam_by_slot[slot].get("learning_rate", 1e-4),
-                    ),
-                )
+    identical (operations, lease), and the fixed per-kind, slot-sorted order
+    keeps the collective sequence identical.
+
+    The optimizer boundary goes through the generic coordinator
+    (run_optim_controls: poison partition, Adam defaults, outcome
+    normalization) driving the MultiLoraParameterExecutor, which resolves
+    every binding from the batch lease and validates it against this rank's
+    loaded adapters before mutating anything. The storage/publish verbs
+    (save_weights_for_sampler, save_state, load_state) stay target-specific
+    here, but resolve their slot through the same lease."""
+    lease = lease_from_metadata(lease_metadata)
+    executor = MultiLoraParameterExecutor(model=model, optimizer=optimizer, loaded_adapters=loaded_adapters)
+    results = run_optim_controls(operations, lease, executor)
+
+    def state_order(op: dict):
+        binding = lease.binding_of(op["operation_id"])
+        return (op["kind"], binding.training_slot if binding is not None else -1)
 
     for op in sorted(
         (op for op in operations if op["kind"] in ("save_weights_for_sampler", "save_state", "load_state")),
-        key=lambda op: (op["kind"], op["slot"]),
+        key=state_order,
     ):
-        results[op["operation_id"]] = _execute_state_op(op, args, model, optimizer, loaded_adapters, pending_push)
+        results[op["operation_id"]] = _execute_state_op(
+            op, lease, args, model, optimizer, loaded_adapters, pending_push
+        )
         if results[op["operation_id"]].get("ok") and op["kind"] == "load_state":
             weights_backuper.backup("actor")
 
@@ -269,11 +258,20 @@ def execute_controls(args, model, optimizer, loaded_adapters, pending_push, weig
     return results
 
 
-def _execute_state_op(op: dict, args, model, optimizer, loaded_adapters, pending_push) -> dict:
+def _execute_state_op(op: dict, lease, args, model, optimizer, loaded_adapters, pending_push) -> dict:
     name, kind = op["name"], op["kind"]
+    # Binding from the lease only; validated against this rank's loaded state
+    # (exact name, registration, slot) before any storage/publish mutation.
+    binding = lease.binding_of(op["operation_id"])
+    if binding is None:
+        return dict(
+            ok=False, error=f"operation '{op['operation_id']}' has no binding in the batch lease", category="server"
+        )
     run = loaded_adapters.get(name)
-    if run is None or run.slot != op["slot"]:
-        return dict(ok=False, error=f"adapter '{name}' is not resident in slot {op['slot']}", category="server")
+    if run is None or run.registration_id != binding.registration_key[1] or run.slot != binding.training_slot:
+        return dict(
+            ok=False, error=f"adapter '{name}' is not resident in slot {binding.training_slot}", category="server"
+        )
     # The registry's clocks are authoritative; the loaded view can lag.
     run = dataclass_replace(run, step=op.get("step", run.step), version=op.get("serving_version", run.version))
 
@@ -320,23 +318,54 @@ def _execute_state_op(op: dict, args, model, optimizer, loaded_adapters, pending
     return dict(ok=True, deferred="publish", result=dict(step=restored_step, path=str(path)))
 
 
+def validate_batch_lease(rollout_data, loaded_adapters: dict) -> None:
+    """Physical dispatch gate: before ANY gradient mutation, every binding in
+    the batch's execution lease must match a locally loaded adapter with the
+    exact registration and slot. Claim-time READY gating plus the sequential
+    driver make a mismatch unreachable today — if one ever appears, the batch
+    must fail loudly rather than mutate another tenant's state."""
+    lease = rollout_data.get("batch_execution_lease")
+    if lease is None:
+        raise RuntimeError("tinker batch carries no execution lease")
+    for op_id, (name, registration_id, slot) in lease["bindings_by_operation"]:
+        run = loaded_adapters.get(name)
+        if run is None or run.registration_id != registration_id or run.slot != slot:
+            raise RuntimeError(
+                f"operation '{op_id}': lease binding ('{name}', {registration_id[:8]}, slot {slot}) "
+                "does not match this rank's loaded adapters; refusing to mutate"
+            )
+
+
 def commit_batch(rollout_data, pending_push: set) -> None:
-    """A tinker train/forward call landed: pin the accumulating adapters dirty
-    and complete the batch's operations with their gathered logprobs. Data
-    batches step nothing and publish nothing — pending_push is untouched."""
+    """A tinker train/forward call landed: mark the accumulating registration
+    streams dirty and complete the batch's operations with their gathered
+    logprobs. The commit carries EXACT registration keys from the BatchPlan
+    (never a trainer-reported name list), so a stale batch can never dirty a
+    same-name successor. Data batches step nothing and publish nothing —
+    pending_push is untouched. The batch lease releases at this completion
+    boundary (finally: even a failed commit must not strand the receipt —
+    a no-op under fixed residency, so nothing can leak either way)."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     logprobs_by_op = _gather_logprobs(rollout_data)
     if is_first_replica_megatron_main_rank():
-        name_by_slot = rollout_data.get("adapter_name_by_slot", {})
-        # Forward batches accumulate nothing: no dirty pins.
-        accumulated = [] if rollout_data.get("tinker_forward_only") else sorted(name_by_slot.values())
-        operation_ids = [op_id for op_id in rollout_data.get("operation_by_slot", {}).values() if op_id]
-        ray.get(get_tinker_controller().commit_tinker_batch.remote(accumulated, operation_ids, logprobs_by_op))
+        try:
+            registration_by_lane = rollout_data.get("registration_by_lane", {})
+            # Forward batches accumulate nothing: no dirty streams.
+            accumulated = (
+                []
+                if rollout_data.get("tinker_forward_only")
+                else sorted({tuple(key) for key in registration_by_lane.values()})
+            )
+            operation_ids = [op_id for op_id in rollout_data.get("operation_by_lane", {}).values() if op_id]
+            ray.get(get_tinker_controller().commit_tinker_batch.remote(accumulated, operation_ids, logprobs_by_op))
+        finally:
+            if (lease := rollout_data.get("batch_execution_lease")) is not None:
+                ray.get(get_tinker_controller().release_batch_lease.remote(lease))
 
 
 def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:
-    """Merge every rank's (slot, row) logprob shards and group them per
+    """Merge every rank's (lane, row) logprob shards and group them per
     operation in row order. TP/CP duplicates carry identical values, so the
     merge is an idempotent dict union; rows live on exactly one DP rank."""
     collector = rollout_data.get("tinker_logprob_collector") or {}
@@ -349,13 +378,13 @@ def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:
     else:
         merged = dict(collector)
 
-    op_by_slot = rollout_data.get("operation_by_slot", {})
+    op_by_lane = rollout_data.get("operation_by_lane", {})
     logprobs_by_op: dict[str, list[list[float]]] = {}
-    for op_slot, op_id in op_by_slot.items():
+    for op_lane, op_id in op_by_lane.items():
         if op_id is None:
             continue
         # row -1 is DP padding: never part of the operation's result plane.
-        rows = sorted((row, lp) for (slot, row), lp in merged.items() if slot == op_slot and row >= 0)
+        rows = sorted((row, lp) for (lane, row), lp in merged.items() if lane == op_lane and row >= 0)
         logprobs_by_op[op_id] = [lp for _, lp in rows]
     return logprobs_by_op
 

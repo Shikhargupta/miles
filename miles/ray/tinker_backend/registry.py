@@ -172,13 +172,16 @@ class AdapterRegistry:
             if record is not None:
                 record.serving_version += 1
 
-    def commit_tinker_step(self, name: str) -> int:
-        """One optim_step applied: advance the step clock and release the
-        dirty-gradient pin. num_step is an optional client-set bound."""
+    def on_step_committed(self, name: str, registration_id: str, step: int) -> None:
+        """Hook: the gradient-window tracker committed an optim step for this
+        EXACT registration. Mirror the clock onto the record, release the
+        dirty-gradient pin, and apply the optional client-set num_step bound.
+        The tracker owns the step authority; this record copy only feeds the
+        Multi-LoRA lifecycle and its views."""
         record = self.find(name)
-        if record is None:
-            return -1
-        record.step += 1
+        if record is None or record.registration_id != registration_id:
+            return
+        record.step = step
         self.slot_pool.unpin(record.tenant, DIRTY_PIN)
         if (
             getattr(record.config, "num_step", None) is not None
@@ -187,16 +190,13 @@ class AdapterRegistry:
         ):
             logger.info(f"[tinker] adapter '{name}' reached num_step={record.config.num_step}, deregistering")
             self.deregister(name)
-        return record.step
 
     def set_step(self, name: str, step: int) -> None:
+        """Mirror hook: a restore (load_state / sidecar resume) repositioned
+        the stream's clock and its num_step baseline."""
         if (record := self.find(name)) is not None:
             record.step = step
             record.start_step = step
-
-    def step_count(self, name: str) -> int:
-        record = self.find(name)
-        return record.step if record is not None else 0
 
     # ---------------------- gradient-state pins ----------------------
 

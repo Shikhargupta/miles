@@ -40,6 +40,11 @@ def ready_backend(num_step=None):
     return backend
 
 
+def reg_key(backend, name="X"):
+    """The exact registration key batch commits carry."""
+    return (name, backend.registry.find(name).registration_id)
+
+
 def fb_payload(n=1, loss_fn="cross_entropy"):
     return {
         "samples": [
@@ -181,45 +186,50 @@ class TestControlClaims:
         backend = make_backend()
         register(backend)
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
-        assert backend.claim_ready_control_operations() == []  # PENDING, not READY
+        assert backend.claim_ready_control_operations() == {"operations": [], "lease": None}  # PENDING, not READY
         backend.registry.mark_ready(["X"])
-        [op] = backend.claim_ready_control_operations()
-        assert op["operation_id"] == "opt1" and op["slot"] == 0
+        claimed = backend.claim_ready_control_operations()
+        [op] = claimed["operations"]
+        assert op["operation_id"] == "opt1"
+        # The claim carries no slot: the batch lease is the single binding truth.
+        assert "slot" not in op
+        rid = backend.registry.find("X").registration_id
+        assert claimed["lease"]["bindings_by_operation"] == [["opt1", ["X", rid, 0]]]
 
     def test_claim_carries_authoritative_clocks(self):
         backend = ready_backend()
-        backend.registry.set_step("X", 7)
+        backend.set_adapter_step("X", 7)
         backend.registry.record_weight_update(["X"])
         backend.enqueue_operation("X", "pub1", 1, "save_weights_for_sampler")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         assert op["step"] == 7 and op["serving_version"] == 1
 
     def test_dirty_slot_fails_state_moves_but_allows_publish(self):
         backend = ready_backend()
-        backend.commit_tinker_batch(["X"], [])
+        backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "save1", 1, "save_state", {"tag": "t0"})
-        assert backend.claim_ready_control_operations() == []
+        assert backend.claim_ready_control_operations() == {"operations": [], "lease": None}
         view = backend.operations.get("save1")
         assert view["state"] == "FAILED" and "unstepped gradients" in view["error"]
 
         backend.enqueue_operation("X", "pub1", 2, "save_weights_for_sampler")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         assert op["operation_id"] == "pub1"  # publishing pre-step weights is fine
 
     def test_success_advances_step_and_releases_pin(self):
         backend = ready_backend(num_step=2)
-        backend.commit_tinker_batch(["X"], [])
+        backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({op["operation_id"]: dict(ok=True, result={"grad_norm": 0.5})})
         record = backend.registry.find("X")
         assert record.step == 1 and not backend.registry.is_dirty("X")
 
     def test_veto_fails_without_advancing(self):
         backend = ready_backend()
-        backend.commit_tinker_batch(["X"], [])
+        backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({op["operation_id"]: dict(ok=False, error="veto", category="server")})
         assert backend.registry.find("X").step == 0
         assert not backend.registry.is_dirty("X")
@@ -232,7 +242,7 @@ class TestControlClaims:
         backend.operations.claim_data_operation("X", rid)
         backend.operations.fail("fb1", "bad chunk", "user")
         backend.enqueue_operation("X", "opt2", 2, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         assert "gradient window" in op["poison"] and "discarded" in op["poison"]
         # The trainer runs the discard on every rank and reports a user failure.
         backend.complete_control_operations({"opt2": dict(ok=False, error=op["poison"], category="user")})
@@ -241,9 +251,9 @@ class TestControlClaims:
         # The executed (poison-consuming) optim delimits: the next round is clean.
         backend.enqueue_operation("X", "fb3", 3, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("X", rid)
-        backend.commit_tinker_batch(["X"], ["fb3"], {"fb3": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([reg_key(backend)], ["fb3"], {"fb3": [[-0.1, -0.2]]})
         backend.enqueue_operation("X", "opt4", 4, "optim_step")
-        [clean] = backend.claim_ready_control_operations()
+        [clean] = backend.claim_ready_control_operations()["operations"]
         assert clean["operation_id"] == "opt4" and "poison" not in clean
 
     def test_stale_registration_handle_is_fenced(self):
@@ -268,7 +278,7 @@ class TestControlClaims:
         backend = ready_backend()
         backend.registry.record_weight_update(["X"])  # the push landed: v1
         backend.enqueue_operation("X", "pub1", 1, "save_weights_for_sampler")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({op["operation_id"]: dict(ok=True, result={})})
         result = backend.operations.get("pub1")["result"]
         assert result["serving_version"] == 1
@@ -278,7 +288,7 @@ class TestControlClaims:
     def test_load_state_repositions_the_clock(self):
         backend = ready_backend()
         backend.enqueue_operation("X", "load1", 1, "load_state", {"path": "/tmp/state"})
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({op["operation_id"]: dict(ok=True, result={"step": 42})})
         record = backend.registry.find("X")
         assert record.step == 42 and record.start_step == 42
@@ -290,7 +300,7 @@ class TestCommitAndFence:
         reg_id = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("X", reg_id)
-        backend.commit_tinker_batch(["X"], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.commit_tinker_batch([reg_key(backend)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         result = backend.operations.get("fb1")["result"]
         assert result["logprobs"] == [[-0.1, -0.2]]
         assert result["metrics"]["loss:sum"] == pytest.approx(0.1 + 0.2)  # unit loss_weights
@@ -320,6 +330,22 @@ def test_service_info_reports_the_v1_matrix():
     assert info["lora_rank_max"] == 32 and info["n_adapters"] == 4
     assert info["occupied_slots"] == [0] and info["ready_adapters"] == ["X"]
     assert info["supported_loss_fns"] == ["cross_entropy", "importance_sampling", "ppo"]
+
+
+def test_engine_aborts_go_through_the_inference_admin_port():
+    # The backend's only engine-facing need rides the narrow admin port with
+    # the full registration-scoped rid prefix (anti-ABA); swapping the engine
+    # owner (PR #1842) swaps the adapter, never the backend.
+    backend = make_backend()
+    aborted = []
+
+    class FakeAdmin:
+        async def abort_registration(self, rid_prefix):
+            aborted.append(rid_prefix)
+
+    backend.inference_admin = FakeAdmin()
+    asyncio.run(backend.abort_adapter_requests("X", "reg-1"))
+    assert aborted == ["X::reg-1::"]
 
 
 def test_trainer_readiness_flag_flips_once_marked():

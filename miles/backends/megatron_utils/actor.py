@@ -472,7 +472,12 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> TrainStepOutcome:
         # Tinker batches collect per-datum logprobs for the operation result
         # plane; the loss fills this shared side channel during the forward.
+        # The batch lease is validated BEFORE any gradient mutation: every
+        # binding must still match a locally loaded adapter exactly.
         if rollout_data.get("batch_kind") == "tinker":
+            from miles.backends.megatron_utils.tinker_backend.trainer import validate_batch_lease
+
+            validate_batch_lease(rollout_data, self.loaded_adapters)
             rollout_data["tinker_logprob_collector"] = {}
 
         # Create data iterator for log_probs and train.
@@ -621,10 +626,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def execute_tinker_controls(self, operations: list[dict]) -> dict:
+    def execute_tinker_controls(self, operations: list[dict], lease_metadata: dict) -> dict:
         """Run a claimed set of data-less tinker operations (optim_step,
         save_weights_for_sampler, save_state, load_state) on this rank. Every
-        rank receives the identical list; results are keyed by operation_id."""
+        rank receives the identical list plus the control batch's execution
+        lease; results are keyed by operation_id."""
         from miles.backends.megatron_utils.tinker_backend.trainer import execute_controls
 
         return execute_controls(
@@ -635,6 +641,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self._multi_lora_pending_push,
             self.weights_backuper,
             operations,
+            lease_metadata,
         )
 
     @with_logs

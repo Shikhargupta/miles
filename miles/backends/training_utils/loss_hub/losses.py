@@ -503,21 +503,23 @@ def tinker_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Client-directed per-slot losses for tinker batches.
+    """Client-directed per-operation losses for tinker batches.
 
-    Every sample dispatches on its adapter's ``loss_spec`` from the BatchPlan:
+    Every sample dispatches on its operation's ``loss_spec`` from the
+    BatchPlan, keyed by the sample's batch-local ``operation lane`` (never by
+    trainer slot — ``adapter_slots`` only routes the Multi-LoRA forward):
     linear cross-entropy ``Σ(-logp·w)``, importance sampling ``-Σ(ratio·A)``,
     or the PPO clipped surrogate. Reduction is a plain token sum — chunk
     additive, so K accumulated forward_backward operations produce the same
     gradient as one, and the client's ``loss_weights`` own the scale (no
-    1/count normalization ever applies to tinker slots).
+    1/count normalization ever applies to tinker operations).
 
     Selections are homogeneous: a batch is either all forward_backward or all
     forward (``tinker_forward_only``). A forward batch only fills the logprob
     collector — backward never runs, so no gradient can reach its adapters.
     """
-    specs_by_slot = batch["tinker_loss_by_slot"]
-    adapter_slots = batch["adapter_slots"]
+    specs_by_lane = batch["tinker_loss_by_lane"]
+    operation_lanes = batch["tinker_operation_lanes"]
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
     max_seq_lens = batch.get("max_seq_lens", None)
@@ -541,9 +543,10 @@ def tinker_loss_function(
             raise ValueError(f"tinker loss '{loss_fn}' needs per-token '{key}'")
         return values[i]
 
-    # Operation result plane: per-datum target logprobs, keyed by (slot, row)
-    # so one selection's adapters never collide. CP shards gather to the full
-    # response; a checkpointed loss recompute overwrites idempotently.
+    # Operation result plane: per-datum target logprobs, keyed by (lane, row)
+    # so one selection's operations never collide — even two operations that
+    # execute on the same physical target stay distinct. CP shards gather to
+    # the full response; a checkpointed loss recompute overwrites idempotently.
     collector = batch.get("tinker_logprob_collector")
     if collector is not None:
         sample_indices = batch["sample_indices"]
@@ -551,7 +554,7 @@ def tinker_loss_function(
             full = logp
             if get_parallel_state().cp.size > 1:
                 full = all_gather_with_cp(logp, total_lengths[i], response_lengths[i])
-            collector[(adapter_slots[i], sample_indices[i])] = full.detach().float().cpu().tolist()
+            collector[(operation_lanes[i], sample_indices[i])] = full.detach().float().cpu().tolist()
 
     if batch.get("tinker_forward_only"):
         # Logprobs are the whole result; the dummy scalar is never backwarded
@@ -561,9 +564,9 @@ def tinker_loss_function(
 
     loss = None
     for i, logp in enumerate(log_probs):
-        spec = specs_by_slot.get(adapter_slots[i])
+        spec = specs_by_lane.get(operation_lanes[i])
         if spec is None:
-            raise ValueError(f"tinker backward batch has no loss spec for slot {adapter_slots[i]}")
+            raise ValueError(f"tinker backward batch has no loss spec for lane {operation_lanes[i]}")
         loss_fn = spec.get("loss_fn", "cross_entropy")
         config = spec.get("loss_fn_config") or {}
         mask = local_masks[i].to(device=logp.device, dtype=logp.dtype)
@@ -579,7 +582,7 @@ def tinker_loss_function(
                 surrogate = torch.minimum(surrogate, ratio.clamp(low, high) * advantages)
             sample_loss = -(surrogate * mask).sum()
         else:
-            raise ValueError(f"tinker adapter in slot {adapter_slots[i]} requests unknown loss_fn '{loss_fn}'")
+            raise ValueError(f"tinker operation in lane {operation_lanes[i]} requests unknown loss_fn '{loss_fn}'")
         loss = sample_loss if loss is None else loss + sample_loss
 
     if loss is None:

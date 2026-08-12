@@ -73,10 +73,10 @@ class TinkerController:
         self.backend.mark_trainer_ready()
 
     def set_adapter_step(self, name: str, step: int) -> None:
-        self.backend.registry.set_step(name, step)
+        self.backend.set_adapter_step(name, step)
 
     def adapter_step(self, name: str) -> int:
-        return self.backend.registry.step_count(name)
+        return self.backend.adapter_step(name)
 
     def snapshot(self) -> dict:
         return self.backend.registry.snapshot()
@@ -109,7 +109,14 @@ class TinkerController:
         )
 
     def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
-        return self.backend.operations.claim_data_operation(name, registration_id)
+        # Claim-and-bind in this single actor call: no binding, no CLAIMED.
+        return self.backend.claim_data_operation(name, registration_id)
+
+    def acquire_batch_lease(self, bindings_by_operation: list):
+        return self.backend.acquire_batch_lease(bindings_by_operation)
+
+    def release_batch_lease(self, lease_metadata: dict) -> None:
+        self.backend.release_batch_lease(lease_metadata)
 
     def claim_ready_control_operations(self) -> list[dict]:
         return self.backend.claim_ready_control_operations()
@@ -118,7 +125,9 @@ class TinkerController:
         self.backend.complete_control_operations(results)
 
     def commit_tinker_batch(self, accumulated: list, operation_ids: list, logprobs_by_op: dict | None = None) -> None:
-        self.backend.commit_tinker_batch(list(accumulated), list(operation_ids), logprobs_by_op)
+        # ``accumulated`` is a list of exact (name, registration_id) keys;
+        # normalize sequence types that crossed the Ray boundary.
+        self.backend.commit_tinker_batch([tuple(key) for key in accumulated], list(operation_ids), logprobs_by_op)
 
     def complete_operation(self, operation_id: str, result: dict | None = None) -> None:
         self.backend.operations.complete(operation_id, result)
