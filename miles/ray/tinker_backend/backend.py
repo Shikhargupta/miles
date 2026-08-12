@@ -454,6 +454,39 @@ class TinkerBackend:
         # same-name successor's in-flight requests (rid carries the registration).
         await self.inference_admin.abort_registration(rid_prefix(adapter_name, registration_id))
 
+    # ---------------- frontend facade ----------------
+    # The HTTP frontend sees projections and verbs only — never the registry,
+    # the ledger, or the router URL (codex-rollout-fullparameter-design-0810
+    # §4.2; §3.7 dependency rule: frontend -> backend facade + sampling
+    # transport). A future lifecycle strategy replaces what sits behind these
+    # without forking the frontend.
+
+    def registration_view(self, name: str) -> dict | None:
+        """Projection of the name's CURRENT registration: identity, lifecycle
+        state, resolved rank, bound-ness, and serving version."""
+        record = self.registry.find(name)
+        if record is None:
+            return None
+        return dict(
+            name=record.name,
+            registration_id=record.registration_id,
+            state=record.state.value,
+            rank=getattr(record.config, "rank", None),
+            bound=record.slot is not None,
+            serving_version=record.serving_version,
+        )
+
+    def operation_view(self, operation_id: str) -> dict | None:
+        return self.operations.get(operation_id)
+
+    def ack_operation(self, operation_id: str) -> None:
+        self.operations.ack(operation_id)
+
+    def sampling_endpoint(self) -> str:
+        """Base URL sampling requests go to: the SGLang router today, the
+        InferenceController-provided endpoint after PR #1842."""
+        return self.router_url
+
     # ---------------- info ----------------
 
     def service_info(self) -> dict:

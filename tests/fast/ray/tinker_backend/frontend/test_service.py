@@ -693,3 +693,17 @@ def test_seq_to_ordinal_documented_mapping():
     from miles.ray.tinker_backend.frontend import service
 
     assert "ordinal = seq_id" in service.__doc__
+
+
+def test_frontend_reads_the_backend_facade_only():
+    """§4.2/§3.7 dependency rule (codex-rollout-fullparameter-design-0810):
+    the frontend consumes projections and verbs — a facade fake needs no
+    .registry, .operations, or .router_url fields. Enforced structurally:
+    the service source never dereferences backend internals."""
+    import inspect
+
+    from miles.ray.tinker_backend.frontend import service
+
+    source = inspect.getsource(service)
+    for internal in ("backend.registry", "backend.operations"):
+        assert internal not in source, f"frontend must not read {internal}"
