@@ -31,10 +31,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-import httpx
 
 from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.frontend import translation, wire
+from miles.ray.tinker_backend.frontend.sampling import SamplingTransport, SGLangRouterSamplingTransport
 from miles.ray.tinker_backend.frontend.state import (
     CheckpointCatalog,
     CheckpointRecord,
@@ -75,24 +75,34 @@ class TinkerFrontend:
     """One instance per controller; single event loop, no cross-await state
     mutation inside a submit or resolve step."""
 
-    def __init__(self, backend: Any, poll_window_s: float = 15.0, poll_interval_s: float = 0.1) -> None:
+    def __init__(
+        self,
+        backend: Any,
+        poll_window_s: float = 15.0,
+        poll_interval_s: float = 0.1,
+        sampling_transport: SamplingTransport | None = None,
+    ) -> None:
         self.backend = backend
         self.poll_window_s = poll_window_s
         self.poll_interval_s = poll_interval_s
+        # Injected sampling hop (frontend -> router); the default preserves
+        # the direct-router transport this frontend always used.
+        self.sampling_transport = (
+            sampling_transport
+            if sampling_transport is not None
+            else SGLangRouterSamplingTransport(backend.sampling_endpoint())
+        )
         self.sessions = SessionStore()
         self.models = ModelStore()
         self.futures = FutureStore()
         self.checkpoints = CheckpointCatalog()
         self.samplers = SamplingSessionStore()
-        self._http: httpx.AsyncClient | None = None
         self._sample_tasks: set[asyncio.Task] = set()
 
     async def close(self) -> None:
         for task in list(self._sample_tasks):
             task.cancel()
-        if self._http is not None:
-            await self._http.aclose()
-            self._http = None
+        await self.sampling_transport.close()
 
     # ---------------- bootstrap ----------------
 
@@ -559,11 +569,7 @@ class TinkerFrontend:
         )
 
     async def _post_generate(self, payload: dict) -> dict:
-        if self._http is None:
-            self._http = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=600.0, write=60.0))
-        response = await self._http.post(f"{self.backend.router_url}/generate", json=payload)
-        response.raise_for_status()
-        return response.json()
+        return await self.sampling_transport.generate(payload)
 
     # ---------------- future retrieval ----------------
 
