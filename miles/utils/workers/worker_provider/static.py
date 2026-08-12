@@ -6,7 +6,7 @@ from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
-from miles.utils.workers.worker_provider.utils import build_rpc_handle
+from miles.utils.workers.worker_provider.utils import build_rpc_handle, warn_static_membership
 from miles.utils.workers.worker_spec import BaseWorkerSpec, NamedHostAndPorts, ServeWorkerSpec
 
 
@@ -30,6 +30,9 @@ class StaticWorkerProvider(BaseWorkerProvider):
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not enumerate workers")
+
+    async def invalidate_cell(self, cell_id: str) -> None:
+        warn_static_membership(cell_id, provider=type(self).__name__)
 
     def _addrs_of_worker(self, worker_name: str) -> NamedHostAndPorts:
         scheduling = self._spec.scheduling

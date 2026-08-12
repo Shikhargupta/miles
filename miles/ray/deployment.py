@@ -8,14 +8,14 @@ from miles.ray.wiring import get_backend_capability, launch_worker_manager
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.logging_utils import configure_logger
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.types import DeployComponent, DeploySelector
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
 
 
 def run_deployment(args, *, run_orchestration_script: Callable[[object], Awaitable[None]]) -> None:
-    if DeployComponent(args.deploy_component).deploys_orchestration_script():
+    if DeploySelector.of(args).deploys_orchestration_script():
         asyncio.run(run_orchestration_script(args))
         return
 
@@ -24,13 +24,13 @@ def run_deployment(args, *, run_orchestration_script: Callable[[object], Awaitab
 
 async def _serve_deployed_workers(args) -> None:
     configure_logger(args, source=SimpleProcessIdentity(component="main"))
-    component = DeployComponent(args.deploy_component)
+    selector = DeploySelector.of(args)
 
     _worker_manager = launch_worker_manager(args)
     logger.info(
-        f"Deployed the {component.value} workers of this run: "
+        f"Deployed the {selector.value} workers of this run: "
         f"{[spec.name for spec in compute_specs(args)]}. "
-        f"{await _describe_controller_addrs(args, component=component)}"
+        f"{await _describe_controller_addrs(args, component=selector.component)}"
     )
     logger.info(
         "This deployment carries no orchestration script, so it has no training to finish and stays up until it is "

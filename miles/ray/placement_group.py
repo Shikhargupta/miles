@@ -22,13 +22,13 @@ from miles.ray.specs.static_addrs import (
     inference_controller_urls,
     trainer_controller_urls,
 )
-from miles.ray.specs.train import compute_critic_args, create_trainer_controller_handle
+from miles.ray.specs.train import compute_critic_args, compute_trainer_gpu_budget, create_trainer_controller_handle
 from miles.ray.wiring import get_backend_capability
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.ft_utils.api_server.server import start_api_server
-from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.types import DeployComponent, DeploySelector
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -111,9 +111,9 @@ def _create_placement_group(num_gpus) -> PlacementGroupInfo:
 
 
 def _get_placement_group_layout(args) -> tuple[int, int]:
-    actor_num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
+    actor_num_gpus = compute_trainer_gpu_budget(args)
 
-    component = DeployComponent(args.deploy_component)
+    component = DeploySelector.of(args).component
     if component is DeployComponent.PRIMARY:
         return 0, 0
     if component is DeployComponent.TRAINER:
@@ -188,7 +188,7 @@ async def create_training_models(
 async def update_weights(
     args,
     *,
-    actor_model: BaseWorkerHandle,
+    actor_model,
     rollout_executor: BaseWorkerHandle,
     inference_controller: BaseWorkerHandle,
     rollout_id: int | None = None,
@@ -197,10 +197,13 @@ async def update_weights(
     """Sequence the weight update: the controllers never call each other, the orchestration script does."""
     info = await inference_controller.start_update_weights(model_id=model_id)
     try:
-        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id, model_id=model_id)
     except BaseException:
         await _abort_update_weights(
-            actor_model=actor_model, inference_controller=inference_controller, window_id=info.window_id
+            actor_model=actor_model,
+            inference_controller=inference_controller,
+            window_id=info.window_id,
+            model_id=model_id,
         )
         raise
     await inference_controller.end_update_weights(
@@ -216,11 +219,11 @@ async def update_weights(
 
 
 async def _abort_update_weights(
-    *, actor_model: BaseWorkerHandle, inference_controller: BaseWorkerHandle, window_id: int
+    *, actor_model, inference_controller: BaseWorkerHandle, window_id: int, model_id: str | None
 ) -> None:
     try:
         confirmed = await asyncio.wait_for(
-            actor_model.wait_update_weights_finished(window_id=window_id),
+            actor_model.wait_update_weights_finished(window_id=window_id, model_id=model_id),
             timeout=UPDATE_WEIGHTS_STOP_CONFIRMATION_TIMEOUT_SECONDS,
         )
     except BaseException:
@@ -272,7 +275,7 @@ async def _maybe_log_inference_engine_weight_checksums(
 
 
 # TODO: move (when reorganizing files)
-def maybe_start_api_server(args, *, actor_model: BaseWorkerHandle, inference_controller: BaseWorkerHandle) -> None:
+def maybe_start_api_server(args, *, actor_model, inference_controller: BaseWorkerHandle) -> None:
     if not args.api_server_port:
         return
 

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Awaitable, Callable
 
 from miles.utils.function_registry import load_function
@@ -8,22 +9,31 @@ from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import RPC_PORT_NAME, NamedHostAndPorts
 
+logger = logging.getLogger(__name__)
+
 
 async def apply_cell_observation(
     *,
     cell_id: str,
     observed: CellInfo | None,
-    actual_workers_hash: str | None,
+    actual: CellInfo | None,
     add: Callable[[str, CellInfo], Awaitable[None]],
     remove: Callable[[str], Awaitable[None]],
 ) -> None:
-    if observed is not None and actual_workers_hash is None:
+    if observed is not None and actual is None:
         await add(cell_id, observed)
-    elif observed is None and actual_workers_hash is not None:
+    elif observed is None and actual is not None:
         await remove(cell_id)
-    elif observed is not None and actual_workers_hash is not None and actual_workers_hash != observed.workers_hash:
+    elif observed is not None and actual is not None and actual != observed:
         await remove(cell_id)
         await add(cell_id, observed)
+
+
+def warn_static_membership(cell_id: str, *, provider: str) -> None:
+    logger.warning(
+        f"{provider} was asked to forget cell {cell_id}, but it serves the membership this run was launched with, "
+        f"so nothing observes that cell anew and it stays in this run until the run ends"
+    )
 
 
 def build_rpc_handle(*, worker_class: type, addrs: NamedHostAndPorts, pool_id: str) -> BaseWorkerHandle:

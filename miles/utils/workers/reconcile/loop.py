@@ -109,6 +109,9 @@ class ReconcileLoop:
         await self._driver.aclose()
         self._tasks = []
 
+    def enqueue(self, parent_key: ParentKey) -> None:
+        self._queue.add(parent_key)
+
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)
 

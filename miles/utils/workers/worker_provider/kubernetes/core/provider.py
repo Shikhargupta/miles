@@ -31,6 +31,7 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
         self._pool_ids = pool_ids
         self._resync_period = resync_period
         self._loop: ReconcileLoop | None = None
+        self._invalidated: set[str] = set()
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         for cell_id in self.cell_ids():
@@ -47,6 +48,10 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
         def notify_cell(cell_id: str) -> Awaitable[None]:
+            if cell_id in self._invalidated:
+                self._invalidated.discard(cell_id)
+                self._loop_or_fail().enqueue(cell_id)
+                return reconcile(cell_id, None)
             info = self.cell_info(cell_id)
             return reconcile(cell_id, info if info is not None and info.alive else None)
 
@@ -69,6 +74,10 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
                 )
             )
             return watching.pop_all().aclose
+
+    async def invalidate_cell(self, cell_id: str) -> None:
+        self._invalidated.add(cell_id)
+        self._loop_or_fail().enqueue(cell_id)
 
     def cell_ids(self) -> list[str]:
         return sorted(self._loop_or_fail().parent_keys())

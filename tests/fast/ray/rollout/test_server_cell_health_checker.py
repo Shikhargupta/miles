@@ -262,7 +262,7 @@ async def _make_controller_with_serving_cell() -> tuple[InferenceController, Ser
     controller.servers = {"default": srv}
 
     async with controller.context_lock:
-        await srv.add_cell(_make_meta())
+        srv.commit_cell(await srv.bring_up_cell(_make_meta()))
 
     cell: ServerCell = track_server_cell(srv.server_cells["inference-engine-0-0-0"])
     cell.router_api_client = _NoopRouterApiClient()

@@ -6,7 +6,7 @@ from miles.utils.http_utils import wait_tcp_ready
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name, parse_cell_id, parse_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
-from miles.utils.workers.worker_provider.utils import attach_rpc_handle
+from miles.utils.workers.worker_provider.utils import attach_rpc_handle, warn_static_membership
 from miles.utils.workers.worker_spec import RPC_PORT_NAME, HostAndPort, NamedHostAndPorts
 
 STATIC_ADDRS_READY_TIMEOUT_SECONDS = 600.0
@@ -41,6 +41,9 @@ class SimpleWorkerProvider(BaseWorkerProvider):
             return None
 
         return _stop
+
+    async def invalidate_cell(self, cell_id: str) -> None:
+        warn_static_membership(cell_id, provider=type(self).__name__)
 
     def _cell_info(self, cell_index: int) -> CellInfo:
         worker_name = compute_worker_name(pool_id=self._pool_id, cell_index=cell_index)

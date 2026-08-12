@@ -12,6 +12,7 @@ from miles.utils.workers.worker_provider.base import (
     ReconcileFn,
     StopWatchFn,
     cell_id_of_worker,
+    restamp_observation,
     select_handle,
 )
 from miles.utils.workers.worker_provider.utils import attach_rpc_handle
@@ -34,6 +35,7 @@ class RayWorkerProvider(BaseWorkerProvider):
         self._pool_ids = pool_ids
         self._poll_interval_seconds = poll_interval_seconds
         self._handles: dict[str, tuple[int, BaseWorkerHandle]] = {}
+        self._invalidated: set[str] = set()
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         refs = [self._worker_manager_handle.get_worker_infos.remote(cell_id) for cell_id in cell_ids]
@@ -59,6 +61,9 @@ class RayWorkerProvider(BaseWorkerProvider):
         await self._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
         task = asyncio.create_task(self._watch_loop(reconcile, seen_infos, pool_ids=pool_ids))
         return partial(_cancel_and_await_task, task)
+
+    async def invalidate_cell(self, cell_id: str) -> None:
+        self._invalidated.add(cell_id)
 
     def _attach_handles(self, infos_per_cell: list[list[WorkerInfo]]) -> list[list[WorkerInfo]]:
         return [[self._attach_cached_handle(info) for info in infos] for infos in infos_per_cell]
@@ -89,16 +94,23 @@ class RayWorkerProvider(BaseWorkerProvider):
     async def _poll_once(
         self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, pool_ids: list[str]
     ) -> None:
+        for cell_id in sorted(self._invalidated):
+            self._invalidated.discard(cell_id)
+            if seen_infos.pop(cell_id, None) is not None:
+                await reconcile(cell_id, None)
+
         all_infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
         observed_infos: dict[str, CellInfo] = {cell_id: info for cell_id, info in all_infos.items() if info.alive}
         for cell_id in sorted(set(seen_infos) | set(observed_infos)):
             observed_info = observed_infos.get(cell_id)
             if seen_infos.get(cell_id) == observed_info:
                 continue
-            await reconcile(cell_id, observed_info)
             if observed_info is None:
+                await reconcile(cell_id, None)
                 seen_infos.pop(cell_id, None)
             else:
+                observed_info = restamp_observation(observed_info)
+                await reconcile(cell_id, observed_info)
                 seen_infos[cell_id] = observed_info
 
 

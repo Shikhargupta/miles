@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ class _RecordingCell:
         self.finished_count = 0
         self.meta = SimpleNamespace(cell_id=cell_id)
         self.is_pending_weights_or_serving = False
+        self.observed_info = None
         self._error = error
         self._delay = delay
 
@@ -34,6 +36,10 @@ class _StubServer:
     def __init__(self, server_cells: dict):
         self.server_cells = server_cells
         self.dispose_count = 0
+        self.unreachable_sweeps = 0
+
+    async def remove_unreachable_cells(self) -> None:
+        self.unreachable_sweeps += 1
 
     async def dispose(self) -> None:
         self.dispose_count += 1
@@ -71,7 +77,7 @@ class TestTickCells:
         assert slow.finished_count == 1
 
     async def test_a_wedged_cell_cannot_stall_the_sweep_forever(self, monkeypatch):
-        """A hung engine holds the controller lock for as long as its tick runs, so it must be bounded."""
+        """A hung engine would keep a run waiting for its sweep forever, so one tick has to be bounded."""
         wedged = _RecordingCell(delay=60.0, cell_id="wedged")
         healthy = _RecordingCell(cell_id="healthy")
         controller = _make_controller({"default": _StubServer({"a": wedged, "b": healthy})})
@@ -109,6 +115,52 @@ class TestTickCells:
         assert healthy.tick_count > 1
 
 
+class TestTickSweepsUnreachableCellsAndStaleReporters:
+    async def test_every_sweep_asks_each_server_to_drop_what_it_cannot_reach(self):
+        """A cell nothing probes stays in the router forever, taking requests it can no longer serve."""
+        first, second = _StubServer({}), _StubServer({})
+        controller = _make_controller({"default": first, "frozen": second})
+
+        await controller._tick_cells()
+
+        assert (first.unreachable_sweeps, second.unreachable_sweeps) == (1, 1)
+
+    async def test_a_reporter_that_went_quiet_is_logged_by_the_sweep(self, caplog):
+        """Staleness never removes a cell, so a log line is the only thing that says a datacenter went quiet."""
+        controller = _make_controller({})
+        controller._registration_provider = _StubRegistrationProvider(seconds=10_000.0)
+
+        with caplog.at_level(logging.WARNING):
+            await controller._tick_cells()
+
+        assert "east" in caplog.text
+
+    async def test_a_reporter_reporting_on_time_is_not_logged(self):
+        """A warning every five seconds for a healthy run is a warning nobody ever reads."""
+        controller = _make_controller({})
+        controller._registration_provider = _StubRegistrationProvider(seconds=1.0)
+
+        await controller._tick_cells()
+
+        assert controller._registration_provider.asked == ["east"]
+
+
+class _StubRegistrationProvider:
+    def __init__(self, *, seconds: float) -> None:
+        self._seconds = seconds
+        self.asked: list[str] = []
+
+    def reporter_ids(self) -> list[str]:
+        return ["east"]
+
+    def cell_ids(self) -> list[str]:
+        return ["east-inference-engine-0-0-0"]
+
+    def seconds_since_last_snapshot(self, reporter_id: str) -> float:
+        self.asked.append(reporter_id)
+        return self._seconds
+
+
 class TestControllerDisposal:
     async def test_dispose_stops_the_ticker(self):
         """A surviving loop would keep dialing engines after the controller is gone."""
@@ -139,3 +191,17 @@ class TestControllerDisposal:
         await controller.dispose()
 
         assert controller._ticker is None
+
+
+class TestTheTickHoldsNoLockWhileItProbes:
+    async def test_another_locked_call_gets_through_while_a_cell_is_being_probed(self):
+        """Probing a cross-datacenter engine every five seconds under the lock starves everything else in the run."""
+        probing = _RecordingCell(delay=1.0, cell_id="slow")
+        controller = _make_controller({"default": _StubServer({"a": probing})})
+
+        ticking = asyncio.create_task(controller._tick_cells())
+        await asyncio.sleep(0.01)
+        await asyncio.wait_for(controller._observed_info_of_cell("a"), timeout=0.1)
+
+        ticking.cancel()
+        await asyncio.gather(ticking, return_exceptions=True)

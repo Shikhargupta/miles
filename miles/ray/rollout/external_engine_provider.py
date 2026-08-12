@@ -14,6 +14,7 @@ from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.utils import warn_static_membership
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,9 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
             pass
 
         return _stop
+
+    async def invalidate_cell(self, cell_id: str) -> None:
+        warn_static_membership(cell_id, provider=type(self).__name__)
 
     def expected_num_cells(self, *, model_id: str) -> int:
         return sum(1 for cell in self._initialized_cells.values() if cell.cell_info.meta["model_id"] == model_id)

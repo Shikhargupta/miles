@@ -32,7 +32,7 @@ from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecuto
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.rpc.common.wire_types import WireNamespace
-from miles.utils.workers.types import DeployComponent, DeploymentIdentity
+from miles.utils.workers.types import DeployComponent, DeploymentIdentity, DeploySelector
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -85,6 +85,11 @@ class TrainerController(NodeProbeMixin):
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
+        self._observed_by_id: dict[str, CellInfo] = {}
+
+    @property
+    def model_id(self) -> str:
+        return self._role
 
     @property
     def pool_id(self) -> str:
@@ -122,11 +127,10 @@ class TrainerController(NodeProbeMixin):
         )
 
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
-        actual = self._cells_by_id.get(cell_id)
         await apply_cell_observation(
             cell_id=cell_id,
             observed=observed,
-            actual_workers_hash=actual.workers_hash if actual is not None else None,
+            actual=self._observed_by_id.get(cell_id),
             add=self._add_cell,
             remove=self._remove_cell,
         )
@@ -135,9 +139,11 @@ class TrainerController(NodeProbeMixin):
         self._cells_by_id[cell_id] = self._create_cell(
             cell_id, cell_index=observed.meta["cell_index"], workers_hash=observed.workers_hash
         )
+        self._observed_by_id[cell_id] = observed
 
     async def _remove_cell(self, cell_id: str) -> None:
         cell = self._cells_by_id.pop(cell_id)
+        self._observed_by_id.pop(cell_id, None)
         cell.health_checker.stop()
 
     def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
@@ -162,7 +168,8 @@ class TrainerController(NodeProbeMixin):
 
         return cell
 
-    async def dispose(self) -> None:
+    async def dispose(self, model_id: str | None = None) -> None:
+        self._assert_model_id(model_id)
         if (disposer := self._watcher_disposer) is not None:
             await disposer()
             self._watcher_disposer = None
@@ -174,8 +181,10 @@ class TrainerController(NodeProbeMixin):
         rollout_id: int,
         rollout_data_pack: RolloutDataPack,
         external_data: list[TrainStepOutput] | None = None,
+        model_id: str | None = None,
     ) -> list[TrainStepOutput]:
         """Do one rollout training"""
+        self._assert_model_id(model_id)
 
         assert (
             external_data is None or len(self._cells) == 1
@@ -305,11 +314,12 @@ class TrainerController(NodeProbeMixin):
 
     # ------------------------ API :: others ------------------------
 
-    async def init(self, args: WireNamespace) -> list[Any]:
+    async def init(self, args: WireNamespace, model_id: str | None = None) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
+        self._assert_model_id(model_id)
         self.args = _adopt_launch_level_args(args, launch_args=self._launch_args)
         configure_logger(self.args, source=TrainerControllerProcessIdentity(role=self._role))
 
@@ -348,23 +358,28 @@ class TrainerController(NodeProbeMixin):
         )
         return [item for sublist in cell_results for item in sublist]
 
-    async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
+    async def save_model(self, rollout_id: int, force_sync: bool = False, model_id: str | None = None) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
+        self._assert_model_id(model_id)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
             lambda _: self._execute_first_alive("save_model", rollout_id=rollout_id, force_sync=force_sync),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def export_hf(self, rollout_id: int, path: str) -> None:
+    async def export_hf(self, rollout_id: int, path: str, model_id: str | None = None) -> None:
         """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
+        self._assert_model_id(model_id)
         await retry(
             lambda _: self._execute_first_alive("export_hf", rollout_id=rollout_id, path=path),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> int | None:
+    async def update_weights(
+        self, info: UpdatableEngines, rollout_id: int | None = None, model_id: str | None = None
+    ) -> int | None:
         """Broadcast weights to the engines the orchestration script snapshotted, and answer the version served."""
+        self._assert_model_id(model_id)
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
@@ -422,7 +437,8 @@ class TrainerController(NodeProbeMixin):
             router_addrs={},
         )
 
-    async def onload(self) -> None:
+    async def onload(self, model_id: str | None = None) -> None:
+        self._assert_model_id(model_id)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("wake_up")
         self._health_checker_activeness.bump_active(True)
@@ -435,23 +451,34 @@ class TrainerController(NodeProbeMixin):
         finally:
             self._health_checker_activeness.bump_active(True)
 
-    async def offload(self) -> None:
+    async def offload(self, model_id: str | None = None) -> None:
+        self._assert_model_id(model_id)
         self._health_checker_activeness.bump_active(False)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("sleep")
 
-    async def clear_memory(self) -> None:
+    async def clear_memory(self, model_id: str | None = None) -> None:
+        self._assert_model_id(model_id)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def reconcile_adapters(self) -> None:
+    async def reconcile_adapters(self, model_id: str | None = None) -> None:
+        self._assert_model_id(model_id)
         await asyncio.gather(*[cell.execute("reconcile_adapters") for cell in self._cells])
 
-    async def get_train_parallel_config(self) -> dict[str, Any]:
+    async def get_train_parallel_config(self, model_id: str | None = None) -> dict[str, Any]:
+        self._assert_model_id(model_id)
         return (await self._execute_first_alive("get_train_parallel_config"))[0]
 
-    async def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self, model_id: str | None = None) -> dict[str, CellStatus]:
+        self._assert_model_id(model_id)
         return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
+
+    def _assert_model_id(self, model_id: str | None) -> None:
+        assert model_id is None or model_id == self._role, (
+            f"this trainer trains {self._role!r}, so it cannot answer for model {model_id!r}; a run that trains "
+            f"several policies routes through a CompositeTrainerController"
+        )
 
     # ------------------------ utils to forward calls to cells ------------------------
 
@@ -695,10 +722,10 @@ def _first_exception(results) -> BaseException | None:
 
 
 def _adopt_launch_level_args(args: WireNamespace, *, launch_args) -> WireNamespace:
-    component = DeployComponent(args.deploy_component)
-    assert component.selects(DeployComponent.PRIMARY), (
+    selector = DeploySelector.of(args)
+    assert selector.selects(DeployComponent.PRIMARY), (
         f"the orchestration script hands the trainer controller the arguments of its own launch, and a launch that "
-        f"deploys {component.value} carries no orchestration script"
+        f"deploys {selector.value} carries no orchestration script"
     )
     adopted = copy.copy(args)
     for name in _LAUNCH_LEVEL_ARG_NAMES:

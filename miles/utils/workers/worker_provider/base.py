@@ -1,12 +1,24 @@
 import abc
+import itertools
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.utils.workers.naming import compute_cell_id, parse_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_spec import NamedHostAndPorts
+
+
+_observation_sequence = itertools.count(1)
+
+
+def allocate_observation_seq() -> int:
+    return next(_observation_sequence)
+
+
+class ObservationSupersededError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -17,6 +29,11 @@ class CellInfo:
     worker_names: list[str]
     workers_hash: str
     meta: dict[str, Any]  # TODO: in k8s native mode, may be provided from pod annotations
+    observation_seq: int = field(default_factory=allocate_observation_seq, compare=False)
+
+
+def restamp_observation(info: CellInfo) -> CellInfo:
+    return replace(info, observation_seq=allocate_observation_seq())
 
 
 # args: (cell_id, CellInfo)
@@ -39,6 +56,18 @@ class BaseWorkerProvider(abc.ABC):
 
     def expected_num_cells(self, *, model_id: str) -> int | None:
         return None
+
+    def extra_expected_num_cells(self, *, model_id: str) -> int:
+        """How many cells of ``model_id`` this provider expects on top of the ones this deployment launches."""
+        return 0
+
+    @abc.abstractmethod
+    async def invalidate_cell(self, cell_id: str) -> None:
+        """Drop ``cell_id``, so a provider that watches a platform announces it again once it observes it anew.
+
+        Callers hold their own context lock across this call, so an implementation must return without
+        doing any networked call: it may only mark its own state and let its watch loop observe anew.
+        """
 
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
         (infos,) = self.get_worker_infos(cell_ids=[cell_id_of_worker(worker_name)])

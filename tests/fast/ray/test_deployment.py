@@ -25,6 +25,9 @@ class _AddressBookProvider(BaseWorkerProvider):
         addr = self._addrs_by_worker_name[worker_name]
         return {RPC_PORT_NAME: addr, "primary": addr}
 
+    async def invalidate_cell(self, cell_id: str) -> None:
+        return None
+
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         raise NotImplementedError
 

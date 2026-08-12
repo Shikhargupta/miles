@@ -6,8 +6,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.specs.trainer_identity import DEFAULT_TRAINER_ROLE
 from miles.ray.train.group import TrainerController
 from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.registration.provider import RegistrationWorkerProvider
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 
@@ -16,12 +18,14 @@ def make_inference_controller(
     *,
     engine_provider: BaseWorkerProvider | None = None,
     router_providers: Sequence[BaseWorkerProvider] = (),
+    registration_provider: RegistrationWorkerProvider | None = None,
     **overrides: Any,
 ) -> InferenceController:
     controller = InferenceController(
         args,
         engine_provider=engine_provider if engine_provider is not None else MagicMock(spec=BaseWorkerProvider),
         router_providers=router_providers,
+        registration_provider=registration_provider,
     )
     _apply_overrides(controller, overrides=overrides)
     return controller
@@ -31,7 +35,7 @@ def make_trainer_controller(
     *,
     args: Any = None,
     launch_args: Any = None,
-    role: str = "actor",
+    role: str = DEFAULT_TRAINER_ROLE,
     with_ref: bool = False,
     cell_provider: BaseWorkerProvider | None = None,
     cell_operations: BaseCellOperations | None = None,

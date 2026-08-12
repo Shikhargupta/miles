@@ -31,6 +31,9 @@ class _StubProvider:
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         raise AssertionError(f"this module addresses cells through a patched _compute_addr_info ({worker_name=})")
 
+    async def invalidate_cell(self, cell_id: str) -> None:
+        return None
+
 
 class _FakeRouter:
     def __init__(self) -> None:

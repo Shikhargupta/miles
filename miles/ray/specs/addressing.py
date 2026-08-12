@@ -15,7 +15,8 @@ from miles.ray.specs.static_addrs import (
     INFERENCE_ROUTER_ADDRS_FLAG,
     TRAINER_CONTROLLER_ADDRS_FLAG,
 )
-from miles.ray.specs.train import compute_trainer_controller_pool_id, trainer_controller_worker_name
+from miles.ray.specs.train import compute_deployed_trainer_instances, trainer_controller_worker_name
+from miles.ray.specs.trainer_identity import compute_trainer_controller_pool_id
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import RPC_PORT_NAME, HostAndPort
 
@@ -64,7 +65,7 @@ def compute_addressed_workers(args, *, component: DeployComponent) -> list[Addre
             worker_name=trainer_controller_worker_name(role),
             port_name=RPC_PORT_NAME,
         )
-        for role in ["actor", *(["critic"] if args.use_critic else [])]
+        for role in [instance.role for instance in compute_deployed_trainer_instances(args)]
     ]
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
@@ -16,6 +18,9 @@ from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
+
+_SCHEDULER_YIELDS = 5
+_ROUTER_CALL_BOUND_SLACK_SECONDS = 5.0
 
 _ADDR_INFO = CellAddrInfo(
     server_url="http://10.0.0.1:30000",
@@ -68,6 +73,23 @@ class _RecordingRouterApiClient:
 
     async def remove_worker(self, **kwargs):
         self.calls.append(("remove_worker", kwargs))
+
+
+class _SuspendingRouterApiClient(_RecordingRouterApiClient):
+    def __init__(self):
+        super().__init__()
+        self.registering = asyncio.Event()
+        self.finish_registering = asyncio.Event()
+
+    async def add_worker(self, **kwargs):
+        self.registering.set()
+        await self.finish_registering.wait()
+        await super().add_worker(**kwargs)
+
+
+async def _let_other_tasks_run() -> None:
+    for _ in range(_SCHEDULER_YIELDS):
+        await asyncio.sleep(0)
 
 
 class _RecordingApiClient:
@@ -584,4 +606,76 @@ class TestDispose:
 
         await cell.tick()
 
+        assert isinstance(cell._state, StateDisposed)
+
+    async def test_a_cell_disposed_while_it_was_probed_never_reaches_the_router(self, cell_env, monkeypatch):
+        """A frozen cell registers itself, so the probe must not publish an engine that was torn down."""
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router, update_weights=False)
+        await cell.init()
+
+        async def _probe_then_dispose(server_url: str, api_key, timeout: float = 5.0) -> bool:
+            await cell.dispose()
+            return True
+
+        monkeypatch.setattr(server_cell_module, "probe_server_healthy", _probe_then_dispose)
+
+        await cell.tick()
+
+        assert router.calls == []
+        assert isinstance(cell._state, StateDisposed)
+
+    async def test_a_cell_disposed_while_it_was_registering_is_taken_out_of_the_router_again(self, cell_env):
+        """The dispose starts while add_worker is genuinely suspended, so the removal must still land after it."""
+        router = _SuspendingRouterApiClient()
+        cell = _make_cell(router=router, update_weights=False)
+        await cell.init()
+
+        ticking = asyncio.create_task(cell.tick())
+        await router.registering.wait()
+        disposing = asyncio.create_task(cell.dispose())
+        await _let_other_tasks_run()
+        assert router.calls == [] and not disposing.done()
+        router.finish_registering.set()
+        await asyncio.gather(ticking, disposing)
+
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker"]
+        assert isinstance(cell._state, StateDisposed)
+
+    async def test_a_cell_disposed_while_its_weights_were_published_is_taken_out_of_the_router_again(self, cell_env):
+        """mark_weights_ready registers too, so a dispose racing it must not leave the engine in the router."""
+        router = _SuspendingRouterApiClient()
+        cell = _make_cell(router=router)
+        await cell.init()
+        await cell.tick()
+
+        publishing = asyncio.create_task(cell.mark_weights_ready())
+        await router.registering.wait()
+        disposing = asyncio.create_task(cell.dispose())
+        await _let_other_tasks_run()
+        assert router.calls == [] and not disposing.done()
+        router.finish_registering.set()
+        await asyncio.gather(publishing, disposing)
+
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker"]
+        assert isinstance(cell._state, StateDisposed)
+
+    async def test_a_dispose_behind_a_router_that_never_answers_is_bounded_by_the_two_call_timeouts(
+        self, cell_env, monkeypatch
+    ):
+        """This wait runs under the controller's context lock, so its bound is every locked call's bound."""
+        monkeypatch.setattr(server_cell_module, "CELL_CALL_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(server_cell_module, "SHUTDOWN_TIMEOUT", 0.05)
+        router = _SuspendingRouterApiClient()
+        cell = _make_cell(router=router, update_weights=False)
+        await cell.init()
+
+        ticking = asyncio.create_task(cell.tick())
+        await router.registering.wait()
+        await asyncio.wait_for(cell.dispose(), timeout=_ROUTER_CALL_BOUND_SLACK_SECONDS)
+        router.finish_registering.set()
+        with pytest.raises(TimeoutError):
+            await ticking
+
+        assert [name for name, _kwargs in router.calls] == ["remove_worker"]
         assert isinstance(cell._state, StateDisposed)

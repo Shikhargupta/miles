@@ -5,19 +5,18 @@ import pytest
 from tests.fast.fixtures.controller_fixtures import make_trainer_controller
 from tests.fast.ray.train.conftest import make_provider
 
-from miles.ray.specs.train import compute_trainer_pool_id
+from miles.ray.specs.trainer_identity import DEFAULT_TRAINER_ROLE, compute_trainer_pool_id
 from miles.ray.train.group import TrainerController
 from miles.utils import retry_utils
 from miles.utils.workers.worker_provider.base import CellInfo
 
 pytestmark = pytest.mark.asyncio
 
-_POOL_ID = compute_trainer_pool_id("actor")
+_POOL_ID = compute_trainer_pool_id(DEFAULT_TRAINER_ROLE)
 
 
 def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerController:
     return make_trainer_controller(
-        role="actor",
         cell_provider=make_provider(),
         args=SimpleNamespace(
             indep_dp=indep_dp,

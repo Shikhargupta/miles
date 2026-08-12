@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
 
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.base import CellInfo
+from miles.utils.workers.worker_provider.base import CellInfo, allocate_observation_seq
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -89,6 +89,9 @@ async def _raised(error: Exception) -> Any:
 
 def _make_watching_handle(*answers: Any) -> _WatchingManagerHandle:
     return _WatchingManagerHandle(get_cell_infos=_FakeCellInfosMethod(answers=list(answers)))
+
+
+_FOREIGN_OBSERVATION_SEQ = 10**9
 
 
 def _cell_info(cell_id: str, *, alive: bool = True, workers_hash: str = "hash-0") -> CellInfo:
@@ -319,6 +322,43 @@ class TestRayWorkerProviderRpcHandles:
         await provider.get_handle_async("trainer-engine-actor-0-0")
 
         assert handle.get_worker_infos.calls == ["trainer-engine-actor-0"]
+
+
+class TestRayWorkerProviderObservationNumbering:
+    async def test_every_observed_cell_is_numbered_again_in_this_process(self):
+        """The manager runs in its own actor process, so the number it stamped means nothing to the controller."""
+        info = replace(_cell_info("cell-a"), observation_seq=_FOREIGN_OBSERVATION_SEQ)
+        handle = _make_watching_handle({"cell-a": info})
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
+        reconciler = _RecordingReconciler()
+
+        before = allocate_observation_seq()
+        stop = await provider.watch_cells(reconciler)
+        after = allocate_observation_seq()
+        try:
+            [(cell_id, observed)] = reconciler.calls
+            assert cell_id == "cell-a"
+            assert before < observed.observation_seq < after
+        finally:
+            await stop()
+
+    async def test_a_relaunched_cell_is_numbered_after_the_observation_it_replaces(self):
+        """Two observations of one cell must order by when this process saw them, whatever the manager stamped."""
+        first = replace(_cell_info("cell-a", workers_hash="hash-0"), observation_seq=_FOREIGN_OBSERVATION_SEQ)
+        second = replace(_cell_info("cell-a", workers_hash="hash-1"), observation_seq=1)
+        handle = _make_watching_handle({"cell-a": first}, {"cell-a": second})
+        provider = RayWorkerProvider(
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
+        )
+        reconciler = _RecordingReconciler()
+
+        stop = await provider.watch_cells(reconciler)
+        try:
+            await _wait_until(lambda: len(reconciler.calls) >= 2)
+            seqs = [observed.observation_seq for _cell_id, observed in reconciler.calls[:2]]
+            assert seqs[0] < seqs[1] < _FOREIGN_OBSERVATION_SEQ
+        finally:
+            await stop()
 
 
 class TestRayWorkerProviderWatchCellsStop:

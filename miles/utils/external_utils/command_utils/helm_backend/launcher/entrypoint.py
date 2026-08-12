@@ -48,7 +48,7 @@ from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import derive_run_uuid
 from miles.utils.workers.serving.utils import override_argv
-from miles.utils.workers.types import ClusterBackend, DeployComponent
+from miles.utils.workers.types import ClusterBackend, DeployComponent, DeploySelector
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
 from miles.utils.workers.worker_spec import BaseWorkerSpec
 
@@ -71,13 +71,13 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
     namespace = config.namespace
     args = _parse_train_args(request, run_id=run_id)
-    deploy_component = DeployComponent(args.deploy_component)
-    assert deploy_component is config.deploy_component, (
-        f"the run's pods are told {deploy_component.value} while everything this launch installs is named after "
-        f"{config.deploy_component.value}"
+    selector = DeploySelector.of(args)
+    assert selector == config.deploy_selector, (
+        f"the run's pods are told {selector.value} while everything this launch installs is named after "
+        f"{config.deploy_selector.value}"
     )
-    deploys_orchestration_script = deploy_component.deploys_orchestration_script()
-    release = RunNames.release(run_id=run_id, deploy_component=deploy_component)
+    deploys_orchestration_script = selector.deploys_orchestration_script()
+    release = RunNames.release_of(run_id=run_id, selector=selector)
     mooncake_plan = MooncakeInfo.plan_of_args(args)
     pod_argv = _compute_pod_argv(
         request,
@@ -157,7 +157,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         )
         return
 
-    if deploy_component.is_split():
+    if selector.is_split():
         master = MooncakeInfo.master_service_host(release, namespace)
         logger.info(
             f"The other deployments of this run share the object store of {release}, so give each of them "
@@ -170,7 +170,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
 def describe_reachable_addrs(args, *, specs: list[BaseWorkerSpec], release: str) -> str:
     specs_by_pool_id = {spec.name: spec for spec in specs}
-    workers = compute_addressed_workers(args, component=DeployComponent(args.deploy_component))
+    workers = compute_addressed_workers(args, component=DeploySelector.of(args).component)
     entries = [
         (
             worker,
@@ -277,7 +277,17 @@ def _assert_upgrade_only_resizes(
 
 
 def _belongs_to_run(release: str, *, run_id: str) -> bool:
-    return release in {RunNames.release(run_id=run_id, deploy_component=component) for component in DeployComponent}
+    own = RunNames.release(run_id=run_id)
+    if release == own:
+        return True
+    if not release.startswith(f"{own}-"):
+        return False
+    suffix = release.removeprefix(f"{own}-")
+    return any(
+        suffix == component.value or suffix.startswith(f"{component.value}-")
+        for component in DeployComponent
+        if component.is_split()
+    )
 
 
 def _uninstall_leftover_ci_releases(namespace: str, *, keep_run_id: str) -> list[str]:

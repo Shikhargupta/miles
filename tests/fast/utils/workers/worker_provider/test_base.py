@@ -24,6 +24,9 @@ class _RecordingProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str):
         raise NotImplementedError
 
+    async def invalidate_cell(self, cell_id: str) -> None:
+        return None
+
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         self.requested_cell_ids.append(cell_ids)
         return [self._infos]
