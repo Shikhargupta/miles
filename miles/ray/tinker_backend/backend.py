@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from miles.ray.tinker_backend.config import AdapterRunConfig
+from miles.ray.tinker_backend.gradient_windows import GradientWindowTracker
 from miles.ray.tinker_backend.operations import OperationLedger
 from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
 from miles.utils.http_utils import router_worker_base_urls
@@ -42,6 +43,9 @@ class TinkerBackend:
         self.args = args
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
         self.operations = OperationLedger()
+        # Registration-keyed step/dirty authority (parameterization-neutral);
+        # the registry only mirrors its transitions into lifecycle pins.
+        self.gradient_windows = GradientWindowTracker()
         self.router_url = router_url.rstrip("/")
         self.client: httpx.AsyncClient | None = None
         # Readiness (distinct from liveness): the driver flips it once the
@@ -90,6 +94,7 @@ class TinkerBackend:
         config = self.resolve_adapter_config(name, config)
         await self.validate_adapter(name, config)
         result = self.registry.register(name, config)
+        self.gradient_windows.open(self.registry.records[name].tenant)
         logger.info(f"[tinker] adapter '{name}' registered (slot {result['slot']})")
         return result
 
@@ -117,7 +122,27 @@ class TinkerBackend:
         record = self.registry.records.get(name)
         if record is not None and record.state is AdapterState.CLEANUP:
             await self.abort_adapter_requests(name, record.registration_id)
-        return self.registry.free_slot(name)
+        slot = self.registry.free_slot(name)
+        if record is not None and slot != -1:
+            # The stream stayed queryable through RETIRING/CLEANUP (the final
+            # state save reads its step); it dies with the registration.
+            self.gradient_windows.close(record.tenant)
+        return slot
+
+    # ---------------- training-stream clocks ----------------
+
+    def set_adapter_step(self, name: str, step: int) -> None:
+        """Reposition the CURRENT registration's stream (sidecar resume /
+        load_state): tracker first (authority), registry mirror second."""
+        record = self.registry.find(name)
+        if record is None:
+            return
+        self.gradient_windows.restore_step(record.tenant, step)
+        self.registry.set_step(name, step)
+
+    def adapter_step(self, name: str) -> int:
+        record = self.registry.find(name)
+        return self.gradient_windows.step_of(record.tenant) if record is not None else 0
 
     # ---------------- operation preflight (compatibility matrix) ----------------
 
@@ -273,7 +298,7 @@ class TinkerBackend:
                         f"a forward_backward in this gradient window failed ({blocker}); the window's "
                         "accumulated gradients were discarded — resubmit the batch and optim_step again"
                     )
-            if operation["kind"] in self.DIRTY_GATED_KINDS and self.registry.is_dirty(name):
+            if operation["kind"] in self.DIRTY_GATED_KINDS and self.gradient_windows.is_dirty(record.tenant):
                 self.operations.fail(
                     operation["operation_id"],
                     f"adapter '{name}' holds unstepped gradients; optim_step (or deregister) before "
@@ -282,7 +307,7 @@ class TinkerBackend:
                 )
                 continue
             operation["slot"] = record.slot
-            operation["step"] = record.step
+            operation["step"] = self.gradient_windows.step_of(record.tenant)
             operation["serving_version"] = record.serving_version
             ready.append(operation)
         return ready
@@ -308,15 +333,24 @@ class TinkerBackend:
                         "serving_name": serving_lora_name(operation["name"], operation["registration_id"]),
                     }
                 self.operations.complete(operation_id, result)
+                key = (operation["name"], operation["registration_id"])
                 if operation["kind"] == "optim_step":
-                    self.registry.commit_tinker_step(operation["name"])
+                    step = self.gradient_windows.commit_step(key)
+                    # Registry hook: mirror the clock, release the dirty pin,
+                    # apply the num_step auto-retire bound.
+                    self.registry.on_step_committed(operation["name"], operation["registration_id"], step)
                 elif operation["kind"] == "load_state":
-                    self.registry.set_step(operation["name"], int((outcome.get("result") or {}).get("step", 0)))
+                    step = int((outcome.get("result") or {}).get("step", 0))
+                    self.gradient_windows.restore_step(key, step)
+                    self.registry.set_step(operation["name"], step)
             else:
                 self.operations.fail(
                     operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server")
                 )
                 if operation["kind"] == "optim_step":
+                    # Executed without committing (veto / poison discard):
+                    # every rank cleared the window's gradients.
+                    self.gradient_windows.clear_after_executed_optim((operation["name"], operation["registration_id"]))
                     self.registry.clear_dirty(operation["name"])
 
     def commit_tinker_batch(
@@ -326,6 +360,11 @@ class TinkerBackend:
         unstepped gradients (pin them); every listed operation completes with
         its per-datum target logprobs in the operation's row order, plus
         backend-computed metrics in the SDK combiner's name:reduction format."""
+        for name in accumulated:
+            record = self.registry.find(name)
+            if record is not None:
+                self.gradient_windows.mark_forward_backward_succeeded(record.tenant)
+        # Multi-LoRA mirror: pin the accumulating slots' state immovable.
         self.registry.mark_accumulated(accumulated)
         logprobs_by_op = logprobs_by_op or {}
         for operation_id in operation_ids:

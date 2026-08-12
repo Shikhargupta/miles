@@ -188,7 +188,7 @@ class TestControlClaims:
 
     def test_claim_carries_authoritative_clocks(self):
         backend = ready_backend()
-        backend.registry.set_step("X", 7)
+        backend.set_adapter_step("X", 7)
         backend.registry.record_weight_update(["X"])
         backend.enqueue_operation("X", "pub1", 1, "save_weights_for_sampler")
         [op] = backend.claim_ready_control_operations()

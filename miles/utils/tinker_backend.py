@@ -14,6 +14,12 @@ from miles.utils.misc import SingletonMeta
 # Cannot appear in adapter names (registry validates [A-Za-z0-9._-] only).
 RID_SEPARATOR = "::"
 
+# The protocol identity of one registration of one adapter name: a
+# re-registered name is a new key. Shared by claim receipts, batch commits,
+# the gradient-window tracker, and physical-executor validation
+# (codex-rollout-fullparameter-design-0810 §5.9).
+RegistrationKey = tuple[str, str]
+
 
 class AdaptersCache(metaclass=SingletonMeta):
     """TTL-cached tinker controller snapshot; get/get_all expose the resident

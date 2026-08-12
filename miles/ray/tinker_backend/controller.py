@@ -73,10 +73,10 @@ class TinkerController:
         self.backend.mark_trainer_ready()
 
     def set_adapter_step(self, name: str, step: int) -> None:
-        self.backend.registry.set_step(name, step)
+        self.backend.set_adapter_step(name, step)
 
     def adapter_step(self, name: str) -> int:
-        return self.backend.registry.step_count(name)
+        return self.backend.adapter_step(name)
 
     def snapshot(self) -> dict:
         return self.backend.registry.snapshot()
