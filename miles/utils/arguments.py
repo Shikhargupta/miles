@@ -180,6 +180,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--reload-rollout-weights-from-disk",
+                action="store_true",
+                help=(
+                    "With 'weight' in --offload-rollout-level, drop rollout engine weights without a "
+                    "host mirror and re-read them from the engine-local checkpoint at onload. Trades "
+                    "an NVMe re-read per rollout resume for the CPU-backup host memory."
+                ),
+            )
+            parser.add_argument(
                 "--offload-train-target",
                 type=str,
                 choices=["cpu", "disk"],
@@ -246,6 +255,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "buffer, which bounds host memory regardless of how much is moved. Used by both "
                     "--offload-train-target=disk and --stream-optimizer-state-to-disk, and each "
                     "allocates its own, so enabling both costs 2x this per rank."
+                ),
+            )
+
+            parser.add_argument(
+                "--colocate-memory-peak-device",
+                type=str,
+                choices=["cpu", "gpu"],
+                default="cpu",
+                help=(
+                    "Which device absorbs the trainer<->rollout handoff overlap. 'cpu' "
+                    "(default) offloads each side before the other onloads, so the engine's "
+                    "weight mirror and the trainer's backup briefly coexist in host memory. "
+                    "'gpu' onloads first, moving the overlap to GPU memory. Use 'gpu' when "
+                    "host RAM is the tighter budget."
                 ),
             )
 
@@ -1740,7 +1763,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                    "onload/offload. Ignored unless --colocate and LoRA are both on, and "
+                    "needs 'weight' in --offload-rollout-level: SGLang builds the mirror "
+                    "during release_weights_occupation."
                 ),
             )
             parser.add_argument(

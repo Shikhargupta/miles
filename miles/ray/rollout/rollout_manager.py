@@ -50,6 +50,15 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def get_rollout_offload_tags(args) -> list[str]:
+    tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+    if "kv_cache" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+    if "weight" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+    return tags
+
+
 @ray.remote
 class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
@@ -286,10 +295,29 @@ class RolloutManager:
             await srv.onload(tags)
 
     async def onload_weights(self):
+        if self.args.reload_rollout_weights_from_disk:
+            # No host mirror to restore from; re-read the base from disk.
+            for srv in self.servers.values():
+                await srv.onload_weights_from_disk()
+            return
         await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+
+    # Split offload counterparts for --colocate-memory-peak-device gpu: pure GPU
+    # memory can go before the trainer wakes, the weights (whose release builds
+    # the host mirror) only after the trainer's own backup is gone.
+    async def offload_kv(self):
+        tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+        if "kv_cache" in self.args.offload_rollout_level:
+            tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+        await self.offload(tags=tags)
+
+    async def offload_weights(self):
+        if "weight" not in self.args.offload_rollout_level:
+            return
+        await self.offload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     # -------------------------- engine management -----------------------------
 
