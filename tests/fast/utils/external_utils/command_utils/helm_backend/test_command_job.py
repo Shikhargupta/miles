@@ -20,6 +20,7 @@ class FakeKubectl:
     statuses: list[str]
     pod_indices: list[int] = field(default_factory=list)
     calls: list[list[str]] = field(default_factory=list)
+    logs_fail: bool = False
 
     def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         assert argv[0] == "kubectl", f"only kubectl is expected to reach the process layer, got {argv[0]}"
@@ -48,6 +49,10 @@ class FakeKubectl:
             }[status]
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout=body, stderr="")
         if arguments[0] == "logs":
+            if self.logs_fail:
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=1, stdout="", stderr="Error from server: pods is forbidden"
+                )
             return subprocess.CompletedProcess(
                 args=argv, returncode=0, stdout=f"the output of {arguments[1]}", stderr=""
             )
@@ -329,6 +334,22 @@ class TestExecCommandMultiNode:
 
         with pytest.raises(AssertionError, match="num_nodes"):
             _gpu_backend().exec_command_multi_node("torchrun --nnodes={{nnodes}}", num_nodes=None)
+
+
+class TestLogs:
+    def test_refuses_to_pass_a_failed_log_read_off_as_the_command_output(self, monkeypatch):
+        """A caller parsing that string would read 'Error from server' as what its command printed."""
+        kubectl = FakeKubectl(statuses=["complete"], pod_indices=[0], logs_fail=True)
+
+        with pytest.raises(RuntimeError, match="kubectl logs"):
+            _run(monkeypatch, kubectl, capture_output=True)
+
+    def test_still_reports_why_a_job_failed_when_its_logs_are_gone(self, monkeypatch):
+        """Losing the logs of a failure must not replace the failure with a second one."""
+        kubectl = FakeKubectl(statuses=["failed"], pod_indices=[0], logs_fail=True)
+
+        with pytest.raises(RuntimeError, match="failed; last log lines"):
+            _run(monkeypatch, kubectl)
 
 
 class TestRunJob:

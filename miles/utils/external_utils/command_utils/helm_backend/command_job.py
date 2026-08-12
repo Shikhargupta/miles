@@ -86,7 +86,7 @@ def _run_job(job: _CommandJob, *, command: list[str], capture_output: bool) -> l
         outcome = _wait(job)
 
     if outcome != "complete":
-        raise RuntimeError(f"Job {job.object_name} {outcome}; last log lines:\n{_joined(_logs_per_completion(job))}")
+        raise RuntimeError(f"Job {job.object_name} {outcome}; last log lines:\n{_joined(_readable_logs(job))}")
 
     logs = _logs_per_completion(job) if capture_output else [None] * job.completions
     Kubectl.delete_job(job.object_name, namespace=job.context.namespace)
@@ -153,6 +153,14 @@ def _logs_per_completion(job: _CommandJob) -> list[str]:
     return [
         logs.get(index, f"no pod of this job reported completion index {index}") for index in range(job.completions)
     ]
+
+
+def _readable_logs(job: _CommandJob) -> list[str]:
+    """The logs of a job that already failed, where losing them must not replace the failure itself."""
+    try:
+        return _logs_per_completion(job)
+    except RuntimeError as error:
+        return [f"the logs of {job.object_name} could not be read: {error}"]
 
 
 def _pods_by_completion_index(job: _CommandJob) -> list[tuple[int, str]]:

@@ -169,7 +169,9 @@ class Kubectl:
         result = run_process(
             Kubectl.logs_command(namespace=namespace, target=target, tail=tail), capture_output=True, check=False
         )
-        return result.stdout or result.stderr
+        if result.returncode != 0:
+            raise RuntimeError(f"kubectl logs {target} failed with code {result.returncode}: {result.stderr.strip()}")
+        return result.stdout
 
     @staticmethod
     def logs_command(
