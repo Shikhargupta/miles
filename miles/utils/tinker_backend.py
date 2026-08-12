@@ -106,17 +106,6 @@ class AdaptersCache(metaclass=SingletonMeta):
         return (await self.get_all()).get(adapter_name)
 
 
-@dataclass(frozen=True)
-class TinkerAdapterRef:
-    """Stamp on every sample a tinker run emits: routing derives from
-    ``(name, registration_id)``; ``slot`` is trainer-side only."""
-
-    name: str
-    registration_id: str
-    serving_version: int
-    slot: int | None
-
-
 class EmptyBatchTimeoutError(RuntimeError):
     """No registration produced a claimable data operation within the wait."""
 

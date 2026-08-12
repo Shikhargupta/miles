@@ -179,7 +179,6 @@ def convert_samples_to_train_data(
             train_data["adapter_slots"] = _adapter_slots_from_lease(
                 metadata, train_data["tinker_operation_lanes"], samples
             )
-            train_data["adapter_name_by_slot"] = metadata["adapter_name_by_slot"]
         else:
             train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
 
@@ -416,7 +415,6 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "raw_reward",
             "total_lengths",
             "dynamic_global_batch_size",
-            "adapter_name_by_slot",
             "tinker_loss_by_lane",
             "operation_by_lane",
             "registration_by_lane",

@@ -37,7 +37,7 @@ from miles.utils.types import AdapterRef, Sample
 logger = logging.getLogger(__name__)
 
 
-def batch_plan_to_metadata(batch_plan: list[dict], lease=None) -> dict[str, Any]:
+def batch_plan_to_metadata(batch_plan: list[dict], lease) -> dict[str, Any]:
     """Distill one tinker selection's BatchPlan into conversion metadata.
     Selections are homogeneous: exactly one data-operation kind — mixed
     forward/forward_backward batches are structurally impossible, which is
@@ -46,9 +46,7 @@ def batch_plan_to_metadata(batch_plan: list[dict], lease=None) -> dict[str, Any]
     Correlation is batch-local (codex-rollout-fullparameter-design-0810 §3.3):
     each selected operation gets a small integer ``lane`` (its position in the
     selection), and the loss/result plane is keyed by lane — never by trainer
-    slot, so operation identity survives any parameterization. The plan's
-    ``bound_slot`` feeds only the Multi-LoRA compatibility helper
-    ``adapter_name_by_slot`` (physical model routing).
+    slot, so operation identity survives any parameterization.
 
     The batch's ``BatchExecutionLease`` is the single binding truth (§5.3):
     it ships plain-encoded, and the conversion derives ``adapter_slots`` by
@@ -71,11 +69,10 @@ def batch_plan_to_metadata(batch_plan: list[dict], lease=None) -> dict[str, Any]
         "registration_by_lane": {
             lane: (entry["name"], entry["registration_id"]) for lane, entry in enumerate(batch_plan)
         },
-        # Multi-LoRA compatibility helper only: slot -> serving name.
-        "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
+        # The lease is mandatory: a batch without its dispatch receipt is one
+        # the trainer must reject, so the optional path may not exist here.
+        "batch_execution_lease": lease_to_metadata(lease),
     }
-    if lease is not None:
-        metadata["batch_execution_lease"] = lease_to_metadata(lease)
     if kinds == {"forward"}:
         metadata["tinker_forward_only"] = True
     return metadata
@@ -440,7 +437,6 @@ class TinkerOperationBatchAdapter:
                     dict(
                         name=name,
                         registration_id=registration_id,
-                        bound_slot=binding.training_slot,
                         operation_id=output.metadata["operation_id"],
                         operation_kind=output.metadata["operation_kind"],
                         loss_spec=output.metadata.get("loss_spec"),

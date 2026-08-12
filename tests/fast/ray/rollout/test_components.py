@@ -1,7 +1,8 @@
 """Factory contract for the role-separated rollout construction
 (codex-rollout-fullparameter-design-0810 §4.3/§4.8/§8.2): the factory unpacks
 (rollout_manager, num_rollout_per_epoch), returns two DISTINCT role objects
-sharing one legacy handle, the bundle disposes exactly once, and
+sharing one legacy handle (num_rollout_per_epoch is dropped: the tinker
+driver has no epochs), the bundle disposes exactly once, and
 future-shaped fakes can replace the factory without changing driver call
 sites."""
 
@@ -47,7 +48,6 @@ def test_factory_builds_two_role_views_over_one_legacy_handle(monkeypatch):
     log: list = []
     components, manager = build(monkeypatch, log)
 
-    assert components.num_rollout_per_epoch == 7
     assert components.inference_controller is not components.rollout_executor
     # The raw combined actor is exposed ONLY as the factory's opaque
     # weight-update owner; the controller role never leaks it publicly.
@@ -104,7 +104,6 @@ def test_future_shaped_fakes_satisfy_the_bundle_without_the_factory():
         rollout_executor=FakeExecutor(),
         lifecycle=lifecycle,
         weight_update_owner=object(),
-        num_rollout_per_epoch=None,
     )
 
     async def one_cycle():

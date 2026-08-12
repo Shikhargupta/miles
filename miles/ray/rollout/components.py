@@ -106,7 +106,6 @@ class RolloutComponents:
     # passes it to create_training_models verbatim and never introspects it;
     # PR #1842's factory hands out its real controller-owned target here.
     weight_update_owner: object
-    num_rollout_per_epoch: int | None
 
     async def dispose(self) -> None:
         await self.lifecycle.dispose_once()
@@ -115,14 +114,14 @@ class RolloutComponents:
 def create_rollout_components(args, pg) -> RolloutComponents:
     """The one construction seam: today it builds one RolloutManager and two
     role views over it; after PR #1842 it builds the real controller/executor
-    pair — call sites never change."""
+    pair — call sites never change. The tinker driver has no epochs, so the
+    manager's num_rollout_per_epoch is deliberately not carried."""
     from miles.ray.placement_group import create_rollout_manager
 
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pg)
+    rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pg)
     return RolloutComponents(
         inference_controller=LegacyInferenceControllerAdapter(rollout_manager),
         rollout_executor=LegacyRolloutExecutorAdapter(rollout_manager),
         lifecycle=LegacyRolloutLifecycle(rollout_manager),
         weight_update_owner=rollout_manager,
-        num_rollout_per_epoch=num_rollout_per_epoch,
     )

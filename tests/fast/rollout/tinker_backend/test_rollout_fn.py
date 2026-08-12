@@ -237,7 +237,6 @@ class TestSelectionKindLock:
             "tinker_loss_by_lane": {0: {}},
             "operation_by_lane": {0: "op-A"},
             "registration_by_lane": {0: ("A", "r-A")},
-            "adapter_name_by_slot": {0: "A"},
             "batch_execution_lease": {
                 "dispatch_id": "lease-1",
                 "bindings_by_operation": [["op-A", ["A", "r-A", 0]]],
@@ -305,6 +304,5 @@ class TestSelectionKindLock:
         output = merge(fn, selected)
         assert output.conversion_metadata["tinker_operation_lanes"] == [0, 1]
         assert output.conversion_metadata["registration_by_lane"] == {0: ("A", "r-A"), 1: ("B", "r-B")}
-        assert output.conversion_metadata["adapter_name_by_slot"] == {7: "A", 2: "B"}
         lease = output.conversion_metadata["batch_execution_lease"]
         assert lease["bindings_by_operation"] == [["op-A", ["A", "r-A", 7]], ["op-B", ["B", "r-B", 2]]]
