@@ -67,6 +67,37 @@ def validate_multi_lora_args(args: Any) -> None:
         "complete adapter to push to the rollout engines, and a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
     )
+    # Activation recompute: a checkpointed region is only replayed grad-enabled
+    # when its INPUT requires grad. Multi-LoRA trains adapter-only (frozen base),
+    # so layer inputs carry no grad unless an earlier adapter OUTSIDE every
+    # checkpointed region put grad on the stream. Full-layer recompute
+    # checkpoints the whole layer — including every adapter — so no layer is
+    # ever replayed, every adapter gradient is identically zero, and training
+    # is a silent no-op under a truthful grad_norm=0.0 (reproduced: GPT-OSS 20B
+    # expert-only LoRA, TP=2+SP, 4xH200, 2026-08-12). Refuse at launch.
+    assert getattr(args, "recompute_granularity", None) != "full", (
+        "Multi-LoRA does not support --recompute-granularity full: the frozen base "
+        "makes every checkpointed layer input grad-free, Megatron never replays the "
+        "layers, and all adapter gradients are silently zero (grad_norm=0.0 on every "
+        "step while the job keeps 'training'). Use --recompute-granularity selective "
+        "instead (default recompute-modules core_attn; add moe_act for MoE activation "
+        "memory) — adapters stay outside those checkpointed submodules."
+    )
+    # Same mechanism, selective flavor: recomputing 'moe' checkpoints the expert
+    # GEMMs together with the expert adapters, so expert-only targeting reproduces
+    # the zero-grad no-op. moe_act (the activation function alone) is the
+    # supported way to claw back MoE activation memory.
+    if targets_expert_leaves(args.target_modules):
+        recompute_modules = list(getattr(args, "recompute_modules", None) or [])
+        assert "moe" not in recompute_modules, (
+            "Multi-LoRA with expert-module targets does not support 'moe' in "
+            "--recompute-modules: the checkpointed MoE region contains the expert "
+            "adapters themselves, so their gradients depend on an upstream, "
+            "non-checkpointed adapter forcing the layer stream to require grad — "
+            "with expert-only targets that never happens and every adapter gradient "
+            "is silently zero. Recompute the expert activation instead: "
+            "--recompute-modules core_attn moe_act."
+        )
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
     assert getattr(args, "qkv_format", "thd") == "thd", (
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "

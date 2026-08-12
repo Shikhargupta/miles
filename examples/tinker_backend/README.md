@@ -38,6 +38,18 @@ Key flags:
 | `--tinker-max-coalesce-wait-s` | how long one train call coalesces additional ready client batches |
 | `--tinker-max-empty-wait-s` | idle-queue yield back to the control phase (keep this small) |
 
+### Activation recompute (memory saving)
+
+Only `--recompute-granularity selective` is supported (default
+`--recompute-modules core_attn`; add `moe_act` to also recompute the MoE
+activation with grouped GEMM). `--recompute-granularity full` is refused at
+launch: multi-LoRA trains adapter-only, so every checkpointed layer input is
+grad-free, Megatron never replays the layers, and all adapter gradients are
+silently zero — the job steps forever at `grad_norm=0.0` without learning
+(4xH200 GPT-OSS 20B repro, 2026-08-12). `moe` in `--recompute-modules` is
+refused for the same reason when expert modules are targeted: that checkpoint
+region contains the expert adapters themselves.
+
 ## Operation contract
 
 `enqueue_operation(name, operation_id, ordinal, kind, payload)` — ordinals are
