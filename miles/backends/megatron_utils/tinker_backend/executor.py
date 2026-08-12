@@ -87,12 +87,23 @@ class MultiLoraParameterExecutor:
                         category="server",
                     )
         if adam_by_slot:
-            grad_norms, vetoed = step_adapter_slots(self.optimizer, self.model, adam_by_slot)
+            grad_norms, vetoed, norm_blind = step_adapter_slots(self.optimizer, self.model, adam_by_slot)
             for slot, operation_id in operation_by_slot.items():
                 if slot in vetoed:
                     outcomes[operation_id] = dict(
                         ok=False,
                         error="non-finite gradients; step vetoed and gradients cleared",
+                        category="server",
+                        gradient_window_consumed=True,
+                    )
+                elif slot in norm_blind:
+                    outcomes[operation_id] = dict(
+                        ok=False,
+                        error=(
+                            "gradient-norm collection is structurally empty while gradients exist "
+                            "(parameter-flagging bug in the parameterization); step refused and "
+                            "gradients cleared"
+                        ),
                         category="server",
                         gradient_window_consumed=True,
                     )

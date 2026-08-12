@@ -42,7 +42,7 @@ def step(op_id, lr=1e-4):
 class TestStepMany:
     def test_step_and_veto_both_report_the_window_consumed(self, monkeypatch):
         monkeypatch.setattr(
-            executor_module, "step_adapter_slots", lambda optimizer, model, adam: ({0: 1.5}, {1})
+            executor_module, "step_adapter_slots", lambda optimizer, model, adam: ({0: 1.5}, {1}, set())
         )
         executor = make_executor({**loaded("A", "r-A", 0), **loaded("B", "r-B", 1)})
         lease = lease_of(("op-A", binding("A", "r-A", 0)), ("op-B", binding("B", "r-B", 1)))
@@ -70,7 +70,7 @@ class TestStepMany:
         monkeypatch.setattr(
             executor_module,
             "step_adapter_slots",
-            lambda optimizer, model, adam: (stepped.append(dict(adam)) or ({s: 1.0 for s in adam}, set())),
+            lambda optimizer, model, adam: (stepped.append(dict(adam)) or ({s: 1.0 for s in adam}, set(), set())),
         )
         executor = make_executor()
         lease = lease_of(("op-1", binding("A", "r-A", 0)), ("op-2", binding("A", "r-A", 0)))

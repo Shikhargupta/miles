@@ -44,7 +44,7 @@ def harness(monkeypatch):
     def fake_step(optimizer, model, adam_params_by_slot):
         calls.step_args = adam_params_by_slot
         vetoed = {slot for slot, adam in adam_params_by_slot.items() if (adam or {}).get("veto")}
-        return {slot: 1.25 for slot in adam_params_by_slot if slot not in vetoed}, vetoed
+        return {slot: 1.25 for slot in adam_params_by_slot if slot not in vetoed}, vetoed, set()
 
     # The slot primitives now live behind the MultiLoraParameterExecutor.
     monkeypatch.setattr(executor_module, "step_adapter_slots", fake_step)
