@@ -68,13 +68,13 @@ class Stack:
         )
 
 
-def run(scenario):
+def run(scenario, poll_window_s=5.0, **backend_overrides):
     async def main():
         router = FakeRouter()
-        backend = make_backend()
+        backend = make_backend(**backend_overrides)
         await backend.init()
         driver = FakeDriver(backend)
-        frontend = TinkerFrontend(backend, poll_window_s=5.0, poll_interval_s=0.002)
+        frontend = TinkerFrontend(backend, poll_window_s=poll_window_s, poll_interval_s=0.002)
         stack = Stack(frontend, driver, router)
         frontend._post_generate = lambda payload: _respond(router, payload)  # engine boundary only
         driver_task = asyncio.create_task(driver.run(interval=0.002))
@@ -635,8 +635,151 @@ class TestLifecycle:
         run(scenario)
 
 
+async def until_terminal(stack, request_id):
+    while (body := await stack.retrieve(request_id)).get("type") == "try_again":
+        pass
+    return body
+
+
+class TestCapacityQueue:
+    def test_unbound_create_reports_paused_capacity_until_the_slot_frees(self):
+        # Fixed residency, SDK-visible: with one trainer slot, a second
+        # registration queues UNBOUND — its create future long-polls as
+        # 'paused_capacity' (never an early success), its operations enqueue
+        # into the ordered ledger but never execute, and only the incumbent's
+        # full retirement/cleanup binds the queued registration, resolves the
+        # create future, and drains the queued work.
+        async def scenario(stack):
+            model_a = await stack.create_model(model_seq_id=0)
+            future_b = await stack.frontend.create_model(
+                wire.CreateModelRequest(
+                    session_id=stack.session_id,
+                    model_seq_id=1,
+                    base_model=BASE,
+                    lora_config=wire.LoraConfig(rank=8),
+                )
+            )
+            model_b = f"{stack.session_id}:train:1"
+            paused = {"type": "try_again", "queue_state": "paused_capacity"}
+            assert await stack.retrieve(future_b["request_id"]) == paused
+
+            # The paused registration accepts operations, but nothing runs:
+            # the forward_backward future stays pending, and the create future
+            # still reports paused_capacity (no early create success).
+            fb_b = stack.frontend.forward_backward(stack.fb_request(model_b, 1))
+            assert (await stack.retrieve(fb_b["request_id"]))["type"] == "try_again"
+            assert await stack.retrieve(future_b["request_id"]) == paused
+
+            # A's retirement frees the slot: the driver binds and loads B, the
+            # create future resolves, and the queued forward_backward executes.
+            unload = await stack.frontend.unload_model(wire.UnloadModelRequest(model_id=model_a))
+            assert await until_terminal(stack, unload["request_id"]) == {
+                "type": "unload_model",
+                "model_id": model_a,
+            }
+            assert await until_terminal(stack, future_b["request_id"]) == {
+                "type": "create_model",
+                "model_id": model_b,
+            }
+            body = await until_terminal(stack, fb_b["request_id"])
+            (row,) = [output["logprobs"]["data"] for output in body["loss_fn_outputs"]]
+            assert row == [-0.5, -0.5, -0.5]  # executed at B's fresh step clock
+
+        run(scenario, poll_window_s=0.2, multi_lora_n_adapters=1)
+
+
 def test_seq_to_ordinal_documented_mapping():
     # The D5 mapping is 1:1 by design; keep it explicit and grep-able.
     from miles.ray.tinker_backend.frontend import service
 
     assert "ordinal = seq_id" in service.__doc__
+
+
+def test_frontend_reads_the_backend_facade_only():
+    """§4.2/§3.7 dependency rule (codex-rollout-fullparameter-design-0810):
+    the frontend consumes projections and verbs — a facade fake needs no
+    .registry, .operations, or .router_url fields. Enforced structurally:
+    the service source never dereferences backend internals."""
+    import inspect
+
+    from miles.ray.tinker_backend.frontend import service
+
+    source = inspect.getsource(service)
+    for internal in ("backend.registry", "backend.operations", "backend.router_url"):
+        assert internal not in source, f"frontend must not read {internal}"
+
+
+def test_injected_sampling_transport_receives_the_exact_router_payload():
+    """§4.6/§8.2: sampling stays frontend -> router through the injected
+    transport — /asample answers with a future immediately (the transport is
+    awaited by a background task), the payload matches the direct-router wire
+    shape exactly, and no rollout component is ever involved."""
+    import asyncio
+
+    from tests.fast.ray.tinker_backend.frontend.fake_stack import FakeDriver, FakeRouter, make_backend
+
+    from miles.ray.tinker_backend.frontend.service import TinkerFrontend
+
+    class FakeTransport:
+        def __init__(self, router):
+            self.router = router
+            self.payloads = []
+            self.release = asyncio.Event()
+
+        async def generate(self, payload):
+            self.payloads.append(payload)
+            await self.release.wait()
+            return self.router.response_for(payload)
+
+        async def close(self):
+            pass
+
+    async def main():
+        router = FakeRouter()
+        backend = make_backend()
+        await backend.init()
+        driver = FakeDriver(backend)
+        transport = FakeTransport(router)
+        frontend = TinkerFrontend(backend, poll_window_s=0.3, poll_interval_s=0.002, sampling_transport=transport)
+        stack = Stack(frontend, driver, router)
+        driver_task = asyncio.create_task(driver.run(interval=0.002))
+        try:
+            model_id = await stack.create_model()
+            publish = frontend.save_weights_for_sampler(
+                wire.SaveWeightsForSamplerRequest(model_id=model_id, seq_id=1, sampling_session_seq_id=0)
+            )
+            publish_body = await stack.retrieve(publish["request_id"])
+            sampler_id = publish_body["sampling_session_id"]
+
+            request = wire.SampleRequest.model_validate(
+                {
+                    "sampling_session_id": sampler_id,
+                    "seq_id": 0,
+                    "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2, 3]}]},
+                    "sampling_params": {"max_tokens": 4, "temperature": 0.0},
+                    "num_samples": 1,
+                }
+            )
+            future = frontend.sample(request)
+            assert future["request_id"]  # the future returns IMMEDIATELY
+            for _ in range(200):
+                if transport.payloads:
+                    break
+                await asyncio.sleep(0.002)
+            [payload] = transport.payloads
+            # The exact direct-router wire shape: tokenized prompt, sglang
+            # params, logprobs on, registration-scoped rid + cache key.
+            assert payload["input_ids"] == [1, 2, 3]
+            assert payload["return_logprob"] is True
+            assert payload["sampling_params"]["max_new_tokens"] == 4
+            assert payload["lora_path"].startswith("__miles_adapter_")
+            assert payload["rid"].count("::") == 2
+            transport.release.set()
+            body = await stack.retrieve(future["request_id"])
+            assert body["sequences"]
+        finally:
+            driver_task.cancel()
+            await frontend.close()
+            await backend.close()
+
+    asyncio.run(main())

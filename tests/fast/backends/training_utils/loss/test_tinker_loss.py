@@ -1,6 +1,7 @@
-"""Tinker per-slot loss dispatch: linear CE / importance sampling / PPO,
-sum-reduction (chunk-additive), per-sample slot routing, channel validation,
-and homogeneous forward-only collection."""
+"""Tinker per-operation-lane loss dispatch: linear CE / importance sampling /
+PPO, sum-reduction (chunk-additive), per-sample lane correlation, channel
+validation, and homogeneous forward-only collection. The physical
+``adapter_slots`` never appear here: they route the Multi-LoRA forward only."""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -34,8 +35,8 @@ def make_batch(seed=7, prompt_lens=(4, 6), response_lens=(3, 5)):
         response_lengths=list(response_lens),
         loss_masks=[torch.ones(rl, dtype=torch.int32) for rl in response_lens],
         rollout_log_probs=inputs["rollout_log_probs"],
-        adapter_slots=[0] * len(prompt_lens),
-        tinker_loss_by_slot={0: {"loss_fn": "cross_entropy"}},
+        tinker_operation_lanes=[0] * len(prompt_lens),
+        tinker_loss_by_lane={0: {"loss_fn": "cross_entropy"}},
     )
     return args, batch, inputs["policy_logits"].requires_grad_(True)
 
@@ -84,7 +85,7 @@ def test_importance_sampling_and_ppo_clip():
     args, batch, logits = make_batch()
     advantages = [torch.tensor([1.0, -1.0, 2.0]), torch.tensor([0.5, 0.5, -0.5, 1.0, 0.0])]
     batch["advantages"] = advantages
-    batch["tinker_loss_by_slot"] = {0: {"loss_fn": "importance_sampling"}}
+    batch["tinker_loss_by_lane"] = {0: {"loss_fn": "importance_sampling"}}
 
     loss, _ = run(args, batch, logits)
     lp = reference_log_probs(args, batch, logits)
@@ -92,7 +93,7 @@ def test_importance_sampling_and_ppo_clip():
     expected = sum(-(r * a).sum() for r, a in zip(ratios, advantages, strict=True))
     assert torch.allclose(loss, expected)
 
-    batch["tinker_loss_by_slot"] = {
+    batch["tinker_loss_by_lane"] = {
         0: {"loss_fn": "ppo", "loss_fn_config": {"clip_low_threshold": 0.9, "clip_high_threshold": 1.1}}
     }
     loss_ppo, _ = run(args, batch, logits)
@@ -104,12 +105,12 @@ def test_importance_sampling_and_ppo_clip():
     assert not torch.allclose(loss_ppo, loss)
 
 
-def test_mixed_slots_dispatch_independently():
+def test_mixed_lanes_dispatch_independently():
     args, batch, logits = make_batch()
-    batch["adapter_slots"] = [0, 1]
+    batch["tinker_operation_lanes"] = [0, 1]
     batch["loss_weights"] = [torch.ones(3), torch.zeros(5)]
     batch["advantages"] = [torch.zeros(3), torch.ones(5)]
-    batch["tinker_loss_by_slot"] = {
+    batch["tinker_loss_by_lane"] = {
         0: {"loss_fn": "cross_entropy"},
         1: {"loss_fn": "importance_sampling"},
     }
@@ -139,8 +140,8 @@ def test_sum_reduction_is_chunk_additive():
             response_lengths=[batch["response_lengths"][i]],
             loss_masks=[batch["loss_masks"][i]],
             loss_weights=[batch["loss_weights"][i]],
-            adapter_slots=[0],
-            tinker_loss_by_slot=batch["tinker_loss_by_slot"],
+            tinker_operation_lanes=[0],
+            tinker_loss_by_lane=batch["tinker_loss_by_lane"],
         )
         sub_loss, _ = run(args, sub, sub_logits)
         total += sub_loss
@@ -164,12 +165,12 @@ def test_missing_channel_missing_spec_and_unknown_loss_fail_loudly():
         run(args, batch, logits)
 
     batch["loss_weights"] = [torch.ones(3), torch.ones(5)]
-    batch["adapter_slots"] = [0, 3]
-    with pytest.raises(ValueError, match="no loss spec for slot 3"):
+    batch["tinker_operation_lanes"] = [0, 3]
+    with pytest.raises(ValueError, match="no loss spec for lane 3"):
         run(args, batch, logits)
 
-    batch["adapter_slots"] = [0, 0]
-    batch["tinker_loss_by_slot"] = {0: {"loss_fn": "dro"}}
+    batch["tinker_operation_lanes"] = [0, 0]
+    batch["tinker_loss_by_lane"] = {0: {"loss_fn": "dro"}}
     with pytest.raises(ValueError, match="unknown loss_fn 'dro'"):
         run(args, batch, logits)
 
@@ -193,8 +194,8 @@ def test_forward_only_batch_collects_logprobs_without_client_loss_terms():
     # rows; it needs no channels, fills the collector, and its dummy loss is
     # never backwarded (the executor runs forward_only=True).
     args, batch, logits = make_batch()
-    batch["adapter_slots"] = [0, 1]
-    batch["tinker_loss_by_slot"] = {}
+    batch["tinker_operation_lanes"] = [0, 1]
+    batch["tinker_loss_by_lane"] = {}
     batch["tinker_forward_only"] = True
     batch["sample_indices"] = [0, 0]
     collector: dict = {}

@@ -16,7 +16,8 @@ from pathlib import Path
 
 import ray
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.placement_group import create_placement_groups, create_training_models
+from miles.ray.rollout.components import create_rollout_components
 from miles.ray.tinker_backend.config import parse_adapter_run_yaml
 from miles.ray.tinker_backend.controller import create_tinker_controller
 from miles.utils import object_store
@@ -37,29 +38,67 @@ def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
     return isinstance(task_error.as_instanceof_cause(), EmptyBatchTimeoutError)
 
 
-async def run_control_phase(actor_model, controller) -> None:
-    """Claim → execute → complete, with the publish barrier in the middle."""
-    operations = await controller.claim_ready_control_operations.remote()
-    deferred: list[str] = []
-    if operations:
-        results = await actor_model.execute_tinker_controls(operations)
-        deferred = [op_id for op_id, outcome in results.items() if outcome.get("deferred") == "publish"]
-        immediate = {op_id: outcome for op_id, outcome in results.items() if op_id not in deferred}
-        if immediate:
-            await controller.complete_control_operations.remote(immediate)
+class ActorGroupWeightPublisher:
+    """Physical publish-barrier seam (codex-rollout-fullparameter-design-0810
+    §4.7): one parameterless call that lands whatever the training actors
+    staged. It carries no tinker operation IDs, no lease, and no second
+    binding list — the actor keeps sole authority over pending-push
+    coalescing, the has_new_engines trigger, and the resident push-set
+    selection. PR #1842 integration swaps only what sits behind this call."""
 
-    # Push staged weights (publishes and load_state re-publishes); a no-op
-    # when nothing is staged. Serving versions bump as the push commits.
-    await actor_model.update_weights()
+    def __init__(self, actor_model) -> None:
+        self._actor_model = actor_model
 
-    if deferred:
-        # The barrier held: these weights are now live, so the operations may
-        # complete with their original execution results (a deferred load_state
-        # carries its restored step; the backend stamps a publish's
-        # authoritative serving identity).
-        await controller.complete_control_operations.remote(
-            {op_id: {key: value for key, value in results[op_id].items() if key != "deferred"} for op_id in deferred}
-        )
+    async def publish_staged_weights(self) -> None:
+        await self._actor_model.update_weights()
+
+
+async def run_control_phase(actor_model, controller, weight_publisher) -> None:
+    """Claim → execute → complete, with the publish barrier in the middle.
+
+    The claim carries one BatchExecutionLease for the whole control batch
+    (the single binding truth the trainer validates before mutating). Its
+    lifecycle follows the operations' completion boundary: an immediate-only
+    batch releases after its completions land; a batch with deferred
+    publish/load operations holds the lease through the physical publish
+    barrier and releases only after their terminal completion. Failure paths
+    release in ``finally`` — a no-op under fixed residency, so nothing can
+    leak either way."""
+    claimed = await controller.claim_ready_control_operations.remote()
+    operations, lease = claimed["operations"], claimed["lease"]
+    released = lease is None
+    try:
+        deferred: list[str] = []
+        if operations:
+            results = await actor_model.execute_tinker_controls(operations, lease)
+            deferred = [op_id for op_id, outcome in results.items() if outcome.get("deferred") == "publish"]
+            immediate = {op_id: outcome for op_id, outcome in results.items() if op_id not in deferred}
+            if immediate:
+                await controller.complete_control_operations.remote(immediate)
+            if not deferred and not released:
+                released = True
+                await controller.release_batch_lease.remote(lease)
+
+        # Push staged weights (publishes and load_state re-publishes); a no-op
+        # when nothing is staged. Serving versions bump as the push commits.
+        await weight_publisher.publish_staged_weights()
+
+        if deferred:
+            # The barrier held: these weights are now live, so the operations may
+            # complete with their original execution results (a deferred load_state
+            # carries its restored step; the backend stamps a publish's
+            # authoritative serving identity).
+            await controller.complete_control_operations.remote(
+                {
+                    op_id: {key: value for key, value in results[op_id].items() if key != "deferred"}
+                    for op_id in deferred
+                }
+            )
+            released = True
+            await controller.release_batch_lease.remote(lease)
+    finally:
+        if not released:
+            await controller.release_batch_lease.remote(lease)
 
 
 async def main(args):
@@ -71,17 +110,25 @@ async def main(args):
     pgs = create_placement_groups(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
-    rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    # Role-separated views over the (currently combined) rollout plane: the
+    # inference controller owns the router/engines, the rollout executor runs
+    # operation batches. PR #1842 swaps only the factory's construction.
+    rollout_components = create_rollout_components(args, pgs["rollout"])
+    inference_controller = rollout_components.inference_controller
+    rollout_executor = rollout_components.rollout_executor
 
-    router_ip, router_port = await rollout_manager.get_router_address.remote()
-    args.sglang_router_ip, args.sglang_router_port = router_ip, router_port
-    controller = create_tinker_controller(args, f"http://{router_ip}:{router_port}")
+    inference_endpoint = await inference_controller.get_inference_endpoint()
+    args.sglang_router_ip, args.sglang_router_port = inference_endpoint.host, inference_endpoint.port
+    controller = create_tinker_controller(args, inference_endpoint.base_url)
     await controller.start.remote()
     host = await controller.http_host.remote()
     api_port = await controller.api_port.remote()
     logger.info(f"Tinker control API listening on http://{host}:{api_port} (head node)")
 
-    actor_model, _ = await create_training_models(args, pgs, rollout_manager)
+    # Engine/weight-update plumbing still wires the combined manager handle
+    # into the training actors; the inference-owner role holds it.
+    actor_model, _ = await create_training_models(args, pgs, inference_controller.manager)
+    weight_publisher = ActorGroupWeightPublisher(actor_model)
 
     # CLI-registered adapters; loaded and marked READY by the first reconcile.
     for name, path in args.multi_lora_adapters:
@@ -111,14 +158,14 @@ async def main(args):
         # load bound registrations and open their READY gates.
         await actor_model.reconcile_tinker_adapters()
 
-        await run_control_phase(actor_model, controller)
+        await run_control_phase(actor_model, controller, weight_publisher)
 
         post_control = await controller.snapshot.remote()
         if not post_control["ready"]:
             continue
 
         try:
-            rollout_data = await rollout_manager.generate.remote(rollout_id)
+            rollout_data = await rollout_executor.generate(rollout_id)
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
                 # The data queue is idle; loop back to the control phase so
@@ -129,7 +176,7 @@ async def main(args):
         remove_rollout_data_refs(args, rollout_data)
         rollout_id += 1
 
-    await rollout_manager.dispose.remote()
+    await rollout_components.dispose()
     await controller.stop.remote()
 
 

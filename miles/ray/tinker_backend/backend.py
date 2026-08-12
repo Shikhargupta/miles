@@ -3,7 +3,6 @@ aborts, shared by the controller Ray actor and the HTTP server. Every client
 input is validated here, at the boundary — an unsupported loss, shape, or
 payload must never reach the shared GPU driver."""
 
-import asyncio
 import logging
 import math
 import re
@@ -11,13 +10,18 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from miles.ray.tinker_backend.config import AdapterRunConfig
+from miles.ray.tinker_backend.gradient_windows import GradientWindowTracker
+from miles.ray.tinker_backend.inference_admin import RouterInferenceAdmin
 from miles.ray.tinker_backend.operations import OperationLedger
 from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
-from miles.utils.http_utils import router_worker_base_urls
-from miles.utils.tinker_backend import rid_prefix, serving_lora_name
+from miles.ray.tinker_backend.residency import (
+    FixedSlotResidency,
+    ResidentBinding,
+    lease_from_metadata,
+    lease_to_metadata,
+)
+from miles.utils.tinker_backend import BatchExecutionLease, rid_prefix, serving_lora_name
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +46,16 @@ class TinkerBackend:
         self.args = args
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
         self.operations = OperationLedger()
+        # Registration-keyed step/dirty authority (parameterization-neutral);
+        # the registry only mirrors its transitions into lifecycle pins.
+        self.gradient_windows = GradientWindowTracker()
+        # Narrow trainer-residency facade: claims and batch dispatch see
+        # opaque bindings/receipts, never SlotPool internals.
+        self.residency = FixedSlotResidency(self.registry)
         self.router_url = router_url.rstrip("/")
-        self.client: httpx.AsyncClient | None = None
+        # Engine admin behind a narrow port: today straight off the router; a
+        # post-split adapter delegates to the InferenceController.
+        self.inference_admin = RouterInferenceAdmin(self.router_url)
         # Readiness (distinct from liveness): the driver flips it once the
         # training actors exist, so probes never report ok on a dead trainer.
         self.trainer_ready = False
@@ -52,12 +64,10 @@ class TinkerBackend:
         self.trainer_ready = True
 
     async def init(self) -> None:
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        await self.inference_admin.init()
 
     async def close(self) -> None:
-        if self.client is not None:
-            await self.client.aclose()
-            self.client = None
+        await self.inference_admin.close()
 
     # ---------------- registration ----------------
 
@@ -90,6 +100,7 @@ class TinkerBackend:
         config = self.resolve_adapter_config(name, config)
         await self.validate_adapter(name, config)
         result = self.registry.register(name, config)
+        self.gradient_windows.open(self.registry.records[name].tenant)
         logger.info(f"[tinker] adapter '{name}' registered (slot {result['slot']})")
         return result
 
@@ -117,7 +128,27 @@ class TinkerBackend:
         record = self.registry.records.get(name)
         if record is not None and record.state is AdapterState.CLEANUP:
             await self.abort_adapter_requests(name, record.registration_id)
-        return self.registry.free_slot(name)
+        slot = self.registry.free_slot(name)
+        if record is not None and slot != -1:
+            # The stream stayed queryable through RETIRING/CLEANUP (the final
+            # state save reads its step); it dies with the registration.
+            self.gradient_windows.close(record.tenant)
+        return slot
+
+    # ---------------- training-stream clocks ----------------
+
+    def set_adapter_step(self, name: str, step: int) -> None:
+        """Reposition the CURRENT registration's stream (sidecar resume /
+        load_state): tracker first (authority), registry mirror second."""
+        record = self.registry.find(name)
+        if record is None:
+            return
+        self.gradient_windows.restore_step(record.tenant, step)
+        self.registry.set_step(name, step)
+
+    def adapter_step(self, name: str) -> int:
+        record = self.registry.find(name)
+        return self.gradient_windows.step_of(record.tenant) if record is not None else 0
 
     # ---------------- operation preflight (compatibility matrix) ----------------
 
@@ -260,6 +291,34 @@ class TinkerBackend:
         if (value := adam.get("eps")) is not None and value <= 0:
             raise ValueError("adam_params.eps must be > 0")
 
+    # ---------------- data-operation claims ----------------
+
+    def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
+        """Claim-and-bind in ONE controller call (all-or-nothing): resolve the
+        exact READY binding FIRST; only a successful lookup lets the ledger
+        turn the head CLAIMED, and the claim carries the binding. A missing
+        binding leaves the head QUEUED — no rollback branch exists
+        (codex-rollout-fullparameter-design-0810 §3.6)."""
+        binding = self.residency.binding_for((name, registration_id))
+        if binding is None:
+            return None
+        operation = self.operations.claim_data_operation(name, registration_id)
+        if operation is None:
+            return None
+        operation["binding"] = binding
+        return operation
+
+    def acquire_batch_lease(self, bindings_by_operation: list) -> BatchExecutionLease[ResidentBinding]:
+        """Selection finished: snapshot the selected claims' bindings into one
+        immutable dispatch receipt (re-validating exact slot ownership)."""
+        return self.residency.acquire_batch(
+            tuple((operation_id, binding) for operation_id, binding in bindings_by_operation)
+        )
+
+    def release_batch_lease(self, lease_metadata: dict) -> None:
+        """Completion-boundary lifecycle hook; no-op under fixed residency."""
+        self.residency.release_batch(lease_from_metadata(lease_metadata))
+
     # ---------------- control-operation claims ----------------
 
     EXECUTABLE_CONTROL_KINDS = ("optim_step", "save_weights_for_sampler", "save_state", "load_state")
@@ -267,19 +326,22 @@ class TinkerBackend:
     # checkpoint carries grads): the client must step or deregister first.
     DIRTY_GATED_KINDS = ("save_state", "load_state")
 
-    def claim_ready_control_operations(self) -> list[dict]:
+    def claim_ready_control_operations(self) -> dict:
         """Claim every registration whose next open operation is an executable
-        control kind on a slot-resident READY adapter. The claimed view
-        carries the registry's authoritative clocks."""
-        ready = []
+        control kind, gated by the residency facade (exact READY binding —
+        claim-and-bind, same as the data path). The claimed views carry the
+        registry's authoritative clocks but never a slot: one
+        ``BatchExecutionLease`` for the whole control batch is the single
+        binding truth, returned alongside as
+        ``{"operations": [...], "lease": <encoded> | None}``."""
+        ready: list[dict] = []
+        bindings: list[tuple[str, ResidentBinding]] = []
         for name, registration_id in self.operations.claimable_control_tenants():
             record = self.registry.find(name)
-            if (
-                record is None
-                or record.registration_id != registration_id
-                or record.state is not AdapterState.READY
-                or record.slot is None
-            ):
+            if record is None or record.registration_id != registration_id:
+                continue
+            binding = self.residency.binding_for((name, registration_id))
+            if binding is None:
                 continue
             operation = self.operations.claim_control_operation(
                 name, registration_id, kinds=self.EXECUTABLE_CONTROL_KINDS
@@ -297,7 +359,7 @@ class TinkerBackend:
                         f"a forward_backward in this gradient window failed ({blocker}); the window's "
                         "accumulated gradients were discarded — resubmit the batch and optim_step again"
                     )
-            if operation["kind"] in self.DIRTY_GATED_KINDS and self.registry.is_dirty(name):
+            if operation["kind"] in self.DIRTY_GATED_KINDS and self.gradient_windows.is_dirty(record.tenant):
                 self.operations.fail(
                     operation["operation_id"],
                     f"adapter '{name}' holds unstepped gradients; optim_step (or deregister) before "
@@ -305,11 +367,14 @@ class TinkerBackend:
                     "user",
                 )
                 continue
-            operation["slot"] = record.slot
-            operation["step"] = record.step
+            operation["step"] = self.gradient_windows.step_of(record.tenant)
             operation["serving_version"] = record.serving_version
             ready.append(operation)
-        return ready
+            bindings.append((operation["operation_id"], binding))
+        if not ready:
+            return {"operations": [], "lease": None}
+        lease = self.residency.acquire_batch(tuple(bindings))
+        return {"operations": ready, "lease": lease_to_metadata(lease)}
 
     def complete_control_operations(self, results: dict[str, dict]) -> None:
         """Book the trainer's control-phase outcomes: an optim_step success
@@ -332,25 +397,46 @@ class TinkerBackend:
                         "serving_name": serving_lora_name(operation["name"], operation["registration_id"]),
                     }
                 self.operations.complete(operation_id, result)
+                key = (operation["name"], operation["registration_id"])
                 if operation["kind"] == "optim_step":
-                    self.registry.commit_tinker_step(operation["name"])
+                    step = self.gradient_windows.commit_step(key)
+                    # Registry hook: mirror the clock, release the dirty pin,
+                    # apply the num_step auto-retire bound.
+                    self.registry.on_step_committed(operation["name"], operation["registration_id"], step)
                 elif operation["kind"] == "load_state":
-                    self.registry.set_step(operation["name"], int((outcome.get("result") or {}).get("step", 0)))
+                    step = int((outcome.get("result") or {}).get("step", 0))
+                    self.gradient_windows.restore_step(key, step)
+                    self.registry.set_step(operation["name"], step)
             else:
                 self.operations.fail(
                     operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server")
                 )
                 if operation["kind"] == "optim_step":
+                    # Executed without committing (veto / poison discard):
+                    # every rank cleared the window's gradients.
+                    self.gradient_windows.clear_after_executed_optim((operation["name"], operation["registration_id"]))
                     self.registry.clear_dirty(operation["name"])
 
     def commit_tinker_batch(
-        self, accumulated: list[str], operation_ids: list[str], logprobs_by_op: dict[str, list] | None = None
+        self,
+        accumulated: list[tuple[str, str]],
+        operation_ids: list[str],
+        logprobs_by_op: dict[str, list] | None = None,
     ) -> None:
-        """A data selection landed: forward_backward adapters now hold
-        unstepped gradients (pin them); every listed operation completes with
-        its per-datum target logprobs in the operation's row order, plus
-        backend-computed metrics in the SDK combiner's name:reduction format."""
-        self.registry.mark_accumulated(accumulated)
+        """A data selection landed: forward_backward registrations now hold
+        unstepped gradients — ``accumulated`` carries their EXACT registration
+        keys from the BatchPlan, and a key whose registration is gone (or was
+        re-registered) is skipped, never inherited by a successor. Every
+        listed operation completes with its per-datum target logprobs in the
+        operation's row order, plus backend-computed metrics in the SDK
+        combiner's name:reduction format."""
+        for name, registration_id in accumulated:
+            record = self.registry.find(name)
+            if record is None or record.registration_id != registration_id:
+                continue
+            self.gradient_windows.mark_forward_backward_succeeded(record.tenant)
+            # Multi-LoRA mirror: pin the accumulating slot's state immovable.
+            self.registry.mark_accumulated([name])
         logprobs_by_op = logprobs_by_op or {}
         for operation_id in operation_ids:
             operation = self.operations.get(operation_id)
@@ -363,34 +449,43 @@ class TinkerBackend:
 
     # ---------------- engine-facing ----------------
 
-    async def worker_urls(self) -> list[str]:
-        assert self.client is not None
-        for endpoint, extract in (
-            ("/list_workers", lambda body: body["urls"]),
-            ("/workers", lambda body: [worker["url"] for worker in body["workers"]]),
-        ):
-            try:
-                resp = await self.client.get(f"{self.router_url}{endpoint}")
-                if resp.status_code == 200:
-                    return router_worker_base_urls(extract(resp.json()))
-            except Exception:
-                continue
-        return []
-
     async def abort_adapter_requests(self, adapter_name: str, registration_id: str) -> None:
         # Registration-scoped: a retiring tenant's abort must never match a
         # same-name successor's in-flight requests (rid carries the registration).
-        prefix = rid_prefix(adapter_name, registration_id)
-        urls = await self.worker_urls()
-        if not urls:
-            logger.warning(f"[tinker] abort for '{adapter_name}': no workers discovered at {self.router_url}")
-            return
-        results = await asyncio.gather(
-            *(self.client.post(f"{url}/abort_request", json={"rid": prefix, "prefix": True}) for url in urls),
-            return_exceptions=True,
+        await self.inference_admin.abort_registration(rid_prefix(adapter_name, registration_id))
+
+    # ---------------- frontend facade ----------------
+    # The HTTP frontend sees projections and verbs only — never the registry,
+    # the ledger, or the router URL (codex-rollout-fullparameter-design-0810
+    # §4.2; §3.7 dependency rule: frontend -> backend facade + sampling
+    # transport). A future lifecycle strategy replaces what sits behind these
+    # without forking the frontend.
+
+    def registration_view(self, name: str) -> dict | None:
+        """Projection of the name's CURRENT registration: identity, lifecycle
+        state, resolved rank, bound-ness, and serving version."""
+        record = self.registry.find(name)
+        if record is None:
+            return None
+        return dict(
+            name=record.name,
+            registration_id=record.registration_id,
+            state=record.state.value,
+            rank=getattr(record.config, "rank", None),
+            bound=record.slot is not None,
+            serving_version=record.serving_version,
         )
-        if failures := sum(isinstance(r, Exception) for r in results):
-            logger.warning(f"[tinker] abort for '{adapter_name}': {failures}/{len(results)} posts failed")
+
+    def operation_view(self, operation_id: str) -> dict | None:
+        return self.operations.get(operation_id)
+
+    def ack_operation(self, operation_id: str) -> None:
+        self.operations.ack(operation_id)
+
+    def sampling_endpoint(self) -> str:
+        """Base URL sampling requests go to: the SGLang router today, the
+        InferenceController-provided endpoint after PR #1842."""
+        return self.router_url
 
     # ---------------- info ----------------
 

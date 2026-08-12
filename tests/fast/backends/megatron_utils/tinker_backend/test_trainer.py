@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import miles.backends.megatron_utils.tinker_backend.executor as executor_module
 import miles.backends.megatron_utils.tinker_backend.trainer as trainer
 from miles.ray.tinker_backend.config import AdapterRun, AdapterRunConfig
 
@@ -21,20 +22,23 @@ def make_run(name="X", slot=0, step=3, save="/tmp/tinker-trainer-test"):
 
 
 def control_op(kind, name="X", slot=0, op_id="op1", payload=None, step=3, serving_version=1):
+    """Claimed control view: carries clocks, never a slot — the ``slot`` here
+    only feeds the harness's lease builder (the single binding truth)."""
     return dict(
         operation_id=op_id,
         name=name,
-        slot=slot,
         kind=kind,
         payload=payload,
         step=step,
         serving_version=serving_version,
+        _lease_slot=slot,
     )
 
 
 @pytest.fixture()
 def harness(monkeypatch):
-    """execute_controls with the collective pieces faked out."""
+    """execute_controls with the collective pieces faked out; the lease is
+    built from each op's declared slot exactly as the controller would."""
     calls = SimpleNamespace(step_args=None, saved=[], loaded=[], backups=0)
 
     def fake_step(optimizer, model, adam_params_by_slot):
@@ -42,16 +46,23 @@ def harness(monkeypatch):
         vetoed = {slot for slot, adam in adam_params_by_slot.items() if (adam or {}).get("veto")}
         return {slot: 1.25 for slot in adam_params_by_slot if slot not in vetoed}, vetoed
 
-    monkeypatch.setattr(trainer, "step_adapter_slots", fake_step)
+    # The slot primitives now live behind the MultiLoraParameterExecutor.
+    monkeypatch.setattr(executor_module, "step_adapter_slots", fake_step)
     monkeypatch.setattr(trainer, "save_slot_state", lambda *a, **k: calls.saved.append(k) or Path("/saved"))
     monkeypatch.setattr(trainer, "load_slot_state", lambda *a, base=None, **k: 42 if "good" in str(base) else None)
 
-    loaded = {"X": make_run()}
+    loaded = {"X": make_run(), "Y": make_run("Y", slot=1)}
     pending: set = set()
     backuper = SimpleNamespace(backup=lambda tag: setattr(calls, "backups", calls.backups + 1))
 
     def run(operations):
-        return trainer.execute_controls(SimpleNamespace(), None, None, loaded, pending, backuper, operations)
+        lease = {
+            "dispatch_id": "lease-t",
+            "bindings_by_operation": [
+                [op["operation_id"], [op["name"], "reg1", op.pop("_lease_slot", 0)]] for op in operations
+            ],
+        }
+        return trainer.execute_controls(SimpleNamespace(), None, None, loaded, pending, backuper, operations, lease)
 
     return SimpleNamespace(run=run, calls=calls, loaded=loaded, pending=pending)
 
@@ -59,21 +70,26 @@ def harness(monkeypatch):
 class TestExecuteControls:
     def test_optim_steps_apply_per_call_adam_and_report_norms(self, harness):
         results = harness.run([control_op("optim_step", payload={"adam_params": {"learning_rate": 3e-4}})])
-        assert harness.calls.step_args == {0: {"learning_rate": 3e-4}}
+        # The coordinator resolves the SDK defaults into the request.
+        assert harness.calls.step_args[0]["learning_rate"] == 3e-4
+        assert harness.calls.step_args[0]["beta1"] == 0.9
         assert results["op1"] == dict(ok=True, result=dict(grad_norm=1.25, learning_rate=3e-4))
 
     def test_poisoned_optim_discards_the_window_and_never_steps(self, harness, monkeypatch):
         zeroed = []
-        monkeypatch.setattr(trainer, "zero_adapter_slot_grads", lambda model, slot: zeroed.append(slot))
+        monkeypatch.setattr(executor_module, "zero_adapter_slot_grads", lambda model, slot: zeroed.append(slot))
         poison = "a forward_backward in this gradient window failed; the window's gradients were discarded"
         results = harness.run(
             [
                 {**control_op("optim_step", op_id="bad", payload={"adam_params": {}}), "poison": poison},
-                control_op("optim_step", op_id="good", slot=1, payload={"adam_params": {"learning_rate": 2e-4}}),
+                control_op(
+                    "optim_step", name="Y", op_id="good", slot=1, payload={"adam_params": {"learning_rate": 2e-4}}
+                ),
             ]
         )
         assert zeroed == [0]  # the poisoned slot's partial gradients are discarded on this rank
-        assert harness.calls.step_args == {1: {"learning_rate": 2e-4}}  # only the clean slot stepped
+        assert set(harness.calls.step_args) == {1}  # only the clean slot stepped
+        assert harness.calls.step_args[1]["learning_rate"] == 2e-4
         assert results["bad"] == dict(ok=False, error=poison, category="user")
         assert results["good"]["ok"] is True
 
@@ -90,6 +106,28 @@ class TestExecuteControls:
     def test_non_resident_adapter_is_a_server_error(self, harness):
         results = harness.run([control_op("save_state", name="ghost", slot=2)])
         assert results["op1"]["ok"] is False and "not resident" in results["op1"]["error"]
+
+    def test_lease_binding_must_match_the_loaded_registration_and_slot(self, harness):
+        # Same name, wrong slot in the lease: refused before any mutation.
+        wrong_slot = harness.run([control_op("optim_step", slot=1)])
+        assert wrong_slot["op1"]["ok"] is False and "not resident" in wrong_slot["op1"]["error"]
+        assert harness.calls.step_args is None  # nothing stepped
+
+    def test_operation_missing_from_the_lease_is_refused(self, harness):
+        op = control_op("optim_step")
+        op.pop("_lease_slot")
+        lease = {"dispatch_id": "lease-t", "bindings_by_operation": []}
+        results = trainer.execute_controls(
+            SimpleNamespace(),
+            None,
+            None,
+            harness.loaded,
+            harness.pending,
+            SimpleNamespace(backup=lambda t: None),
+            [op],
+            lease,
+        )
+        assert results["op1"]["ok"] is False and "no binding in the batch lease" in results["op1"]["error"]
 
     def test_save_state_validates_tag_and_immutability(self, harness, tmp_path, monkeypatch):
         results = harness.run([control_op("save_state", payload={"tag": "../evil"})])
@@ -169,8 +207,8 @@ class TestGatherAndCommit:
     def test_gather_groups_rows_per_operation_in_order(self):
         rollout_data = {
             # (0, -1) is a zero-weight DP pad: filtered from the result plane.
-            "tinker_logprob_collector": {(0, 1): [-2.0], (0, 0): [-1.0], (3, 0): [-9.0], (0, -1): [-7.0]},
-            "operation_by_slot": {0: "fb1", 3: "fb2", 5: None},
+            "tinker_logprob_collector": {(0, 1): [-2.0], (0, 0): [-1.0], (1, 0): [-9.0], (0, -1): [-7.0]},
+            "operation_by_lane": {0: "fb1", 1: "fb2", 2: None},
         }
         assert trainer._gather_logprobs(rollout_data) == {"fb1": [[-1.0], [-2.0]], "fb2": [[-9.0]]}
 
@@ -192,12 +230,13 @@ class TestGatherAndCommit:
         )
 
         rollout_data = {
-            "adapter_name_by_slot": {0: "A", 3: "B"},
-            "operation_by_slot": {0: "fb1", 3: None},
+            "registration_by_lane": {0: ("A", "r-A"), 1: ("B", "r-B")},
+            "operation_by_lane": {0: "fb1", 1: None},
             "tinker_logprob_collector": {(0, 0): [-1.0]},
         }
         trainer.commit_batch(rollout_data, pending_push=set())
-        assert committed["accumulated"] == ["A", "B"]
+        # Exact registration keys, never a bare name list.
+        assert committed["accumulated"] == [("A", "r-A"), ("B", "r-B")]
         assert committed["operation_ids"] == ["fb1"]
         assert committed["logprobs_by_op"] == {"fb1": [[-1.0]]}
 

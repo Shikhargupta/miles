@@ -31,10 +31,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-import httpx
 
 from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.frontend import translation, wire
+from miles.ray.tinker_backend.frontend.sampling import SamplingTransport, SGLangRouterSamplingTransport
 from miles.ray.tinker_backend.frontend.state import (
     CheckpointCatalog,
     CheckpointRecord,
@@ -50,7 +50,6 @@ from miles.ray.tinker_backend.frontend.state import (
     fingerprint_of,
 )
 from miles.ray.tinker_backend.frontend.translation import UserInputError
-from miles.ray.tinker_backend.registry import AdapterState
 from miles.utils.tinker_backend import cache_extra_key, make_rid, serving_lora_name
 
 logger = logging.getLogger(__name__)
@@ -76,24 +75,34 @@ class TinkerFrontend:
     """One instance per controller; single event loop, no cross-await state
     mutation inside a submit or resolve step."""
 
-    def __init__(self, backend: Any, poll_window_s: float = 15.0, poll_interval_s: float = 0.1) -> None:
+    def __init__(
+        self,
+        backend: Any,
+        poll_window_s: float = 15.0,
+        poll_interval_s: float = 0.1,
+        sampling_transport: SamplingTransport | None = None,
+    ) -> None:
         self.backend = backend
         self.poll_window_s = poll_window_s
         self.poll_interval_s = poll_interval_s
+        # Injected sampling hop (frontend -> router); the default preserves
+        # the direct-router transport this frontend always used.
+        self.sampling_transport = (
+            sampling_transport
+            if sampling_transport is not None
+            else SGLangRouterSamplingTransport(backend.sampling_endpoint())
+        )
         self.sessions = SessionStore()
         self.models = ModelStore()
         self.futures = FutureStore()
         self.checkpoints = CheckpointCatalog()
         self.samplers = SamplingSessionStore()
-        self._http: httpx.AsyncClient | None = None
         self._sample_tasks: set[asyncio.Task] = set()
 
     async def close(self) -> None:
         for task in list(self._sample_tasks):
             task.cancel()
-        if self._http is not None:
-            await self._http.aclose()
-            self._http = None
+        await self.sampling_transport.close()
 
     # ---------------- bootstrap ----------------
 
@@ -182,15 +191,15 @@ class TinkerFrontend:
             if (existing := self._existing(request_id, fingerprint)) is not None:
                 return wire.untyped_future(request_id, existing.model.model_id if existing.model else None)
             raise ApiError(400, str(exc)) from exc
-        registered = self.backend.registry.find(name)
+        registered = self.backend.registration_view(name)
         model = ModelRecord(
             model_id=f"{request.session_id}:train:{request.model_seq_id}",
             session_id=request.session_id,
             model_seq_id=request.model_seq_id,
             name=name,
-            registration_id=registered.registration_id,
+            registration_id=registered["registration_id"],
             base_model=base_model,
-            rank=registered.config.rank,
+            rank=registered["rank"],
             fingerprint=fingerprint,
         )
         self.models.add(model)
@@ -500,13 +509,13 @@ class TinkerFrontend:
         try:
             payload: dict = {"input_ids": tokens, "sampling_params": params, "return_logprob": True}
             if sampler.name is not None:
-                live = self.backend.registry.find(sampler.name)
-                if live is None or live.registration_id != sampler.registration_id:
+                live = self.backend.registration_view(sampler.name)
+                if live is None or live["registration_id"] != sampler.registration_id:
                     record.resolve(
                         wire.terminal_failure("sampler weights are no longer live (registration retired)", "user")
                     )
                     return
-                if live.serving_version != sampler.serving_version:
+                if live["serving_version"] != sampler.serving_version:
                     record.resolve(
                         wire.terminal_failure(
                             "stale ephemeral sampler: the model was republished and this backend serves the "
@@ -552,19 +561,15 @@ class TinkerFrontend:
             record.resolve(wire.terminal_failure(f"sampling failed: {exc}", "server"))
 
     def _sampler_still_live(self, sampler: SamplingSessionRecord) -> bool:
-        live = self.backend.registry.find(sampler.name)
+        live = self.backend.registration_view(sampler.name)
         return (
             live is not None
-            and live.registration_id == sampler.registration_id
-            and live.serving_version == sampler.serving_version
+            and live["registration_id"] == sampler.registration_id
+            and live["serving_version"] == sampler.serving_version
         )
 
     async def _post_generate(self, payload: dict) -> dict:
-        if self._http is None:
-            self._http = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=600.0, write=60.0))
-        response = await self._http.post(f"{self.backend.router_url}/generate", json=payload)
-        response.raise_for_status()
-        return response.json()
+        return await self.sampling_transport.generate(payload)
 
     # ---------------- future retrieval ----------------
 
@@ -594,8 +599,8 @@ class TinkerFrontend:
 
     def _queue_state(self, record: FutureRecord) -> str:
         if record.kind == "create_model" and record.model is not None:
-            live = self.backend.registry.find(record.model.name)
-            if live is not None and live.slot is None:
+            live = self.backend.registration_view(record.model.name)
+            if live is not None and not live["bound"]:
                 return "paused_capacity"
         return "active"
 
@@ -609,7 +614,7 @@ class TinkerFrontend:
         # "sample" resolves from its own task.
 
     def _poll_operation(self, record: FutureRecord) -> None:
-        view = self.backend.operations.get(record.operation_id)
+        view = self.backend.operation_view(record.operation_id)
         if view is None:
             record.resolve(wire.terminal_failure("operation record lost before retrieval", "server"))
             return
@@ -626,7 +631,7 @@ class TinkerFrontend:
             record.resolve(wire.terminal_failure(error, view.get("error_category") or "server"))
         # Ack only after the terminal body is stored: a lost response replays
         # from the future store, never from a record the ack released.
-        self.backend.operations.ack(record.operation_id)
+        self.backend.ack_operation(record.operation_id)
 
     def _success_body(self, record: FutureRecord, result: dict) -> dict:
         kind, model = record.operation_kind, record.model
@@ -670,17 +675,17 @@ class TinkerFrontend:
 
     def _poll_create_model(self, record: FutureRecord) -> None:
         model = record.model
-        live = self.backend.registry.find(model.name)
-        if live is None or live.registration_id != model.registration_id:
+        live = self.backend.registration_view(model.name)
+        if live is None or live["registration_id"] != model.registration_id:
             record.resolve(wire.terminal_failure("registration retired before the model became ready", "user"))
             return
-        if live.state is AdapterState.READY:
+        if live["state"] == "READY":
             record.resolve({"type": "create_model", "model_id": model.model_id})
-        elif live.state is not AdapterState.PENDING:
-            record.resolve(wire.terminal_failure(f"registration is {live.state.value}; model creation failed", "user"))
+        elif live["state"] != "PENDING":
+            record.resolve(wire.terminal_failure(f"registration is {live['state']}; model creation failed", "user"))
 
     def _poll_unload_model(self, record: FutureRecord) -> None:
         model = record.model
-        live = self.backend.registry.find(model.name)
-        if live is None or live.registration_id != model.registration_id:
+        live = self.backend.registration_view(model.name)
+        if live is None or live["registration_id"] != model.registration_id:
             record.resolve({"type": "unload_model", "model_id": model.model_id})
