@@ -8,6 +8,7 @@ successor (anti-ABA)."""
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Generic, Protocol, TypeVar
 
 from miles.utils.misc import SingletonMeta
 
@@ -19,6 +20,60 @@ RID_SEPARATOR = "::"
 # the gradient-window tracker, and physical-executor validation
 # (codex-rollout-fullparameter-design-0810 §5.9).
 RegistrationKey = tuple[str, str]
+
+# Opaque execution binding: what a trainer needs to route one logical
+# operation onto physical state. The Multi-LoRA concrete is ResidentBinding
+# (registration -> fixed slot); a future parameterization supplies its own.
+BindingT = TypeVar("BindingT")
+
+
+@dataclass(frozen=True)
+class BatchExecutionLease(Generic[BindingT]):
+    """Immutable receipt for ONE trainer dispatch: it fixes the logical
+    operation -> opaque execution binding mapping for the batch's lifetime
+    (codex-rollout-fullparameter-design-0810 §5.3). ``dispatch_id`` exists for
+    logging/correlation only — there is no active/released lease registry.
+    The receipt lives to the operation completion boundary: a data batch to
+    ``commit_tinker_batch``, immediate controls to their completion, deferred
+    publish/load past the physical publish barrier."""
+
+    dispatch_id: str
+    bindings_by_operation: tuple[tuple[str, BindingT], ...]
+
+    def binding_of(self, operation_id: str) -> BindingT | None:
+        for op_id, binding in self.bindings_by_operation:
+            if op_id == operation_id:
+                return binding
+        return None
+
+
+class TrainerResidencyPort(Protocol[BindingT]):
+    """Narrow facade over trainer residency: batch construction sees opaque
+    bindings and batch receipts, never SlotPool internals. The current (and
+    only) concrete is FixedSlotResidency — it snapshots and validates mappings
+    that fixed residency already established, and never binds, unbinds, picks
+    victims, or moves state. Fixed residency is a current implementation
+    policy, not part of this contract (§3.8)."""
+
+    def binding_for(self, key: RegistrationKey) -> BindingT | None:
+        """The exact registration's current binding, or None when it may not
+        be dispatched (the claim gate). Never mutates residency."""
+        ...
+
+    def acquire_batch(self, bindings_by_operation: tuple[tuple[str, BindingT], ...]) -> BatchExecutionLease[BindingT]:
+        """Snapshot already-claimed bindings into one immutable dispatch
+        receipt, re-validating ownership. Raises if any binding went stale."""
+        ...
+
+    def validate(self, lease: BatchExecutionLease[BindingT]) -> bool:
+        """Re-check the receipt before physical mutation."""
+        ...
+
+    def release_batch(self, lease: BatchExecutionLease[BindingT]) -> None:
+        """Lifecycle hook at the batch's completion boundary; the fixed
+        residency concrete is a no-op (nothing was reserved), so failure
+        paths cannot leak capacity state."""
+        ...
 
 
 class AdaptersCache(metaclass=SingletonMeta):

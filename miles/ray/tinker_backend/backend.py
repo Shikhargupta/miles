@@ -17,8 +17,9 @@ from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.gradient_windows import GradientWindowTracker
 from miles.ray.tinker_backend.operations import OperationLedger
 from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
+from miles.ray.tinker_backend.residency import FixedSlotResidency, ResidentBinding
 from miles.utils.http_utils import router_worker_base_urls
-from miles.utils.tinker_backend import rid_prefix, serving_lora_name
+from miles.utils.tinker_backend import BatchExecutionLease, rid_prefix, serving_lora_name
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,9 @@ class TinkerBackend:
         # Registration-keyed step/dirty authority (parameterization-neutral);
         # the registry only mirrors its transitions into lifecycle pins.
         self.gradient_windows = GradientWindowTracker()
+        # Narrow trainer-residency facade: claims and batch dispatch see
+        # opaque bindings/receipts, never SlotPool internals.
+        self.residency = FixedSlotResidency(self.registry)
         self.router_url = router_url.rstrip("/")
         self.client: httpx.AsyncClient | None = None
         # Readiness (distinct from liveness): the driver flips it once the
@@ -260,6 +264,36 @@ class TinkerBackend:
                 raise ValueError(f"adam_params.{field_name} must be in [0, 1)")
         if (value := adam.get("eps")) is not None and value <= 0:
             raise ValueError("adam_params.eps must be > 0")
+
+    # ---------------- data-operation claims ----------------
+
+    def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
+        """Claim-and-bind in ONE controller call (all-or-nothing): resolve the
+        exact READY binding FIRST; only a successful lookup lets the ledger
+        turn the head CLAIMED, and the claim carries the binding. A missing
+        binding leaves the head QUEUED — no rollback branch exists
+        (codex-rollout-fullparameter-design-0810 §3.6)."""
+        binding = self.residency.binding_for((name, registration_id))
+        if binding is None:
+            return None
+        operation = self.operations.claim_data_operation(name, registration_id)
+        if operation is None:
+            return None
+        operation["binding"] = binding
+        return operation
+
+    def acquire_batch_lease(self, bindings_by_operation: list) -> BatchExecutionLease[ResidentBinding]:
+        """Selection finished: snapshot the selected claims' bindings into one
+        immutable dispatch receipt (re-validating exact slot ownership)."""
+        return self.residency.acquire_batch(
+            tuple((operation_id, binding) for operation_id, binding in bindings_by_operation)
+        )
+
+    def release_batch_lease(self, lease_metadata: dict) -> None:
+        """Completion-boundary lifecycle hook; no-op under fixed residency."""
+        from miles.ray.tinker_backend.residency import lease_from_metadata
+
+        self.residency.release_batch(lease_from_metadata(lease_metadata))
 
     # ---------------- control-operation claims ----------------
 

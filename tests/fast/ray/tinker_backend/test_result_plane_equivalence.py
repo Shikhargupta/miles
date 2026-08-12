@@ -42,7 +42,9 @@ from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
 from miles.ray.tinker_backend.backend import TinkerBackend
 from miles.ray.tinker_backend.config import AdapterRunConfig
+from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.rollout.tinker_backend.rollout_fn import batch_plan_to_metadata
+from miles.utils.tinker_backend import BatchExecutionLease
 from miles.utils.types import AdapterRef, Sample
 
 VOCAB = 32
@@ -121,7 +123,17 @@ def make_pipeline(pad_to_dp_size: int | None = None):
         samples, post_metadata = postprocess_rollout_data(
             convert_args, samples, train_parallel_config={"dp_size": pad_to_dp_size}, pad_to_dp=True
         )
-    metadata = batch_plan_to_metadata(PLAN)
+    lease = BatchExecutionLease(
+        dispatch_id="lease-eq",
+        bindings_by_operation=tuple(
+            (
+                entry["operation_id"],
+                ResidentBinding((entry["name"], entry["registration_id"]), entry["bound_slot"]),
+            )
+            for entry in PLAN
+        ),
+    )
+    metadata = batch_plan_to_metadata(PLAN, lease)
     convert_args = SimpleNamespace(use_dynamic_global_batch_size=False)
     train_data = convert_samples_to_train_data(
         convert_args,

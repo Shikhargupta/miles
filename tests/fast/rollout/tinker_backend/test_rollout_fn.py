@@ -14,6 +14,7 @@ import pytest
 
 import miles.rollout.tinker_backend.rollout_fn as rollout_module
 from miles.ray.tinker_backend.config import AdapterRun, AdapterRunConfig
+from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput, RolloutFnTrainOutput
 from miles.rollout.tinker_backend.rollout_fn import (
     AdapterRolloutRuntime,
@@ -21,7 +22,7 @@ from miles.rollout.tinker_backend.rollout_fn import (
     TinkerOperationSource,
     TinkerRolloutFn,
 )
-from miles.utils.tinker_backend import EmptyBatchTimeoutError
+from miles.utils.tinker_backend import BatchExecutionLease, EmptyBatchTimeoutError
 
 
 def make_run(name="X", reg="rx", slot=3, version=2) -> AdapterRun:
@@ -45,13 +46,19 @@ def sample_payload(n=2) -> dict:
 
 
 class _FakeController:
-    """Scripted claim results; records failures."""
+    """Scripted claim results; records failures and issued leases."""
 
-    def __init__(self, claims):
+    def __init__(self, claims=()):
         self._claims = list(claims)
         self.failed: list[tuple] = []
+        self.leases: list[tuple] = []
         self.claim_data_operation = SimpleNamespace(remote=lambda name, reg: self._next_claim())
         self.fail_operation = SimpleNamespace(remote=lambda *args: self.failed.append(args))
+        self.acquire_batch_lease = SimpleNamespace(remote=self._acquire)
+
+    def _acquire(self, bindings_by_operation):
+        self.leases.append(tuple(bindings_by_operation))
+        return BatchExecutionLease(dispatch_id="lease-1", bindings_by_operation=tuple(bindings_by_operation))
 
     def _next_claim(self):
         return self._claims.pop(0) if self._claims else None
@@ -68,7 +75,8 @@ def fake_ray(monkeypatch):
     return install
 
 
-def op(op_id="op1", kind="forward_backward", payload=None):
+def op(op_id="op1", kind="forward_backward", payload=None, slot=3):
+    # A claim always carries its fixed binding (claim-and-bind).
     return dict(
         operation_id=op_id,
         name="X",
@@ -76,6 +84,7 @@ def op(op_id="op1", kind="forward_backward", payload=None):
         kind=kind,
         payload=sample_payload() if payload is None else payload,
         state="CLAIMED",
+        binding=ResidentBinding(registration_key=("X", "rx"), training_slot=slot),
     )
 
 
@@ -96,6 +105,7 @@ class TestQueueChild:
             operation_kind="forward_backward",
             batch_id="batch-7",
             loss_spec={"loss_fn": "cross_entropy"},
+            binding=ResidentBinding(registration_key=("X", "rx"), training_slot=3),
         )
 
     def test_client_supplied_row_index_is_overwritten(self, fake_ray):
@@ -134,16 +144,29 @@ class TestQueueChild:
 
 
 def ready_runtime(fn: TinkerRolloutFn, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
-    run = make_run(name=name, reg=f"r-{name}", slot=slot)
+    # The runtime's stamped slot (9) is deliberately stale: the claim's
+    # binding, not the long-lived AdapterRun view, is the dispatch truth.
+    run = make_run(name=name, reg=f"r-{name}", slot=9)
     runtime = AdapterRolloutRuntime(fn.args, run)
     runtime.state = AdapterRolloutRuntime.READY
     runtime.ready_output = RolloutFnTrainOutput(
         samples=[[SimpleNamespace(adapter=None, metadata={})]],
-        metadata=dict(operation_id=f"op-{name}", operation_kind=kind, loss_spec=None),
+        metadata=dict(
+            operation_id=f"op-{name}",
+            operation_kind=kind,
+            loss_spec=None,
+            binding=ResidentBinding(registration_key=(name, f"r-{name}"), training_slot=slot),
+        ),
     )
     fn.runtimes[runtime.tenant] = runtime
     fn._sync_rotation()
     return runtime
+
+
+def merge(fn: TinkerRolloutFn, selected, fake_ray) -> RolloutFnTrainOutput:
+    controller = _FakeController()
+    fake_ray(controller)
+    return asyncio.run(fn._merge(selected))
 
 
 def make_fn(soft_target=100) -> TinkerRolloutFn:
@@ -187,16 +210,16 @@ class TestSelectionKindLock:
         with pytest.raises(EmptyBatchTimeoutError):
             asyncio.run(fn._select())
 
-    def test_merge_ships_the_converted_plan_and_pad_policy(self):
+    def test_merge_ships_the_converted_plan_and_pad_policy(self, fake_ray):
         """Correlation is batch-local (§3.3): the selected operation gets lane
         0, the loss/result maps key by lane, and the exact registration rides
-        along for the commit. The physical slot appears ONLY in the Multi-LoRA
-        compatibility helper ``adapter_name_by_slot`` — model routing, never
-        operation identity."""
+        along for the commit. The claim's binding is the single binding truth
+        — it flows into the batch lease (§5.3) and the routing helper; the
+        runtime's stale stamped slot (9) appears nowhere."""
         fn = make_fn()
         first = ready_runtime(fn, "A", 0, "forward_backward")
         selected = asyncio.run(fn._select())
-        output = fn._merge(selected)
+        output = merge(fn, selected, fake_ray)
         assert output.conversion_metadata == {
             "batch_kind": "tinker",
             "tinker_operation_lanes": [0],
@@ -204,11 +227,15 @@ class TestSelectionKindLock:
             "operation_by_lane": {0: "op-A"},
             "registration_by_lane": {0: ("A", "r-A")},
             "adapter_name_by_slot": {0: "A"},
+            "batch_execution_lease": {
+                "dispatch_id": "lease-1",
+                "bindings_by_operation": [["op-A", ["A", "r-A", 0]]],
+            },
         }
         assert output.postprocess.pad_to_dp is True
         assert first.state == AdapterRolloutRuntime.IDLE and first.ready_output is None
 
-    def test_merge_of_a_forward_selection_marks_forward_only(self):
+    def test_merge_of_a_forward_selection_marks_forward_only(self, fake_ray):
         """Forward kind: the same composition with ``tinker_forward_only``
         set — the flag that keeps forward operations gradient-free must
         survive the lane re-keying."""
@@ -216,13 +243,13 @@ class TestSelectionKindLock:
         ready_runtime(fn, "A", 0, "forward")
         ready_runtime(fn, "B", 1, "forward")
         selected = asyncio.run(fn._select())
-        output = fn._merge(selected)
+        output = merge(fn, selected, fake_ray)
         assert output.conversion_metadata["tinker_forward_only"] is True
         assert output.conversion_metadata["operation_by_lane"] == {0: "op-A", 1: "op-B"}
         assert output.conversion_metadata["tinker_operation_lanes"] == [0, 1]
         assert output.postprocess.pad_to_dp is True
 
-    def test_lanes_are_selection_local_and_independent_of_slots(self):
+    def test_lanes_are_selection_local_and_independent_of_slots(self, fake_ray):
         """Two operations on HIGH slots (7, 2) still get lanes 0 and 1 in
         selection order: identity never rides the physical slot, so a future
         parameterization (or slot reuse across operations) cannot collide in
@@ -231,7 +258,9 @@ class TestSelectionKindLock:
         ready_runtime(fn, "A", 7, "forward_backward")
         ready_runtime(fn, "B", 2, "forward_backward")
         selected = asyncio.run(fn._select())
-        output = fn._merge(selected)
+        output = merge(fn, selected, fake_ray)
         assert output.conversion_metadata["tinker_operation_lanes"] == [0, 1]
         assert output.conversion_metadata["registration_by_lane"] == {0: ("A", "r-A"), 1: ("B", "r-B")}
         assert output.conversion_metadata["adapter_name_by_slot"] == {7: "A", 2: "B"}
+        lease = output.conversion_metadata["batch_execution_lease"]
+        assert lease["bindings_by_operation"] == [["op-A", ["A", "r-A", 7]], ["op-B", ["B", "r-B", 2]]]

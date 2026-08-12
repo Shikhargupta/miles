@@ -95,7 +95,14 @@ class TinkerController:
         return self.backend.enqueue_operation(name, operation_id, ordinal, kind, payload, expected_registration_id)
 
     def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
-        return self.backend.operations.claim_data_operation(name, registration_id)
+        # Claim-and-bind in this single actor call: no binding, no CLAIMED.
+        return self.backend.claim_data_operation(name, registration_id)
+
+    def acquire_batch_lease(self, bindings_by_operation: list):
+        return self.backend.acquire_batch_lease(bindings_by_operation)
+
+    def release_batch_lease(self, lease_metadata: dict) -> None:
+        self.backend.release_batch_lease(lease_metadata)
 
     def claim_ready_control_operations(self) -> list[dict]:
         return self.backend.claim_ready_control_operations()

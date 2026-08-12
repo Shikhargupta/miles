@@ -320,26 +320,50 @@ def _execute_state_op(op: dict, args, model, optimizer, loaded_adapters, pending
     return dict(ok=True, deferred="publish", result=dict(step=restored_step, path=str(path)))
 
 
+def validate_batch_lease(rollout_data, loaded_adapters: dict) -> None:
+    """Physical dispatch gate: before ANY gradient mutation, every binding in
+    the batch's execution lease must match a locally loaded adapter with the
+    exact registration and slot. Claim-time READY gating plus the sequential
+    driver make a mismatch unreachable today — if one ever appears, the batch
+    must fail loudly rather than mutate another tenant's state."""
+    lease = rollout_data.get("batch_execution_lease")
+    if lease is None:
+        raise RuntimeError("tinker batch carries no execution lease")
+    for op_id, (name, registration_id, slot) in lease["bindings_by_operation"]:
+        run = loaded_adapters.get(name)
+        if run is None or run.registration_id != registration_id or run.slot != slot:
+            raise RuntimeError(
+                f"operation '{op_id}': lease binding ('{name}', {registration_id[:8]}, slot {slot}) "
+                "does not match this rank's loaded adapters; refusing to mutate"
+            )
+
+
 def commit_batch(rollout_data, pending_push: set) -> None:
     """A tinker train/forward call landed: mark the accumulating registration
     streams dirty and complete the batch's operations with their gathered
     logprobs. The commit carries EXACT registration keys from the BatchPlan
     (never a trainer-reported name list), so a stale batch can never dirty a
     same-name successor. Data batches step nothing and publish nothing —
-    pending_push is untouched."""
+    pending_push is untouched. The batch lease releases at this completion
+    boundary (finally: even a failed commit must not strand the receipt —
+    a no-op under fixed residency, so nothing can leak either way)."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     logprobs_by_op = _gather_logprobs(rollout_data)
     if is_first_replica_megatron_main_rank():
-        registration_by_lane = rollout_data.get("registration_by_lane", {})
-        # Forward batches accumulate nothing: no dirty streams.
-        accumulated = (
-            []
-            if rollout_data.get("tinker_forward_only")
-            else sorted({tuple(key) for key in registration_by_lane.values()})
-        )
-        operation_ids = [op_id for op_id in rollout_data.get("operation_by_lane", {}).values() if op_id]
-        ray.get(get_tinker_controller().commit_tinker_batch.remote(accumulated, operation_ids, logprobs_by_op))
+        try:
+            registration_by_lane = rollout_data.get("registration_by_lane", {})
+            # Forward batches accumulate nothing: no dirty streams.
+            accumulated = (
+                []
+                if rollout_data.get("tinker_forward_only")
+                else sorted({tuple(key) for key in registration_by_lane.values()})
+            )
+            operation_ids = [op_id for op_id in rollout_data.get("operation_by_lane", {}).values() if op_id]
+            ray.get(get_tinker_controller().commit_tinker_batch.remote(accumulated, operation_ids, logprobs_by_op))
+        finally:
+            if (lease := rollout_data.get("batch_execution_lease")) is not None:
+                ray.get(get_tinker_controller().release_batch_lease.remote(lease))
 
 
 def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:

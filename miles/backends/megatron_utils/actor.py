@@ -472,7 +472,12 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> TrainStepOutcome:
         # Tinker batches collect per-datum logprobs for the operation result
         # plane; the loss fills this shared side channel during the forward.
+        # The batch lease is validated BEFORE any gradient mutation: every
+        # binding must still match a locally loaded adapter exactly.
         if rollout_data.get("batch_kind") == "tinker":
+            from miles.backends.megatron_utils.tinker_backend.trainer import validate_batch_lease
+
+            validate_batch_lease(rollout_data, self.loaded_adapters)
             rollout_data["tinker_logprob_collector"] = {}
 
         # Create data iterator for log_probs and train.

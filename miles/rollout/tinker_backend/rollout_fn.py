@@ -20,6 +20,7 @@ import ray
 
 from miles.ray.tinker_backend.config import AdapterRun
 from miles.ray.tinker_backend.controller import get_tinker_controller
+from miles.ray.tinker_backend.residency import lease_to_metadata
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnInput,
@@ -33,7 +34,7 @@ from miles.utils.types import AdapterRef, Sample
 logger = logging.getLogger(__name__)
 
 
-def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
+def batch_plan_to_metadata(batch_plan: list[dict], lease=None) -> dict[str, Any]:
     """Distill one tinker selection's BatchPlan into conversion metadata.
     Selections are homogeneous: exactly one data-operation kind — mixed
     forward/forward_backward batches are structurally impossible, which is
@@ -44,7 +45,12 @@ def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
     selection), and the loss/result plane is keyed by lane — never by trainer
     slot, so operation identity survives any parameterization. The plan's
     ``bound_slot`` feeds only the Multi-LoRA compatibility helper
-    ``adapter_name_by_slot`` (physical model routing)."""
+    ``adapter_name_by_slot`` (physical model routing).
+
+    The batch's ``BatchExecutionLease`` is the single binding truth (§5.3):
+    it ships plain-encoded, and the conversion derives ``adapter_slots`` by
+    joining ``operation_by_lane`` through it — the plan never stores a second
+    copy of the binding."""
     kinds = {entry["operation_kind"] for entry in batch_plan}
     if len(kinds) != 1 or not kinds <= {"forward_backward", "forward"}:
         raise ValueError(f"tinker selection must be one homogeneous data kind, got {sorted(kinds)}")
@@ -65,6 +71,8 @@ def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
         # Multi-LoRA compatibility helper only: slot -> serving name.
         "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
     }
+    if lease is not None:
+        metadata["batch_execution_lease"] = lease_to_metadata(lease)
     if kinds == {"forward"}:
         metadata["tinker_forward_only"] = True
     return metadata
@@ -189,6 +197,10 @@ class QueueChildRolloutFn:
                 operation_kind=operation["kind"],
                 batch_id=payload.get("batch_id"),
                 loss_spec=payload.get("loss"),
+                # Fixed binding resolved atomically with the claim (claim-and-
+                # bind); the long-lived runtime's AdapterRun.slot is never the
+                # dispatch truth.
+                binding=operation["binding"],
             ),
         )
 
@@ -255,7 +267,7 @@ class TinkerRolloutFn:
         await self._reconcile(adapters)
         self._launch_idle_children(input.rollout_id)
         selected = await self._select()
-        return self._merge(selected)
+        return await self._merge(selected)
 
     async def aclose(self) -> None:
         for runtime in list(self.runtimes.values()):
@@ -390,7 +402,7 @@ class TinkerRolloutFn:
 
     # ------------------------------ merge ------------------------------
 
-    def _merge(self, selected: list[AdapterRolloutRuntime]) -> RolloutFnTrainOutput:
+    async def _merge(self, selected: list[AdapterRolloutRuntime]) -> RolloutFnTrainOutput:
         data: list[list[Sample]] = []
         batch_plan: list[dict] = []
         metrics: dict = {}
@@ -400,25 +412,38 @@ class TinkerRolloutFn:
             runtime.state = AdapterRolloutRuntime.IDLE  # relaunches at the NEXT generate call
             run = runtime.run
             data.extend(output.samples)
+            # The claim's binding is the dispatch truth (resolved atomically
+            # with the claim); the runtime's AdapterRun view only names the
+            # metrics stream.
+            binding = output.metadata["binding"]
+            name, registration_id = binding.registration_key
             batch_plan.append(
                 dict(
-                    name=run.name,
-                    registration_id=run.registration_id,
-                    # Fixed residency: the slot was bound at registration.
-                    bound_slot=run.slot,
+                    name=name,
+                    registration_id=registration_id,
+                    bound_slot=binding.training_slot,
                     operation_id=output.metadata["operation_id"],
                     operation_kind=output.metadata["operation_kind"],
                     loss_spec=output.metadata.get("loss_spec"),
                     sample_count=sum(len(group) for group in output.samples),
+                    binding=binding,
                 )
             )
             metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
+        # One immutable dispatch receipt for the whole selection: the
+        # controller re-validates exact slot ownership before issuing it.
+        lease = await asyncio.to_thread(
+            ray.get,
+            get_tinker_controller().acquire_batch_lease.remote(
+                [(entry["operation_id"], entry["binding"]) for entry in batch_plan]
+            ),
+        )
         return RolloutFnTrainOutput(
             samples=data,
             metrics=metrics,
             # Converted HERE, not in the manager: the generic rollout plane
             # never recognizes tinker keys.
-            conversion_metadata=batch_plan_to_metadata(batch_plan),
+            conversion_metadata=batch_plan_to_metadata(batch_plan, lease),
             # Whole client batches: zero-weight pads round the selection up to
             # the DP grid so the multi-LoRA dynamic-GBS branch sizes the step
             # to the batch instead of trimming it.

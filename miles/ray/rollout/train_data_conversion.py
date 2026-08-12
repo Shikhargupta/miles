@@ -164,22 +164,22 @@ def convert_samples_to_train_data(
         train_data["tinker_loss_by_lane"] = metadata["tinker_loss_by_lane"]
         train_data["operation_by_lane"] = metadata["operation_by_lane"]
         train_data["registration_by_lane"] = metadata["registration_by_lane"]
+        if (lease := metadata.get("batch_execution_lease")) is not None:
+            train_data["batch_execution_lease"] = lease
         if metadata.get("tinker_forward_only"):
             train_data["tinker_forward_only"] = True
 
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
-        if (name_by_slot := metadata.get("adapter_name_by_slot")) is not None:
-            # The BatchPlan's registration-bound slot is authoritative; a
-            # stamped slot could be stale, and a name missing from the plan
-            # must fail loudly. Slots are physical Multi-LoRA model routing
-            # ONLY: loss/result correlation rides the lanes above.
-            slot_by_name = {name: slot for slot, name in name_by_slot.items()}
-            missing = {sample.adapter.name for sample in samples if sample.adapter.name not in slot_by_name}
-            if missing:
-                raise ValueError(f"Samples from adapters {sorted(missing)} have no BatchPlan slot")
-            train_data["adapter_slots"] = [slot_by_name[sample.adapter.name] for sample in samples]
-            train_data["adapter_name_by_slot"] = name_by_slot
+        if tinker and metadata.get("batch_execution_lease") is not None:
+            # The batch lease is the single binding truth: derive each row's
+            # physical slot by joining lane -> operation -> binding. Slots are
+            # Multi-LoRA model routing ONLY; loss/result correlation rides the
+            # lanes above, and a stale sample stamp must never route.
+            train_data["adapter_slots"] = _adapter_slots_from_lease(
+                metadata, train_data["tinker_operation_lanes"], samples
+            )
+            train_data["adapter_name_by_slot"] = metadata["adapter_name_by_slot"]
         else:
             train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
 
@@ -195,6 +195,33 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _adapter_slots_from_lease(metadata: dict, sample_lanes: list[int], samples: list[Sample]) -> list[int]:
+    """Join lane -> operation -> lease binding to produce per-row physical
+    slots. The lease and the lane maps must agree exactly (one binding per
+    planned operation), and every sample's stamped adapter name must match its
+    lane's binding — a mismatch means a stale or foreign row and fails loudly
+    before it can route onto another tenant's slot."""
+    lease = metadata["batch_execution_lease"]
+    binding_by_op = {op_id: tuple(binding) for op_id, binding in lease["bindings_by_operation"]}
+    operation_by_lane = metadata["operation_by_lane"]
+    missing = [op_id for op_id in operation_by_lane.values() if op_id not in binding_by_op]
+    if missing or len(binding_by_op) != len(operation_by_lane):
+        raise ValueError(
+            f"batch lease and lane plan disagree: lanes carry {sorted(operation_by_lane.values())}, "
+            f"lease carries {sorted(binding_by_op)}"
+        )
+    slots = []
+    for sample, lane in zip(samples, sample_lanes, strict=True):
+        name, _registration_id, slot = binding_by_op[operation_by_lane[lane]]
+        if sample.adapter.name != name:
+            raise ValueError(
+                f"sample stamped for adapter '{sample.adapter.name}' rides lane {lane}, "
+                f"which the batch lease binds to '{name}'"
+            )
+        slots.append(slot)
+    return slots
 
 
 def _tinker_sample_lanes(lanes: list[int], num_samples: int) -> list[int]:
@@ -387,6 +414,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "tinker_loss_by_lane",
             "operation_by_lane",
             "registration_by_lane",
+            "batch_execution_lease",
             "tinker_forward_only",
             "batch_kind",
             "prompt_group_sizes",
