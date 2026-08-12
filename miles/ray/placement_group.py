@@ -192,9 +192,10 @@ async def update_weights(
     rollout_executor: BaseWorkerHandle,
     inference_controller: BaseWorkerHandle,
     rollout_id: int | None = None,
+    model_id: str | None = None,
 ) -> None:
     """Sequence the weight update: the controllers never call each other, the orchestration script does."""
-    info = await inference_controller.start_update_weights()
+    info = await inference_controller.start_update_weights(model_id=model_id)
     try:
         weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
     except BaseException:
@@ -207,11 +208,11 @@ async def update_weights(
     )
 
     await _maybe_log_inference_engine_weight_checksums(
-        args, inference_controller=inference_controller, rollout_id=rollout_id
+        args, inference_controller=inference_controller, rollout_id=rollout_id, model_id=model_id
     )
 
     if weight_version is not None:
-        await rollout_executor.set_weight_version(weight_version)
+        await rollout_executor.set_weight_version(weight_version, trainer_model_id=model_id)
 
 
 async def _abort_update_weights(
@@ -256,14 +257,14 @@ async def _assert_inference_names_this_run(args, *, inference_controller: BaseWo
 
 
 async def _maybe_log_inference_engine_weight_checksums(
-    args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None
+    args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, model_id: str | None = None
 ) -> None:
     if not is_event_logger_initialized():
         return
     if args.debug_train_only or args.debug_rollout_only:
         return
 
-    check_weights_result = await inference_controller.check_weights(action="checksum")
+    check_weights_result = await inference_controller.check_weights(action="checksum", model_id=model_id)
     get_event_logger().log(
         InferenceEngineWeightChecksumEvent,
         dict(rollout_id=rollout_id, engine_checksums=flatten_inference_engine_checksums(check_weights_result)),

@@ -8,6 +8,23 @@ def dict_add_prefix(d: dict[str, Any], prefix: str) -> dict[str, Any]:
     return {f"{prefix}{k}": v for k, v in d.items()}
 
 
+def compute_metric_namespace(args) -> str:
+    return compute_model_metric_namespace(args.trainer_model_id)
+
+
+def compute_model_metric_namespace(trainer_model_id: str | None) -> str:
+    return "" if trainer_model_id is None else f"{trainer_model_id}/"
+
+
+def namespace_metrics(
+    log_dict: dict[str, Any], *, namespace: str, step_name: str, step: int
+) -> tuple[dict[str, Any], str]:
+    ans = dict_add_prefix(log_dict, namespace)
+    step_key = f"{namespace}{step_name}"
+    ans[step_key] = step
+    return ans, step_key
+
+
 def compute_pass_rate(
     flat_rewards: list[float],
     group_size: int,

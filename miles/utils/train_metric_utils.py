@@ -3,7 +3,7 @@ from argparse import Namespace
 from collections.abc import Callable
 from copy import deepcopy
 
-from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.metric_utils import compute_metric_namespace, compute_rollout_step, namespace_metrics
 from miles.utils.timer import Timer
 from miles.utils.tracking_utils import tracking
 
@@ -49,6 +49,10 @@ def log_perf_data_raw(
 
     logger.info(f"perf {rollout_id}: {log_dict}")
 
-    step = compute_rollout_step(args, rollout_id)
-    log_dict["rollout/step"] = step
-    tracking.log(args, log_dict, step_key="rollout/step")
+    log_dict, step_key = namespace_metrics(
+        log_dict,
+        namespace=compute_metric_namespace(args),
+        step_name="rollout/step",
+        step=compute_rollout_step(args, rollout_id),
+    )
+    tracking.log(args, log_dict, step_key=step_key)
