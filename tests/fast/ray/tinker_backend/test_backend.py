@@ -332,6 +332,22 @@ def test_service_info_reports_the_v1_matrix():
     assert info["supported_loss_fns"] == ["cross_entropy", "importance_sampling", "ppo"]
 
 
+def test_engine_aborts_go_through_the_inference_admin_port():
+    # The backend's only engine-facing need rides the narrow admin port with
+    # the full registration-scoped rid prefix (anti-ABA); swapping the engine
+    # owner (PR #1842) swaps the adapter, never the backend.
+    backend = make_backend()
+    aborted = []
+
+    class FakeAdmin:
+        async def abort_registration(self, rid_prefix):
+            aborted.append(rid_prefix)
+
+    backend.inference_admin = FakeAdmin()
+    asyncio.run(backend.abort_adapter_requests("X", "reg-1"))
+    assert aborted == ["X::reg-1::"]
+
+
 def test_trainer_readiness_flag_flips_once_marked():
     # Liveness comes up with the HTTP server; readiness only when the driver
     # says the trainer exists (probes must not report ok on a dead trainer).

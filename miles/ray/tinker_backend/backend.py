@@ -3,7 +3,6 @@ aborts, shared by the controller Ray actor and the HTTP server. Every client
 input is validated here, at the boundary — an unsupported loss, shape, or
 payload must never reach the shared GPU driver."""
 
-import asyncio
 import logging
 import math
 import re
@@ -11,10 +10,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.gradient_windows import GradientWindowTracker
+from miles.ray.tinker_backend.inference_admin import RouterInferenceAdmin
 from miles.ray.tinker_backend.operations import OperationLedger
 from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
 from miles.ray.tinker_backend.residency import (
@@ -23,7 +21,6 @@ from miles.ray.tinker_backend.residency import (
     lease_from_metadata,
     lease_to_metadata,
 )
-from miles.utils.http_utils import router_worker_base_urls
 from miles.utils.tinker_backend import BatchExecutionLease, rid_prefix, serving_lora_name
 
 logger = logging.getLogger(__name__)
@@ -56,7 +53,9 @@ class TinkerBackend:
         # opaque bindings/receipts, never SlotPool internals.
         self.residency = FixedSlotResidency(self.registry)
         self.router_url = router_url.rstrip("/")
-        self.client: httpx.AsyncClient | None = None
+        # Engine admin behind a narrow port: today straight off the router; a
+        # post-split adapter delegates to the InferenceController.
+        self.inference_admin = RouterInferenceAdmin(self.router_url)
         # Readiness (distinct from liveness): the driver flips it once the
         # training actors exist, so probes never report ok on a dead trainer.
         self.trainer_ready = False
@@ -65,12 +64,10 @@ class TinkerBackend:
         self.trainer_ready = True
 
     async def init(self) -> None:
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        await self.inference_admin.init()
 
     async def close(self) -> None:
-        if self.client is not None:
-            await self.client.aclose()
-            self.client = None
+        await self.inference_admin.close()
 
     # ---------------- registration ----------------
 
@@ -428,34 +425,10 @@ class TinkerBackend:
 
     # ---------------- engine-facing ----------------
 
-    async def worker_urls(self) -> list[str]:
-        assert self.client is not None
-        for endpoint, extract in (
-            ("/list_workers", lambda body: body["urls"]),
-            ("/workers", lambda body: [worker["url"] for worker in body["workers"]]),
-        ):
-            try:
-                resp = await self.client.get(f"{self.router_url}{endpoint}")
-                if resp.status_code == 200:
-                    return router_worker_base_urls(extract(resp.json()))
-            except Exception:
-                continue
-        return []
-
     async def abort_adapter_requests(self, adapter_name: str, registration_id: str) -> None:
         # Registration-scoped: a retiring tenant's abort must never match a
         # same-name successor's in-flight requests (rid carries the registration).
-        prefix = rid_prefix(adapter_name, registration_id)
-        urls = await self.worker_urls()
-        if not urls:
-            logger.warning(f"[tinker] abort for '{adapter_name}': no workers discovered at {self.router_url}")
-            return
-        results = await asyncio.gather(
-            *(self.client.post(f"{url}/abort_request", json={"rid": prefix, "prefix": True}) for url in urls),
-            return_exceptions=True,
-        )
-        if failures := sum(isinstance(r, Exception) for r in results):
-            logger.warning(f"[tinker] abort for '{adapter_name}': {failures}/{len(results)} posts failed")
+        await self.inference_admin.abort_registration(rid_prefix(adapter_name, registration_id))
 
     # ---------------- info ----------------
 
