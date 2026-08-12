@@ -144,9 +144,12 @@ class TestPoisonWindow:
         )
 
         backend.enqueue_operation("A", "opt3", 3, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        claimed = backend.claim_ready_control_operations()
+        [op] = claimed["operations"]
         assert op["operation_id"] == "opt3"
-        assert op["slot"] == 0 and op["step"] == 0 and op["serving_version"] == 0
+        assert op["step"] == 0 and op["serving_version"] == 0
+        # Binding truth rides the control batch's lease, not the claim.
+        assert claimed["lease"]["bindings_by_operation"] == [["opt3", ["A", rid, 0]]]
         assert op["poison"] == (
             "a forward_backward in this gradient window failed (forward_backward ordinal 1 FAILED: bad chunk); "
             "the window's accumulated gradients were discarded — resubmit the batch and optim_step again"
@@ -167,7 +170,7 @@ class TestPoisonWindow:
         backend.operations.claim_data_operation("A", rid)
         backend.commit_tinker_batch([("A", rid)], ["fb4"], {"fb4": [[-0.1, -0.2]]})
         backend.enqueue_operation("A", "opt5", 5, "optim_step")
-        [clean] = backend.claim_ready_control_operations()
+        [clean] = backend.claim_ready_control_operations()["operations"]
         assert clean["operation_id"] == "opt5" and "poison" not in clean
         backend.complete_control_operations({"opt5": dict(ok=True, result={"grad_norm": 0.5})})
         assert window_state(backend, "A") == dict(
@@ -191,7 +194,7 @@ class TestPoisonWindow:
         )
 
         backend.enqueue_operation("A", "opt3", 3, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         assert op["operation_id"] == "opt3"
         assert "forward_backward ordinal 1 FAILED" in op["poison"]
 
@@ -201,7 +204,7 @@ class TestPoisonWindow:
         backend = make_backend()
         ready(backend, "A")
         backend.enqueue_operation("A", "opt1", 1, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         assert "poison" not in op
         backend.complete_control_operations({"opt1": dict(ok=True, result={"grad_norm": 0.0})})
         assert window_state(backend, "A") == dict(
@@ -215,7 +218,7 @@ class TestPoisonWindow:
         backend.operations.claim_data_operation("A", rid)
         backend.commit_tinker_batch([("A", rid)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         backend.enqueue_operation("A", "opt2", 2, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations(
             {
                 "opt2": dict(
@@ -236,7 +239,7 @@ class TestStepClockLifecycle:
         backend.operations.claim_data_operation("A", rid)
         backend.commit_tinker_batch([("A", rid)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         backend.enqueue_operation("A", "opt2", 2, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({"opt2": dict(ok=True, result={"grad_norm": 0.5})})
         assert window_state(backend, "A") == dict(
             state="RETIRING", slot=0, step=1, start_step=0, serving_version=0, dirty=False
@@ -246,7 +249,7 @@ class TestStepClockLifecycle:
         backend = make_backend()
         ready(backend, "A")
         backend.enqueue_operation("A", "load1", 1, "load_state", {"path": "/tmp/state"})
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({"load1": dict(ok=True, result={"step": 42, "path": "/tmp/state"})})
         assert window_state(backend, "A") == dict(
             state="READY", slot=0, step=42, start_step=42, serving_version=0, dirty=False
@@ -260,7 +263,7 @@ class TestStepClockLifecycle:
         backend.commit_tinker_batch([("A", rid)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
 
         backend.enqueue_operation("A", "save2", 2, "save_state", {"tag": "t0"})
-        assert backend.claim_ready_control_operations() == []
+        assert backend.claim_ready_control_operations() == {"operations": [], "lease": None}
         assert op_state(backend, "save2") == dict(
             state="FAILED",
             result=None,
@@ -269,10 +272,10 @@ class TestStepClockLifecycle:
         )
 
         backend.enqueue_operation("A", "opt3", 3, "optim_step")
-        [op] = backend.claim_ready_control_operations()
+        [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({"opt3": dict(ok=True, result={"grad_norm": 0.5})})
         backend.enqueue_operation("A", "save4", 4, "save_state", {"tag": "t0"})
-        [save_op] = backend.claim_ready_control_operations()
+        [save_op] = backend.claim_ready_control_operations()["operations"]
         assert save_op["operation_id"] == "save4"
 
 
@@ -293,7 +296,7 @@ class TestIndependentWindows:
 
         backend.enqueue_operation("A", "a-opt2", 2, "optim_step")
         backend.enqueue_operation("B", "b-opt2", 2, "optim_step")
-        claimed = {op["operation_id"]: op for op in backend.claim_ready_control_operations()}
+        claimed = {op["operation_id"]: op for op in backend.claim_ready_control_operations()["operations"]}
         assert set(claimed) == {"a-opt2", "b-opt2"}
         assert "forward_backward ordinal 1 FAILED" in claimed["a-opt2"]["poison"]
         assert "poison" not in claimed["b-opt2"]

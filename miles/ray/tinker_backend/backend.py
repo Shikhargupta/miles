@@ -17,7 +17,12 @@ from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.gradient_windows import GradientWindowTracker
 from miles.ray.tinker_backend.operations import OperationLedger
 from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
-from miles.ray.tinker_backend.residency import FixedSlotResidency, ResidentBinding
+from miles.ray.tinker_backend.residency import (
+    FixedSlotResidency,
+    ResidentBinding,
+    lease_from_metadata,
+    lease_to_metadata,
+)
 from miles.utils.http_utils import router_worker_base_urls
 from miles.utils.tinker_backend import BatchExecutionLease, rid_prefix, serving_lora_name
 
@@ -291,8 +296,6 @@ class TinkerBackend:
 
     def release_batch_lease(self, lease_metadata: dict) -> None:
         """Completion-boundary lifecycle hook; no-op under fixed residency."""
-        from miles.ray.tinker_backend.residency import lease_from_metadata
-
         self.residency.release_batch(lease_from_metadata(lease_metadata))
 
     # ---------------- control-operation claims ----------------
@@ -302,19 +305,22 @@ class TinkerBackend:
     # checkpoint carries grads): the client must step or deregister first.
     DIRTY_GATED_KINDS = ("save_state", "load_state")
 
-    def claim_ready_control_operations(self) -> list[dict]:
+    def claim_ready_control_operations(self) -> dict:
         """Claim every registration whose next open operation is an executable
-        control kind on a slot-resident READY adapter. The claimed view
-        carries the registry's authoritative clocks."""
-        ready = []
+        control kind, gated by the residency facade (exact READY binding —
+        claim-and-bind, same as the data path). The claimed views carry the
+        registry's authoritative clocks but never a slot: one
+        ``BatchExecutionLease`` for the whole control batch is the single
+        binding truth, returned alongside as
+        ``{"operations": [...], "lease": <encoded> | None}``."""
+        ready: list[dict] = []
+        bindings: list[tuple[str, ResidentBinding]] = []
         for name, registration_id in self.operations.claimable_control_tenants():
             record = self.registry.find(name)
-            if (
-                record is None
-                or record.registration_id != registration_id
-                or record.state is not AdapterState.READY
-                or record.slot is None
-            ):
+            if record is None or record.registration_id != registration_id:
+                continue
+            binding = self.residency.binding_for((name, registration_id))
+            if binding is None:
                 continue
             operation = self.operations.claim_control_operation(
                 name, registration_id, kinds=self.EXECUTABLE_CONTROL_KINDS
@@ -340,11 +346,14 @@ class TinkerBackend:
                     "user",
                 )
                 continue
-            operation["slot"] = record.slot
             operation["step"] = self.gradient_windows.step_of(record.tenant)
             operation["serving_version"] = record.serving_version
             ready.append(operation)
-        return ready
+            bindings.append((operation["operation_id"], binding))
+        if not ready:
+            return {"operations": [], "lease": None}
+        lease = self.residency.acquire_batch(tuple(bindings))
+        return {"operations": ready, "lease": lease_to_metadata(lease)}
 
     def complete_control_operations(self, results: dict[str, dict]) -> None:
         """Book the trainer's control-phase outcomes: an optim_step success

@@ -17,12 +17,14 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.tinker_backend.checkpoint import load_slot_state, named_state_dir, save_slot_state
+from miles.backends.megatron_utils.tinker_backend.executor import MultiLoraParameterExecutor
 from miles.backends.megatron_utils.tinker_backend.optimizer import (
     reload_adapter_slot_model_params,
-    step_adapter_slots,
     zero_adapter_slot_grads,
 )
+from miles.backends.training_utils.tinker_execution import run_optim_controls
 from miles.ray.tinker_backend.controller import get_tinker_controller
+from miles.ray.tinker_backend.residency import lease_from_metadata
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -216,48 +218,35 @@ def reconcile_adapters(args, model, optimizer, loaded_adapters: dict, pending_pu
             ray.get(get_tinker_controller().free_slot.remote(name))
 
 
-def execute_controls(args, model, optimizer, loaded_adapters, pending_push, weights_backuper, operations) -> dict:
+def execute_controls(
+    args, model, optimizer, loaded_adapters, pending_push, weights_backuper, operations, lease_metadata
+) -> dict:
     """Run data-less tinker operations on this rank; every rank receives the
-    identical list, and the fixed per-kind, slot-sorted order keeps the
-    collective sequence identical. optim_step applies the operation's
-    AdamParams and steps the slot's accumulated gradient sum;
-    save_weights_for_sampler stages the adapter for the next weight push (the
-    driver completes it after the push lands); save_state/load_state move the
-    slot's full training state through named immutable checkpoints."""
-    results: dict[str, dict] = {}
-    all_optim_ops = sorted((op for op in operations if op["kind"] == "optim_step"), key=lambda op: op["slot"])
-    # A poisoned window (a failed forward_backward chunk, #2258 §5) must never
-    # step: discard the slot's partial gradient sum on every rank and fail the
-    # operation as a user error. Step clock and serving version stay put; the
-    # discard itself resets the window to clean.
-    poisoned_ops = [op for op in all_optim_ops if op.get("poison")]
-    for op in poisoned_ops:
-        zero_adapter_slot_grads(model, op["slot"])
-        results[op["operation_id"]] = dict(ok=False, error=op["poison"], category="user")
-    optim_ops = [op for op in all_optim_ops if not op.get("poison")]
-    if optim_ops:
-        adam_by_slot = {op["slot"]: (op.get("payload") or {}).get("adam_params") or {} for op in optim_ops}
-        grad_norms, vetoed = step_adapter_slots(optimizer, model, adam_by_slot)
-        for op in optim_ops:
-            slot = op["slot"]
-            if slot in vetoed:
-                results[op["operation_id"]] = dict(
-                    ok=False, error="non-finite gradients; step vetoed and gradients cleared", category="server"
-                )
-            else:
-                results[op["operation_id"]] = dict(
-                    ok=True,
-                    result=dict(
-                        grad_norm=grad_norms.get(slot),
-                        learning_rate=adam_by_slot[slot].get("learning_rate", 1e-4),
-                    ),
-                )
+    identical (operations, lease), and the fixed per-kind, slot-sorted order
+    keeps the collective sequence identical.
+
+    The optimizer boundary goes through the generic coordinator
+    (run_optim_controls: poison partition, Adam defaults, outcome
+    normalization) driving the MultiLoraParameterExecutor, which resolves
+    every binding from the batch lease and validates it against this rank's
+    loaded adapters before mutating anything. The storage/publish verbs
+    (save_weights_for_sampler, save_state, load_state) stay target-specific
+    here, but resolve their slot through the same lease."""
+    lease = lease_from_metadata(lease_metadata)
+    executor = MultiLoraParameterExecutor(model=model, optimizer=optimizer, loaded_adapters=loaded_adapters)
+    results = run_optim_controls(operations, lease, executor)
+
+    def state_order(op: dict):
+        binding = lease.binding_of(op["operation_id"])
+        return (op["kind"], binding.training_slot if binding is not None else -1)
 
     for op in sorted(
         (op for op in operations if op["kind"] in ("save_weights_for_sampler", "save_state", "load_state")),
-        key=lambda op: (op["kind"], op["slot"]),
+        key=state_order,
     ):
-        results[op["operation_id"]] = _execute_state_op(op, args, model, optimizer, loaded_adapters, pending_push)
+        results[op["operation_id"]] = _execute_state_op(
+            op, lease, args, model, optimizer, loaded_adapters, pending_push
+        )
         if results[op["operation_id"]].get("ok") and op["kind"] == "load_state":
             weights_backuper.backup("actor")
 
@@ -269,11 +258,20 @@ def execute_controls(args, model, optimizer, loaded_adapters, pending_push, weig
     return results
 
 
-def _execute_state_op(op: dict, args, model, optimizer, loaded_adapters, pending_push) -> dict:
+def _execute_state_op(op: dict, lease, args, model, optimizer, loaded_adapters, pending_push) -> dict:
     name, kind = op["name"], op["kind"]
+    # Binding from the lease only; validated against this rank's loaded state
+    # (exact name, registration, slot) before any storage/publish mutation.
+    binding = lease.binding_of(op["operation_id"])
+    if binding is None:
+        return dict(
+            ok=False, error=f"operation '{op['operation_id']}' has no binding in the batch lease", category="server"
+        )
     run = loaded_adapters.get(name)
-    if run is None or run.slot != op["slot"]:
-        return dict(ok=False, error=f"adapter '{name}' is not resident in slot {op['slot']}", category="server")
+    if run is None or run.registration_id != binding.registration_key[1] or run.slot != binding.training_slot:
+        return dict(
+            ok=False, error=f"adapter '{name}' is not resident in slot {binding.training_slot}", category="server"
+        )
     # The registry's clocks are authoritative; the loaded view can lag.
     run = dataclass_replace(run, step=op.get("step", run.step), version=op.get("serving_version", run.version))
 

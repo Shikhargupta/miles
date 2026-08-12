@@ -133,10 +133,11 @@ class RayTrainGroup:
         """Converge trainer residency to the tinker controller's registry."""
         await self._broadcast("reconcile_tinker_adapters")
 
-    async def execute_tinker_controls(self, operations: list[dict]) -> dict:
-        """Run claimed control operations on every rank (identical list, fixed
-        order — the collectives require it); results agree, take rank 0's."""
-        results = await self._broadcast("execute_tinker_controls", operations)
+    async def execute_tinker_controls(self, operations: list[dict], lease_metadata: dict) -> dict:
+        """Run claimed control operations on every rank (identical list and
+        batch lease, fixed order — the collectives require it); results agree,
+        take rank 0's."""
+        results = await self._broadcast("execute_tinker_controls", operations, lease_metadata)
         return results[0]
 
     async def onload(self):

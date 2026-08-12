@@ -20,6 +20,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.tinker_backend.checkpoint import _slot_children, named_adapter_slot_parameters
+from miles.backends.training_utils.tinker_execution import resolve_adam_params
 
 logger = logging.getLogger(__name__)
 
@@ -132,17 +133,6 @@ def reload_adapter_slot_model_params(optimizer, slot: int) -> None:
         child.reload_model_params()
 
 
-def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP grad bookkeeping WITHOUT zeroing buffers, so per-adapter
-    accumulation survives (replaces ``zero_grad_buffer``)."""
-    for model_chunk in model_chunks:
-        if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
-            for param in model_chunk.params_with_grad:
-                param.grad_added_to_main_grad = False
-        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
-            bucket_group.reset()
-
-
 def zero_adapter_slot_grads(model, slot: int) -> None:
     """Zero one slot's gradients everywhere they live: the DDP ``main_grad``
     buffer views and any lingering ``grad``/``main_param.grad`` references."""
@@ -163,15 +153,12 @@ def _found_inf_anywhere(found_inf: bool) -> bool:
     return flag.item() > 0
 
 
-# Tinker AdamParams defaults, per the SDK's AdamParams model.
-_ADAM_PARAM_DEFAULTS = dict(learning_rate=1e-4, beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.0, grad_clip_norm=0.0)
-
-
 def apply_adam_params_to_slot(optimizer, slot: int, adam_params: dict | None) -> dict:
     """Write one optim_step's AdamParams onto the slot's param groups; returns
-    the resolved values. Tinker slots install no scheduler, so nothing
-    overwrites these between operations."""
-    resolved = {**_ADAM_PARAM_DEFAULTS, **{k: v for k, v in (adam_params or {}).items() if v is not None}}
+    the resolved values (SDK defaults come from the parameterization-neutral
+    resolver). Tinker slots install no scheduler, so nothing overwrites these
+    between operations."""
+    resolved = resolve_adam_params(adam_params)
     for child in _slot_children(optimizer, slot):
         for group in child.param_groups:
             group["lr"] = resolved["learning_rate"]

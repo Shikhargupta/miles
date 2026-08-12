@@ -139,7 +139,7 @@ class TestClaimAndBind:
         backend.registry.mark_ready(["A"])
         asyncio.run(backend.register("B", AdapterRunConfig()))  # unbound
         backend.enqueue_operation("B", "b-opt1", 1, "optim_step")
-        assert backend.claim_ready_control_operations() == []
+        assert backend.claim_ready_control_operations() == {"operations": [], "lease": None}
         assert backend.operations.get("b-opt1")["state"] == "QUEUED"
 
 

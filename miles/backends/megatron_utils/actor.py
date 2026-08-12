@@ -626,10 +626,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def execute_tinker_controls(self, operations: list[dict]) -> dict:
+    def execute_tinker_controls(self, operations: list[dict], lease_metadata: dict) -> dict:
         """Run a claimed set of data-less tinker operations (optim_step,
         save_weights_for_sampler, save_state, load_state) on this rank. Every
-        rank receives the identical list; results are keyed by operation_id."""
+        rank receives the identical list plus the control batch's execution
+        lease; results are keyed by operation_id."""
         from miles.backends.megatron_utils.tinker_backend.trainer import execute_controls
 
         return execute_controls(
@@ -640,6 +641,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self._multi_lora_pending_push,
             self.weights_backuper,
             operations,
+            lease_metadata,
         )
 
     @with_logs

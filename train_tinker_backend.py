@@ -38,28 +38,51 @@ def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
 
 
 async def run_control_phase(actor_model, controller) -> None:
-    """Claim → execute → complete, with the publish barrier in the middle."""
-    operations = await controller.claim_ready_control_operations.remote()
-    deferred: list[str] = []
-    if operations:
-        results = await actor_model.execute_tinker_controls(operations)
-        deferred = [op_id for op_id, outcome in results.items() if outcome.get("deferred") == "publish"]
-        immediate = {op_id: outcome for op_id, outcome in results.items() if op_id not in deferred}
-        if immediate:
-            await controller.complete_control_operations.remote(immediate)
+    """Claim → execute → complete, with the publish barrier in the middle.
 
-    # Push staged weights (publishes and load_state re-publishes); a no-op
-    # when nothing is staged. Serving versions bump as the push commits.
-    await actor_model.update_weights()
+    The claim carries one BatchExecutionLease for the whole control batch
+    (the single binding truth the trainer validates before mutating). Its
+    lifecycle follows the operations' completion boundary: an immediate-only
+    batch releases after its completions land; a batch with deferred
+    publish/load operations holds the lease through the physical publish
+    barrier and releases only after their terminal completion. Failure paths
+    release in ``finally`` — a no-op under fixed residency, so nothing can
+    leak either way."""
+    claimed = await controller.claim_ready_control_operations.remote()
+    operations, lease = claimed["operations"], claimed["lease"]
+    released = lease is None
+    try:
+        deferred: list[str] = []
+        if operations:
+            results = await actor_model.execute_tinker_controls(operations, lease)
+            deferred = [op_id for op_id, outcome in results.items() if outcome.get("deferred") == "publish"]
+            immediate = {op_id: outcome for op_id, outcome in results.items() if op_id not in deferred}
+            if immediate:
+                await controller.complete_control_operations.remote(immediate)
+            if not deferred and not released:
+                released = True
+                await controller.release_batch_lease.remote(lease)
 
-    if deferred:
-        # The barrier held: these weights are now live, so the operations may
-        # complete with their original execution results (a deferred load_state
-        # carries its restored step; the backend stamps a publish's
-        # authoritative serving identity).
-        await controller.complete_control_operations.remote(
-            {op_id: {key: value for key, value in results[op_id].items() if key != "deferred"} for op_id in deferred}
-        )
+        # Push staged weights (publishes and load_state re-publishes); a no-op
+        # when nothing is staged. Serving versions bump as the push commits.
+        await actor_model.update_weights()
+
+        if deferred:
+            # The barrier held: these weights are now live, so the operations may
+            # complete with their original execution results (a deferred load_state
+            # carries its restored step; the backend stamps a publish's
+            # authoritative serving identity).
+            await controller.complete_control_operations.remote(
+                {
+                    op_id: {key: value for key, value in results[op_id].items() if key != "deferred"}
+                    for op_id in deferred
+                }
+            )
+            released = True
+            await controller.release_batch_lease.remote(lease)
+    finally:
+        if not released:
+            await controller.release_batch_lease.remote(lease)
 
 
 async def main(args):

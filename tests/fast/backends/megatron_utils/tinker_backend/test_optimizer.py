@@ -16,12 +16,12 @@ import torch
 
 import miles.backends.megatron_utils.tinker_backend.optimizer as tinker_optimizer
 from miles.backends.megatron_utils.tinker_backend.optimizer import (
-    _ADAM_PARAM_DEFAULTS,
     _found_inf_anywhere,
     apply_adam_params_to_slot,
     build_tinker_slot_optimizer,
     step_adapter_slots,
 )
+from miles.backends.training_utils.tinker_execution import ADAM_PARAM_DEFAULTS
 
 
 class FakeChild:
@@ -93,7 +93,7 @@ class TestAdamParams:
         chained = FakeChained({0: [FakeChild([[1.0]])]})
         resolved = apply_adam_params_to_slot(chained, 0, {"learning_rate": 3e-4, "grad_clip_norm": None})
         assert resolved["learning_rate"] == 3e-4
-        assert resolved["grad_clip_norm"] == _ADAM_PARAM_DEFAULTS["grad_clip_norm"]
+        assert resolved["grad_clip_norm"] == ADAM_PARAM_DEFAULTS["grad_clip_norm"]
         assert resolved["beta2"] == 0.95 and resolved["eps"] == 1e-12
 
     def test_lands_on_every_group_of_the_slot_only(self):

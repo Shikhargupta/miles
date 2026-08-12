@@ -451,7 +451,7 @@ def train_one_step(
     explicit_optim_step = uses_tinker_operation_semantics(args)
 
     if explicit_optim_step:
-        from miles.backends.megatron_utils.tinker_backend.optimizer import reset_grad_metadata_keep_grads
+        from miles.backends.training_utils.tinker_execution import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.
