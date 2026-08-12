@@ -155,8 +155,11 @@ class TestPoisonWindow:
             "the window's accumulated gradients were discarded — resubmit the batch and optim_step again"
         )
 
-        # The trainer runs the discard on every rank and reports a user failure.
-        backend.complete_control_operations({"opt3": dict(ok=False, error=op["poison"], category="user")})
+        # The trainer runs the discard on every rank and reports a user
+        # failure that confirms the window was physically consumed.
+        backend.complete_control_operations(
+            {"opt3": dict(ok=False, error=op["poison"], category="user", gradient_window_consumed=True)}
+        )
         assert op_state(backend, "opt3") == dict(
             state="FAILED", result=None, error=op["poison"], error_category="user"
         )
@@ -222,7 +225,10 @@ class TestPoisonWindow:
         backend.complete_control_operations(
             {
                 "opt2": dict(
-                    ok=False, error="non-finite gradients; step vetoed and gradients cleared", category="server"
+                    ok=False,
+                    error="non-finite gradients; step vetoed and gradients cleared",
+                    category="server",
+                    gradient_window_consumed=True,
                 )
             }
         )

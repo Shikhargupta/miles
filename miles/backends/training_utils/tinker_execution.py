@@ -66,7 +66,14 @@ def run_optim_controls(
 
     Clean optim_steps (no prior F/B in the window) execute exactly like any
     other — no dirty prerequisite exists or may be added. Claim order and
-    compatibility policy are untouched: this only partitions and formats."""
+    compatibility policy are untouched: this only partitions and formats.
+
+    Every outcome answers two independent questions: did the OPERATION succeed
+    (``ok``), and were the window's physical gradients consumed
+    (``gradient_window_consumed`` — a step, a discard, or a veto that zeroed
+    them). A missing executor outcome fails CLOSED as a server error with the
+    consumed bit unset: claiming a phantom discard/step here is exactly the
+    partial-gradient leak the window invariant forbids."""
     all_optim = [op for op in operations if op["kind"] == "optim_step"]
     results: dict[str, dict] = {}
 
@@ -74,11 +81,24 @@ def run_optim_controls(
     if poisoned:
         discard_outcomes = executor.discard_many(lease, [op["operation_id"] for op in poisoned])
         for op in poisoned:
-            outcome = discard_outcomes.get(op["operation_id"], dict(ok=True))
+            outcome = discard_outcomes.get(op["operation_id"])
+            if outcome is None:
+                # Fail closed: without an explicit discard outcome nothing
+                # says the gradients were cleared, so this must not read as
+                # the user-poison terminal (which delimits the window).
+                results[op["operation_id"]] = dict(
+                    ok=False,
+                    error=f"executor returned no discard outcome for operation '{op['operation_id']}'",
+                    category="server",
+                )
+                continue
             # A successful discard is the POLICY failure (user, poison
-            # evidence attached); an executor-side refusal wins as-is.
+            # evidence attached, window consumed); an executor-side refusal
+            # wins as-is (and carries no consumed bit).
             results[op["operation_id"]] = (
-                dict(ok=False, error=op["poison"], category="user") if outcome.get("ok") else outcome
+                dict(ok=False, error=op["poison"], category="user", gradient_window_consumed=True)
+                if outcome.get("ok")
+                else outcome
             )
 
     clean = [op for op in all_optim if not op.get("poison")]
@@ -90,7 +110,16 @@ def run_optim_controls(
             )
             for op in clean
         ]
-        results.update(executor.step_many(lease, requests))
+        step_outcomes = executor.step_many(lease, requests)
+        for op in clean:
+            outcome = step_outcomes.get(op["operation_id"])
+            if outcome is None:
+                outcome = dict(
+                    ok=False,
+                    error=f"executor returned no step outcome for operation '{op['operation_id']}'",
+                    category="server",
+                )
+            results[op["operation_id"]] = outcome
     return results
 
 

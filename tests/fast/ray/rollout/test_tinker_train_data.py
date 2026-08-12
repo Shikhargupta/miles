@@ -145,6 +145,24 @@ class TestConvert:
         with pytest.raises(ValueError, match="batch lease binds"):
             convert([make_sample("ghost")], metadata)
 
+    def test_stale_same_name_registration_is_rejected_before_slot_routing(self):
+        """Anti-ABA (external review): a Datum stamped by an OLD registration
+        of the same name must fail loudly, never route onto the same-name
+        successor's slot — the name alone is not the tenant identity."""
+        metadata = plan_metadata([plan_entry("A", 5)])
+        stale = make_sample("A")
+        stale.adapter = AdapterRef(name="A", registration_id="r-old", serving_version=1, slot=9)
+        with pytest.raises(ValueError, match="registration"):
+            convert([stale], metadata)
+
+    def test_lease_binding_no_lane_references_is_a_plan_mismatch(self):
+        """Exact set agreement: a lease carrying a binding no lane uses is as
+        much of a mismatch as a lane the lease never bound."""
+        metadata = plan_metadata([plan_entry("A", 5)])
+        metadata["batch_execution_lease"]["bindings_by_operation"].append(["op-ghost", ["G", "r-G", 7]])
+        with pytest.raises(ValueError, match="disagree"):
+            convert([make_sample("A")], metadata)
+
     def test_adapter_less_samples_keep_the_generic_tinker_contract(self):
         """Contract only (no full-param runtime exists): the identity /
         correlation plane — batch_kind, lanes, loss map, operation map,

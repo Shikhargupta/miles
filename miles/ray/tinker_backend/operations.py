@@ -90,6 +90,11 @@ class Operation:
     # True once an executor claimed it: distinguishes an optim_step that ran
     # (and consumed/cleared its gradient window) from one that never executed.
     was_claimed: bool = False
+    # True only when the executor reported that this optim_step physically
+    # consumed the gradient window (step, discard, or veto that zeroed the
+    # grads on every rank). A claimed-then-refused optim_step stays False —
+    # it never touched the gradients and must not delimit the poison window.
+    window_consumed: bool = False
 
     @property
     def tenant(self) -> Tenant:
@@ -278,9 +283,10 @@ class OperationLedger:
         """The gradient-window poison scan (issue #2258 §5: a failed chunk
         poisons and clears the whole window; no partial step). Walk the
         ordinals below ``ordinal`` down to the nearest optim_step that actually
-        EXECUTED (claimed then terminal — it stepped or cleared the slot's
-        gradients either way; a boundary-rejected or cancelled optim_step never
-        touched them and is no delimiter). A forward_backward in that span that
+        CONSUMED the window (claimed, terminal, and the executor confirmed the
+        gradients were stepped or cleared; a boundary-rejected, cancelled, or
+        executor-refused optim_step never touched them and is no delimiter).
+        A forward_backward in that span that
         reached a terminal state without succeeding left the window holding
         partial gradients: report it so the pending optim_step is failed and
         the trainer discards the window instead of stepping it."""
@@ -291,7 +297,7 @@ class OperationLedger:
             op = queue.by_ordinal.get(o)
             if op is None:
                 continue
-            if op.kind is OperationKind.OPTIM_STEP and op.was_claimed and op.terminal:
+            if op.kind is OperationKind.OPTIM_STEP and op.was_claimed and op.terminal and op.window_consumed:
                 return None
             if op.kind is OperationKind.FORWARD_BACKWARD and op.terminal and op.state is not OperationState.SUCCEEDED:
                 return f"forward_backward ordinal {o} {op.state.value}: {op.error or 'failed'}"
@@ -309,6 +315,15 @@ class OperationLedger:
         op.state = OperationState.FAILED
         op.error = error
         op.error_category = category
+
+    def mark_window_consumed(self, operation_id: str) -> None:
+        """The executor confirmed this optim_step physically consumed the
+        gradient window (step, discard, or veto). Recorded on the — possibly
+        already terminal — operation so ``poisoned_window_blocker`` treats it
+        as a window delimiter."""
+        op = self.by_id.get(operation_id)
+        if op is not None:
+            op.window_consumed = True
 
     def cancel(self, operation_id: str) -> dict:
         """Cancel a not-yet-claimed operation; anything already claimed must

@@ -354,9 +354,12 @@ class TinkerBackend:
 
     def complete_control_operations(self, results: dict[str, dict]) -> None:
         """Book the trainer's control-phase outcomes: an optim_step success
-        advances the step clock and either outcome releases the dirty pin (a
-        veto zeroes the gradients on every rank); a load_state success
-        repositions the step clock."""
+        advances the step clock; a load_state success repositions the step
+        clock. Dirty state and the window delimiter follow the executor's
+        ``gradient_window_consumed`` bit, NOT mere failure: a step, a poison
+        discard, or a veto consumed the window (grads cleared on every rank),
+        while a pre-mutation refusal left partial gradients in place — its
+        dirty pin and poison evidence must survive for the next optim_step."""
         for operation_id, outcome in results.items():
             operation = self.operations.get(operation_id)
             if operation is None:
@@ -375,6 +378,7 @@ class TinkerBackend:
                 self.operations.complete(operation_id, result)
                 key = (operation["name"], operation["registration_id"])
                 if operation["kind"] == "optim_step":
+                    self.operations.mark_window_consumed(operation_id)
                     step = self.gradient_windows.commit_step(key)
                     # Registry hook: mirror the clock, release the dirty pin,
                     # apply the num_step auto-retire bound.
@@ -387,9 +391,13 @@ class TinkerBackend:
                 self.operations.fail(
                     operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server")
                 )
-                if operation["kind"] == "optim_step":
+                if operation["kind"] == "optim_step" and outcome.get("gradient_window_consumed"):
                     # Executed without committing (veto / poison discard):
-                    # every rank cleared the window's gradients.
+                    # every rank cleared the window's gradients. A refusal
+                    # without the consumed bit changes NOTHING here — the
+                    # partial gradients still exist, so the dirty pin stays
+                    # and the ledger keeps its poison evidence undelimited.
+                    self.operations.mark_window_consumed(operation_id)
                     self.gradient_windows.clear_after_executed_optim((operation["name"], operation["registration_id"]))
                     self.registry.clear_dirty(operation["name"])
 

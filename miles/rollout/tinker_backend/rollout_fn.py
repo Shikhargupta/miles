@@ -420,33 +420,48 @@ class TinkerOperationBatchAdapter:
         data: list[list[Sample]] = []
         batch_plan: list[dict] = []
         metrics: dict = {}
+        # Read-only pass: build the merged data and plan WITHOUT touching the
+        # runtimes, so a failure anywhere up to and including lease
+        # acquisition leaves every selected runtime READY with its output
+        # intact (the claimed operation stays retryable at the next selection
+        # instead of orphaning the only in-memory copy of an already-CLAIMED
+        # output).
+        try:
+            for runtime in selected:
+                output = runtime.ready_output
+                run = runtime.run
+                data.extend(output.samples)
+                # The claim's binding is the dispatch truth (resolved
+                # atomically with the claim); the runtime's AdapterRun view
+                # only names the metrics stream.
+                binding = output.metadata["binding"]
+                name, registration_id = binding.registration_key
+                batch_plan.append(
+                    dict(
+                        name=name,
+                        registration_id=registration_id,
+                        bound_slot=binding.training_slot,
+                        operation_id=output.metadata["operation_id"],
+                        operation_kind=output.metadata["operation_kind"],
+                        loss_spec=output.metadata.get("loss_spec"),
+                        sample_count=sum(len(group) for group in output.samples),
+                        binding=binding,
+                    )
+                )
+                metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
+            # One immutable dispatch receipt for the whole selection: the
+            # controller re-validates exact slot ownership before issuing it.
+            lease = await self.residency.acquire_batch(
+                [(entry["operation_id"], entry["binding"]) for entry in batch_plan]
+            )
+        except BaseException:
+            for runtime in selected:
+                runtime.state = AdapterRolloutRuntime.READY
+            raise
+        # Acquisition succeeded: NOW consume the outputs.
         for runtime in selected:
-            output = runtime.ready_output
             runtime.ready_output = None
             runtime.state = AdapterRolloutRuntime.IDLE  # relaunches at the NEXT generate call
-            run = runtime.run
-            data.extend(output.samples)
-            # The claim's binding is the dispatch truth (resolved atomically
-            # with the claim); the runtime's AdapterRun view only names the
-            # metrics stream.
-            binding = output.metadata["binding"]
-            name, registration_id = binding.registration_key
-            batch_plan.append(
-                dict(
-                    name=name,
-                    registration_id=registration_id,
-                    bound_slot=binding.training_slot,
-                    operation_id=output.metadata["operation_id"],
-                    operation_kind=output.metadata["operation_kind"],
-                    loss_spec=output.metadata.get("loss_spec"),
-                    sample_count=sum(len(group) for group in output.samples),
-                    binding=binding,
-                )
-            )
-            metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
-        # One immutable dispatch receipt for the whole selection: the
-        # controller re-validates exact slot ownership before issuing it.
-        lease = await self.residency.acquire_batch([(entry["operation_id"], entry["binding"]) for entry in batch_plan])
         return RolloutFnTrainOutput(
             samples=data,
             metrics=metrics,

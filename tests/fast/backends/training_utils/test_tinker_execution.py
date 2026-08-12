@@ -70,7 +70,9 @@ class TestRunOptimControls:
             executor,
         )
         assert executor.discarded == ["opt1"]  # the discard still EXECUTES
-        assert results["opt1"] == dict(ok=False, error="window poisoned", category="user")
+        assert results["opt1"] == dict(
+            ok=False, error="window poisoned", category="user", gradient_window_consumed=True
+        )
         [request] = executor.stepped
         assert request.operation_id == "opt2" and request.adam_params["learning_rate"] == 2e-4
         assert results["opt2"]["ok"] is True
@@ -79,6 +81,31 @@ class TestRunOptimControls:
         executor = FakeExecutor(discard_outcomes={"opt1": dict(ok=False, error="stale binding", category="server")})
         results = run_optim_controls([optim("opt1", poison="poisoned")], LEASE, executor)
         assert results["opt1"] == dict(ok=False, error="stale binding", category="server")
+        # A refusal never touched the gradients, so it must not claim the
+        # window was consumed.
+        assert not results["opt1"].get("gradient_window_consumed")
+
+    def test_missing_discard_outcome_fails_closed_as_a_server_error(self):
+        """External review: an executor that returns NO outcome for a poisoned
+        step proved nothing about the gradients; defaulting it to ok would
+        book the user-poison terminal (a window delimiter) over a window that
+        still physically holds partial gradients."""
+        executor = FakeExecutor(discard_outcomes={})
+        results = run_optim_controls([optim("opt1", poison="poisoned")], LEASE, executor)
+        outcome = results["opt1"]
+        assert outcome["ok"] is False and outcome["category"] == "server"
+        assert "discard" in outcome["error"]
+        assert not outcome.get("gradient_window_consumed")
+
+    def test_missing_step_outcome_fails_closed_as_a_server_error(self):
+        class SilentExecutor(FakeExecutor):
+            def step_many(self, lease, requests):
+                return {}
+
+        results = run_optim_controls([optim("opt1")], LEASE, SilentExecutor())
+        outcome = results["opt1"]
+        assert outcome["ok"] is False and outcome["category"] == "server"
+        assert not outcome.get("gradient_window_consumed")
 
     def test_clean_step_needs_no_prior_fb(self):
         executor = FakeExecutor()

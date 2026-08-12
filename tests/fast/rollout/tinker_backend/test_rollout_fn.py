@@ -246,6 +246,39 @@ class TestSelectionKindLock:
         assert output.postprocess.pad_to_dp is True
         assert first.state == AdapterRolloutRuntime.IDLE and first.ready_output is None
 
+    def test_failed_lease_acquisition_keeps_claimed_output_retryable(self):
+        """External review P1: acquisition is fallible (fencing races), and a
+        failure must not orphan the only in-memory copy of an already-CLAIMED
+        output — the selected runtimes return to READY with their outputs
+        intact, and the next selection retries them."""
+
+        class RefusingOnceResidency(FakeResidency):
+            def __init__(self):
+                super().__init__()
+                self.refusals_left = 1
+
+            async def acquire_batch(self, bindings_by_operation):
+                if self.refusals_left:
+                    self.refusals_left -= 1
+                    raise ValueError("stale binding")
+                return await super().acquire_batch(bindings_by_operation)
+
+        fn = make_fn()
+        fn.residency = RefusingOnceResidency()
+        runtime = ready_runtime(fn, "A", 0, "forward_backward")
+        selected = asyncio.run(fn._select())
+
+        with pytest.raises(ValueError, match="stale binding"):
+            merge(fn, selected)
+        assert runtime.state == AdapterRolloutRuntime.READY
+        assert runtime.ready_output is not None
+
+        # Retry-once: the SAME claimed output dispatches on the next cycle.
+        selected = asyncio.run(fn._select())
+        output = merge(fn, selected)
+        assert output.conversion_metadata["operation_by_lane"] == {0: "op-A"}
+        assert runtime.state == AdapterRolloutRuntime.IDLE and runtime.ready_output is None
+
     def test_merge_of_a_forward_selection_marks_forward_only(self):
         """Forward kind: the same composition with ``tinker_forward_only``
         set — the flag that keeps forward operations gradient-free must

@@ -73,7 +73,9 @@ class TestExecuteControls:
         # The coordinator resolves the SDK defaults into the request.
         assert harness.calls.step_args[0]["learning_rate"] == 3e-4
         assert harness.calls.step_args[0]["beta1"] == 0.9
-        assert results["op1"] == dict(ok=True, result=dict(grad_norm=1.25, learning_rate=3e-4))
+        assert results["op1"] == dict(
+            ok=True, gradient_window_consumed=True, result=dict(grad_norm=1.25, learning_rate=3e-4)
+        )
 
     def test_poisoned_optim_discards_the_window_and_never_steps(self, harness, monkeypatch):
         zeroed = []
@@ -90,7 +92,7 @@ class TestExecuteControls:
         assert zeroed == [0]  # the poisoned slot's partial gradients are discarded on this rank
         assert set(harness.calls.step_args) == {1}  # only the clean slot stepped
         assert harness.calls.step_args[1]["learning_rate"] == 2e-4
-        assert results["bad"] == dict(ok=False, error=poison, category="user")
+        assert results["bad"] == dict(ok=False, error=poison, category="user", gradient_window_consumed=True)
         assert results["good"]["ok"] is True
 
     def test_vetoed_slot_fails_as_server_error(self, harness):
@@ -112,6 +114,31 @@ class TestExecuteControls:
         wrong_slot = harness.run([control_op("optim_step", slot=1)])
         assert wrong_slot["op1"]["ok"] is False and "not resident" in wrong_slot["op1"]["error"]
         assert harness.calls.step_args is None  # nothing stepped
+
+    def test_state_operation_validates_the_binding_name_before_mutation(self):
+        """External review: registration id and slot alone are not identity —
+        an operation naming adapter A must refuse a lease binding that names
+        another tenant, BEFORE any storage/publish mutation (nothing may be
+        staged for push)."""
+        from miles.ray.tinker_backend.residency import ResidentBinding
+        from miles.utils.tinker_backend import BatchExecutionLease
+
+        lease = BatchExecutionLease(
+            dispatch_id="lease-t",
+            bindings_by_operation=(("op1", ResidentBinding(("B", "reg1"), 0)),),
+        )
+        pending: set = set()
+        result = trainer._execute_state_op(
+            dict(operation_id="op1", name="A", kind="save_weights_for_sampler"),
+            lease,
+            None,
+            None,
+            None,
+            {"A": make_run("A")},
+            pending,
+        )
+        assert result["ok"] is False and result["category"] == "server"
+        assert pending == set()
 
     def test_operation_missing_from_the_lease_is_refused(self, harness):
         op = control_op("optim_step")
