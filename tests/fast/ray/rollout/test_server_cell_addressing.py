@@ -119,3 +119,11 @@ class TestComputeAddrInfo:
 
         assert addr_info.server_url == "http://[fd00::1]:30000"
         assert addr_info.gate_url == "http://[fd00::1]:13000"
+
+
+class TestTheApiClientOfACell:
+    def test_carries_the_engine_api_key(self, stub_provider) -> None:
+        """A protected /server_info answers 401 without it, so the engine env would never be recorded."""
+        cell = _make_cell(stub_provider({}), sglang_api_key="a-key")
+
+        assert cell.api_client.api_key == "a-key"

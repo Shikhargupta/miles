@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from tests.fast.utils.workers.fake_ray import FakeRayCluster, FakeRayModule
 
@@ -22,3 +24,8 @@ def patch_ray_get(monkeypatch):
     import miles.utils.workers.addr_allocator as mod
 
     monkeypatch.setattr(mod.ray, "get", lambda x: x)
+
+
+def worker_manager_args(**overrides) -> SimpleNamespace:
+    """The slice of a training run's args the worker manager reads when it configures its logger."""
+    return SimpleNamespace(**{"save_debug_event_data": None, "env_report": "", **overrides})
