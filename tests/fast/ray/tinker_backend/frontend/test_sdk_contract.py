@@ -81,6 +81,7 @@ def stack(tmp_path_factory):
         router=router,
         run=run,
     )
+
     # Teardown must AWAIT what it cancels: dropping the driver/router tasks
     # pending prints "Task was destroyed but it is pending!" and can mask
     # exactly the shutdown/task-leak bug class these tests exist to catch.
