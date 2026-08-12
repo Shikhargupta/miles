@@ -59,18 +59,24 @@ class FakeDriver:
         self._run_control_operations()
 
     def _row(self, name: str, length: int) -> list[float]:
-        step = self.backend.registry.step_count(name)
+        step = self.backend.adapter_step(name)
         return [self.base_logprob - 0.01 * step] * length
 
     def _run_data_operations(self) -> None:
         for name, run in list(self.backend.registry.ready_adapters().items()):
-            while (op := self.backend.operations.claim_data_operation(name, run.registration_id)) is not None:
+            # Claim-and-bind, exactly like the rollout adapter's port.
+            while (op := self.backend.claim_data_operation(name, run.registration_id)) is not None:
                 rows = [self._row(name, sample["response_length"]) for sample in op["payload"]["samples"]]
-                accumulated = [name] if op["kind"] == "forward_backward" else []
+                # Batch commits carry exact registration keys, never bare names.
+                accumulated = [(name, run.registration_id)] if op["kind"] == "forward_backward" else []
                 self.backend.commit_tinker_batch(accumulated, [op["operation_id"]], {op["operation_id"]: rows})
 
     def _run_control_operations(self) -> None:
-        for op in self.backend.claim_ready_control_operations():
+        # Control claims return one envelope per batch: the operations plus a
+        # BatchExecutionLease (the fake trainer has no local residency to
+        # validate, and release is a no-op under fixed residency).
+        claimed = self.backend.claim_ready_control_operations()
+        for op in claimed["operations"]:
             kind, name, payload = op["kind"], op["name"], op.get("payload") or {}
             if kind == "optim_step":
                 if op.get("poison"):
@@ -105,6 +111,8 @@ class FakeDriver:
             else:
                 result = dict(ok=False, error=f"fake driver cannot run '{kind}'", category="server")
             self.backend.complete_control_operations({op["operation_id"]: result})
+        if claimed["lease"] is not None:
+            self.backend.release_batch_lease(claimed["lease"])
 
 
 class FakeRouter:
