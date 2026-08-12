@@ -16,10 +16,7 @@ import time
 from collections import deque
 from typing import Any
 
-import ray
-
 from miles.ray.tinker_backend.config import AdapterRun
-from miles.ray.tinker_backend.controller import get_tinker_controller
 from miles.ray.tinker_backend.residency import lease_to_metadata
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -27,6 +24,12 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
     RolloutPostprocessOptions,
+)
+from miles.rollout.tinker_backend.operation_port import (
+    BatchResidencyPort,
+    OperationQueuePort,
+    RayTinkerOperationQueue,
+    RayTrainerResidencyPort,
 )
 from miles.utils.tinker_backend import EmptyBatchTimeoutError
 from miles.utils.types import AdapterRef, Sample
@@ -145,18 +148,18 @@ class TinkerNullDataSource:
 class QueueChildRolloutFn:
     """Awaits the registration's next data-bearing operation and returns it as
     one complete batch. Blocking while the client queue is idle is normal: the
-    runtime simply stays IN_FLIGHT and other adapters keep training."""
+    runtime simply stays IN_FLIGHT and other adapters keep training. Claims go
+    through the injected OperationQueuePort — this class knows no Ray."""
 
-    def __init__(self, input: RolloutFnConstructorInput):
+    def __init__(self, input: RolloutFnConstructorInput, operations: OperationQueuePort | None = None):
         assert isinstance(input.data_source, TinkerOperationSource)
         self.source: TinkerOperationSource = input.data_source
+        self.operations = operations if operations is not None else RayTinkerOperationQueue()
 
     async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
-        name, registration_id = self.source.run.name, self.source.run.registration_id
+        key = (self.source.run.name, self.source.run.registration_id)
         while True:
-            operation = await asyncio.to_thread(
-                ray.get, get_tinker_controller().claim_data_operation.remote(name, registration_id)
-            )
+            operation = await self.operations.claim_data(key)
             if operation is None:
                 await asyncio.sleep(_CLAIM_POLL_S)
                 continue
@@ -165,13 +168,8 @@ class QueueChildRolloutFn:
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 - a bad payload fails its op, not the adapter
-                logger.exception(f"[tinker] ({name}) operation '{operation['operation_id']}' rejected: {e}")
-                await asyncio.to_thread(
-                    ray.get,
-                    get_tinker_controller().fail_operation.remote(
-                        operation["operation_id"], f"invalid operation payload: {e}", "user"
-                    ),
-                )
+                logger.exception(f"[tinker] ({key[0]}) operation '{operation['operation_id']}' rejected: {e}")
+                await self.operations.fail(operation["operation_id"], f"invalid operation payload: {e}", "user")
 
     def _batch_from_operation(self, operation: dict) -> RolloutFnTrainOutput:
         if operation["kind"] not in DATA_OPERATION_KINDS:
@@ -215,11 +213,11 @@ class AdapterRolloutRuntime:
     SELECTED = "SELECTED"
     FAILED = "FAILED"
 
-    def __init__(self, args, run: AdapterRun):
+    def __init__(self, args, run: AdapterRun, operations: OperationQueuePort | None = None):
         self.run = run
         self.data_source = TinkerOperationSource(args, run)
         child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
-        self.child_fn = QueueChildRolloutFn(child_input)
+        self.child_fn = QueueChildRolloutFn(child_input, operations)
         self.state = self.IDLE
         self.ready_output: RolloutFnTrainOutput | None = None
         self.task: asyncio.Task | None = None
@@ -248,12 +246,27 @@ class AdapterRolloutRuntime:
         self.task = None
 
 
-class TinkerRolloutFn:
-    """Tinker wrapper: whole child batches only, persistent round-robin,
-    homogeneous kind lock, coalesce timeout, registration fencing."""
+class TinkerOperationBatchAdapter:
+    """Operation-to-batch adapter (codex-rollout-fullparameter-design-0810
+    §4.5): turns claimed client operations into whole training batches —
+    persistent round-robin, homogeneous kind lock, coalesce timeout,
+    registration fencing. Transports are injected ports (OperationQueuePort,
+    BatchResidencyPort), so a future RolloutExecutor loads this adapter
+    unchanged and unit tests need no Ray.
 
-    def __init__(self, input: RolloutFnConstructorInput):
+    The adapter never samples prompts, never generates, never scores, never
+    builds Datums, and never touches residency policy — it only claims,
+    selects, and converts."""
+
+    def __init__(
+        self,
+        input: RolloutFnConstructorInput,
+        operations: OperationQueuePort | None = None,
+        residency: BatchResidencyPort | None = None,
+    ):
         self.args = input.args
+        self.operations = operations if operations is not None else RayTinkerOperationQueue()
+        self.residency = residency if residency is not None else RayTrainerResidencyPort()
         self.runtimes: dict[Tenant, AdapterRolloutRuntime] = {}
         self.rotation: deque[Tenant] = deque()
         self._ready = asyncio.Event()
@@ -262,7 +275,9 @@ class TinkerRolloutFn:
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
         if input.evaluation:
-            raise ValueError("TinkerRolloutFn does not serve eval; tinker runs have no server-side eval loop")
+            raise ValueError(
+                "TinkerOperationBatchAdapter does not serve eval; tinker runs have no server-side eval loop"
+            )
         adapters = await self._trainable_adapters()
         await self._reconcile(adapters)
         self._launch_idle_children(input.rollout_id)
@@ -278,10 +293,9 @@ class TinkerRolloutFn:
     # ------------------------------ runtimes ------------------------------
 
     async def _trainable_adapters(self) -> dict[str, AdapterRun]:
-        snapshot = await asyncio.to_thread(ray.get, get_tinker_controller().snapshot.remote())
         # READY only: a retiring registration's queued operations are fenced
         # terminal, so a child claim would never return for it.
-        return snapshot["ready"]
+        return await self.operations.ready_streams()
 
     async def _reconcile(self, adapters: dict[str, AdapterRun]) -> None:
         live = {(name, run.registration_id) for name, run in adapters.items()}
@@ -295,7 +309,7 @@ class TinkerRolloutFn:
             if tenant in self.runtimes:
                 self.runtimes[tenant].refresh(run)
                 continue
-            self.runtimes[tenant] = AdapterRolloutRuntime(self.args, run)
+            self.runtimes[tenant] = AdapterRolloutRuntime(self.args, run, self.operations)
             logger.info(f"[tinker] created child runtime for '{name}' ({run.registration_id[:8]})")
         self._sync_rotation()
 
@@ -432,12 +446,7 @@ class TinkerRolloutFn:
             metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
         # One immutable dispatch receipt for the whole selection: the
         # controller re-validates exact slot ownership before issuing it.
-        lease = await asyncio.to_thread(
-            ray.get,
-            get_tinker_controller().acquire_batch_lease.remote(
-                [(entry["operation_id"], entry["binding"]) for entry in batch_plan]
-            ),
-        )
+        lease = await self.residency.acquire_batch([(entry["operation_id"], entry["binding"]) for entry in batch_plan])
         return RolloutFnTrainOutput(
             samples=data,
             metrics=metrics,
@@ -449,3 +458,8 @@ class TinkerRolloutFn:
             # to the batch instead of trimming it.
             postprocess=RolloutPostprocessOptions(pad_to_dp=True),
         )
+
+
+# Stable import path: --rollout-function-path defaults keep working, and the
+# historical name survives as an alias of the adapter it always was.
+TinkerRolloutFn = TinkerOperationBatchAdapter
