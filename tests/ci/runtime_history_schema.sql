@@ -1,3 +1,4 @@
+-- doc-dev: docs/ci/04-runtime-est-time.md
 CREATE TABLE IF NOT EXISTS ci_test_runtime_attempts (
     test_path TEXT NOT NULL,
     backend TEXT NOT NULL,
