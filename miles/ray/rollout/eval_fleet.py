@@ -130,7 +130,6 @@ class InferenceControllerEvalFleet:
         return False
 
     async def _fleet_api_clients(self) -> list[SGLangApiClient]:
-        """A snapshot taken under the server's lock, so a cell joining mid-pin cannot be missed silently."""
         async with self._srv.context_lock:
             return list(self._srv.api_clients)
 
