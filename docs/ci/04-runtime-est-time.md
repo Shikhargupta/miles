@@ -16,19 +16,11 @@ For each selected file, the harness buffers every completed PASS, FAIL, and TIME
 
 Runtime-history provenance and batch-write failures are fail-open: the harness logs `[CI Runtime] history write failed` and preserves the test result. FAIL and TIMEOUT rows remain available for audit but never contribute to an estimate.
 
-## Provision the Neon table
+## Runtime-history storage
 
 Runtime history reuses the repository's hosted Postgres connection but stays in the independent `ci_test_runtime_attempts` table; it does not share metric-history tables or trust semantics. Runtime code performs DML only and never creates or migrates the table.
 
-From the repository root, apply the checked-in schema once with a schema-owner connection:
-
-```bash
-psql "${NEON_SCHEMA_DSN:?set NEON_SCHEMA_DSN to the schema-owner DSN}" \
-  -v ON_ERROR_STOP=1 \
-  -f tests/ci/runtime_history_schema.sql
-```
-
-`NEON_SCHEMA_DSN` in this command is an operator-shell variable, not a Miles configuration key. Configure the repository Actions secret `NEON_DATABASE_URL` with a role that can `SELECT`, `INSERT`, and `UPDATE` this table. The same secret is passed to scheduled CUDA jobs for collection and to the calibration workflow for reads.
+The table definition is versioned in `tests/ci/runtime_history_schema.sql`. The repository Actions secret `NEON_DATABASE_URL` must use a role that can `SELECT`, `INSERT`, and `UPDATE` this table. The same secret is passed to scheduled CUDA jobs for collection and to the calibration workflow for reads.
 
 The idempotency key is `(github_run_id, github_run_attempt, test_path, backend, suite, test_attempt)`. Replaying the same payload is safe; a different payload for an existing key fails and rolls back the batch instead of silently choosing one value.
 
@@ -85,12 +77,11 @@ The `Update CI runtime estimates` workflow runs every Monday at 12:00 UTC. Its s
 
 Enable publishing in this order:
 
-1. Apply `tests/ci/runtime_history_schema.sql` and verify the DML role's permissions.
-2. Configure the `NEON_DATABASE_URL` Actions secret and verify scheduled-main collection.
-3. Wait until each identity to be calibrated has at least three recent PASS attempts.
-4. Manually dispatch `Update CI runtime estimates` with `dry_run=true` and inspect its step summary.
-5. In repository **Settings → Actions → General → Workflow permissions**, enable **Allow GitHub Actions to create and approve pull requests** as described in the [GitHub Actions settings documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository).
-6. Set the repository Actions variable `CI_RUNTIME_EST_TIME_BOT_ENABLED=true`.
+1. Configure the `NEON_DATABASE_URL` Actions secret with the required DML permissions and verify scheduled-main collection.
+2. Wait until each identity to be calibrated has at least three recent PASS attempts.
+3. Manually dispatch `Update CI runtime estimates` with `dry_run=true` and inspect its step summary.
+4. In repository **Settings → Actions → General → Workflow permissions**, enable **Allow GitHub Actions to create and approve pull requests** as described in the [GitHub Actions settings documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository).
+5. Set the repository Actions variable `CI_RUNTIME_EST_TIME_BOT_ENABLED=true`.
 
 A manual dispatch with `dry_run=false` can publish even before the scheduled-job variable is enabled. Publishing happens only when `tests/e2e` changed. The workflow refreshes the fixed `jiajun/ci-est-time-update` branch with `--force-with-lease`, updates its existing open pull request or creates one, and never merges it.
 
@@ -101,7 +92,7 @@ Current limitation: the publish step authenticates with the repository `GITHUB_T
 | Symptom | Check |
 |---|---|
 | No runtime rows | Confirm the source was a scheduled run on `main`, the job was CUDA, the file was under `tests/e2e`, and `NEON_DATABASE_URL` reached the job. PR runs, nightly-labeled PRs, CPU, and ROCm do not collect runtime history. |
-| `[CI Runtime] history write failed` | Check table provisioning, DSN reachability, provenance variables, and `SELECT`/`INSERT`/`UPDATE` privileges. The associated test outcome is unchanged, but its runtime evidence was not persisted. |
+| `[CI Runtime] history write failed` | Check that `ci_test_runtime_attempts` exists, along with DSN reachability, provenance variables, and `SELECT`/`INSERT`/`UPDATE` privileges. The associated test outcome is unchanged, but its runtime evidence was not persisted. |
 | The report has no changes | Check for three PASS attempts within the window. FAIL and TIMEOUT rows are excluded, and a p90 that rounds to the current literal needs no edit. |
 | The scheduled workflow is skipped | Confirm `CI_RUNTIME_EST_TIME_BOT_ENABLED` is the string `true`. |
 | The publish step cannot create a pull request | Confirm both the workflow's write permissions and the repository setting that allows Actions to create pull requests. |
