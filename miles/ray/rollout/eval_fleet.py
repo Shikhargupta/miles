@@ -16,7 +16,7 @@ from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.http_utils import wait_http_ok
-from miles.utils.workers.rpc.client.misc import RpcWorkerCallError, ServerRestartedError
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
@@ -38,7 +38,7 @@ class EvalFleetPin:
     skip_reason: str | None
 
 
-UNREACHABLE_CONTROLLER_ERRORS = (RpcWorkerCallError, WorkerUnreachableError, ServerRestartedError, TimeoutError)
+UNREACHABLE_CONTROLLER_ERRORS = (WorkerUnreachableError, ServerRestartedError, TimeoutError)
 
 
 class RolloutExecutorEvalFleet:
