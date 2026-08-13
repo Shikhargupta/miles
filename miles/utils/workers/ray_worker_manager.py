@@ -256,7 +256,8 @@ class _CellManager(Generic[SpecT]):
         self.actors = None
 
     async def find_dead_worker_names(self) -> list[str]:
-        actors = self.actors
+        if (actors := self.actors) is None:
+            return []
         probes = await asyncio.gather(*[a.probe_is_dead() for a in actors])
         return [actor.name for actor, is_dead in zip(actors, probes, strict=True) if is_dead]
 

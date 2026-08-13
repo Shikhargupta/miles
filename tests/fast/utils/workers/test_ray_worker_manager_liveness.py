@@ -122,6 +122,36 @@ class TestScanLivenessOnce:
         assert probed == {1}
 
 
+class TestScanLivenessRacesWithMembershipChanges:
+    async def test_a_cell_stopped_while_another_one_is_probed_is_skipped(self, fake_ray_cluster: FakeRayCluster):
+        """A suspend landing mid-scan empties a cell's actors, and probing them would abort the whole scan."""
+        manager = await _launch([_make_spec("engine", num_cells=2)], comm_backend=WorkerCommBackend.RPC)
+        fake_ray_cluster.handles[0].hanging_methods[READINESS_METHOD] = 0.2
+
+        scan = asyncio.create_task(manager._scan_liveness_once())
+        await asyncio.sleep(0.05)
+        await manager.stop_cells(["engine-1"])
+        await scan
+
+        infos = manager.get_cell_infos(pool_ids=["engine"])
+        assert infos["engine-0"].alive
+        assert not infos["engine-1"].alive
+
+    async def test_a_cell_restarted_while_being_probed_survives(self, fake_ray_cluster: FakeRayCluster):
+        """The dead workers the scan saw belong to the old generation, so the new one must not pay for them."""
+        manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        _kill_worker_process(fake_ray_cluster, handle_index=0)
+        fake_ray_cluster.handles[0].hanging_methods[READINESS_METHOD] = 0.2
+
+        scan = asyncio.create_task(manager._scan_liveness_once())
+        await asyncio.sleep(0.05)
+        await manager.stop_cells(["engine-0"])
+        await manager.start_cells(["engine-0"])
+        await scan
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+
+
 class TestScanLivenessOnlyTrustsAProvenDeath:
     async def test_a_worker_that_does_not_answer_in_time_is_kept(self, fake_ray_cluster: FakeRayCluster):
         """A busy worker must not be declared dead, or a slow train step would kill its own cell."""
