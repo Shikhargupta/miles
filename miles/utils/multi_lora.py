@@ -45,6 +45,40 @@ def targets_expert_leaves(target_modules: Any) -> bool:
     return any(entry.split(".")[-1] in _EXPERT_LEAF_NAMES for entry in entries)
 
 
+def _recompute_source_recognizes_adapters(recompute_module: Any) -> bool:
+    """Whether a bridge ``peft.recompute`` module's input-grad patch classifies
+    multi-LoRA ``.adapters.<slot>.`` parameter names as adapter parameters.
+    Source inspection, separated from the import so tests can probe real
+    module files without touching the installed bridge."""
+    import inspect
+
+    try:
+        source = inspect.getsource(recompute_module.maybe_enable_recompute_inputs_grad)
+    except (AttributeError, OSError, TypeError):
+        return False
+    return ".adapters." in source
+
+
+def _bridge_recompute_patch_recognizes_multi_lora() -> bool:
+    """Whether the installed Megatron-Bridge can replay checkpointed regions
+    grad-enabled for multi-LoRA.
+
+    Adapter-only training leaves every layer input grad-free, so activation
+    recompute only works because the bridge's PEFT patch
+    (``megatron.bridge.peft.recompute.maybe_enable_recompute_inputs_grad``)
+    forces TransformerBlock inputs to require grad when only adapters train.
+    Bridges before radixark/Megatron-Bridge#27 (branch ``bridge`` @ 688d34b8)
+    matched only single-LoRA ``.adapter.`` names, classified multi-LoRA
+    ``.adapters.<slot>.`` params as trainable base weights, and skipped the
+    patch — full recompute then silently zeroed every adapter gradient. An
+    unimportable or unreadable bridge fails closed (treated as unfixed)."""
+    try:
+        from megatron.bridge.peft import recompute
+    except Exception:
+        return False
+    return _recompute_source_recognizes_adapters(recompute)
+
+
 def validate_multi_lora_args(args: Any) -> None:
     """Set ``args.multi_lora``, then validate and default the multi-LoRA arg
     surface. Called from ``miles_validate_args``; a no-op for normal runs."""
@@ -67,6 +101,45 @@ def validate_multi_lora_args(args: Any) -> None:
         "complete adapter to push to the rollout engines, and a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
     )
+    # Activation recompute: a checkpointed region is only replayed grad-enabled
+    # when its INPUT requires grad. Multi-LoRA trains adapter-only (frozen
+    # base), so recompute shapes that checkpoint the adapters themselves —
+    # 'full' granularity always, selective 'moe' when the expert leaves are
+    # the targets — depend on the bridge's PEFT input-grad patch forcing
+    # TransformerBlock inputs to require grad. On a bridge without the
+    # multi-LoRA fix (radixark/Megatron-Bridge#27), no layer is ever replayed,
+    # every adapter gradient is identically zero, and training is a silent
+    # no-op under a truthful grad_norm=0.0 (reproduced: GPT-OSS 20B
+    # expert-only LoRA, TP=2+SP, 4xH200, 2026-08-12). Refuse those shapes at
+    # launch unless the installed bridge carries the fix.
+    recompute_modules = list(getattr(args, "recompute_modules", None) or [])
+    risky_full = getattr(args, "recompute_granularity", None) == "full"
+    risky_moe = "moe" in recompute_modules and targets_expert_leaves(args.target_modules)
+    if risky_full or risky_moe:
+        bridge_fixed = _bridge_recompute_patch_recognizes_multi_lora()
+        assert not risky_full or bridge_fixed, (
+            "Multi-LoRA with --recompute-granularity full requires a Megatron-Bridge "
+            "whose PEFT recompute patch recognizes multi-LoRA '.adapters.<slot>.' "
+            "params (radixark/Megatron-Bridge#27, branch bridge @ 688d34b8). The "
+            "installed bridge does not: maybe_enable_recompute_inputs_grad matches "
+            "only single-LoRA '.adapter.' names, so the TransformerBlock input-grad "
+            "hook is skipped, no checkpointed layer is ever replayed, and every "
+            "adapter gradient is silently zero (grad_norm=0.0 on every step while "
+            "the job keeps 'training'). Upgrade the bridge, or use "
+            "--recompute-granularity selective (default recompute-modules core_attn; "
+            "add moe_act for MoE activation memory)."
+        )
+        assert not risky_moe or bridge_fixed, (
+            "Multi-LoRA with expert-module targets and 'moe' in --recompute-modules "
+            "requires a Megatron-Bridge whose PEFT recompute patch recognizes "
+            "multi-LoRA '.adapters.<slot>.' params (radixark/Megatron-Bridge#27, "
+            "branch bridge @ 688d34b8): the checkpointed MoE region contains the "
+            "expert adapters themselves, so with expert-only targets their replay "
+            "depends entirely on the bridge's TransformerBlock input-grad hook — "
+            "without it every adapter gradient is silently zero (grad_norm=0.0 on "
+            "every step). Upgrade the bridge, or recompute the expert activation "
+            "instead: --recompute-modules core_attn moe_act."
+        )
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
     assert getattr(args, "qkv_format", "thd") == "thd", (
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "

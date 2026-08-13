@@ -249,7 +249,12 @@ class TinkerOperationBatchAdapter:
     persistent round-robin, homogeneous kind lock, coalesce timeout,
     registration fencing. Transports are injected ports (OperationQueuePort,
     BatchResidencyPort), so a future RolloutExecutor loads this adapter
-    unchanged and unit tests need no Ray.
+    unchanged and unit tests need no Ray — "unchanged" is the executor/Ray
+    boundary only. The adapter is NOT parameterization-neutral: its runtimes
+    build ``TinkerOperationSource``/``AdapterRun`` views and stamp samples
+    with ``AdapterRef``, so a full-parameter deployment reuses the operation/
+    result semantics but still needs a small sample-stamping extraction here
+    (external review 0811: soften, do not pre-build the hook).
 
     The adapter never samples prompts, never generates, never scores, never
     builds Datums, and never touches residency policy — it only claims,

@@ -3,9 +3,15 @@
 
 Everything here is tinker OPERATION semantics — the client owns the optimizer
 boundary — with no Multi-LoRA in it: no AdapterRegistry, no SlotPool, no
-AdapterRun, no slot numbers (the dependency rule of §3.7). The Multi-LoRA
-pieces live behind the ``ParameterExecutor`` port
-(miles/backends/megatron_utils/tinker_backend/executor.py).
+AdapterRun, no slot numbers (the dependency rule of §3.7). The OPTIMIZER-
+boundary Multi-LoRA pieces live behind the ``ParameterExecutor`` port
+(miles/backends/megatron_utils/tinker_backend/executor.py); the trainer-side
+DATA-batch path does not have an equivalent port yet — lease validation,
+logprob gathering, and batch commit are Multi-LoRA-owned in
+``megatron_utils/actor.py`` + ``tinker_backend/trainer.py``, so a future
+full-parameter executor reuses the operation/result semantics but still needs
+a small trainer-side data-hook extraction (external review 0811: narrow the
+claim rather than pre-build the hook).
 """
 
 from dataclasses import dataclass

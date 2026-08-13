@@ -25,6 +25,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -116,6 +117,7 @@ class FSDPTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
+        self._flops_args = flops_args_from_hf_config(self.hf_config)
 
         routing_replay.enable(args)
 
@@ -439,7 +441,9 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_id=rollout_id,
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
-            compute_total_fwd_flops=None,
+            compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(
+                seq_lens, self._flops_args, dist.get_world_size()
+            ),
         )
 
         self._heartbeat.bump()
@@ -659,25 +663,9 @@ class FSDPTrainRayActor(TrainRayActor):
             raise NotImplementedError(f"Loading from checkpoint file {ref_load_path} not yet implemented")
 
     def _get_model_inputs_args(self, batch: dict) -> dict:
-        input_ids = batch["tokens"]
-        position_ids = batch["position_ids"]
-
-        if get_parallel_state().cp.size > 1:
-            # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
-            from ring_flash_attn import update_ring_flash_attn_params
-
-            if "cu_seqlens" in batch:
-                cu_seqlens = batch["cu_seqlens"]
-                if not cu_seqlens.is_cuda:
-                    cu_seqlens = cu_seqlens.cuda()
-                update_ring_flash_attn_params(cu_seqlens, self.cp_group)
-
-            input_ids = torch.chunk(input_ids, get_parallel_state().cp.size, dim=1)[get_parallel_state().cp.rank]
-            position_ids = torch.chunk(position_ids, get_parallel_state().cp.size, dim=1)[get_parallel_state().cp.rank]
-
         model_args = {
-            "input_ids": input_ids,
-            "position_ids": position_ids,
+            "input_ids": batch["tokens"],
+            "position_ids": batch["position_ids"],
             "attention_mask": None,
         }
 

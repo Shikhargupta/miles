@@ -357,6 +357,70 @@ class TestCommitAndFence:
         assert backend.registry.records["X"].state is AdapterState.CLEANUP
 
 
+class TestFailTinkerBatch:
+    """The abnormal-outcome data-batch finalizer (external review P1: data
+    operations must never remain CLAIMED forever when a dispatched train
+    exits without committing)."""
+
+    def _claimed_batch(self, backend):
+        rid = backend.registry.find("X").registration_id
+        backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
+        claim = backend.claim_data_operation("X", rid)
+        lease = backend.acquire_batch_lease([("fb1", claim["binding"])])
+        from miles.ray.tinker_backend.residency import lease_to_metadata
+
+        return lease_to_metadata(lease)
+
+    def test_uncommitted_batch_terminal_fails_claimed_operations_typed_server(self):
+        backend = ready_backend()
+        lease_metadata = self._claimed_batch(backend)
+        backend.fail_tinker_batch(["fb1"], "train step finished without committing", lease_metadata)
+        view = backend.operations.get("fb1")
+        assert view["state"] == "FAILED" and view["error_category"] == "server"
+        assert "without committing" in view["error"]
+
+    def test_finalized_forward_backward_is_poison_evidence_for_the_next_optim(self):
+        # The finalizer must PRESERVE poison semantics, not bypass them: the
+        # failed forward_backward left possibly-partial gradients, so the
+        # next optim_step is routed to a discard.
+        backend = ready_backend()
+        lease_metadata = self._claimed_batch(backend)
+        backend.fail_tinker_batch(["fb1"], "abnormal train outcome", lease_metadata)
+        backend.enqueue_operation("X", "opt2", 2, "optim_step")
+        [op] = backend.claim_ready_control_operations()["operations"]
+        assert "forward_backward ordinal 1" in op["poison"]
+
+    def test_already_terminal_operations_are_left_untouched(self):
+        # A late finalization after a partial commit must never overwrite a
+        # landed result.
+        backend = ready_backend()
+        lease_metadata = self._claimed_batch(backend)
+        backend.commit_tinker_batch([reg_key(backend)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
+        backend.fail_tinker_batch(["fb1"], "late failure", lease_metadata)
+        view = backend.operations.get("fb1")
+        assert view["state"] == "SUCCEEDED" and view["result"]["logprobs"] == [[-0.1, -0.2]]
+
+    def test_lease_releases_even_when_the_ledger_walk_raises(self):
+        backend = ready_backend()
+        lease_metadata = self._claimed_batch(backend)
+        released = []
+        backend.residency.release_batch = lambda lease: released.append(lease.dispatch_id)
+
+        def boom(operation_id, error, category="server"):
+            raise RuntimeError("ledger unavailable")
+
+        backend.operations.fail = boom
+        with pytest.raises(RuntimeError, match="ledger unavailable"):
+            backend.fail_tinker_batch(["fb1"], "abnormal train outcome", lease_metadata)
+        assert released == [lease_metadata["dispatch_id"]]
+
+    def test_unknown_operation_ids_and_missing_lease_are_tolerated(self):
+        # Finalizing is best-effort bookkeeping: a batch whose operations were
+        # already fenced away (retirement) must not crash the driver loop.
+        backend = ready_backend()
+        backend.fail_tinker_batch(["ghost"], "abnormal train outcome", None)
+
+
 def test_service_info_reports_the_v1_matrix():
     backend = ready_backend()
     info = backend.service_info()
