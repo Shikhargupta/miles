@@ -102,8 +102,8 @@ client-set `alpha`; non-finite/out-of-domain AdamParams; a loss's required
 per-token channels missing; `response_length == len(tokens)` (targets are
 shifted); async/off-policy sampling against pinned snapshots;
 cross-world-size state restore; state restore into a slot whose per-rank
-optimizer ownership differs from the save (cross-slot restore under DP
-sharding — always safe under DP=1); idle slot GC.
+optimizer ownership differs from the save (cross-slot restore requires an
+identical dense-and-expert ownership signature); idle slot GC.
 
 ## Files
 

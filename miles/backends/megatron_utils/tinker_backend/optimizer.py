@@ -114,7 +114,7 @@ def build_tinker_slot_optimizer(args: Namespace, config, model_chunks: Sequence)
 
     optimizer = LayerWiseDistributedOptimizer(base_optimizers, config, pg_collection, init_state_fn_list=init_fns)
 
-    # Params are scattered whole across DP ranks, so per-child norm/clip reductions must span the world.
+    # Dense and expert params use independent ownership groups; norm/clip reductions must span the world.
     for child in optimizer.chained_optimizers:
         child.grad_stats_parallel_group = None
 
@@ -212,7 +212,7 @@ def step_adapter_slots(
         for child in children:
             found_inf = bool(child.prepare_grads()) or found_inf
 
-        # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
+        # Reduce per-slot norms across the world to combine dense and expert ownership groups.
         grads_for_norm = []
         slot_params = []
         for child in children:
