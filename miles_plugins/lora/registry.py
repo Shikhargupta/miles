@@ -297,13 +297,21 @@ def preflight_native_lora(
         try:
             from miles.utils.external_utils.command_utils import repo_base_dir
 
-            candidate = os.path.join(repo_base_dir, "scripts", "models", f"{megatron_model_type}.sh")
-            model_args_script = candidate if os.path.exists(candidate) else None
+            model_args_script = next(
+                (
+                    candidate
+                    for suffix in (".py", ".sh")
+                    if os.path.exists(
+                        candidate := os.path.join(repo_base_dir, "scripts", "models", f"{megatron_model_type}{suffix}")
+                    )
+                ),
+                None,
+            )
         except Exception:
             model_args_script = None
         if strict:
             assert model_args_script is not None, (
-                f"[lora-preflight] scripts/models/{megatron_model_type}.sh not found; raw-mode conversion "
+                f"[lora-preflight] scripts/models/{megatron_model_type}.py not found; raw-mode conversion "
                 "and training source MODEL_ARGS from that file."
             )
 
