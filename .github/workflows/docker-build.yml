@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
-      - 'docker/build.py'
       - 'docker/install-kube-tools.sh'
       - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
@@ -193,13 +192,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Resolve Megatron-LM commit
-        id: megatron
-        run: |
-          MEGATRON_COMMIT=$(git ls-remote https://github.com/radixark/Megatron-LM.git refs/heads/miles-main | awk '{print $1}')
-          test -n "$MEGATRON_COMMIT"
-          echo "commit=$MEGATRON_COMMIT" >> "$GITHUB_OUTPUT"
-
       - name: Build and push
         run: |
           python3 docker/build.py \
@@ -207,7 +199,6 @@ jobs:
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
-            --megatron-commit "${{ steps.megatron.outputs.commit }}" \
             --push
 
       - name: Build and push cu12-x86 (automatic builds only)
@@ -215,8 +206,7 @@ jobs:
         # image; a manual workflow_dispatch builds only the single variant the user picked.
         if: ${{ !inputs.variant }}
         run: |
-          python3 docker/build.py --variant cu12-x86 --image-tag dev \
-            --megatron-commit "${{ steps.megatron.outputs.commit }}" --push
+          python3 docker/build.py --variant cu12-x86 --image-tag dev --push
 
       - name: Point latest to current dev
         # schedule only: latest is published registry state, so — like prune — a [DEBUG]

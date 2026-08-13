@@ -142,23 +142,9 @@ jobs:
       - name: Build and push PR tag
         id: build
         if: env.BUILD == 'true'
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
         run: |
-          MEGATRON_REF=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
-          [ -z "$MEGATRON_REF" ] && MEGATRON_REF=miles-main
-          if [[ "$MEGATRON_REF" =~ ^#([0-9]+)$ ]]; then
-            MEGATRON_FETCH="refs/pull/${BASH_REMATCH[1]}/head"
-            MEGATRON_COMMIT=$(git ls-remote https://github.com/radixark/Megatron-LM.git "$MEGATRON_FETCH" | awk '{print $1}')
-          elif [[ "$MEGATRON_REF" =~ ^[0-9a-f]{40}$ ]]; then
-            MEGATRON_COMMIT="$MEGATRON_REF"
-          else
-            MEGATRON_COMMIT=$(git ls-remote https://github.com/radixark/Megatron-LM.git "$MEGATRON_REF" | awk 'NR == 1 {print $1}')
-          fi
-          test -n "$MEGATRON_COMMIT"
           python3 docker/build.py --variant cu13 --image-tag custom \
-            --custom-tag pr-${{ github.event.pull_request.number }} \
-            --megatron-commit "$MEGATRON_COMMIT" --push
+            --custom-tag pr-${{ github.event.pull_request.number }} --push
           echo "built=true" >> "$GITHUB_OUTPUT"
       - name: Nothing to build
         if: env.BUILD != 'true'
