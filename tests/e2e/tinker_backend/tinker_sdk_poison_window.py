@@ -34,6 +34,19 @@ Step/serving clocks come from the operator plane (``GET /adapter_runs`` on
 the same uvicorn; loopback-only), so run this on the head node from a venv
 with ``tinker==0.24.1``:
   python tests/e2e/tinker_backend/tinker_sdk_poison_window.py --out-dir <dir>
+
+Numeric tolerances: dense deployments are bitwise-deterministic per forward,
+so every probe comparison defaults to EXACT (0.0) and the grad-norm reference
+comparison to rel_tol=1e-6. MoE deployments (e.g. GPT-OSS grouped-GEMM/Triton
+kernels) have inherent run-to-run forward nondeterminism at the BASE model
+(measured 0.09-0.21 max |dlogprob| on 4xH200 GPT-OSS 20B, pre-existing before
+any multi-LoRA change), which fails the probe-stability precondition before
+any mechanism is tested. For those deployments pass ``--probe-tolerance`` (and
+``--grad-norm-rtol``) calibrated to the measured noise; the client then also
+REQUIRES the real-step sensitivity to clear 3x that tolerance, so a discard
+check can never hide a real update inside the noise band. Every MECHANISM
+assertion — typed fb/optim failures, step/serving clocks held, discard
+executed, neighbor isolation, no-hang — stays exact regardless of tolerance.
 """
 
 import argparse
@@ -59,6 +72,18 @@ CORPUS = [
 ]
 
 LR = 1e-4
+
+# Deployment noise tolerances; overridden from --probe-tolerance /
+# --grad-norm-rtol in main(). 0.0 / 1e-6 = the exact dense-deployment contract.
+PROBE_TOLERANCE = 0.0
+GRAD_NORM_RTOL = 1e-6
+
+
+def assert_probe_still(delta: float, what: str) -> None:
+    """A probe that must NOT have moved (discard/isolation checks): exact on
+    dense deployments, within the deployment's measured forward-noise band on
+    nondeterministic (MoE) ones."""
+    assert delta <= PROBE_TOLERANCE, f"{what}: max|dlogprob|={delta} > tolerance {PROBE_TOLERANCE}"
 
 
 def log(msg: str) -> None:
@@ -180,7 +205,9 @@ def train_round(client, data, lr: float = LR) -> tuple[float, float]:
 
 
 def assert_close(observed: float, reference: float, what: str) -> None:
-    assert math.isclose(observed, reference, rel_tol=1e-6), f"{what}: {observed} != {reference}"
+    assert math.isclose(
+        observed, reference, rel_tol=GRAD_NORM_RTOL
+    ), f"{what}: {observed} != {reference} (rel_tol {GRAD_NORM_RTOL})"
 
 
 def main() -> None:
@@ -189,7 +216,23 @@ def main() -> None:
     parser.add_argument("--api-key", default=os.environ.get("MILES_TINKER_API_KEY", "tml-miles-gpu-acceptance"))
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--large-fb-datums", type=int, default=1030, help=">1024 forces multi-chunk posting")
+    parser.add_argument(
+        "--probe-tolerance",
+        type=float,
+        default=0.0,
+        help="allowed max |dlogprob| for probe comparisons; 0.0 (exact) for dense deployments, "
+        "the measured base-model forward-noise band for nondeterministic MoE kernels",
+    )
+    parser.add_argument(
+        "--grad-norm-rtol",
+        type=float,
+        default=1e-6,
+        help="rel_tol for grad-norm reference comparisons (recovery/residue checks)",
+    )
     args = parser.parse_args()
+    global PROBE_TOLERANCE, GRAD_NORM_RTOL
+    PROBE_TOLERANCE = args.probe_tolerance
+    GRAD_NORM_RTOL = args.grad_norm_rtol
     os.makedirs(args.out_dir, exist_ok=True)
     summary: dict = {}
 
@@ -220,7 +263,9 @@ def main() -> None:
     _, grad_norm_ref = train_round(client_a, data, lr=0.0)  # clean-window reference, weights unchanged
     l0_control = probe_rows(client_a, probe_data)
     control_delta = max_abs_delta(l0_control, l0)
-    assert control_delta == 0.0, f"probe not stable across an lr=0 round: {control_delta}"
+    # Precondition: the deployment's inherent forward noise must sit inside
+    # the configured tolerance, or every later stillness check is meaningless.
+    assert_probe_still(control_delta, "probe not stable across an lr=0 round")
     step_pre, version_pre, _ = clocks(args, client_a)
     assert (step_pre, version_pre) == (4, 1)
 
@@ -229,7 +274,7 @@ def main() -> None:
     )
     l1 = probe_rows(client_a, probe_data)
     poison_delta = max_abs_delta(l1, l0)
-    assert poison_delta == 0.0, f"weights moved across a poisoned window: max|dlogprob|={poison_delta}"
+    assert_probe_still(poison_delta, "weights moved across a poisoned window")
     summary["phase2_poison"] = {
         "grad_norm_ref": grad_norm_ref,
         "control_probe_delta": control_delta,
@@ -248,7 +293,10 @@ def main() -> None:
     assert step == step_pre + 1, f"recovery step clock: {step} != {step_pre + 1}"
     l2 = probe_rows(client_a, probe_data)
     sensitivity = max_abs_delta(l2, l0)
-    assert sensitivity > 0.0, "probe blind: a real optim step did not move the logprobs"
+    assert sensitivity > max(0.0, 3 * PROBE_TOLERANCE), (
+        f"probe blind: a real optim step moved the logprobs by {sensitivity}, "
+        f"not clearly above the noise tolerance {PROBE_TOLERANCE}"
+    )
     summary["phase3_recovery"] = {
         "loss": loss_rec,
         "grad_norm": grad_norm_rec,
@@ -265,7 +313,7 @@ def main() -> None:
     assert slot_b != slot_a, (slot_a, slot_b)
     lb0 = probe_rows(client_b, probe_data)
     _, grad_norm_ref_b = train_round(client_b, data, lr=0.0)  # quiet reference for B
-    assert max_abs_delta(probe_rows(client_b, probe_data), lb0) == 0.0
+    assert_probe_still(max_abs_delta(probe_rows(client_b, probe_data), lb0), "B probe not stable")
     step_a_pre = clocks(args, client_a)[0]
 
     barrier = threading.Barrier(2)
@@ -314,7 +362,7 @@ def main() -> None:
     assert all(b <= a * 1.02 for a, b in zip(neighbor_losses, neighbor_losses[1:], strict=False)), neighbor_losses
     lb1 = probe_rows(client_b, probe_data)
     victim_delta = max_abs_delta(lb1, lb0)
-    assert victim_delta == 0.0, f"victim weights moved: {victim_delta}"
+    assert_probe_still(victim_delta, "victim weights moved")
     _, grad_norm_rec_b = train_round(client_b, data)  # victim recovery (quiet)
     assert_close(grad_norm_rec_b, grad_norm_ref_b, "victim recovery grad_norm vs quiet reference")
     step_b, version_b, _ = clocks(args, client_b)
@@ -349,7 +397,7 @@ def main() -> None:
     assert (step_post_b, version_post_b) == (step_pre_b, version_pre_b)
     lb3 = probe_rows(client_b, probe_data)
     late_delta = max_abs_delta(lb3, lb2)
-    assert late_delta == 0.0, f"1024 landed datums leaked into the weights: {late_delta}"
+    assert_probe_still(late_delta, "1024 landed datums leaked into the weights")
     loss_late, grad_norm_late = train_round(client_b, data)  # residue of 1024 datums would explode this
     assert_close(grad_norm_late, grad_norm_ref_late, "post-late-chunk recovery grad_norm vs quiet reference")
     summary["phase5_late_chunk"] = {
