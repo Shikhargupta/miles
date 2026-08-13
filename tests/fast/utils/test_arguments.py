@@ -11,6 +11,7 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
+    _resolve_rollout_functions,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -154,6 +155,29 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
 
     override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+
+
+def test_fully_async_rejects_abort_pause_mode(monkeypatch):
+    """Generation is always in flight, so aborting on every weight update would kill it."""
+    monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
+    args = SimpleNamespace(
+        fully_async=True,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=False,
+        partial_rollout=False,
+        pause_generation_mode="abort",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+    )
+
+    with pytest.raises(AssertionError, match="pause-generation-mode abort"):
+        _resolve_rollout_functions(args)
+
+    args.pause_generation_mode = "retract"
+    _resolve_rollout_functions(args)
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
@@ -313,6 +337,52 @@ class TestSessionServerV2Validation:
             miles_validate_args(args)
 
         assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
+
+
+class TestSessionMessageMatcherArgument:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_defaults_to_strict(self):
+        assert self._parse([]).session_message_matcher == "strict"
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            "strict",
+            "loose_tool_call",
+            "role_content_only",
+            "not_installed.matchers.same_message",
+        ],
+    )
+    def test_preserves_selector_without_importing(self, selector):
+        args = self._parse(["--session-message-matcher", selector])
+
+        assert args.session_message_matcher == selector
+
+
+class TestSessionServerPauseGenerationMode:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_session_server_rejects_abort(self):
+        args = self._parse(["--use-session-server", "--pause-generation-mode", "abort"])
+
+        with pytest.raises(
+            AssertionError, match="--use-session-server is incompatible with --pause-generation-mode=abort"
+        ):
+            miles_validate_args(args)
+
+    def test_abort_without_session_server_passes(self):
+        miles_validate_args(self._parse(["--pause-generation-mode", "abort"]))
+
+    @pytest.mark.parametrize("mode", ["retract", "in_place"])
+    def test_session_server_accepts_non_abort_modes(self, mode):
+        miles_validate_args(self._parse(["--use-session-server", "--pause-generation-mode", mode]))
 
 
 class TestTitoFixedTemplateConfiguration:

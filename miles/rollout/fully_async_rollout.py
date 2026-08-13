@@ -2,9 +2,9 @@
 
 A persistent background worker keeps up to ``rollout_batch_size`` prompt groups in
 flight at all times; each training step only drains already-completed groups from the
-worker's output queue. Rollout production and training consumption run in parallel,
-so per-iteration wall time moves from ``rollout_time + train_time`` toward
-``max(rollout_time, train_time)``.
+data buffer (see ``fully_async_data_buffer.py``). Rollout production and training
+consumption run in parallel, so per-iteration wall time moves from
+``rollout_time + train_time`` toward ``max(rollout_time, train_time)``.
 
 Selected by ``train_async.py --fully-async``, which also requires the class-based
 rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``).
@@ -18,7 +18,6 @@ rollout engines, pausing producer submissions for the duration of the
 
 import asyncio
 import logging
-from collections.abc import Iterator
 
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -29,7 +28,13 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
 )
-from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.fully_async_data_buffer import (
+    DataBuffer,
+    DataBufferConstructorInput,
+    DataBufferInput,
+    DefaultDataBuffer,
+    first_sample,
+)
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
@@ -38,35 +43,16 @@ from miles.utils.types import Group, Sample
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_QUEUE_MAX_GROUPS = 1000
 NO_PROGRESS_WARN_SECS = 30.0
-
-
-def _iter_samples(group: Group) -> Iterator[Sample]:
-    for item in group:
-        if isinstance(item, list):
-            yield from item
-        else:
-            yield item
-
-
-def _first_sample(group: Group) -> Sample:
-    return group[0][0] if isinstance(group[0], list) else group[0]
-
-
-def group_oldest_weight_version(group: Group) -> int | None:
-    """Return the minimum weight version across all trajectories and turns in a group."""
-    versions = [v for s in _iter_samples(group) if (v := s.oldest_weight_version) is not None]
-    return min(versions) if versions else None
 
 
 class FullyAsyncRolloutFn:
     """Continuous rollout generation decoupled from training steps.
 
     The worker runs as a long-lived task on the shared rollout event loop, created
-    lazily on the first train call. Groups whose samples were aborted (e.g. by a
-    weight update pausing generation) or whose weights are older than
-    ``--max-weight-staleness`` are recycled back into the data source.
+    lazily on the first train call. Which finished groups reach training is the
+    data buffer's call (see ``fully_async_data_buffer.py``); this class assembles
+    what it hands back into a batch.
     """
 
     def __init__(self, input: RolloutFnConstructorInput):
@@ -75,19 +61,26 @@ class FullyAsyncRolloutFn:
         self.state = GenerateState(input.args)
         # default to sample level backfill for fully async rollout
         self._scheduler = make_submission_scheduler(input.args, default="sample")
-        self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
+        assert input.args.async_unused_samples_handler in ("retry", "drop")
+        # applied to every group we do not train on; "drop" discards instead of recycling
+        self._handle_unused = (
+            self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
+        )
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
         self._eval_prompt_dataset_cache: dict = {}
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
-        self._output: asyncio.Queue[tuple[list[Sample], Group]] | None = None
+        self._output: DataBuffer | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
             return await self._call_eval(input)
         if self._worker is None:
-            self._output = asyncio.Queue(maxsize=OUTPUT_QUEUE_MAX_GROUPS)
+            buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
+            self._output = buffer_cls(
+                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+            )
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input)
@@ -120,13 +113,7 @@ class FullyAsyncRolloutFn:
         [prompt_group] = samples
         return asyncio.create_task(self._generate_group(prompt_group))
 
-    async def _generate_group(self, prompt_group: list[Sample]) -> tuple[list[Sample], Group]:
-        """Return the submitted prompt group next to its result.
-
-        A retry has to resubmit the prompt group: a generate function may expand one
-        trajectory into several samples, and ``generate_and_rm_group`` does not accept
-        that shape back.
-        """
+    async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         result = await generate_and_rm_group(
             self.state,
             prompt_group,
@@ -134,7 +121,7 @@ class FullyAsyncRolloutFn:
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
         )
-        return prompt_group, result
+        return DataBufferInput(prompt_group=prompt_group, group=result)
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
@@ -144,14 +131,12 @@ class FullyAsyncRolloutFn:
                 active.add(self._submit_one_group())
             done, active = await self._scheduler.wait_for_progress(active)
             for task in done:
-                # Blocks when the queue is full: training lagging behind rollout
-                # production pauses submission instead of growing the queue unboundedly.
                 await self._output.put(task.result())
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self) -> tuple[list[Sample], Group]:
-        queue_get = asyncio.create_task(self._output.get())
+    async def _next_group(self, current_version: int | None) -> DataBufferInput:
+        queue_get = asyncio.create_task(self._output.get(current_version=current_version))
         try:
             while True:
                 done, _ = await asyncio.wait(
@@ -166,9 +151,7 @@ class FullyAsyncRolloutFn:
                     raise RuntimeError("fully-async rollout worker exited without an exception")
                 if queue_get in done:
                     return queue_get.result()
-                logger.warning(
-                    f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s (queued: {self._output.qsize()})"
-                )
+                logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
         finally:
             if not queue_get.done():
                 queue_get.cancel()
@@ -179,75 +162,34 @@ class FullyAsyncRolloutFn:
 
         target_data_size = args.rollout_batch_size
         data: list[Group] = []
-        aborted_groups_recycled = 0
-        stale_groups_recycled = 0
-        staleness_values: list[int] = []
-        metric_gatherer = MetricGatherer()
         do_print = True
 
         while len(data) < target_data_size:
-            prompt_group, group = await self._next_group()
-            assert len(group) == args.n_samples_per_prompt
-
-            # A weight update paused generation mid-group: return it for re-sampling.
-            if any(s.status == Sample.Status.ABORTED for s in _iter_samples(group)):
-                self._recycle(prompt_group)
-                aborted_groups_recycled += 1
-                continue
-
-            if args.max_weight_staleness is not None:
-                oldest = group_oldest_weight_version(group)
-                current = input.weight_version
-                if oldest is not None and current is not None:
-                    staleness = current - oldest
-                    staleness_values.append(staleness)
-                    if staleness > args.max_weight_staleness:
-                        self._recycle(prompt_group)
-                        stale_groups_recycled += 1
-                        logger.info(
-                            f"Recycled stale group (oldest_version={oldest}, current={current}, "
-                            f"staleness={staleness} > max={args.max_weight_staleness})"
-                        )
-                        continue
-
-            filter_output = call_dynamic_filter(self._dynamic_filter, args, group)
-            if not filter_output.keep:
-                # Dropped, not recycled: no usable gradient signal.
-                metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
-                continue
+            entry = await self._next_group(input.weight_version)
+            assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
-                sample = _first_sample(group)
+                sample = first_sample(entry.group)
                 logger.info(
                     f"First rollout sample: {[str(sample.prompt) + sample.response]}, "
                     f"label: {sample.label}, reward: {sample.reward}"
                 )
                 do_print = False
 
-            data.append(group)
+            data.append(entry.group)
 
-        sample = _first_sample(data[-1])
+        sample = first_sample(data[-1])
         logger.info(
             f"Finish rollout: {[str(sample.prompt) + sample.response]}, "
             f"label: {sample.label}, reward: {sample.reward}"
         )
 
-        data.sort(key=lambda group: _first_sample(group).index)
+        data.sort(key=lambda group: first_sample(group).index)
 
         if self._sample_filter is not None:
             self._sample_filter(args, data)
 
-        metrics = {
-            "rollout/fully_async/queue_size": self._output.qsize(),
-            "rollout/fully_async/aborted_groups_recycled": aborted_groups_recycled,
-            "rollout/fully_async/stale_groups_recycled": stale_groups_recycled,
-            **metric_gatherer.collect(),
-        }
-        if staleness_values:
-            metrics["rollout/fully_async/avg_staleness"] = sum(staleness_values) / len(staleness_values)
-            metrics["rollout/fully_async/max_staleness"] = max(staleness_values)
-
-        return RolloutFnTrainOutput(samples=data, metrics=metrics)
+        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics())
 
     def _recycle(self, prompt_group: list[Sample]) -> None:
         for sample in prompt_group:
