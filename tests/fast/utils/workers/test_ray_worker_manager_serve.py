@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import os
 import subprocess
@@ -19,6 +21,7 @@ from miles.utils.workers import ray_worker_manager as rwm
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _build_serve_worker, bootstrapped_worker_class
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
+from miles.utils.workers.rpc.common.metadata import rpc
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
@@ -27,12 +30,32 @@ from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorke
 pytestmark = pytest.mark.asyncio
 
 
+def _passthrough(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+class _GroupedWorker:
+    @rpc(concurrency_group="kill_self")
+    def isolated(self) -> None: ...
+
+    @rpc(concurrency_group="fault_injector")
+    @_passthrough
+    def wrapped_isolated(self) -> None: ...
+
+    def plain(self) -> None: ...
+
+
 class DemoServeWorker:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
 
 
 _WORKER_CLASS_PATH = f"{DemoServeWorker.__module__}.{DemoServeWorker.__qualname__}"
+_GROUPED_WORKER_CLASS_PATH = f"{_GroupedWorker.__module__}.{_GroupedWorker.__qualname__}"
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -227,6 +250,26 @@ class TestServeSchedulingOptions:
         await _launch([_make_spec(num_cpus_per_worker=0.4)])
 
         assert _options(fake_ray_cluster)[0]["num_cpus"] == 0.4
+
+
+class TestConcurrencyGroupsAreDeclaredOnce:
+    async def test_the_group_an_rpc_method_declares_reaches_ray(self, fake_ray_cluster: FakeRayCluster):
+        """A method both wires isolate is declared once, and the launcher is what tells ray about it."""
+        await _launch([_make_spec(worker_class=_GROUPED_WORKER_CLASS_PATH)])
+
+        assert _GroupedWorker.isolated.__ray_concurrency_group__ == "kill_self"
+
+    async def test_a_group_declared_above_a_wrapper_still_reaches_ray(self, fake_ray_cluster: FakeRayCluster):
+        """Ray unwraps a method before reading its group, so a wrapped one would silently run in the default group."""
+        await _launch([_make_spec(worker_class=_GROUPED_WORKER_CLASS_PATH)])
+
+        assert inspect.unwrap(_GroupedWorker.wrapped_isolated).__ray_concurrency_group__ == "fault_injector"
+
+    async def test_a_default_group_method_is_left_undeclared(self, fake_ray_cluster: FakeRayCluster):
+        """Ray rejects an actor naming a group its class never declares, and most methods name none."""
+        await _launch([_make_spec(worker_class=_GROUPED_WORKER_CLASS_PATH)])
+
+        assert not hasattr(_GroupedWorker.plain, "__ray_concurrency_group__")
 
 
 class TestServeWorkersAreStopped:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.rpc.common.metadata import declared_concurrency_groups
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_info import WorkerInfo
@@ -425,8 +427,10 @@ class _ServeActorRayCommManager(_BaseActorManager[ServeWorkerSpec]):
         return {} if groups is None else dict(concurrency_groups=groups)
 
     async def launch_actor(self) -> None:
+        worker_class = bootstrapped_worker_class(self.spec.worker_class)
+        _declare_concurrency_groups_to_ray(worker_class)
         self.actor_handle = self._create_actor(
-            bootstrapped_worker_class(self.spec.worker_class),
+            worker_class,
             ctor_kwargs=self.spec.ctor_kwargs,
             context=self.launch_context,
         )
@@ -450,6 +454,11 @@ class _ServeActorRpcCommManager(_BaseActorManager[ServeWorkerSpec]):
 
     async def post_setup(self) -> None:
         await self.actor_handle.start_rpc_server.remote(port=self.self_addrs[RPC_PORT_NAME].port)
+
+
+def _declare_concurrency_groups_to_ray(worker_class: type) -> None:
+    for name, group in declared_concurrency_groups(worker_class).items():
+        ray.method(concurrency_group=group)(inspect.unwrap(getattr(worker_class, name)))
 
 
 def _build_serve_worker(

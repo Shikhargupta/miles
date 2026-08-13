@@ -7,8 +7,6 @@ import typing
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-import ray
-
 from miles.utils.workers.rpc.common.serialization import RpcSerializer
 
 DEFAULT_CONCURRENCY_GROUP = "default"
@@ -23,8 +21,6 @@ def rpc(*, concurrency_group: str = DEFAULT_CONCURRENCY_GROUP) -> Callable[[_F],
 
     def decorator(fn: _F) -> _F:
         setattr(fn, _RPC_CONFIG_ATTR, config)
-        if concurrency_group != DEFAULT_CONCURRENCY_GROUP:
-            return ray.method(concurrency_group=concurrency_group)(fn)
         return fn
 
     return decorator
@@ -55,6 +51,19 @@ def canonicalize_method_arguments(
 
 def collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
     return dict(_collect_rpc_method_specs(worker_cls))
+
+
+def declared_concurrency_groups(worker_cls: type) -> dict[str, str]:
+    groups = {}
+    for name in sorted(dir(worker_cls)):
+        if name.startswith("_"):
+            continue
+        attr = inspect.getattr_static(worker_cls, name)
+        if not callable(attr):
+            continue
+        if (group := _find_rpc_config(attr).concurrency_group) != DEFAULT_CONCURRENCY_GROUP:
+            groups[name] = group
+    return groups
 
 
 @functools.cache

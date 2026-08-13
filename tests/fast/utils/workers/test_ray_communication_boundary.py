@@ -32,7 +32,6 @@ RAY_USING_MODULES = {
     "miles/dashboard/collector.py": "known debt: the dashboard collector is a named actor, tracked outside M23",
     "miles/dashboard/hooks.py": "known debt: the dashboard reads its gpu ids from ray, tracked outside M23",
     "miles/utils/tracking_utils/prometheus_utils.py": "known debt: the prometheus collector is a ray actor, skipped under kubernetes",
-    "miles/utils/workers/rpc/common/metadata.py": "launcher closure: an rpc concurrency group is also what ray is told, while both wires exist",
     "miles/ray/train_actor.py": "launcher closure: a launched actor reads the gpu ids ray gave it",
     "miles/backends/fsdp_utils/update_weight_utils.py": "node ip lookup for a collective, not a call to another worker",
     "miles/backends/megatron_utils/update_weight/update_weight_from_distributed/broadcast.py": "node ip lookup for a collective, not a call to another worker",
