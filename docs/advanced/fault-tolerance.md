@@ -45,21 +45,6 @@ Each loop iteration does:
 | `--rollout-health-check-timeout` | `30.0` | "Timeout in seconds to wait for a rollout engine `/health_generate` response before killing it." |
 | `--rollout-health-check-first-wait` | `0` | "Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm." |
 
-## Ray worker liveness
-
-On the Ray backend the worker manager owns every actor it launched, and its cell membership is
-what the reconcilers read. A worker can leave without anyone asking it to: its rpc server stops,
-its subprocess exits, the kernel kills it.
-
-- The manager probes each actor of every live cell every 10s
-  (`_LIVENESS_SCAN_INTERVAL_SECONDS` in `miles/utils/workers/ray_worker_manager.py`).
-- Losing one worker takes down its whole cell, because a cell is the unit of recovery. The
-  surviving actors are killed and the cell is reported as not alive.
-- The cell can then be started again — with a new `workers_hash`, so consumers rebuild their
-  handles — without being stopped first.
-- Only a proven death counts. A probe that times out leaves the cell alone, so a worker busy in
-  a long call is never mistaken for a dead one.
-
 ## Engine recovery
 
 When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
