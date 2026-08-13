@@ -118,6 +118,7 @@ def execute(eval_mode: str):
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
         "--use-tis "
+        "--skip-actor-forward-only "
     )
 
     optimizer_args = (
