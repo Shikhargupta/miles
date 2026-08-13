@@ -50,17 +50,29 @@ jobs:
       cadence: ${{ steps.resolve.outputs.cadence }}
       raw_labels: ${{ steps.resolve.outputs.raw_labels }}
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
+      docs_only: ${{ steps.resolve.outputs.docs_only }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          fetch-depth: 2
           persist-credentials: false
+      - name: List PR changed files
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          # Same merge-commit-vs-HEAD^1 convention as pr-test.yml. On any
+          # failure the list file is removed, which ci_policy.py reads as an
+          # unknown diff — never as docs-only — so the MI300X stage still runs.
+          git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed_files.txt" \
+            || rm -f "$RUNNER_TEMP/changed_files.txt"
       - name: Resolve CI policy inputs
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule || '' }}
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          CHANGED_FILES_PATH: ${{ runner.temp }}/changed_files.txt
         run: python -m tests.ci.ci_policy
 
   resolve-ci-image:
@@ -85,6 +97,9 @@ jobs:
 
   stage-c-4-gpu-mi300x:
     needs: [resolve-ci-policy, resolve-ci-image]
+    # No status function here, so success() of the needs is still implied;
+    # this only adds the docs-only skip on top.
+    if: needs.resolve-ci-policy.outputs.docs_only != 'true'
     # One shard per 4-GPU runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
     # shard's failure does not cancel the other mid-run.

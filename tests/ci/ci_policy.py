@@ -26,6 +26,12 @@ SCHEDULE_POLICIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "0 15 * * 6": (WEEKLY_CADENCE, ()),
 }
 
+# Paths that provably cannot affect a GPU suite: the docs site sources, whose
+# only executable coverage (docs.json validity, examples-mirror drift) lives in
+# the CPU stages, which always run. Keep this an allowlist of prefixes — never
+# a denylist — so an unanticipated path always fails toward the full fleet.
+DOCS_ONLY_PREFIXES = ("docs/",)
+
 
 @dataclass(frozen=True)
 class RunPolicy:
@@ -41,6 +47,7 @@ class WorkflowPolicy:
     cadence: str
     raw_labels: tuple[str, ...]
     bypass_fastfail: bool
+    docs_only: bool
 
 
 def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
@@ -128,7 +135,32 @@ def _canonical_pr_labels(pr_labels_json: str) -> tuple[str, ...]:
     )
 
 
-def resolve_workflow_inputs(event_name: str, schedule: str, pr_labels_json: str) -> WorkflowPolicy:
+def is_docs_only_change(event_name: str, raw_labels: tuple[str, ...], changed_files: tuple[str, ...]) -> bool:
+    """Decide whether the GPU stages may be skipped for a docs-only pull request.
+
+    Every rule fails toward running the full fleet:
+
+    - Only a `pull_request` qualifies; scheduled and manual runs never skip.
+    - Any recognized CI label is an explicit request for tests and wins.
+    - An empty or unavailable change list means "unknown", never "docs-only".
+    - Every changed path must sit under `DOCS_ONLY_PREFIXES`; anything else —
+      including a path git quoted for non-ASCII characters — keeps the fleet.
+    """
+    if event_name != "pull_request":
+        return False
+    if raw_labels:
+        return False
+    if not changed_files:
+        return False
+    return all(path.startswith(DOCS_ONLY_PREFIXES) for path in changed_files)
+
+
+def resolve_workflow_inputs(
+    event_name: str,
+    schedule: str,
+    pr_labels_json: str,
+    changed_files: tuple[str, ...] = (),
+) -> WorkflowPolicy:
     """Adapt GitHub trigger facts to the workflow's stable policy outputs."""
     if event_name == "pull_request":
         raw_labels = _canonical_pr_labels(pr_labels_json)
@@ -148,17 +180,40 @@ def resolve_workflow_inputs(event_name: str, schedule: str, pr_labels_json: str)
         cadence=cadence,
         raw_labels=raw_labels,
         bypass_fastfail=run_policy.bypass_fastfail,
+        docs_only=is_docs_only_change(event_name, raw_labels, changed_files),
     )
+
+
+def _read_changed_files(path: str) -> tuple[str, ...]:
+    """Read the newline-separated change list the workflow diff step wrote.
+
+    A missing, unreadable, or undecodable file yields an empty tuple, which
+    `is_docs_only_change` treats as an unknown diff and never as docs-only.
+    """
+    if not path:
+        return ()
+    try:
+        with open(path, encoding="utf-8") as changed:
+            return tuple(line.strip() for line in changed if line.strip())
+    except OSError:
+        return ()
+    except UnicodeDecodeError:
+        return ()
 
 
 def _write_github_outputs(policy: WorkflowPolicy, output_path: str) -> None:
     raw_labels = " ".join(policy.raw_labels)
     bypass_fastfail = str(policy.bypass_fastfail).lower()
+    docs_only = str(policy.docs_only).lower()
     with open(output_path, "a", encoding="utf-8") as output:
         output.write(f"cadence={policy.cadence}\n")
         output.write(f"raw_labels={raw_labels}\n")
         output.write(f"bypass_fastfail={bypass_fastfail}\n")
-    print(f"Resolved CI policy: cadence={policy.cadence} labels=[{raw_labels}] bypass_fastfail={bypass_fastfail}")
+        output.write(f"docs_only={docs_only}\n")
+    print(
+        f"Resolved CI policy: cadence={policy.cadence} labels=[{raw_labels}] "
+        f"bypass_fastfail={bypass_fastfail} docs_only={docs_only}"
+    )
 
 
 def main() -> int:
@@ -167,6 +222,7 @@ def main() -> int:
             event_name=os.environ["EVENT_NAME"],
             schedule=os.environ.get("SCHEDULE", ""),
             pr_labels_json=os.environ.get("PR_LABELS_JSON", ""),
+            changed_files=_read_changed_files(os.environ.get("CHANGED_FILES_PATH", "")),
         )
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)
