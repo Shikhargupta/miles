@@ -6,7 +6,6 @@ import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 from miles.utils.workers.naming import compute_cell_id, parse_cell_id
-from miles.utils.workers.ray_worker_manager import StaleWorkerSnapshotError
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
@@ -74,8 +73,9 @@ class FakeWorkerManager:
 
     def _get_actor_handle(self, worker_name: str, *, expected_generation: int):
         generation = 1 + len(self.started_cell_ids)
-        if generation != expected_generation:
-            raise StaleWorkerSnapshotError(f"{worker_name} is generation {generation}, not {expected_generation}")
+        assert (
+            generation == expected_generation
+        ), f"{worker_name} is generation {generation}, not {expected_generation}"
         cell_id, _, worker_index = worker_name.rpartition("-")
         return self._handles[cell_id][int(worker_index)]
 

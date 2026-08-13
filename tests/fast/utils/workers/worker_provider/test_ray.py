@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 import miles.utils.workers.worker_provider.ray as ray_worker_provider_mod
-from miles.utils.workers.ray_worker_manager import StaleWorkerSnapshotError
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -432,8 +431,7 @@ class _ActorHandleMethod:
 
     def remote(self, worker_name: str, *, expected_generation: int) -> Any:
         self.requested.append((worker_name, expected_generation))
-        if expected_generation != self.generation_of_worker:
-            raise StaleWorkerSnapshotError(f"{worker_name} is generation {self.generation_of_worker}")
+        assert expected_generation == self.generation_of_worker, f"generation {self.generation_of_worker}"
         return f"actor-of-{worker_name}"
 
 
@@ -476,7 +474,7 @@ class TestRayWorkerProviderRayHandlesAreOfTheGenerationDescribed:
         provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
         monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda ref: ref)
 
-        with pytest.raises(StaleWorkerSnapshotError):
+        with pytest.raises(AssertionError):
             provider.get_handle("trainer-engine-actor-0-0")
 
 
