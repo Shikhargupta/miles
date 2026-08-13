@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import inspect
 import typing
 from collections.abc import Callable
 from typing import Any, TypeVar
+
+import ray
 
 from miles.utils.workers.rpc.common.serialization import RpcSerializer
 
@@ -20,6 +23,8 @@ def rpc(*, concurrency_group: str = DEFAULT_CONCURRENCY_GROUP) -> Callable[[_F],
 
     def decorator(fn: _F) -> _F:
         setattr(fn, _RPC_CONFIG_ATTR, config)
+        if concurrency_group != DEFAULT_CONCURRENCY_GROUP:
+            return ray.method(concurrency_group=concurrency_group)(fn)
         return fn
 
     return decorator
@@ -42,13 +47,18 @@ def canonicalize_method_arguments(
             f"{spec.name}() takes at most {len(spec.positional_parameter_names)} positional arguments, "
             f"got {len(args)}"
         )
-    named = dict(zip(spec.positional_parameter_names, args))
+    named = dict(zip(spec.positional_parameter_names, args, strict=False))
     if overlap := sorted(named.keys() & kwargs.keys()):
         raise TypeError(f"{spec.name}() got multiple values for {overlap}")
     return {**named, **kwargs}
 
 
 def collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
+    return dict(_collect_rpc_method_specs(worker_cls))
+
+
+@functools.cache
+def _collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
     specs: dict[str, RpcMethodSpec] = {}
 
     for name in sorted(dir(worker_cls)):

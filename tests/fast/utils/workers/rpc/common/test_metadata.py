@@ -88,6 +88,30 @@ class TestCollectSpecs:
         assert specs["demo_async_model"].is_async and not specs["demo_default_arg"].is_async
 
 
+class TestTheGroupBothWiresAreTold:
+    def test_the_declaration_also_reaches_ray(self):
+        """A worker launched as an actor must isolate the same methods, and one declaration says so once."""
+
+        class Worker:
+            @rpc(concurrency_group="kill_self")
+            def demo_isolated(self) -> None: ...
+
+        assert Worker.demo_isolated.__ray_concurrency_group__ == "kill_self"
+        assert collect_rpc_method_specs(Worker)["demo_isolated"].concurrency_group == "kill_self"
+
+    def test_the_default_group_is_not_declared_to_ray(self):
+        """Ray rejects an actor naming a group its class never declares, and most methods name none."""
+
+        class Worker:
+            def demo_plain(self) -> None: ...
+
+            @rpc()
+            def demo_default(self) -> None: ...
+
+        assert not hasattr(Worker.demo_default, "__ray_concurrency_group__")
+        assert collect_rpc_method_specs(Worker)["demo_default"].concurrency_group == DEFAULT_CONCURRENCY_GROUP
+
+
 class TestDecoratorChainConcurrencyGroup:
     def test_marker_above_wrapper_is_found(self):
         """@rpc applied outside a functools.wraps wrapper still declares its concurrency group."""
