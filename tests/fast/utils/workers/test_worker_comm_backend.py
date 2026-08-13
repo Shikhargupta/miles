@@ -58,3 +58,23 @@ class TestTheChoiceThatIsStored:
         miles_validate_args(args)
 
         assert args.worker_comm_backend == expected
+
+    @pytest.mark.parametrize("requested, expected", [([], "rpc"), (["--worker-comm-backend", "rpc"], "rpc")])
+    def test_kubernetes_is_resolved_through_the_public_validation_too(self, requested: list[str], expected: str):
+        """Every downstream reader takes the wire off args, so the k8s path must be resolved there as well."""
+        args = _validated_args([*requested, "--cluster-backend", "kubernetes"])
+
+        assert args.worker_comm_backend == expected
+
+    def test_asking_kubernetes_for_ray_fails_the_whole_validation(self):
+        """A combination that cannot work must stop the run at argument time, not at the first call."""
+        with pytest.raises(AssertionError, match="worker-comm-backend"):
+            _validated_args(["--cluster-backend", "kubernetes", "--worker-comm-backend", "ray"])
+
+
+def _validated_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args([*argv, "--rollout-batch-size", "64"])
+    miles_validate_args(args)
+    return args
