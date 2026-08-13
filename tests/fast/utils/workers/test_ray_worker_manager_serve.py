@@ -21,7 +21,7 @@ from miles.utils.workers import ray_worker_manager as rwm
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _build_serve_worker, bootstrapped_worker_class
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
-from miles.utils.workers.rpc.common.metadata import rpc
+from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
@@ -45,6 +45,11 @@ class _GroupedWorker:
     @rpc(concurrency_group="fault_injector")
     @_passthrough
     def wrapped_isolated(self) -> None: ...
+
+    @rpc(concurrency_group="kill_self")
+    @_passthrough
+    @rpc(concurrency_group="heartbeat_status")
+    def outer_declaration_wins(self) -> None: ...
 
     def plain(self) -> None: ...
 
@@ -270,6 +275,25 @@ class TestConcurrencyGroupsAreDeclaredOnce:
         await _launch([_make_spec(worker_class=_GROUPED_WORKER_CLASS_PATH)])
 
         assert not hasattr(_GroupedWorker.plain, "__ray_concurrency_group__")
+
+    async def test_both_wires_end_up_with_the_same_group(self, fake_ray_cluster: FakeRayCluster):
+        """This is the whole point of declaring once: the two wires must not schedule a method differently."""
+        await _launch([_make_spec(worker_class=_GROUPED_WORKER_CLASS_PATH)])
+
+        specs = collect_rpc_method_specs(_GroupedWorker)
+        told_to_ray = {
+            name: getattr(inspect.unwrap(getattr(_GroupedWorker, name)), "__ray_concurrency_group__", "default")
+            for name in specs
+        }
+
+        assert told_to_ray == {name: spec.concurrency_group for name, spec in specs.items()}
+
+    async def test_the_outermost_declaration_is_the_one_ray_hears(self, fake_ray_cluster: FakeRayCluster):
+        """Two markers on one method must not resolve differently per wire, whichever one is meant to win."""
+        await _launch([_make_spec(worker_class=_GROUPED_WORKER_CLASS_PATH)])
+
+        assert inspect.unwrap(_GroupedWorker.outer_declaration_wins).__ray_concurrency_group__ == "kill_self"
+        assert collect_rpc_method_specs(_GroupedWorker)["outer_declaration_wins"].concurrency_group == "kill_self"
 
 
 class TestServeWorkersAreStopped:

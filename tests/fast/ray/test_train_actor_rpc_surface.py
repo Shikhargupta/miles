@@ -7,10 +7,11 @@ import pytest
 from pydantic import ValidationError
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.ray.specs.train import TRAINER_CONCURRENCY_GROUPS
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.object_store import _MooncakeStoreObjectRef
-from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
+from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, declared_concurrency_groups
 
 DRIVEN_METHODS = (
     "init",
@@ -51,6 +52,12 @@ class TestTheTrainerSurfaceIsCallableOverRpc:
         specs = collect_rpc_method_specs(TrainRayActor)
 
         assert specs["get_heartbeat_status"].concurrency_group != specs["train"].concurrency_group
+
+    def test_every_group_a_method_names_is_a_group_the_spec_declares(self):
+        """Ray refuses to build an actor whose method names a group its class never declared, at launch time."""
+        named_by_methods = set(declared_concurrency_groups(TrainRayActor).values())
+
+        assert named_by_methods <= set(TRAINER_CONCURRENCY_GROUPS)
 
     def test_the_train_step_is_serialized_with_the_rest_of_the_work(self):
         """One gpu worker runs one thing at a time; two concurrent steps would corrupt the model."""
