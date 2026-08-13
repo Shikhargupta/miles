@@ -20,6 +20,7 @@ from miles.utils.workers.backend_capability.base import BackendCapability, Defer
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_info import WorkerInfo
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
 
 # TODO: unique name, maybe with args.run_uuid
 _ACTOR_NAME = "ray_worker_manager"
+
+_LIVENESS_SCAN_INTERVAL_SECONDS = 10.0
 
 
 class RayWorkerManager:
@@ -72,22 +75,27 @@ class RayWorkerManager:
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
+        self._membership_lock = asyncio.Lock()
 
         await self.start_cells([c.cell_id for c in self._all_cells()])
 
+        self._liveness_scan_task = asyncio.create_task(self._scan_liveness_forever())
+
     async def start_cells(self, cell_ids: list[str]) -> None:
-        cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
-        try:
-            await _gather_or_raise([c.launch_actors() for c in cells])
-            await _gather_or_raise([c.alloc_ports() for c in cells])
-            await _gather_or_raise([c.post_setup() for c in cells])
-        except Exception:
-            logger.error(f"Starting cells {[c.cell_id for c in cells]} failed, rolling back", exc_info=True)
-            await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
-            raise
+        async with self._membership_lock:
+            cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
+            try:
+                await _gather_or_raise([c.launch_actors() for c in cells])
+                await _gather_or_raise([c.alloc_ports() for c in cells])
+                await _gather_or_raise([c.post_setup() for c in cells])
+            except Exception:
+                logger.error(f"Starting cells {[c.cell_id for c in cells]} failed, rolling back", exc_info=True)
+                await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
+                raise
 
     async def stop_cells(self, cell_ids: list[str]) -> None:
-        await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
+        async with self._membership_lock:
+            await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
 
     def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
         cell = self._find_cell(cell_id)
@@ -119,6 +127,30 @@ class RayWorkerManager:
 
     def get_actor_handle(self, worker_name: str) -> ray.actor.ActorHandle:
         return self._find_actor(worker_name).actor_handle
+
+    async def _scan_liveness_forever(self) -> None:
+        while True:
+            await asyncio.sleep(_LIVENESS_SCAN_INTERVAL_SECONDS)
+            try:
+                await self._scan_liveness_once()
+            except Exception:
+                logger.error("Scanning worker liveness failed, will scan again", exc_info=True)
+
+    async def _scan_liveness_once(self) -> None:
+        for cell in [c for c in self._all_cells() if c.alive]:
+            generation = cell.generation
+            dead_worker_names = await cell.find_dead_worker_names()
+            if not dead_worker_names:
+                continue
+
+            async with self._membership_lock:
+                if not cell.alive or cell.generation != generation:
+                    continue
+                logger.error(
+                    f"Cell {cell.cell_id} lost workers {dead_worker_names} without being stopped, "
+                    f"so the whole cell is torn down and reported as not alive"
+                )
+                await cell.stop()
 
     def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
         served_over_rpc = isinstance(actor.spec, ServeWorkerSpec) and self.comm_backend == WorkerCommBackend.RPC
@@ -223,6 +255,11 @@ class _CellManager(Generic[SpecT]):
         await self._for_all_actors(lambda a: a.stop())
         self.actors = None
 
+    async def find_dead_worker_names(self) -> list[str]:
+        actors = self.actors
+        probes = await asyncio.gather(*[a.probe_is_dead() for a in actors])
+        return [actor.name for actor, is_dead in zip(actors, probes, strict=True) if is_dead]
+
     async def _for_all_actors(self, fn: Callable[[_BaseActorManager], Any]):
         await asyncio.gather(*[fn(a) for a in self.actors])
 
@@ -311,6 +348,11 @@ class _BaseActorManager(Generic[SpecT]):
             runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
             **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
+
+    async def probe_is_dead(self) -> bool:
+        if self.actor_handle is None:
+            return False
+        return await RayWorkerHandle(self.actor_handle).probe_is_dead()
 
     async def stop(self) -> None:
         if self.actor_handle is None:
