@@ -328,6 +328,10 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
         "witness_info": None,
         "attempt": 0,
         "ft_test_action_executor": None,
+        # The tinker backend extends the train call: forward operations are
+        # logprob-only and must not run backward. A dataset-driven train step
+        # never sets rollout_data["tinker_forward_only"], so this is False.
+        "forward_only": False,
     }
 
 
