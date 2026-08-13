@@ -11,6 +11,7 @@ and the default it replaces.
 | Stage | Flag | Replaces |
 |---|---|---|
 | **Rollout** | `--rollout-function-path` | The whole rollout loop |
+| | `--custom-agent-function-path` | The agent-environment loop inside a TITO session |
 | | `--custom-generate-function-path` | A single sample's generation |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
@@ -65,7 +66,34 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
     ...
 ```
 
+The hook also accepts the `GenerateFnInput -> GenerateFnOutput` form; both
+signatures load through the same adapter. See
+[Generate Endpoint](/user-guide/generate-endpoint) for the full contract.
+
 **Reference:** [`examples/experimental/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/experimental/search-r1/generate_with_search.py).
+
+
+### `--custom-agent-function-path`
+
+Enabled when you set `--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate`.
+Use `--custom-agent-function-path` to specify the async agent or environment loop
+that sends OpenAI-compatible chat requests through Miles' TITO session server.
+
+
+```python
+async def run_agent(
+    base_url: str,
+    prompt,
+    request_kwargs: dict,
+    metadata: dict,
+    **kwargs,
+) -> dict | None:
+    ...
+```
+
+See [Agentic Rollout (TITO)](/user-guide/agentic-rollout) for the full wiring and
+message/token ownership contract.
+
 
 ### `--data-source-path`
 
@@ -90,7 +118,7 @@ configured.
 
 ### `--session-message-matcher`
 
-Some harnesses do not replay history verbatim — they reserialize tool-call arguments or drop `reasoning_content` — and the default `strict` matcher counts that as divergence (v1 rollback, v2 branching). This flag loosens what "the same message" means during replay: choose a looser built-in selector (see [Agentic Rollout (TITO)](/user-guide/agentic-chat-template#choose-replay-matching)) or supply your own matcher via a trusted dotted import path:
+Some harnesses do not replay history verbatim — they reserialize tool-call arguments or drop `reasoning_content` — and the default `strict` matcher counts that as divergence (v1 rollback, v2 branching). This flag loosens what "the same message" means during replay: choose a looser built-in selector (see [Agentic Rollout (TITO)](/user-guide/agentic-rollout#choose-replay-matching)) or supply your own matcher via a trusted dotted import path:
 
 ```python
 def matcher(stored_message: dict[str, Any], replayed_message: dict[str, Any]) -> bool:
