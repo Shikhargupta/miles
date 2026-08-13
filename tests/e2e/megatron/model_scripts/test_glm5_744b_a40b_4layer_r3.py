@@ -8,6 +8,7 @@ from scripts.run_glm5_744b_a40b import (
     _validate_glm_checkpoint,
 )
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
@@ -22,6 +23,12 @@ register_cuda_ci(
     labels=["megatron", "model-scripts", "replay"],
 )
 
+register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
+register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="rollout/raw_reward")
+
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
@@ -34,7 +41,6 @@ def _args() -> ScriptArgs:
         extra_args=(
             "--ci-test "
             "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
             "--use-rollout-indexer-replay "
             "--rollout-max-response-len 4096 "
             # preserve to avoid CPU OOM
@@ -48,7 +54,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)
     _prepare_megatron_ckpt(args)

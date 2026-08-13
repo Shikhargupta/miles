@@ -14,8 +14,15 @@ from scripts.run_deepseek_v32 import (
     _prepare_megatron_ckpt,
 )
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(est_time=1700, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts"])
+
+register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
+register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
@@ -27,6 +34,7 @@ def _args() -> ScriptArgs:
         use_single_node=True,
         from_bf16_ckpt=False,
         num_rollout=2,
+        no_save=True,
         extra_args=(
             "--ci-test --check-weight-update-allow-quant-error --bf16 --freeze-indexer "
             "--use-rollout-routing-replay "

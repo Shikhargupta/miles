@@ -36,8 +36,8 @@ def _get_hf_num_layers(model_path: str) -> int:
 
 
 def prepare(mode: FTTestMode) -> None:
-    U.exec_command(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
-    U.exec_command(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
+    U.exec_command_cpu(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
+    U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
 
     hf_model_path = f"{_MODEL_DIR}/{mode.model_name}"
     num_layers = _get_hf_num_layers(hf_model_path)
@@ -163,6 +163,9 @@ _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     "NCCL_ALGO": "Ring",
     "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
     "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+    # The default 4096 split overflows FlashInfer's fixed 2 GiB deterministic workspace
+    # while capturing the 8192-token prefill graph for the 5-layer Qwen3 MoE model.
+    "SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE": "8192",
 }
 
 # Selects v2 RayTrainGroup (miles.ray.train.group). Required because

@@ -2,7 +2,6 @@ import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 
-import ray
 import torch
 import torch.distributed as dist
 from ray.actor import ActorHandle
@@ -119,16 +118,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         if not self._model_registered:
             self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
         self._model_registered = True
-
-    def _finalize_and_resume_engines(self):
-        if dist.get_rank() == 0:
-            ray.get(
-                [
-                    engine.update_weight_version.remote(weight_version=str(self.weight_version))
-                    for engine in self.rollout_engines
-                ]
-            )
-        super()._finalize_and_resume_engines()
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
@@ -269,7 +258,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
-        server_args_module._global_server_args = server_args
+        server_args_module.set_global_server_args_for_scheduler(server_args)
         initialize_moe_config(server_args)
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)

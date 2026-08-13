@@ -1,4 +1,5 @@
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
@@ -14,10 +15,16 @@ register_cuda_ci(
     labels=["megatron", "weight-update"],
 )
 
+register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
+register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="rollout/raw_reward")
+
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
 
