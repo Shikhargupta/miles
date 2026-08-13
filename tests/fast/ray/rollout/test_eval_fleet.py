@@ -16,6 +16,7 @@ from miles.ray.rollout.eval_fleet import (
     RolloutExecutorEvalFleet,
 )
 from miles.rollout.checkpoint_eval import EvalSkip
+from miles.utils.workers.rpc.client.misc import RpcWorkerCallError, ServerRestartedError
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -222,3 +223,19 @@ class TestRolloutExecutorEvalFleet:
         await session.pin("/snap/step_6", "6")
 
         assert (provider.lookups, len(first.calls), len(second.calls)) == (2, 1, 1)
+
+    async def test_a_controller_that_cannot_be_reached_skips_the_point(self, fleet_states):
+        """Losing the controller must skip one eval point, not raise into the driver's rollout loop."""
+        session = make_session(FakeInferenceController([RpcWorkerCallError("controller is gone")]))
+
+        with pytest.raises(EvalSkip) as exc:
+            await session.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "controller_unreachable"
+
+    async def test_a_controller_that_restarted_skips_the_point(self, fleet_states):
+        """A restarted server is a transport failure too, and eval must degrade rather than crash the run."""
+        session = make_session_over(FakeControllerProvider([ServerRestartedError("boot uuid changed")]))
+
+        with pytest.raises(EvalSkip):
+            await session.pin("/snap/step_5", "5")
