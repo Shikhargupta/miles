@@ -40,6 +40,12 @@ async def _launch(specs: list[ServeWorkerSpec], *, comm_backend: WorkerCommBacke
     return manager
 
 
+async def _scan_all_live_cells(manager: RayWorkerManager) -> None:
+    for cell in manager._all_cells():
+        if cell.alive:
+            await cell._scan_liveness_once()
+
+
 def _kill_worker_process(cluster: FakeRayCluster, *, handle_index: int) -> None:
     cluster.handles[handle_index].failing_methods[READINESS_METHOD] = ray.exceptions.RayActorError()
 
