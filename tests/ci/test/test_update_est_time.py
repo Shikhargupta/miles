@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-import tests.ci.update_est_time as update_est_time_module
+import tests.ci.runtime_estimate.update_est_time as update_est_time_module
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
-from tests.ci.runtime_history import RuntimeSample
-from tests.ci.update_est_time import (
+from tests.ci.runtime_estimate.runtime_history import RuntimeSample
+from tests.ci.runtime_estimate.update_est_time import (
     EstimateChange,
     RuntimeEstimate,
     bucket_estimate,

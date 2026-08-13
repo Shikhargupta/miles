@@ -20,7 +20,7 @@ from tests.ci.metric_history import (
     RunProvenance,
 )
 from tests.ci.metric_history.gate import evaluate_gate
-from tests.ci.runtime_history import RuntimeAttempt, RuntimeProvenance, runtime_provenance_from_env
+from tests.ci.runtime_estimate.runtime_history import RuntimeAttempt, RuntimeProvenance, runtime_provenance_from_env
 
 # Env var the training process reads to find the per-attempt record directory; kept
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.

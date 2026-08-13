@@ -13,7 +13,7 @@ from tests.ci.ci_utils import (
     run_unittest_files,
 )
 from tests.ci.labels import KNOWN_LABELS
-from tests.ci.runtime_history import build_runtime_store_from_env
+from tests.ci.runtime_estimate.runtime_history import build_runtime_store_from_env
 
 HW_MAPPING = {
     "cpu": HWBackend.CPU,

@@ -20,7 +20,7 @@ Runtime-history provenance and batch-write failures are fail-open: the harness l
 
 Runtime history reuses the repository's hosted Postgres connection but stays in the independent `ci_test_runtime_attempts` table; it does not share metric-history tables or trust semantics. Runtime code performs DML only and never creates or migrates the table.
 
-The table definition is versioned in `tests/ci/runtime_history_schema.sql`. The repository Actions secret `NEON_DATABASE_URL` must use a role that can `SELECT`, `INSERT`, and `UPDATE` this table. The same secret is passed to scheduled CUDA jobs for collection and to the calibration workflow for reads.
+The table definition is versioned in `tests/ci/runtime_estimate/runtime_history_schema.sql`. The repository Actions secret `NEON_DATABASE_URL` must use a role that can `SELECT`, `INSERT`, and `UPDATE` this table. The same secret is passed to scheduled CUDA jobs for collection and to the calibration workflow for reads.
 
 The idempotency key is `(github_run_id, github_run_attempt, test_path, backend, suite, test_attempt)`. Replaying the same payload is safe; a different payload for an existing key fails and rolls back the batch instead of silently choosing one value.
 
@@ -43,7 +43,7 @@ Do not enable automatic publishing until this query shows the expected scheduled
 Set `NEON_DATABASE_URL` in the local environment, then run a deterministic dry run from the repository root:
 
 ```bash
-python3 -m tests.ci.update_est_time \
+python3 -m tests.ci.runtime_estimate.update_est_time \
   --dry-run \
   --as-of 2026-08-12 \
   --report-file /tmp/ci-runtime-est-time.md
@@ -66,7 +66,7 @@ The calibration path is fail-closed: a database read, registry or AST validation
 To apply the same update locally, omit `--dry-run`, then review only the intended literals:
 
 ```bash
-python3 -m tests.ci.update_est_time --as-of 2026-08-12 --report-file /tmp/ci-runtime-est-time.md
+python3 -m tests.ci.runtime_estimate.update_est_time --as-of 2026-08-12 --report-file /tmp/ci-runtime-est-time.md
 git diff --check
 git diff -- tests/e2e
 ```

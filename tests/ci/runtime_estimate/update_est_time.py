@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files, ut_parse_one_file
-from tests.ci.runtime_history import NeonRuntimeHistoryStore, RuntimeSample
+from tests.ci.runtime_estimate.runtime_history import NeonRuntimeHistoryStore, RuntimeSample
 
 WINDOW_DAYS = 21
 MAX_SAMPLES = 15

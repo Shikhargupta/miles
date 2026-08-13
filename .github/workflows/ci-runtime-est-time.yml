@@ -45,9 +45,9 @@ jobs:
           REPORT_FILE: ${{ runner.temp }}/ci-runtime-est-time.md
         run: |
           if [[ "$DRY_RUN" == "true" ]]; then
-            python3 -m tests.ci.update_est_time --dry-run --report-file "$REPORT_FILE"
+            python3 -m tests.ci.runtime_estimate.update_est_time --dry-run --report-file "$REPORT_FILE"
           else
-            python3 -m tests.ci.update_est_time --report-file "$REPORT_FILE"
+            python3 -m tests.ci.runtime_estimate.update_est_time --report-file "$REPORT_FILE"
           fi
           cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
 

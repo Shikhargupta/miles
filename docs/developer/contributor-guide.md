@@ -126,7 +126,7 @@ Current sentinels, so you know when you have walked into one:
 | `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/ci/00-stage.md`, `docs/ci/01-label.md` |
 | `docker/build.py` | `docs/ci/02-docker-build.md` |
 | `tests/ci/metric_history/**` | `docs/ci/03-metric-history-gate.md` |
-| `.github/workflows/ci-runtime-est-time.yml`, `tests/ci/runtime_history.py`, `tests/ci/runtime_history_schema.sql`, `tests/ci/update_est_time.py` | `docs/ci/04-runtime-est-time.md` |
+| `.github/workflows/ci-runtime-est-time.yml`, `tests/ci/runtime_estimate/runtime_history.py`, `tests/ci/runtime_estimate/runtime_history_schema.sql`, `tests/ci/runtime_estimate/update_est_time.py` | `docs/ci/04-runtime-est-time.md` |
 
 Grep for `doc-dev:` before editing anything under `.github/workflows/` or `docker/`. A
 change that lands the code and leaves the document stale is the failure mode this

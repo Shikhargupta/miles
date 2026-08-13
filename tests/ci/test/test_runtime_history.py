@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
 from tests.ci.ci_utils import run_unittest_files
-from tests.ci.runtime_history import (
+from tests.ci.runtime_estimate.runtime_history import (
     NeonRuntimeHistoryStore,
     RuntimeAttempt,
     RuntimeProvenance,
