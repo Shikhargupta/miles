@@ -10,6 +10,7 @@ from tests.fast.utils.workers.fake_ray import EVENT_KILL, READINESS_METHOD, Fake
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
 
 
@@ -238,6 +239,79 @@ class TestScanLivenessLoop:
         await _wait_until(lambda: len(scans) >= 3)
 
         assert not cell.liveness_scan_task.done()
+
+
+class _ManagerHandleShim:
+    """The provider talks to the manager as a ray actor; here it is the object itself."""
+
+    def __init__(self, manager: RayWorkerManager) -> None:
+        self.get_cell_infos = _ShimMethod(manager.get_cell_infos)
+
+
+class _ShimMethod:
+    def __init__(self, fn) -> None:
+        self._fn = fn
+
+    def remote(self, **kwargs):
+        return _resolved(self._fn(**kwargs))
+
+
+async def _resolved(value):
+    return value
+
+
+class _RecordingReconciler:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object | None]] = []
+
+    async def __call__(self, cell_id: str, info) -> None:
+        self.calls.append((cell_id, info))
+
+
+class TestTheDeathReachesTheProvider:
+    async def test_a_worker_that_died_alone_is_reconciled_away(self, fake_ray_cluster: FakeRayCluster):
+        """Noticing the death is only worth anything if the watcher that rebuilds cells hears about it."""
+        manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        provider = RayWorkerProvider(
+            worker_manager_handle=_ManagerHandleShim(manager),
+            pool_ids=["engine"],
+            poll_interval_seconds=0.001,
+        )
+        reconciler = _RecordingReconciler()
+        stop = await provider.watch_cells(reconciler)
+        try:
+            _kill_worker_process(fake_ray_cluster, handle_index=0)
+            await _scan_all_live_cells(manager)
+
+            await _wait_until(lambda: reconciler.calls[-1][1] is None)
+        finally:
+            await stop()
+
+        assert [cell_id for cell_id, _ in reconciler.calls] == ["engine-0", "engine-0"]
+
+    async def test_the_rebuilt_cell_is_reconciled_back_with_a_new_hash(self, fake_ray_cluster: FakeRayCluster):
+        """A cell dropped by the scan must be startable again and look new, or nothing reconnects to it."""
+        manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        provider = RayWorkerProvider(
+            worker_manager_handle=_ManagerHandleShim(manager),
+            pool_ids=["engine"],
+            poll_interval_seconds=0.001,
+        )
+        reconciler = _RecordingReconciler()
+        stop = await provider.watch_cells(reconciler)
+        try:
+            first_hash = reconciler.calls[0][1].workers_hash
+            _kill_worker_process(fake_ray_cluster, handle_index=0)
+            await _scan_all_live_cells(manager)
+            await _wait_until(lambda: reconciler.calls[-1][1] is None)
+
+            await manager.start_cells(["engine-0"])
+
+            await _wait_until(lambda: reconciler.calls[-1][1] is not None)
+        finally:
+            await stop()
+
+        assert reconciler.calls[-1][1].workers_hash != first_hash
 
 
 async def _wait_until(predicate, *, timeout: float = 5.0) -> None:
