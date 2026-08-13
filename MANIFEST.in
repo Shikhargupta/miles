@@ -1,10 +1,12 @@
 # Files to ship in the miles-rl distribution beyond the Python sources that
 # setup.py's `packages=` already covers.
 
-# PyPI renders README.md on the project page (setup.py embeds it into the
-# wheel METADATA via long_description); listing both here keeps the sdist
-# self-contained and lets `license_files` resolve.
-include README.md LICENSE
+# Files setup.py reads at build time. Without these in the sdist, building a
+# wheel from the sdist -- what `pip install --no-binary` and any environment
+# the wheel does not cover fall back to -- dies before it starts:
+# requirements.txt feeds install_requires, README.md feeds long_description,
+# and LICENSE is resolved by license_files.
+include README.md LICENSE requirements.txt
 
 # Non-Python data files inside the bundled third_party/* sources -- JSON GEMM
 # and MoE configs, kernel templates, headers. `find_namespace_packages` picks

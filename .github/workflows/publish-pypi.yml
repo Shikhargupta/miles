@@ -119,6 +119,36 @@ jobs:
           print(f"OK: wheel carries all expected top-level packages ({len(names)} files)")
           PY
 
+      - name: Rebuild the wheel from the sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `python -m build --wheel --sdist` builds both from the source tree,
+          # so it cannot tell whether the sdist is self-contained. Anyone who
+          # installs with --no-binary, or on a platform the wheel does not
+          # cover, builds from the sdist instead -- and setup.py reads
+          # requirements.txt and README.md at build time, so an sdist missing
+          # either fails before it starts. Prove it round-trips.
+          workdir=$(mktemp -d)
+          tar xzf dist/*.tar.gz -C "$workdir"
+          src=$(find "$workdir" -mindepth 1 -maxdepth 1 -type d)
+          ( cd "$src" && python -m build --wheel --outdir "$workdir/out" )
+          echo "--- wheel rebuilt from the sdist ---"
+          ls -lh "$workdir/out"
+          python - "$workdir/out" <<'PY'
+          import pathlib, sys, zipfile
+
+          wheels = list(pathlib.Path(sys.argv[1]).glob("*.whl"))
+          if len(wheels) != 1:
+              sys.exit(f"expected one wheel rebuilt from the sdist, got {wheels}")
+          names = zipfile.ZipFile(wheels[0]).namelist()
+          missing = [p for p in ("miles/", "sglang/", "megatron/", "miles_megatron_plugins/")
+                     if not any(n.startswith(p) for n in names)]
+          if missing:
+              sys.exit(f"sdist-built wheel is missing: {missing}")
+          print(f"OK: sdist round-trips to a complete wheel ({len(names)} files)")
+          PY
+
       - name: Refuse to upload a version that already exists on PyPI
         if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
