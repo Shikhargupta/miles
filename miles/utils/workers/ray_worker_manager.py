@@ -52,6 +52,10 @@ _ACTOR_NAME = "ray_worker_manager"
 _LIVENESS_SCAN_INTERVAL_SECONDS = 10.0
 
 
+class StaleWorkerSnapshotError(Exception):
+    pass
+
+
 class RayWorkerManager:
     def __init__(self):
         self.port_allocator = PortAllocator()
@@ -125,8 +129,14 @@ class RayWorkerManager:
         infos = [c.get_info() for name in pool_ids for c in self._pools[name].cells]
         return {info.cell_id: info for info in infos}
 
-    def get_actor_handle(self, worker_name: str) -> ray.actor.ActorHandle:
-        return self._find_actor(worker_name).actor_handle
+    def get_actor_handle(self, worker_name: str, *, expected_generation: int) -> ray.actor.ActorHandle:
+        actor = self._find_actor(worker_name)
+        if actor.generation != expected_generation:
+            raise StaleWorkerSnapshotError(
+                f"{worker_name} is now generation {actor.generation}, not the {expected_generation} it was "
+                f"described as; ask for its worker infos again"
+            )
+        return actor.actor_handle
 
     def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
         served_over_rpc = isinstance(actor.spec, ServeWorkerSpec) and self.comm_backend == WorkerCommBackend.RPC

@@ -6,6 +6,7 @@ import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 from miles.utils.workers.naming import compute_cell_id, parse_cell_id
+from miles.utils.workers.ray_worker_manager import StaleWorkerSnapshotError
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
@@ -33,6 +34,7 @@ class FakeWorkerManager:
 
         self.get_cell_infos = _FakeRemoteMethod(self._get_cell_infos)
         self.get_worker_infos = _FakeRemoteMethod(self._get_worker_infos)
+        self.get_actor_handle = _FakeRemoteMethod(self._get_actor_handle)
         self.start_cells = _FakeRemoteMethod(self.started_cell_ids.append)
         self.stop_cells = _FakeRemoteMethod(self._stop_cells)
 
@@ -69,6 +71,13 @@ class FakeWorkerManager:
             )
             for worker_index, handle in enumerate(self._handles[cell_id])
         ]
+
+    def _get_actor_handle(self, worker_name: str, *, expected_generation: int):
+        generation = 1 + len(self.started_cell_ids)
+        if generation != expected_generation:
+            raise StaleWorkerSnapshotError(f"{worker_name} is generation {generation}, not {expected_generation}")
+        cell_id, _, worker_index = worker_name.rpartition("-")
+        return self._handles[cell_id][int(worker_index)]
 
     def _compute_master_addr(self, worker_index: int) -> HostAndPort:
         if self.master_addr_per_worker is None:
