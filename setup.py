@@ -168,7 +168,7 @@ setup(
     # The PyPI distribution is `miles-rl`; plain `miles` is taken by an
     # unrelated project. Import names are unaffected (`import miles`).
     name="miles-rl",
-    version="0.2.2",
+    version="0.1",
     description="Enterprise-grade reinforcement learning for large-scale model post-training.",
     long_description=_read_long_description(),
     long_description_content_type="text/markdown",
