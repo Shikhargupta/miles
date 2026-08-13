@@ -25,7 +25,8 @@ def _to_pickled(value: Any) -> dict[str, str]:
 # TODO(MILES_PICKLED_HATCH): temporary, whitelisted escape hatch for the argparse Namespace a
 # trainer is built from, which no wire type reproduces losslessly. Reclaim it once the
 # arguments subsystem is split into wire-typed pieces; every other parameter must stay
-# strictly wire-typed.
+# strictly wire-typed. Until then this unpickles whatever reaches the worker's rpc port, which
+# assumes the run's network is trusted; it is the reason to reclaim it, not a property to keep.
 Pickled = Annotated[
     Any,
     BeforeValidator(_from_pickled),
