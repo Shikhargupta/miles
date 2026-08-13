@@ -266,7 +266,4 @@ def _local_hostname() -> str:
     return ray.util.get_node_ip_address()
 
 
-# ============================== store object ref ==============================
-
-
 StoreObjectRef = Annotated[_RayStoreObjectRef | _MooncakeStoreObjectRef, Field(discriminator="backend")]
