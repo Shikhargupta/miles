@@ -54,6 +54,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     ), f"run_id {run_id!r} names every object this run installs, so it has to match {_RUN_ID_PATTERN.pattern}"
 
     namespace = config.namespace
+    _assert_extra_manifests_stay_in_namespace(request.extra_manifests, namespace=namespace)
     release = RunNames.release(run_id=run_id)
     pod_argv, args = _compute_train_argv(request, run_id=run_id, release=release, namespace=namespace)
 
@@ -82,6 +83,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         colocate=bool(args.colocate),
         mooncake_plan=MooncakeInfo.plan_of_args(args),
         prepare_cmd=request.prepare_cmd,
+        extra_manifests=request.extra_manifests,
     )
     values_path = RunFiles.new_values_file(run_directory=run_directory)
     record = LaunchRecord.compute(plan=plan, values_file=values_path)
@@ -118,6 +120,21 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     )
 
     _follow_until_finished(release=release, namespace=namespace, state_file=state_file)
+
+
+def _assert_extra_manifests_stay_in_namespace(extra_manifests: list[str], *, namespace: str) -> None:
+    foreign = [
+        described.identity(default_namespace=namespace)
+        for rendered in extra_manifests
+        for described in Manifest.parse(rendered, namespace=namespace).objects
+        if described.metadata.namespace not in (None, namespace)
+    ]
+
+    assert not foreign, (
+        f"extraManifests may only install objects into the run's own namespace {namespace}, but {foreign} name "
+        f"another one. This run uninstalls itself with a namespaced Role, so an object outside it survives the run "
+        f"and keeps whatever it holds"
+    )
 
 
 def _follow_until_finished(*, release: str, namespace: str, state_file: Path) -> None:
