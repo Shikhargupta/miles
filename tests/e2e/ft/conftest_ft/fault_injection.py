@@ -21,6 +21,11 @@ MEAN_INTERVAL_SECONDS: float = 60.0
 # happens entirely between two (much sparser) injections; injections still fire on the long
 # random interval above.
 POLL_INTERVAL_SECONDS: float = 2.0
+# The api server answers an injection once the worker has accepted the call, but on kubernetes that
+# acknowledgement travels over rpc and is itself bounded. Give the request more room than the server
+# is allowed to take, or a kill that worked gets recorded as a failed injection.
+INJECT_REQUEST_TIMEOUT_SECONDS: float = 30.0
+LIST_REQUEST_TIMEOUT_SECONDS: float = 5.0
 FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
 
 
@@ -224,7 +229,7 @@ def run_fault_injection_loop(
             resp = requests.post(
                 f"{base_url}/api/v1/cells/{cell_name}/inject-fault",
                 json={"mode": mode.value, "sub_index": 0},
-                timeout=5,
+                timeout=INJECT_REQUEST_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
             gate.note_injected(cell_name)
@@ -237,7 +242,7 @@ def run_fault_injection_loop(
 
 def list_cells(*, base_url: str, cell_type: str | None) -> list[dict] | None:
     try:
-        resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
+        resp = requests.get(f"{base_url}/api/v1/cells", timeout=LIST_REQUEST_TIMEOUT_SECONDS)
         resp.raise_for_status()
         return [c for c in resp.json()["items"] if _matches_cell_type(c, cell_type)]
     except Exception:

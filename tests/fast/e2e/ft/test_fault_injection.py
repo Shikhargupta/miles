@@ -2,6 +2,7 @@ import dataclasses
 import threading
 from unittest.mock import MagicMock, patch
 
+from miles.utils.workers.cell_operations.kubernetes import INJECT_FAULT_TIMEOUT_SECONDS
 from tests.e2e.ft.conftest_ft import fault_injection as fi
 from tests.e2e.ft.conftest_ft.fault_injection import RecoveryGate, cell_is_alive
 from tests.e2e.ft.conftest_ft.modes import MODES, FTTestMode
@@ -541,3 +542,9 @@ class TestUntypedInjectionSelection:
 
         assert injected
         assert all(name.startswith("rollout-engine-") for name in injected), injected
+
+
+class TestRequestBudgets:
+    def test_gives_an_injection_more_time_than_the_api_server_is_allowed_to_take(self) -> None:
+        """On kubernetes the acknowledgement travels over rpc, and a kill that worked must not read as a failure."""
+        assert fi.INJECT_REQUEST_TIMEOUT_SECONDS > INJECT_FAULT_TIMEOUT_SECONDS
