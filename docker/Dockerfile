@@ -20,6 +20,7 @@ ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
+ARG MEGATRON_COMMIT=""
 
 ARG ENABLE_CUDA_13=1
 
@@ -150,6 +151,10 @@ RUN pip install /tmp/wheels/apex-*.whl
 
 RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
     cd Megatron-LM && \
+    if [ -n "${MEGATRON_COMMIT}" ]; then \
+        git fetch origin "${MEGATRON_COMMIT}" && git checkout --detach "${MEGATRON_COMMIT}"; \
+    fi && \
+    git submodule update --init --recursive && \
     pip install -e .
 
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
@@ -161,10 +166,10 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@74d68c5e4bedf2b6774f2c92ed0f81b7c8d91ed0 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-# radixark/Megatron-Bridge#24 (TE 2.17 grouped-linear contract), merged to @bridge.
+# radixark/Megatron-Bridge#27 (multi-LoRA recompute and expert DDP routing), merged to @bridge.
 # Pinned by SHA, not branch: buildkit caches this layer on the instruction text, so a
 # branch that moves leaves the old revision baked into the image with nothing to show it.
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@7f0fb3456f8ffe47599b5fd167b454605d85f932 --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@688d34b85c6f3785d4a542ab202c35ab077a904b --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
