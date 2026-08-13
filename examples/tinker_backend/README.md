@@ -40,15 +40,19 @@ Key flags:
 
 ### Activation recompute (memory saving)
 
-Only `--recompute-granularity selective` is supported (default
+`--recompute-granularity selective` is always supported (default
 `--recompute-modules core_attn`; add `moe_act` to also recompute the MoE
-activation with grouped GEMM). `--recompute-granularity full` is refused at
-launch: multi-LoRA trains adapter-only, so every checkpointed layer input is
-grad-free, Megatron never replays the layers, and all adapter gradients are
-silently zero — the job steps forever at `grad_norm=0.0` without learning
-(4xH200 GPT-OSS 20B repro, 2026-08-12). `moe` in `--recompute-modules` is
-refused for the same reason when expert modules are targeted: that checkpoint
-region contains the expert adapters themselves.
+activation with grouped GEMM). `--recompute-granularity full` — and `moe` in
+`--recompute-modules` when expert modules are targeted — additionally
+requires a Megatron-Bridge whose PEFT recompute patch recognizes multi-LoRA
+`.adapters.<slot>.` params (radixark/Megatron-Bridge#27, branch `bridge` @
+`688d34b8`): multi-LoRA trains adapter-only, so those checkpointed regions
+replay grad-enabled only because that patch forces TransformerBlock inputs to
+require grad. Launch probes the installed bridge and refuses the two shapes
+on an unfixed one, where every adapter gradient is silently zero and the job
+steps forever at `grad_norm=0.0` without learning (4xH200 GPT-OSS 20B repro,
+2026-08-12; full recompute re-validated training real gradients on the fixed
+bridge, same config).
 
 ## Operation contract
 
