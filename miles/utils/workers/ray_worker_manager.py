@@ -79,8 +79,6 @@ class RayWorkerManager:
 
         await self.start_cells([c.cell_id for c in self._all_cells()])
 
-        self._liveness_scan_task = asyncio.create_task(self._scan_liveness_forever())
-
     async def start_cells(self, cell_ids: list[str]) -> None:
         async with self._membership_lock:
             cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
@@ -127,30 +125,6 @@ class RayWorkerManager:
 
     def get_actor_handle(self, worker_name: str) -> ray.actor.ActorHandle:
         return self._find_actor(worker_name).actor_handle
-
-    async def _scan_liveness_forever(self) -> None:
-        while True:
-            await asyncio.sleep(_LIVENESS_SCAN_INTERVAL_SECONDS)
-            try:
-                await self._scan_liveness_once()
-            except Exception:
-                logger.error("Scanning worker liveness failed, will scan again", exc_info=True)
-
-    async def _scan_liveness_once(self) -> None:
-        for cell in [c for c in self._all_cells() if c.alive]:
-            generation = cell.generation
-            dead_worker_names = await cell.find_dead_worker_names()
-            if not dead_worker_names:
-                continue
-
-            async with self._membership_lock:
-                if not cell.alive or cell.generation != generation:
-                    continue
-                logger.error(
-                    f"Cell {cell.cell_id} lost workers {dead_worker_names} without being stopped, "
-                    f"so the whole cell is torn down and reported as not alive"
-                )
-                await cell.stop()
 
     def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
         served_over_rpc = isinstance(actor.spec, ServeWorkerSpec) and self.comm_backend == WorkerCommBackend.RPC
@@ -218,6 +192,7 @@ class _CellManager(Generic[SpecT]):
     spec: SpecT
     actors: list[_BaseActorManager] | None
     generation: int = 0
+    liveness_scan_task: asyncio.Task | None = None
 
     async def launch_actors(self):
         assert self.actors is None
@@ -242,6 +217,7 @@ class _CellManager(Generic[SpecT]):
             for worker_in_cell_index in range(scheduling.num_workers_per_cell)
         ]
         await self._for_all_actors(lambda a: a.launch_actor())
+        self.liveness_scan_task = asyncio.create_task(self._scan_liveness_forever(self.generation))
 
     async def alloc_ports(self) -> None:
         await self._for_all_actors(lambda a: a.alloc_ports())
@@ -255,7 +231,30 @@ class _CellManager(Generic[SpecT]):
         await self._for_all_actors(lambda a: a.stop())
         self.actors = None
 
-    async def find_dead_worker_names(self) -> list[str]:
+    async def _scan_liveness_forever(self, generation: int) -> None:
+        while self.generation == generation and self.actors is not None:
+            await asyncio.sleep(_LIVENESS_SCAN_INTERVAL_SECONDS)
+            try:
+                await self._scan_liveness_once()
+            except Exception:
+                logger.error(f"Scanning liveness of cell {self.cell_id} failed, will scan again", exc_info=True)
+
+    async def _scan_liveness_once(self) -> None:
+        generation = self.generation
+        dead_worker_names = await self._find_dead_worker_names()
+        if not dead_worker_names:
+            return
+
+        async with self.manager._membership_lock:
+            if self.actors is None or self.generation != generation:
+                return
+            logger.error(
+                f"Cell {self.cell_id} lost workers {dead_worker_names} without being stopped, "
+                f"so the whole cell is torn down and reported as not alive"
+            )
+            await self.stop()
+
+    async def _find_dead_worker_names(self) -> list[str]:
         if (actors := self.actors) is None:
             return []
         probes = await asyncio.gather(*[a.probe_is_dead() for a in actors])

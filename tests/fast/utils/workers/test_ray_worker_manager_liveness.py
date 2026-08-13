@@ -5,7 +5,7 @@ import asyncio
 import pytest
 import ray
 from tests.fast.utils.workers.conftest import worker_manager_args
-from tests.fast.utils.workers.fake_ray import READINESS_METHOD, FakeRayCluster
+from tests.fast.utils.workers.fake_ray import EVENT_KILL, READINESS_METHOD, FakeRayCluster
 
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
@@ -54,7 +54,7 @@ class TestScanLivenessOnce:
         """The scan must not tear down a healthy cell, or every run would restart itself forever."""
         manager = await _launch([_make_spec("engine", num_cells=2)], comm_backend=WorkerCommBackend.RPC)
 
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
 
         assert all(info.alive for info in manager.get_cell_infos(pool_ids=["engine"]).values())
 
@@ -63,7 +63,7 @@ class TestScanLivenessOnce:
         manager = await _launch([_make_spec("engine", num_cells=2)], comm_backend=WorkerCommBackend.RPC)
         _kill_worker_process(fake_ray_cluster, handle_index=0)
 
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
 
         infos = manager.get_cell_infos(pool_ids=["engine"])
         assert not infos["engine-0"].alive
@@ -74,7 +74,7 @@ class TestScanLivenessOnce:
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)], comm_backend=WorkerCommBackend.RPC)
         _kill_worker_process(fake_ray_cluster, handle_index=1)
 
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
 
         assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
         assert [handle.killed for handle in fake_ray_cluster.handles] == [True, True]
@@ -83,7 +83,7 @@ class TestScanLivenessOnce:
         """Reporting the death is only useful if the cell is then restartable without a stop first."""
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
         _kill_worker_process(fake_ray_cluster, handle_index=0)
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
 
         await manager.start_cells(["engine-0"])
 
@@ -96,7 +96,7 @@ class TestScanLivenessOnce:
         before = manager.get_cell_infos(pool_ids=["engine"])["engine-0"].workers_hash
         _kill_worker_process(fake_ray_cluster, handle_index=0)
 
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
         await manager.start_cells(["engine-0"])
 
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].workers_hash != before
@@ -106,44 +106,46 @@ class TestScanLivenessOnce:
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RAY)
         _kill_worker_process(fake_ray_cluster, handle_index=0)
 
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
 
         assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
 
-    async def test_an_already_stopped_cell_is_not_probed(self, fake_ray_cluster: FakeRayCluster):
-        """Probing a cell nobody launched would raise on its missing actors and abort the whole scan."""
-        manager = await _launch([_make_spec("engine", num_cells=2)], comm_backend=WorkerCommBackend.RPC)
+    async def test_a_stopped_cell_probes_nothing(self, fake_ray_cluster: FakeRayCluster):
+        """A scan racing a suspend finds no actors to probe, and must answer that instead of raising."""
+        manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        cell = manager._find_cell("engine-0")
         await manager.stop_cells(["engine-0"])
         fake_ray_cluster.calls.clear()
 
-        await manager._scan_liveness_once()
+        await cell._scan_liveness_once()
 
-        probed = {call.handle.index for call in fake_ray_cluster.calls_of(READINESS_METHOD)}
-        assert probed == {1}
+        assert fake_ray_cluster.calls_of(READINESS_METHOD) == []
 
 
 class TestScanLivenessRacesWithMembershipChanges:
-    async def test_a_cell_stopped_while_another_one_is_probed_is_skipped(self, fake_ray_cluster: FakeRayCluster):
-        """A suspend landing mid-scan empties a cell's actors, and probing them would abort the whole scan."""
-        manager = await _launch([_make_spec("engine", num_cells=2)], comm_backend=WorkerCommBackend.RPC)
+    async def test_a_cell_stopped_while_it_is_probed_is_not_stopped_twice(self, fake_ray_cluster: FakeRayCluster):
+        """A suspend landing mid-probe already killed the actors the scan was about to declare dead."""
+        manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        cell = manager._find_cell("engine-0")
+        _kill_worker_process(fake_ray_cluster, handle_index=0)
         fake_ray_cluster.handles[0].hanging_methods[READINESS_METHOD] = 0.2
 
-        scan = asyncio.create_task(manager._scan_liveness_once())
+        scan = asyncio.create_task(cell._scan_liveness_once())
         await asyncio.sleep(0.05)
-        await manager.stop_cells(["engine-1"])
+        await manager.stop_cells(["engine-0"])
         await scan
 
-        infos = manager.get_cell_infos(pool_ids=["engine"])
-        assert infos["engine-0"].alive
-        assert not infos["engine-1"].alive
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
 
     async def test_a_cell_restarted_while_being_probed_survives(self, fake_ray_cluster: FakeRayCluster):
         """The dead workers the scan saw belong to the old generation, so the new one must not pay for them."""
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        cell = manager._find_cell("engine-0")
         _kill_worker_process(fake_ray_cluster, handle_index=0)
         fake_ray_cluster.handles[0].hanging_methods[READINESS_METHOD] = 0.2
 
-        scan = asyncio.create_task(manager._scan_liveness_once())
+        scan = asyncio.create_task(cell._scan_liveness_once())
         await asyncio.sleep(0.05)
         await manager.stop_cells(["engine-0"])
         await manager.start_cells(["engine-0"])
@@ -158,7 +160,7 @@ class TestScanLivenessOnlyTrustsAProvenDeath:
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
         fake_ray_cluster.handles[0].hanging_methods[READINESS_METHOD] = 3600.0
 
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
 
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
 
@@ -169,24 +171,55 @@ class TestScanLivenessOnlyTrustsAProvenDeath:
             ray.exceptions.RayTaskError
         )
 
-        await manager._scan_liveness_once()
+        await _scan_all_live_cells(manager)
 
         assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
 
 
 class TestScanLivenessLoop:
-    async def test_init_starts_the_scan(self, fake_ray_cluster: FakeRayCluster, instant_scans: None):
-        """The scan is what makes the manager notice a death nobody reported, so it must run unasked."""
+    async def test_a_launched_cell_scans_itself(self, fake_ray_cluster: FakeRayCluster, instant_scans: None):
+        """The scan is what makes a death nobody reported reach the membership, so it must run unasked."""
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
         _kill_worker_process(fake_ray_cluster, handle_index=0)
 
         await _wait_until(lambda: not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive)
 
-        manager._liveness_scan_task.cancel()
+    async def test_each_cell_scans_on_its_own(self, fake_ray_cluster: FakeRayCluster, instant_scans: None):
+        """One worker hanging its probe must not delay how fast another cell's death is noticed."""
+        manager = await _launch([_make_spec("engine", num_cells=2)], comm_backend=WorkerCommBackend.RPC)
+        fake_ray_cluster.handles[0].hanging_methods[READINESS_METHOD] = 3600.0
+        _kill_worker_process(fake_ray_cluster, handle_index=1)
+
+        await _wait_until(lambda: not manager.get_cell_infos(pool_ids=["engine"])["engine-1"].alive)
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+
+    async def test_a_stopped_cell_stops_scanning(self, fake_ray_cluster: FakeRayCluster, instant_scans: None):
+        """A suspended cell that kept scanning would keep a task per suspend for the rest of the run."""
+        manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        cell = manager._find_cell("engine-0")
+
+        await manager.stop_cells(["engine-0"])
+
+        await _wait_until(lambda: cell.liveness_scan_task.done())
+
+    async def test_a_restarted_cell_leaves_only_its_new_scan_running(
+        self, fake_ray_cluster: FakeRayCluster, instant_scans: None
+    ):
+        """A restart that stacked one more scan per generation would probe the same actors N times."""
+        manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        first_scan = manager._find_cell("engine-0").liveness_scan_task
+
+        await manager.stop_cells(["engine-0"])
+        await manager.start_cells(["engine-0"])
+
+        await _wait_until(lambda: first_scan.done())
+        assert not manager._find_cell("engine-0").liveness_scan_task.done()
 
     async def test_a_failing_scan_does_not_end_the_loop(self, fake_ray_cluster: FakeRayCluster, instant_scans: None):
-        """One bad scan must not silently leave the run without any liveness reporting at all."""
+        """One bad scan must not silently leave the cell without any liveness reporting at all."""
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
+        cell = manager._find_cell("engine-0")
         scans: list[int] = []
 
         async def scan_once() -> None:
@@ -194,12 +227,11 @@ class TestScanLivenessLoop:
             if len(scans) == 1:
                 raise RuntimeError("scan failed")
 
-        manager._scan_liveness_once = scan_once
+        cell._scan_liveness_once = scan_once
 
         await _wait_until(lambda: len(scans) >= 3)
 
-        assert not manager._liveness_scan_task.done()
-        manager._liveness_scan_task.cancel()
+        assert not cell.liveness_scan_task.done()
 
 
 async def _wait_until(predicate, *, timeout: float = 5.0) -> None:
