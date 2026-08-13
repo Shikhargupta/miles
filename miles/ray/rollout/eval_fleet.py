@@ -12,6 +12,7 @@ import dataclasses
 import logging
 from argparse import Namespace
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -103,21 +104,21 @@ class InferenceControllerEvalFleet:
         ``weight_version`` — the router load-balances across engines, so a single
         stale engine would mix versions. Never raises: transient failures and
         mismatches are retried, then ``False`` lets the caller skip the point."""
-        actors = [e.actor_handle for e in self._srv.engines]
         versions: list = []
         for attempt in range(retries):
             try:
+                clients = await self._fleet_api_clients()
                 await asyncio.wait_for(
                     asyncio.gather(
                         *[
-                            a.update_weights_from_disk.remote(checkpoint_dir, weight_version=weight_version)
-                            for a in actors
+                            client.update_weights_from_disk(checkpoint_dir, weight_version=weight_version)
+                            for client in clients
                         ]
                     ),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
                 versions = await asyncio.wait_for(
-                    asyncio.gather(*[a.get_weight_version.remote() for a in actors]),
+                    asyncio.gather(*[client.get_weight_version() for client in clients]),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
             except Exception as e:
@@ -127,6 +128,11 @@ class InferenceControllerEvalFleet:
                 return True
         logger.warning(f"Failed to pin weight_version={weight_version} to {checkpoint_dir} (got {versions})")
         return False
+
+    async def _fleet_api_clients(self) -> list[SGLangApiClient]:
+        """A snapshot taken under the server's lock, so a cell joining mid-pin cannot be missed silently."""
+        async with self._srv.context_lock:
+            return list(self._srv.api_clients)
 
     async def _wait_router_ready(self, timeout: float = 180.0) -> None:
         """After a revival the router 503s until its health cycle evicts the dead

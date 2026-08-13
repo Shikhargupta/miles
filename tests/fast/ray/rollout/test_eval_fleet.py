@@ -2,8 +2,6 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
-import asyncio
-from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args as _make_args
@@ -15,7 +13,9 @@ from miles.ray.rollout.eval_fleet import (
     InferenceControllerEvalFleet,
     RolloutExecutorEvalFleet,
 )
+from miles.ray.rollout.rollout_server import RolloutServer
 from miles.rollout.checkpoint_eval import EvalSkip
+from miles.utils.context_lock import ContextLock
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError, ServerRestartedError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_spec import HostAndPort
@@ -31,48 +31,33 @@ def make_args(**overrides):
     return _make_args(**defaults)
 
 
-class FakeRemoteMethod:
-    def __init__(self, engine, name):
-        self.engine = engine
-        self.name = name
-
-    def remote(self, *args, **kwargs):
-        self.engine.log.append((self.name, args, kwargs))
-        result = self.engine.responses[self.name](*args, **kwargs)
-        fut = asyncio.get_event_loop().create_future()
-        fut.set_result(result)
-        return fut
-
-
 class FakeEngine:
+    """Stands in for the api client of one eval cell, with the two methods a pin calls."""
+
     def __init__(self, log):
         self.log = log
         self.weight_version = None
 
-        def load(model_path, weight_version=None):
-            self.weight_version = weight_version
-            return None
+    async def update_weights_from_disk(self, model_path, load_format=None, weight_version=None):
+        self.log.append(("update_weights_from_disk", (model_path,), dict(weight_version=weight_version)))
+        self.weight_version = weight_version
 
-        self.responses = {
-            "update_weights_from_disk": load,
-            "get_weight_version": lambda: self.weight_version,
-        }
-
-    def __getattr__(self, name):
-        if name in ("update_weights_from_disk", "get_weight_version"):
-            return FakeRemoteMethod(self, name)
-        raise AttributeError(name)
+    async def get_weight_version(self):
+        self.log.append(("get_weight_version", (), {}))
+        return self.weight_version
 
 
 class FakeEvalServer:
     def __init__(self, engines):
         self._engines = engines
+        self.context_lock = ContextLock("FakeEvalServer")
         self.router_ip = "10.0.0.2"
         self.router_port = 31000
 
     @property
-    def engines(self):
-        return [SimpleNamespace(actor_handle=e) for e in self._engines]
+    def api_clients(self):
+        assert self.context_lock.held_in_current_context(), "api_clients is read under the server's lock"
+        return list(self._engines)
 
 
 @pytest.fixture
@@ -97,6 +82,22 @@ class TestEvalFleetInfo:
         )
 
 
+def _answers_version(version: str):
+    async def get_weight_version():
+        return version
+
+    return get_weight_version
+
+
+class TestTheFleetIsBuiltOnTheRealServer:
+    def test_everything_the_fake_server_offers_a_real_one_offers_too(self):
+        """A fake with an interface of its own is how the pin path came to call `.engines`, which no server has."""
+        fake = FakeEvalServer([])
+        offered = {name for name in (*vars(fake), *type(fake).__dict__) if not name.startswith("_")}
+
+        assert offered <= set(dir(RolloutServer)) | set(RolloutServer.__annotations__)
+
+
 class TestEvalFleetPinning:
     async def test_pins_every_engine_before_reporting_success(self, router_always_ready):
         """Every engine is reloaded from the snapshot before the pin reports no skip."""
@@ -116,7 +117,7 @@ class TestEvalFleetPinning:
         then degrade to an attributable skip."""
         log = []
         good, stale = FakeEngine(log), FakeEngine(log)
-        stale.responses["get_weight_version"] = lambda: "999"
+        stale.get_weight_version = _answers_version("999")
         fleet = make_fleet(make_args(), [good, stale])
 
         pin = await fleet.pin("/snap/step_5", "5")
