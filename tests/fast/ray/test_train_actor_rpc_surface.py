@@ -30,6 +30,9 @@ DRIVEN_METHODS = (
 )
 
 
+MEGATRON_ONLY_DRIVEN_METHODS = frozenset({"reconfigure_indep_dp", "send_ckpt", "reconcile_adapters"})
+
+
 class TestTheTrainerSurfaceIsCallableOverRpc:
     def test_the_whole_surface_is_accepted(self):
         """Under --worker-comm-backend rpc an unannotated public method makes the pool unreachable."""
@@ -167,6 +170,14 @@ class TestTheConcreteBackends:
         actor_module = pytest.importorskip("miles.backends.megatron_utils.actor")
 
         assert set(DRIVEN_METHODS) <= set(collect_rpc_method_specs(actor_module.MegatronTrainRayActor))
+
+    def test_the_methods_only_the_megatron_actor_answers_are_accepted_too(self):
+        """These are driven by name from the controller, so privatising one only fails in ft or multi-lora."""
+        actor_module = pytest.importorskip("miles.backends.megatron_utils.actor")
+
+        specs = collect_rpc_method_specs(actor_module.MegatronTrainRayActor)
+
+        assert MEGATRON_ONLY_DRIVEN_METHODS <= set(specs)
 
     def test_the_fsdp_actor_is_accepted(self):
         """The second backend shares the driver's call sites, so it shares the requirement."""
