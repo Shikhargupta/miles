@@ -53,6 +53,47 @@ class ActorGroupWeightPublisher:
         await self._actor_model.update_weights()
 
 
+async def train_data_batch(actor_model, controller, rollout_id: int, rollout_data) -> None:
+    """Dispatch one claimed data batch to the trainer and finalize it on
+    abnormal outcomes.
+
+    A NORMAL train commits rank-side (``commit_batch`` completes the batch's
+    operations with their logprobs and releases the lease). Every other exit —
+    a non-NORMAL ``TrainStepOutcome`` (e.g. DISCARDED_SHOULD_RETRY) or a
+    raised train error — used to leave the operations CLAIMED forever and the
+    lease unreleased: the SDK future never resolved. The finalizer terminal-
+    fails the still-CLAIMED operations typed server and releases the lease;
+    the FAILED forward_backwards stay in the ledger as poison evidence, so
+    the window's possibly-partial gradients are discarded by the next
+    optim_step. Retry ownership is explicit: the client resubmits as NEW
+    operations."""
+    from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+
+    dispatch = rollout_data.get("tinker_dispatch") or {}
+    operation_ids = list(dispatch.get("operation_ids") or [])
+    lease = dispatch.get("lease")
+
+    try:
+        outcomes = await actor_model.train(rollout_id, rollout_data)
+    except Exception as e:
+        await controller.fail_tinker_batch.remote(
+            operation_ids,
+            f"train dispatch raised on the trainer: {e}; the batch did not commit and its "
+            "gradient window is poisoned — resubmit the batch and optim_step again",
+            lease,
+        )
+        raise
+    outcomes = outcomes if isinstance(outcomes, list) else [outcomes]
+    abnormal = sorted({str(outcome) for outcome in outcomes if outcome != TrainStepOutcome.NORMAL})
+    if abnormal:
+        await controller.fail_tinker_batch.remote(
+            operation_ids,
+            f"train step finished without committing (outcome {', '.join(abnormal)}); the batch's "
+            "gradient window is poisoned — resubmit the batch and optim_step again",
+            lease,
+        )
+
+
 async def run_control_phase(actor_model, controller, weight_publisher) -> None:
     """Claim → execute → complete, with the publish barrier in the middle.
 
@@ -177,7 +218,7 @@ async def main(args):
                 # queued optim/save/load operations never wait behind it.
                 continue
             raise
-        await actor_model.train(rollout_id, rollout_data)
+        await train_data_batch(actor_model, controller, rollout_id, rollout_data)
         remove_rollout_data_refs(args, rollout_data)
         rollout_id += 1
 

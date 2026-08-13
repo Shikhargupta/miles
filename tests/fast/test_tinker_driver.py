@@ -137,3 +137,88 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
 
     off = SimpleNamespace(tinker_backend=False)
     validate_tinker_args(off)  # no-op without the flag
+
+
+class TestDataBatchFinalizer:
+    """train_data_batch: a NORMAL train commits rank-side; every other exit
+    (abnormal TrainStepOutcome, raised train error) must fail the batch's
+    CLAIMED operations typed server and release the lease — never leave the
+    SDK futures CLAIMED forever (external review P1)."""
+
+    def _pack(self):
+        lease = {
+            "dispatch_id": "lease-9",
+            "bindings_by_operation": [["fb1", ["A", "r-A", 0]], ["fb2", ["B", "r-B", 1]]],
+        }
+        pack = {"data_ref": None, "tinker_dispatch": {"operation_ids": ["fb1", "fb2"], "lease": lease}}
+        return pack, lease
+
+    def test_normal_outcome_never_calls_the_finalizer(self):
+        from train_tinker_backend import train_data_batch
+
+        from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+
+        log: list = []
+        controller = SimpleNamespace(fail_tinker_batch=Remote(log, "fail"))
+
+        async def train(rollout_id, rollout_data):
+            return [TrainStepOutcome.NORMAL, TrainStepOutcome.NORMAL]
+
+        pack, _ = self._pack()
+        asyncio.run(train_data_batch(SimpleNamespace(train=train), controller, 0, pack))
+        assert log == []
+
+    def test_abnormal_outcome_fails_the_batch_operations_and_releases_the_lease(self):
+        from train_tinker_backend import train_data_batch
+
+        from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+
+        log: list = []
+        controller = SimpleNamespace(fail_tinker_batch=Remote(log, "fail"))
+
+        async def train(rollout_id, rollout_data):
+            # One rank reporting an abnormal outcome is enough: the batch did
+            # not commit anywhere.
+            return [TrainStepOutcome.NORMAL, TrainStepOutcome.DISCARDED_SHOULD_RETRY]
+
+        pack, lease = self._pack()
+        asyncio.run(train_data_batch(SimpleNamespace(train=train), controller, 3, pack))
+        [(name, (operation_ids, error, lease_arg))] = log
+        assert name == "fail" and operation_ids == ["fb1", "fb2"] and lease_arg == lease
+        # Retry ownership is explicit in the message: the client resubmits.
+        assert "discarded_should_retry" in error and "resubmit" in error
+
+    def test_train_exception_finalizes_then_reraises(self):
+        import pytest
+        from train_tinker_backend import train_data_batch
+
+        log: list = []
+        controller = SimpleNamespace(fail_tinker_batch=Remote(log, "fail"))
+
+        async def train(rollout_id, rollout_data):
+            raise RuntimeError("trainer rank died")
+
+        pack, lease = self._pack()
+        with pytest.raises(RuntimeError, match="trainer rank died"):
+            asyncio.run(train_data_batch(SimpleNamespace(train=train), controller, 3, pack))
+        [(name, (operation_ids, error, lease_arg))] = log
+        assert name == "fail" and operation_ids == ["fb1", "fb2"] and lease_arg == lease
+        assert "trainer rank died" in error and "poisoned" in error
+
+    def test_missing_dispatch_summary_still_finalizes_with_empty_ids(self):
+        # A pack without the summary (defensive: custom conversion path) must
+        # not crash the driver; the finalizer degrades to a lease-less no-op
+        # call rather than an AttributeError.
+        from train_tinker_backend import train_data_batch
+
+        from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+
+        log: list = []
+        controller = SimpleNamespace(fail_tinker_batch=Remote(log, "fail"))
+
+        async def train(rollout_id, rollout_data):
+            return [TrainStepOutcome.DISCARDED_SHOULD_RETRY]
+
+        asyncio.run(train_data_batch(SimpleNamespace(train=train), controller, 0, {"data_ref": None}))
+        [(name, (operation_ids, error, lease_arg))] = log
+        assert operation_ids == [] and lease_arg is None
