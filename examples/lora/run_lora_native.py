@@ -174,8 +174,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.data_dir} {args.model_dir}")
-    U.exec_command(f"hf download {args.registry.hf_repo} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
+    U.exec_command_cpu(f"hf download {args.registry.hf_repo} --local-dir {args.model_dir}/{args.model_name}")
     match args.task:
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
@@ -189,7 +189,7 @@ def _dequantize(args: ScriptArgs):
         case "fp8":
             U.fp8_cast_bf16(path_src=src, path_dst=args.hf_checkpoint)
         case "kimi-int4":
-            U.exec_command(
+            U.exec_command_gpu(
                 f"python {U.repo_base_dir}/tools/convert_kimi_int4_to_bf16.py "
                 f"--model-dir {src} --output-dir {args.hf_checkpoint}"
             )

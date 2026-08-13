@@ -134,8 +134,8 @@ def _prepare_download(args: ScriptArgs):
     ``scripts/models/<megatron_model_type>.sh`` and passes ``MODEL_ARGS``, without which
     ``convert_hf_to_torch_dist.py`` has no ``--num-layers`` and cannot run.
     """
-    U.exec_command(f"mkdir -p {args.data_dir} {args.model_dir}")
-    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.hf_checkpoint}")
+    U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
+    U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.hf_checkpoint}")
     _download_dataset(args)
     U.convert_checkpoint(
         model_name=args.model_name,

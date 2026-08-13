@@ -114,8 +114,8 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.data_dir} {args.model_dir}")
-    U.exec_command(f"hf download {_HF_REPO[args.model_name]} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
+    U.exec_command_cpu(f"hf download {_HF_REPO[args.model_name]} --local-dir {args.model_dir}/{args.model_name}")
     match args.task:
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
