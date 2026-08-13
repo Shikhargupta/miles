@@ -155,8 +155,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--offload-train",
                 action=argparse.BooleanOptionalAction,
                 help=(
-                    "Whether to offload the training actor to CPU during training. "
-                    "This will always be true when --colocate is set."
+                    "Whether to offload the training actor to CPU while the rollout engines generate. "
+                    "Defaults to true when --colocate is set; an explicit --no-offload-train is respected."
                 ),
             )
             parser.add_argument(
@@ -164,7 +164,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action=argparse.BooleanOptionalAction,
                 help=(
                     "Whether to offload the rollout generator to CPU during training. "
-                    "This will always be true when --colocate is set."
+                    "Defaults to true when --colocate is set; an explicit --no-offload-rollout is respected."
                 ),
             )
 
@@ -429,6 +429,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "
+                ),
+            )
+            parser.add_argument(
+                "--mfu-peak-tflops",
+                type=float,
+                default=None,
+                help=(
+                    "Peak dense BF16 TFLOP/s of one training GPU — the denominator of perf/actor_train_mfu. "
+                    "Defaults to a built-in table keyed on the device name; set this for a device the table "
+                    "does not know, or to report MFU against another precision's peak. With neither available "
+                    "the MFU metric is not logged."
                 ),
             )
 
@@ -2522,6 +2533,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "the pretokenized prefix in multi-turn agentic sessions.",
             )
             parser.add_argument(
+                "--session-message-matcher",
+                type=str,
+                default="strict",
+                help=(
+                    "Process-wide session history matcher: strict (default), "
+                    "loose_tool_call, role_content_only, or a trusted dotted import "
+                    "path. role_content_only is a high-risk opt-in that can collapse "
+                    "different tool-call lineages and does not reconcile call IDs."
+                ),
+            )
+            parser.add_argument(
                 "--session-sample-picker-path",
                 type=str,
                 default="miles.rollout.session.v2.picker_hub.drop_retries",
@@ -2860,6 +2882,10 @@ def miles_validate_args(args):
             raise ValueError(
                 f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
             )
+
+    assert not (
+        args.use_session_server and args.pause_generation_mode == "abort"
+    ), "--use-session-server is incompatible with --pause-generation-mode=abort"
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
@@ -3285,8 +3311,6 @@ def miles_validate_args(args):
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = True
-
-    _validate_rematerialize_param_from_master_weight(args)
 
     _validate_rematerialize_param_from_master_weight(args)
 
