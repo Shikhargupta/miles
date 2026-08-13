@@ -82,7 +82,9 @@ async def _launch(
     specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
 ) -> RayWorkerManager:
     manager = RayWorkerManager()
-    await manager.init(worker_manager_args(), specs, pgs if pgs is not None else {})
+    await manager.init(
+        worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=WorkerCommBackend.RAY
+    )
     return manager
 
 
