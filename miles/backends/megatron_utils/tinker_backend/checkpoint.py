@@ -5,11 +5,10 @@ each slot child optimizer's state_dict (fp32 masters, Adam moments, both step
 counters) and rank/alpha — for named save_state/load_state checkpoints and the
 retirement final state. Parameter names are slot-stripped and optimizer
 entries positional, so state saved from one slot restores into any slot —
-fenced by each rank's recorded per-child parameter names: LayerWise DP
-sharding assigns whole params to ranks across ALL slots at once, so two slots'
-per-rank ownership patterns can differ and a blind positional restore would
-silently load the wrong parameters (under DP=1 every child owns the full slot
-in traversal order, so any slot restores into any slot).
+fenced by each rank's recorded per-child parameter names: LayerWise assigns
+dense and expert parameters across their respective ownership groups, so two
+slots' per-rank ownership patterns can differ and a blind positional restore
+would silently load the wrong parameters.
 Every rank writes its shard atomically and rank 0 commits a manifest after a
 barrier; shards and manifest share a save token so a torn (interrupted) save
 can never restore silently. Loading fences on FORMAT, world topology, and
@@ -252,7 +251,7 @@ def load_slot_state(args, model, optimizer, adapter, *, base: Path | None = None
         problem = (
             f"[tinker] ({adapter.name}) state at {base} was sharded with a different per-rank "
             f"parameter ownership than slot {slot} (mismatch on rank {rank}); cross-slot restore "
-            "requires an identical ownership signature (always true under DP=1)"
+            "requires an identical ownership signature"
         )
     if dist.is_initialized():
         problems = [None] * dist.get_world_size(get_gloo_group())
