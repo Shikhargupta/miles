@@ -2,6 +2,7 @@ import argparse
 import logging
 import re
 import sys
+from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
+    _holds_a_checkpoint,
     _maybe_apply_dumper_overrides,
     _resolve_api_server_port,
     _resolve_ft_components,
@@ -20,8 +22,10 @@ from miles.utils.arguments import (
     _resolve_rollout_functions,
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
+    capture_requested_checkpoint_source,
     get_miles_extra_args_provider,
     miles_validate_args,
+    resolve_checkpoint_source,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
@@ -1942,3 +1946,111 @@ class TestMilesValidateArgsCheckpointResolution:
         miles_validate_args(args)
 
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+
+
+def _make_checkpoint_args(tmp_path, **overrides) -> Namespace:
+    defaults = dict(
+        megatron_to_hf_mode="core",
+        load=str(tmp_path / "save"),
+        save=None,
+        critic_load=None,
+        critic_save=None,
+        ref_load=str(tmp_path / "ref"),
+        hf_checkpoint=str(tmp_path / "hf"),
+        ref_ckpt_step=None,
+        ckpt_step=None,
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+        start_rollout_id=None,
+    )
+    defaults.update(overrides)
+    args = Namespace(**defaults)
+    capture_requested_checkpoint_source(args)
+    return args
+
+
+def _write_megatron_checkpoint(tmp_path) -> str:
+    """A directory megatron recognizes: it exists and carries the iteration tracker file."""
+    path = tmp_path / "save"
+    path.mkdir()
+    (path / "latest_checkpointed_iteration.txt").write_text("10")
+    return str(path)
+
+
+class TestResolveCheckpointSource:
+    def test_a_fresh_bridge_run_falls_back_to_the_reference_weights(self, tmp_path):
+        """--load points at a directory the first run has not written yet, which load_checkpoint asserts on."""
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge")
+
+        resolve_checkpoint_source(args)
+
+        assert args.load == str(tmp_path / "ref")
+        assert args.start_rollout_id == 0
+
+    def test_a_bridge_run_without_reference_weights_falls_back_to_the_hf_checkpoint(self, tmp_path):
+        """Without --ref-load the HF weights are the only thing the bridge can start from."""
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge", ref_load=None)
+
+        resolve_checkpoint_source(args)
+
+        assert args.load == str(tmp_path / "hf")
+
+    def test_a_bridge_run_with_a_real_checkpoint_keeps_it_and_still_restarts_the_rollout_index(self, tmp_path):
+        """The bridge branch resets start_rollout_id even on a resume, unlike the core branch below."""
+        load = _write_megatron_checkpoint(tmp_path)
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge", load=load)
+
+        resolve_checkpoint_source(args)
+
+        assert args.load == load
+        assert args.start_rollout_id == 0
+
+    def test_a_fresh_core_run_finetunes_from_the_reference_weights(self, tmp_path):
+        """Loading an optimizer state and rng that were never written aborts the very first step."""
+        args = _make_checkpoint_args(tmp_path)
+
+        resolve_checkpoint_source(args)
+
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (True, True, True)
+        assert args.load == str(tmp_path / "ref")
+        assert args.start_rollout_id == 0
+
+    def test_a_fresh_core_run_takes_the_step_of_the_reference_checkpoint(self, tmp_path):
+        """--ref-ckpt-step names which iteration of the reference weights to read."""
+        args = _make_checkpoint_args(tmp_path, ref_ckpt_step=7)
+
+        resolve_checkpoint_source(args)
+
+        assert args.ckpt_step == 7
+
+    def test_a_core_run_with_a_real_checkpoint_is_left_untouched(self, tmp_path):
+        """A resume must keep its optimizer state, and start_rollout_id staying None is what says 'resume'."""
+        load = _write_megatron_checkpoint(tmp_path)
+        args = _make_checkpoint_args(tmp_path, load=load, ref_ckpt_step=7)
+
+        resolve_checkpoint_source(args)
+
+        assert args.load == load
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
+        assert (args.ckpt_step, args.start_rollout_id) == (None, None)
+
+
+class TestHoldsACheckpoint:
+    def test_a_directory_holding_the_tracker_file_is_a_checkpoint(self, tmp_path):
+        """This is the one shape both branches treat as a resume."""
+        assert _holds_a_checkpoint(_write_megatron_checkpoint(tmp_path)) is True
+
+    def test_a_directory_without_the_tracker_file_is_not_a_checkpoint(self, tmp_path):
+        """A --save directory exists from the moment the run starts, long before it holds a checkpoint."""
+        (tmp_path / "save").mkdir()
+
+        assert _holds_a_checkpoint(str(tmp_path / "save")) is False
+
+    def test_a_missing_directory_is_not_a_checkpoint(self, tmp_path):
+        """The first run of a job passes a --load path nothing has created yet."""
+        assert _holds_a_checkpoint(str(tmp_path / "nope")) is False
+
+    def test_no_load_directory_at_all_is_not_a_checkpoint(self):
+        """--load is optional, and None must not reach os.path.exists."""
+        assert _holds_a_checkpoint(None) is False

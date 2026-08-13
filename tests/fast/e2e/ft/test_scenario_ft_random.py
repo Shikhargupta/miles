@@ -8,7 +8,7 @@ from tests.e2e.ft.conftest_ft.scenario_ft_random import assert_healing
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 
 _ROLLOUT_CELL_NAME = "rollout-engine-0"
 
@@ -42,7 +42,7 @@ def _rollout_cell(state: fi.ObservedCellState) -> dict:
 
 
 def _write_shrink_only_events(event_dir: Path) -> None:
-    event_logger = EventLogger(log_dir=event_dir, source=MainProcessIdentity())
+    event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="main"))
     event_logger.log(
         CellReconfigureEvent,
         dict(rollout_id=2, quorum_id=1, src_cell_index=None, healed_cell_indices=[], alive_cell_indices_after=[0]),

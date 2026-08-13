@@ -175,9 +175,9 @@ class TestStartMooncakeMaster:
         """An already listening master must not be restarted out from under its clients."""
         commands = []
         waits = []
-        patch_helper(monkeypatch, "_is_tcp_server_ready", lambda host, port: True)
-        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
-        patch_helper(monkeypatch, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs)))
+        monkeypatch.setattr(ray_command, "_is_tcp_server_ready", lambda host, port: True)
+        monkeypatch.setattr(ray_command, "run_shell_command", commands.append)
+        monkeypatch.setattr(ray_command, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs)))
 
         ray_command.start_mooncake_master()
 
@@ -188,13 +188,11 @@ class TestStartMooncakeMaster:
         """Binding port zero atomically avoids collisions with other listeners."""
         commands = []
         waits = []
-        monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: False)
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(
-            command_utils, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs))
-        )
+        monkeypatch.setattr(ray_command, "_is_tcp_server_ready", lambda host, port: False)
+        monkeypatch.setattr(ray_command, "run_shell_command", commands.append)
+        monkeypatch.setattr(ray_command, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs)))
 
-        command_utils.start_mooncake_master()
+        ray_command.start_mooncake_master()
 
         assert len(commands) == 1
         assert "mooncake_master --rpc_port 50051 --metrics_port 0" in commands[0]
@@ -205,9 +203,9 @@ class TestStartMooncakeMaster:
         commands = []
         waits = []
         log_path = tmp_path / "mooncake master.log"
-        patch_helper(monkeypatch, "_is_tcp_server_ready", lambda host, port: False)
-        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
-        patch_helper(monkeypatch, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs)))
+        monkeypatch.setattr(ray_command, "_is_tcp_server_ready", lambda host, port: False)
+        monkeypatch.setattr(ray_command, "run_shell_command", commands.append)
+        monkeypatch.setattr(ray_command, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs)))
 
         ray_command.start_mooncake_master(rpc_port=50151, metrics_port=50152, timeout=12, log_path=log_path)
 
@@ -222,13 +220,13 @@ class TestStartMooncakeMaster:
         log_path = tmp_path / "mooncake_master.log"
         log_path.write_text("bind failed\nfatal startup error\n")
         commands = []
-        patch_helper(monkeypatch, "_is_tcp_server_ready", lambda host, port: False)
-        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
+        monkeypatch.setattr(ray_command, "_is_tcp_server_ready", lambda host, port: False)
+        monkeypatch.setattr(ray_command, "run_shell_command", commands.append)
 
         def fail_wait(*args, **kwargs):
             raise RuntimeError("not ready")
 
-        patch_helper(monkeypatch, "wait_for_server_ready", fail_wait)
+        monkeypatch.setattr(ray_command, "wait_for_server_ready", fail_wait)
 
         with pytest.raises(RuntimeError, match="fatal startup error"):
             ray_command.start_mooncake_master(log_path=log_path)

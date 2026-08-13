@@ -6,6 +6,12 @@ import pytest
 
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.utils.context_lock import ContextLock
+from miles.utils.workers.worker_spec import NamedHostAndPorts
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"no cell in this module is ever addressed ({worker_name=})")
 
 
 class _RecordingCell:
@@ -37,6 +43,7 @@ def _make_server(cells: list[_RecordingCell], **overrides) -> RolloutServer:
         server_cells={cell.meta.cell_id: cell for cell in cells},
         args=SimpleNamespace(colocate=True),
         context_lock=ContextLock("InferenceController"),
+        engine_provider=_StubProvider(),
         **overrides,
     )
 

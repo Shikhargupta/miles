@@ -157,7 +157,7 @@ class _RecordingRolloutExecutor:
         self.train_parallel_config = config
         self.train_parallel_config_model_id = trainer_model_id
 
-    async def load(self, rollout_id=None):
+    async def load(self, rollout_id=None, require_state=False):
         self.loaded_rollout_id = rollout_id
 
 
@@ -172,6 +172,12 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
             self.inited_with = None
             self.calls = calls
             handles.append(self)
+
+        async def is_initialized(self):
+            return False
+
+        async def claim_driver_epoch(self):
+            calls.append((self.trainer_id, "claim_driver_epoch"))
 
         async def init(self, args):
             calls.append((self.trainer_id, "init"))
@@ -308,7 +314,13 @@ async def test_the_controllers_are_inited_before_the_driver_calls_them(monkeypat
         rollout_executor=_RecordingRolloutExecutor(),
     )
 
-    assert handles[0].calls == [("actor", "init"), ("critic", "init"), ("actor", "get_train_parallel_config")]
+    assert handles[0].calls == [
+        ("actor", "claim_driver_epoch"),
+        ("critic", "claim_driver_epoch"),
+        ("actor", "init"),
+        ("critic", "init"),
+        ("actor", "get_train_parallel_config"),
+    ]
 
 
 async def test_a_run_without_a_critic_starts_only_the_actor_controller(monkeypatch):
@@ -369,7 +381,7 @@ class TestTheRunWaitsForEveryTrainerItReachesByAddress:
             megatron_config=None, trainer_controller_addrs=["actor=10.0.0.1:8000", "critic=10.0.0.2:9000"]
         )
 
-        await placement_group_module.create_training_models(args, rollout_executor=_RecordingRolloutExecutor())
+        await placement_group_module.claim_trainers(args)
 
         assert dialled == [[("10.0.0.1", 8000), ("10.0.0.2", 9000)]]
 
@@ -377,9 +389,7 @@ class TestTheRunWaitsForEveryTrainerItReachesByAddress:
         """It installs the trainer itself, so there is no other deployment whose readiness it could dial."""
         dialled = self._patched(monkeypatch)
 
-        await placement_group_module.create_training_models(
-            _training_models_args(), rollout_executor=_RecordingRolloutExecutor()
-        )
+        await placement_group_module.claim_trainers(_training_models_args())
 
         assert dialled == []
 
@@ -435,9 +445,7 @@ class TestEveryAddressedTrainerIsCheckedBeforeAnyInitRuns:
         )
 
         with pytest.raises(AssertionError, match="drives run"):
-            await placement_group_module.create_training_models(
-                _split_run_args(), rollout_executor=_RecordingRolloutExecutor()
-            )
+            await placement_group_module.claim_trainers(_split_run_args())
 
         assert sorted(calls) == [("actor", "get_deployment_identity"), ("critic", "get_deployment_identity")]
 
@@ -448,9 +456,7 @@ class TestEveryAddressedTrainerIsCheckedBeforeAnyInitRuns:
         )
 
         with pytest.raises(AssertionError, match="nothing but the trainer"):
-            await placement_group_module.create_training_models(
-                _split_run_args(), rollout_executor=_RecordingRolloutExecutor()
-            )
+            await placement_group_module.claim_trainers(_split_run_args())
 
         assert ("actor", "init") not in calls
 

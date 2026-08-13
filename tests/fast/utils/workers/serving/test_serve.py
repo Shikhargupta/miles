@@ -85,48 +85,29 @@ class TestOuterServeForwarding:
         with pytest.raises(AssertionError, match=SUBPROCESS_INDEX_ENV_VAR):
             serve_module.main()
 
-
-def _refuse_exec(path: str, argv: list[str], env: dict[str, str]) -> None:
-    raise AssertionError("a spec that overwrites the pod's identity must not reach exec")
-
-    def test_env_var_hook_overrides_same_named_parent_variable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_the_spec_overrides_a_same_named_parent_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A computed variable wins over a same-named variable inherited from the parent environment."""
         captured: dict[str, object] = {}
 
         def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
             captured.update(path=path, argv=argv, env=env)
 
-        monkeypatch.setenv("MILES_TEST_ENV", "from-parent")
-        monkeypatch.setenv("MILES_TEST_UNTOUCHED", "kept")
         monkeypatch.setattr(serve_module.os, "execve", fake_execve)
-        monkeypatch.setattr(
-            serve_module,
-            "load_function",
-            lambda path: lambda worker_argv: {"MILES_TEST_ENV": ",".join(worker_argv)},
-        )
-
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "serve.py",
-                "--worker",
-                "package.worker",
-                "--env-var-fn",
-                "package.env",
-                "--",
-                "--flag",
-                "value",
-            ],
-        )
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        monkeypatch.setenv("MILES_SERVE_SMOKE_ENV", "from-parent")
+        monkeypatch.setenv("MILES_SERVE_SMOKE_UNTOUCHED", "kept")
+        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
+        worker_argv = [RPC_PORT_FLAG, "9000"]
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", *worker_argv])
 
         serve_module.main()
 
-        assert captured["env"]["MILES_TEST_ENV"] == "--flag,value"
-        assert captured["env"]["MILES_TEST_UNTOUCHED"] == "kept"
+        assert captured["env"]["MILES_SERVE_SMOKE_ENV"] == ",".join(worker_argv)
+        assert captured["env"]["MILES_SERVE_SMOKE_UNTOUCHED"] == "kept"
+
+
+def _refuse_exec(path: str, argv: list[str], env: dict[str, str]) -> None:
+    raise AssertionError("a spec that overwrites the pod's identity must not reach exec")
 
 
 def _spawn_serve(port: int) -> subprocess.Popen:

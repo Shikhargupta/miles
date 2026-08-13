@@ -24,6 +24,7 @@ from miles.utils.context_lock import (
     with_lock,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.init_once import InitOnce, init_once_guarded
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin, SimpleTicker
 from miles.utils.workers.registration.hub import RegistrationHub
@@ -50,6 +51,7 @@ class InferenceController(NodeProbeMixin):
         router_providers: Sequence[BaseWorkerProvider],
     ) -> None:
         self.args = args
+        self._init_once = InitOnce(component="InferenceController")
         self._engine_provider = engine_provider
         self._router_providers = router_providers
         self.context_lock = ContextLock("InferenceController")
@@ -59,6 +61,7 @@ class InferenceController(NodeProbeMixin):
         self._ticker: SimpleTicker | None = None
 
     @lock_exempt
+    @init_once_guarded
     async def init(self) -> None:
         configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
 
@@ -81,7 +84,37 @@ class InferenceController(NodeProbeMixin):
 
         dashboard_hooks.register_router(self.args)
 
-        await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+        await self.wait_expected_num_cells()
+
+    # -------------------------- take over -----------------------------
+
+    @lock_exempt
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized
+
+    @lock_exempt
+    async def wait_expected_num_cells(self, timeout: float = CELLS_READY_TIMEOUT_SECONDS) -> None:
+        await asyncio.gather(*[srv.wait_expected_num_cells(timeout=timeout) for srv in self.servers.values()])
+
+    @lock_exempt
+    async def reset_broadcast_lock(self) -> bool:
+        """Free the lock a `start_update_weights` whose `end_update_weights` never came is still holding."""
+        if not self.context_lock.detached:
+            return False
+
+        self.context_lock.reattach()
+        try:
+            await self._health_monitoring_resume()
+        finally:
+            self.context_lock.release()
+        return True
+
+    @with_lock
+    async def abort_all(self) -> None:
+        """Drop every in-flight generation, so a take-over starts from a fleet nothing else is driving."""
+        results = await asyncio.gather(*[srv.abort_all() for srv in self.servers.values()], return_exceptions=True)
+        if failures := [result for result in results if isinstance(result, BaseException)]:
+            raise failures[0]
 
     # -------------------------- registration -----------------------------
 

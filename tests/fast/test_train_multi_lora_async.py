@@ -15,6 +15,7 @@ from miles.utils.multi_lora import EmptyBatchTimeoutError
 
 _ACTIVE_SNAPSHOT = {"pending": [], "active": ["alpha"], "retiring": [], "cleanup": []}
 _EMPTY_SNAPSHOT = {"pending": [], "active": [], "retiring": [], "cleanup": []}
+_GATE_EVENTS = ["claim_trainers", "create_rollout_components", "create_training_models"]
 
 
 class FakeMultiLoRAController:
@@ -76,9 +77,14 @@ def _install_driver_fakes(
     )
 
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
+        events.append("create_rollout_components")
         return components.inference_controller, components.rollout_executor, 4
 
+    async def claim_trainers(_args: SimpleNamespace) -> None:
+        events.append("claim_trainers")
+
     async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
+        events.append("create_training_models")
         return components.actor_model, None
 
     async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
@@ -90,6 +96,7 @@ def _install_driver_fakes(
     monkeypatch.setattr(multi_lora_driver, "init_tracking", lambda _args: None)
     monkeypatch.setattr(multi_lora_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(multi_lora_driver, "get_multi_lora_controller", lambda: components.controller)
+    monkeypatch.setattr(multi_lora_driver, "claim_trainers", claim_trainers)
     monkeypatch.setattr(multi_lora_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(multi_lora_driver, "define_new_adapter_metrics", lambda _snapshot: None)
     monkeypatch.setattr(multi_lora_driver, "update_weights", update_weights)
@@ -120,7 +127,10 @@ class TestAdapterLifecycle:
         await multi_lora_driver.main(args)
 
         assert events == [
+            "claim_trainers",
+            "create_rollout_components",
             "controller_start",
+            "create_training_models",
             "snapshot",
             "actor_reconcile_adapters",
             "update_weights:None",
@@ -176,3 +186,16 @@ class TestEmptyBatchTimeout:
             await multi_lora_driver.main(args)
 
         assert components.actor_model.trained == []
+
+
+class TestTheTakeOverGatesRunInOrder:
+    async def test_the_trainers_are_claimed_before_the_inference_side_is_touched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A previous script can still be broadcasting into the fleet, so gate 2 must not run before gate 1 fenced it."""
+        events: list[str] = []
+        _install_driver_fakes(monkeypatch, events, snapshots=[_EMPTY_SNAPSHOT])
+
+        await multi_lora_driver.main(_make_args())
+
+        assert [event for event in events if event in _GATE_EVENTS] == _GATE_EVENTS

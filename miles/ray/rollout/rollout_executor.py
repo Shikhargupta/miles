@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -22,6 +23,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.data_source import compute_global_dataset_state_path
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -32,6 +34,7 @@ from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
+from miles.utils.init_once import InitOnce, init_once_guarded
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import NodeProbeMixin
@@ -63,6 +66,7 @@ class RolloutExecutor(NodeProbeMixin):
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
         self.args = args
+        self._init_once = InitOnce(component="RolloutExecutor")
         # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
         self._weight_versions_of_model_id: dict[str | None, int] = {}
         self._rollouts_since_weight_version_publish = 0
@@ -71,6 +75,7 @@ class RolloutExecutor(NodeProbeMixin):
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
 
+    @init_once_guarded
     async def init(self) -> None:
         args = self.args
         if not args.debug_train_only:
@@ -116,6 +121,9 @@ class RolloutExecutor(NodeProbeMixin):
         self._metric_checker = MetricChecker.maybe_create(args)
 
     # -------------------------- lifecycle -----------------------------
+
+    def is_initialized(self) -> bool:
+        return self._init_once.is_initialized
 
     def dispose(self) -> None:
         if (close := getattr(self.data_source, "close", None)) is not None:
@@ -281,10 +289,29 @@ class RolloutExecutor(NodeProbeMixin):
             self.generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
-    def load(self, rollout_id: int | None = None) -> None:
+    def load(self, rollout_id: int | None = None, require_state: bool = False) -> None:
+        if require_state:
+            self._assert_rollout_state_exists(rollout_id)
         self.data_source.load(rollout_id)
         if self.use_experimental_refactor:
             self.generate_rollout.load(rollout_id)
+
+    def _assert_rollout_state_exists(self, rollout_id: int | None) -> None:
+        if not self.args.rollout_global_dataset:
+            return
+
+        assert self.args.load is not None, (
+            "this run took over trainers that a previous orchestration script left at a checkpoint, but no --load "
+            "names where that run's rollout state is, so the dataset position of the checkpoint cannot be restored "
+            "and this run would replay samples the trainers already trained on"
+        )
+        path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
+        assert os.path.exists(path), (
+            f"this run took over trainers that resumed at rollout {rollout_id}, but the rollout state of that "
+            f"rollout is not at {path}; the actor, the critic and the rollout state are saved one after the other "
+            f"without a common commit marker, so a restart between two of those saves leaves exactly this gap, and "
+            f"continuing would restart the dataset at a position the trainers already passed"
+        )
 
     # -------------------------- misc APIs -----------------------------
 

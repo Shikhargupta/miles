@@ -79,6 +79,7 @@ def _stub_driver_environment(monkeypatch):
         "resolve_megatron_config",
         lambda args: SimpleNamespace(leader_model_id="a", model_ids=["a", "b"]),
     )
+    monkeypatch.setattr(multi_policy_driver, "claim_trainers", AsyncMock())
     monkeypatch.setattr(multi_policy_driver, "create_trainers", AsyncMock(return_value={}))
     monkeypatch.setattr(multi_policy_driver, "create_rollout_components", AsyncMock())
 
@@ -288,3 +289,28 @@ class TestSaving:
         trainers["a"].save_model.assert_not_awaited()
         trainers["b"].save_model.assert_not_awaited()
         context["rollout_executor"].save.assert_not_awaited()
+
+
+class TestTheTakeOverGatesRunInOrder:
+    async def test_the_trainers_are_claimed_before_the_inference_side_is_touched(self, monkeypatch):
+        """A previous script can still be broadcasting into the fleet, so gate 2 must not run before gate 1 fenced it."""
+        order: list[str] = []
+
+        async def _claim_trainers(_args) -> None:
+            order.append("claim_trainers")
+
+        async def _create_rollout_components(_args):
+            order.append("create_rollout_components")
+            return AsyncMock(), AsyncMock(), None
+
+        async def _create_trainers(_args, *, rollout_executor) -> dict:
+            order.append("create_trainers")
+            return _make_trainers(("a", "b"))
+
+        monkeypatch.setattr(multi_policy_driver, "claim_trainers", _claim_trainers)
+        monkeypatch.setattr(multi_policy_driver, "create_rollout_components", _create_rollout_components)
+        monkeypatch.setattr(multi_policy_driver, "create_trainers", _create_trainers)
+
+        await asyncio.wait_for(train_multi_policy(_make_args(num_rollout=0)), timeout=30)
+
+        assert order == ["claim_trainers", "create_rollout_components", "create_trainers"]

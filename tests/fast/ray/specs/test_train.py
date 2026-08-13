@@ -20,7 +20,6 @@ from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
     _compute_trainer_controller_provider,
-    compute_actor_args,
     compute_trainer_configs,
     compute_trainer_controller_pool_id,
     compute_trainer_ids,
@@ -153,7 +152,6 @@ class TestScheduling:
     def test_independent_dp_critic_cells_use_the_critic_gpu_shape(self, monkeypatch):
         """A critic sized differently from the actor must be split by its own GPU count."""
         monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
-        monkeypatch.setattr("miles.ray.specs.train._create_indep_dp_store_addr", lambda: "10.0.0.1:1234")
 
         _actor_spec, critic_spec = specs_trainer(
             _make_args(
@@ -599,16 +597,13 @@ class TestSpecTrainerController:
         assert compute_trainer_controller_pool_id("critic") == "trainer-controller-critic"
 
 
-class TestComputeActorArgs:
-    def test_a_config_naming_several_actors_cannot_be_collapsed_to_one(self):
-        """train_async.py trains one actor; a run naming several must be started through train_multi_policy.py."""
+class TestTrainerConfigs:
+    def test_a_config_naming_several_actors_expands_to_one_actor_trainer_config_each(self):
+        """Every policy is trained by a trainer of its own, so the actors must not be collapsed into one config."""
         args = _make_args(megatron_config=encode_megatron_config("a", "b"))
 
-        with pytest.raises(ValueError):
-            compute_actor_args(args)
+        assert len([config for config in compute_trainer_configs(args) if config.role == "actor"]) == 2
 
-
-class TestTrainerConfigs:
     def test_a_single_policy_run_names_its_trainers_actor_and_critic(self):
         """Every existing pool name, worker name and checkpoint path is written against these two ids."""
         configs = compute_trainer_configs(_make_args(use_critic=True))

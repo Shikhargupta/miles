@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
 from miles.ray import placement_group as placement_group_module
-from miles.ray.placement_group import create_rollout_components, create_training_model, create_training_models
+from miles.ray.placement_group import (
+    claim_and_check_resumed,
+    claim_trainers,
+    create_rollout_components,
+    create_training_model,
+    create_training_models,
+)
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -37,6 +43,8 @@ def fake_components():
     controller_handle.check_weights = AsyncMock()
     controller_handle.offload = AsyncMock()
     controller_handle.init = AsyncMock(return_value=None)
+    controller_handle.is_initialized = AsyncMock(return_value=False)
+    controller_handle.claim_driver_epoch = AsyncMock(return_value=None)
     controller_handle.get_eval_fleet_info = AsyncMock(return_value=None)
 
     async def resolve_router_addrs(args, *, router_providers) -> dict:
@@ -51,7 +59,10 @@ def fake_components():
         args.session_server_instance_ids = ["session-0"]
         events.append("session_servers_ready")
 
+    controller_handle.init = AsyncMock(side_effect=lambda: events.append("inference_controller_init"))
+
     executor_handle = MagicMock(name="rollout_executor")
+    executor_handle.is_initialized = AsyncMock(side_effect=lambda: events.append("executor_free_check") or False)
     executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
     executor_handle.set_eval_fleet_info = AsyncMock(return_value=None)
@@ -82,9 +93,23 @@ class TestCreateRolloutComponents:
 
         await create_rollout_components(args)
 
-        assert fake_components.events == ["session_servers_ready", "executor_init"]
+        assert fake_components.events == [
+            "session_servers_ready",
+            "executor_free_check",
+            "inference_controller_init",
+            "executor_init",
+        ]
         assert args.session_server_addrs == ["10.0.0.2:5000"]
         assert args.session_server_instance_ids == ["session-0"]
+
+    async def test_the_previous_executor_is_gone_before_the_inference_side_is_reset(self, fake_components):
+        """An executor of the previous script that can still generate would fill the fleet right back up."""
+        args = _make_args(num_rollout=1)
+
+        await create_rollout_components(args)
+
+        events = fake_components.events
+        assert events.index("executor_free_check") < events.index("inference_controller_init")
 
     async def test_returns_two_worker_handles(self, fake_components):
         """Both halves of rollout are independent workers, so the driver only ever holds handles."""
@@ -312,12 +337,19 @@ class TestUpdateWeights:
         rollout_executor.set_weight_version.assert_not_awaited()
 
 
+async def _claim_and_create_training_models(args, rollout_executor) -> tuple:
+    await claim_trainers(args)
+    return await create_training_models(args, rollout_executor)
+
+
 class TestCreateTrainingModels:
     @staticmethod
     def _patched(monkeypatch, requested: list[str]) -> None:
         def _create_handle(args, *, capability, trainer_id: str):
             requested.append(trainer_id)
             handle = MagicMock()
+            handle.is_initialized = AsyncMock(return_value=False)
+            handle.claim_driver_epoch = AsyncMock(return_value=None)
             handle.init = AsyncMock(return_value=[0])
             handle.get_train_parallel_config = AsyncMock(return_value=None)
             return handle
@@ -333,7 +365,7 @@ class TestCreateTrainingModels:
         return rollout_executor
 
     async def test_a_configured_policy_is_addressed_by_its_own_trainer_id(self, tmp_path, monkeypatch):
-        """A single entry --megatron-config names the pool '<model_id>-actor'; 'actor' addresses nothing."""
+        """Gate 1 and the connect step each build their own throwaway handles, both keyed '<model_id>-actor'."""
         requested: list[str] = []
         self._patched(monkeypatch, requested)
         args = Namespace(
@@ -343,12 +375,12 @@ class TestCreateTrainingModels:
             trainer_controller_addrs=None,
         )
 
-        await create_training_models(args, self._rollout_executor())
+        await _claim_and_create_training_models(args, self._rollout_executor())
 
-        assert requested == ["alpha-actor"]
+        assert requested == ["alpha-actor", "alpha-actor"]
 
     async def test_a_run_without_a_megatron_config_still_addresses_the_actor_and_critic_pools(self, monkeypatch):
-        """Every existing single policy deployment names its two pools 'actor' and 'critic'."""
+        """Both rounds of throwaway handles name the two pools every single policy deployment installs."""
         requested: list[str] = []
         self._patched(monkeypatch, requested)
         args = Namespace(
@@ -370,9 +402,37 @@ class TestCreateTrainingModels:
             trainer_controller_addrs=None,
         )
 
+        await _claim_and_create_training_models(args, self._rollout_executor())
+
+        assert requested == ["actor", "critic", "actor", "critic"]
+
+    async def test_every_handle_it_builds_claims_its_trainer_before_it_inits_it(self, tmp_path, monkeypatch):
+        """Gate 1 fenced the trainers under its own epoch, so an unclaimed handle's init is refused by the server."""
+        handles: list[MagicMock] = []
+
+        def _create_handle(args, *, capability, trainer_id: str):
+            handle = MagicMock()
+            handle.is_initialized = AsyncMock(return_value=False)
+            handle.claim_driver_epoch = AsyncMock(return_value=None)
+            handle.init = AsyncMock(return_value=[0])
+            handle.get_train_parallel_config = AsyncMock(return_value=None)
+            handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", _create_handle)
+        monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: object())
+        args = Namespace(
+            megatron_config=write_megatron_config(tmp_path, "alpha"),
+            use_critic=False,
+            start_rollout_id=None,
+            trainer_controller_addrs=None,
+        )
+
         await create_training_models(args, self._rollout_executor())
 
-        assert requested == ["actor", "critic"]
+        [handle] = handles
+        called = [name for name, _args, _kwargs in handle.mock_calls]
+        assert called.index("claim_driver_epoch") < called.index("init")
 
     async def test_a_config_declaring_a_critic_without_use_critic_is_refused(self, tmp_path, monkeypatch):
         """The critic pool would be deployed and never inited, so the run would hang waiting for it."""
@@ -383,42 +443,100 @@ class TestCreateTrainingModels:
             ),
             use_critic=False,
             start_rollout_id=None,
+            trainer_controller_addrs=None,
         )
 
         with pytest.raises(AssertionError, match="a run without --use-critic needs no critic"):
-            await create_training_models(args, self._rollout_executor())
+            await _claim_and_create_training_models(args, self._rollout_executor())
 
 
 class TestCreateTrainingModel:
     @staticmethod
-    def _patch_handle(monkeypatch, *, restored: list[int]) -> None:
-        def _create_handle(*, capability, trainer_id: str):
-            handle = MagicMock()
-            handle.init = AsyncMock(return_value=restored)
-            return handle
+    def _handle(*, restored: list[int]) -> MagicMock:
+        handle = MagicMock()
+        handle.init = AsyncMock(return_value=restored)
+        handle.load_state = AsyncMock(return_value=restored)
+        return handle
 
-        monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", _create_handle)
-        monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: object())
-
-    async def test_a_trainer_whose_cells_restored_different_rollouts_is_refused(self, monkeypatch):
+    async def test_a_trainer_whose_cells_restored_different_rollouts_is_refused(self):
         """Cells of one trainer hold one model, so disagreeing positions mean a corrupted checkpoint set."""
-        self._patch_handle(monkeypatch, restored=[5, 4])
-
         with pytest.raises(AssertionError, match=r"trainer 'alpha-actor' restored \[5, 4\]"):
-            await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+            await create_training_model(
+                Namespace(start_rollout_id=None),
+                handle=self._handle(restored=[5, 4]),
+                trainer_id="alpha-actor",
+                resumed=False,
+            )
 
-    async def test_a_trainer_starts_where_its_cells_restored(self, monkeypatch):
+    async def test_a_trainer_starts_where_its_cells_restored(self):
         """The restored position is what makes a resume continue instead of retraining old rounds."""
-        self._patch_handle(monkeypatch, restored=[3, 3])
-
-        info = await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+        info = await create_training_model(
+            Namespace(start_rollout_id=None),
+            handle=self._handle(restored=[3, 3]),
+            trainer_id="alpha-actor",
+            resumed=False,
+        )
 
         assert info.start_rollout_id == 3
 
-    async def test_an_explicit_start_rollout_id_wins_over_the_restored_one(self, monkeypatch):
+    async def test_an_explicit_start_rollout_id_wins_over_the_restored_one(self):
         """--start-rollout-id is the manual override for replaying or skipping rounds."""
-        self._patch_handle(monkeypatch, restored=[3])
-
-        info = await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+        info = await create_training_model(
+            Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor", resumed=False
+        )
 
         assert info.start_rollout_id == 9
+
+    async def test_a_trainer_a_previous_script_built_is_reloaded_instead_of_inited(self):
+        """A survivor already holds the model, so building it again would throw away the run's own progress."""
+        handle = self._handle(restored=[4])
+
+        info = await create_training_model(
+            Namespace(start_rollout_id=None), handle=handle, trainer_id="alpha-actor", resumed=True
+        )
+
+        assert info.start_rollout_id == 4
+        handle.load_state.assert_awaited_once_with()
+        handle.init.assert_not_awaited()
+
+
+class TestClaimAndCheckResumed:
+    @staticmethod
+    def _handle(*, initialized: bool) -> MagicMock:
+        handle = MagicMock()
+        handle.claim_driver_epoch = AsyncMock(return_value=None)
+        handle.is_initialized = AsyncMock(return_value=initialized)
+        return handle
+
+    async def test_a_fresh_handle_claims_the_trainer_before_it_asks_it_anything(self):
+        """A handle sends the script's epoch header only once it claimed, and gate 1 already fenced the trainer."""
+        handle = self._handle(initialized=False)
+
+        await claim_and_check_resumed({"actor": handle})
+
+        assert handle.mock_calls.index(call.claim_driver_epoch()) < handle.mock_calls.index(call.is_initialized())
+
+    async def test_a_trainer_a_previous_script_built_is_reported_as_resumed(self):
+        """The trainer outlived gate 1 unchanged, so its own answer is what decides init versus load_state."""
+        assert await claim_and_check_resumed({"actor": self._handle(initialized=True)}) is True
+        assert await claim_and_check_resumed({"actor": self._handle(initialized=False)}) is False
+
+    async def test_every_trainer_of_the_run_is_claimed(self):
+        """A trainer left unclaimed still answers the previous script, which would then drive it alongside this one."""
+        handles = {"actor": self._handle(initialized=False), "critic": self._handle(initialized=False)}
+
+        await claim_and_check_resumed(handles)
+
+        assert all(handle.claim_driver_epoch.await_count == 1 for handle in handles.values())
+
+    async def test_trainers_that_disagree_about_being_initialized_stop_the_run(self):
+        """Gate 1 already refuses a mixed fleet; this is the second reading, taken through the handles that init it."""
+        handles = {"actor": self._handle(initialized=True), "critic": self._handle(initialized=False)}
+
+        with pytest.raises(AssertionError, match="disagree about whether"):
+            await claim_and_check_resumed(handles)
+
+    async def test_building_models_against_no_trainer_at_all_is_refused(self):
+        """An empty handle map would read as 'every trainer agrees' and build a run that drives nothing."""
+        with pytest.raises(AssertionError, match="at least one trainer"):
+            await claim_and_check_resumed({})

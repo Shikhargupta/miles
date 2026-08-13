@@ -374,7 +374,6 @@ class TestStartApiServerRegistration:
         """The FT controller is told this port out of band, so binding any other one makes the api unreachable."""
         ports: list[int] = []
         manager = MockWorkerManager(make_cell_summaries("trainer-actor-0"))
-        monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: ports.append(port))
 
         server.start_api_server(
@@ -383,6 +382,7 @@ class TestStartApiServerRegistration:
             inference_controller=MockInferenceController(),
             port=19137,
             ft_components=["train"],
+            cell_operations=RayCellOperations(worker_manager_handle=manager),
         )
 
         assert ports == [19137]
@@ -616,6 +616,7 @@ class TestRequestValidation:
         assert (patch_resp.status_code, inject_resp.status_code) == (422, 422)
         assert (cell.suspend_calls, cell.resume_calls) == (0, 0)
         assert rollout_handler.injected == []
+
 
 class TestOperationsSelection:
     def test_every_handler_gets_the_operations_of_the_process_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:

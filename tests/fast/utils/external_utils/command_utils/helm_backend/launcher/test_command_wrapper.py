@@ -141,7 +141,9 @@ class TestDeleteJob:
         Kubectl.delete_job("miles-run-command-convert", namespace="rl")
 
 
-def _recorded_ci_cleanup(monkeypatch, namespace: str, *, listed: list[dict] | None = None) -> list[list[str]]:
+def _recorded_ci_cleanup(
+    monkeypatch, namespace: str, *, listed: list[dict] | None = None, keep_run_id: str = "kept"
+) -> list[list[str]]:
     commands: list[list[str]] = []
 
     def fake_run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess:
@@ -149,7 +151,7 @@ def _recorded_ci_cleanup(monkeypatch, namespace: str, *, listed: list[dict] | No
         return subprocess.CompletedProcess(args=command, returncode=0, stdout=json.dumps(listed or []), stderr="")
 
     monkeypatch.setattr(command_wrapper, "_run", fake_run)
-    entrypoint._uninstall_leftover_ci_releases(namespace)
+    entrypoint._uninstall_leftover_ci_releases(namespace, keep_run_id=keep_run_id)
     return commands
 
 
@@ -176,6 +178,13 @@ class TestCiCleanup:
         commands = _recorded_ci_cleanup(monkeypatch, "ci", listed=[{"name": "miles-run-a"}])
 
         assert commands[1] == ["helm", "uninstall", "miles-run-a", "--namespace", "ci"]
+
+    def test_spares_the_releases_of_the_run_that_is_launching(self, monkeypatch):
+        """Uninstalling the release this launch just installed would delete the run it is starting."""
+        own = RunNames.release(run_id="kept")
+        commands = _recorded_ci_cleanup(monkeypatch, "ci", listed=[{"name": own}, {"name": "miles-run-a"}])
+
+        assert [command[2] for command in commands[1:]] == ["miles-run-a"]
 
 
 class TestChartDir:

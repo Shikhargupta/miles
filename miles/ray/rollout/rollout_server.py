@@ -136,6 +136,23 @@ class RolloutServer:
         )
 
     @requires_lock
+    async def abort_all(self) -> None:
+        cells = self._addressable_cells()
+        results = await asyncio.gather(*[cell.abort_all() for cell in cells], return_exceptions=True)
+        failures: list[BaseException] = []
+        for cell, result in zip(cells, results, strict=True):
+            if isinstance(result, BaseException):
+                failures.append(result)
+                logger.error(
+                    f"Aborting the generations of cell {cell.meta.cell_id} of {self.model_name} failed, so a request "
+                    f"of the previous orchestration script may still be running on it",
+                    exc_info=result,
+                )
+
+        if failures:
+            raise failures[0]
+
+    @requires_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):

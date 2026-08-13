@@ -3,6 +3,7 @@ import logging
 import os
 
 from miles.ray.placement_group import (
+    claim_trainers,
     create_rollout_components,
     create_training_models,
     maybe_start_api_server,
@@ -36,6 +37,7 @@ async def train(args):
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
+    await claim_trainers(args)
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
 
     # create the actor and critic models

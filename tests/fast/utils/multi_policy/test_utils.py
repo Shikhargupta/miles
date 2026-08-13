@@ -129,13 +129,16 @@ class TestCreatePolicyTrainers:
     def _stub_create_training_model(monkeypatch, start_rollout_ids: dict[str, int]) -> list[dict]:
         created: list[dict] = []
 
-        async def _create(trainer_args, *, trainer_id):
-            handle = AsyncMock()
+        async def _create(trainer_args, *, handle, trainer_id, resumed):
             handle.get_train_parallel_config = AsyncMock(return_value=f"parallel-config-of-{trainer_id}")
-            created.append(dict(trainer_id=trainer_id, args=trainer_args, handle=handle))
+            created.append(dict(trainer_id=trainer_id, args=trainer_args, handle=handle, resumed=resumed))
             return SimpleNamespace(handle=handle, start_rollout_id=start_rollout_ids[trainer_args.trainer_model_id])
 
         monkeypatch.setattr(multi_policy_utils, "create_training_model", _create)
+        monkeypatch.setattr(
+            multi_policy_utils, "create_trainer_handles", lambda args: {"a-actor": AsyncMock(), "b-actor": AsyncMock()}
+        )
+        monkeypatch.setattr(multi_policy_utils, "claim_and_check_resumed", AsyncMock(return_value=False))
         return created
 
     async def test_every_policy_gets_a_trainer_keyed_by_its_model_id(self, monkeypatch):

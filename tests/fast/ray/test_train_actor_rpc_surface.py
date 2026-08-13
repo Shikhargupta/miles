@@ -161,16 +161,22 @@ def _parameter_names(method: object) -> set[str]:
 
 class TestTheConcreteBackends:
     @pytest.mark.parametrize("module_path, class_name", CONCRETE_BACKENDS, ids=[name for _, name in CONCRETE_BACKENDS])
-    @pytest.mark.parametrize("method_name", ["init", "train"])
-    def test_a_backend_accepts_every_parameter_the_base_declares(
-        self, module_path: str, class_name: str, method_name: str
-    ):
+    def test_a_backend_train_accepts_every_parameter_the_base_declares(self, module_path: str, class_name: str):
         """A client builds its query from the declared surface, so a backend missing a parameter is a TypeError."""
         actor_module = pytest.importorskip(module_path)
 
-        declared = _parameter_names(getattr(TrainRayActor, method_name))
+        declared = _parameter_names(TrainRayActor.train)
 
-        assert declared <= _parameter_names(getattr(getattr(actor_module, class_name), method_name))
+        assert declared <= _parameter_names(getattr(actor_module, class_name).train)
+
+    @pytest.mark.parametrize("module_path, class_name", CONCRETE_BACKENDS, ids=[name for _, name in CONCRETE_BACKENDS])
+    def test_a_backend_init_takes_exactly_the_parameters_the_base_declares(self, module_path: str, class_name: str):
+        """A client builds its query from the base surface, so either side gaining a parameter is a TypeError."""
+        actor_module = pytest.importorskip(module_path)
+        backend_cls = getattr(actor_module, class_name)
+
+        assert "init" in vars(backend_cls)
+        assert _parameter_names(TrainRayActor.init) == _parameter_names(backend_cls.init)
 
     def test_the_megatron_actor_is_accepted(self):
         """The pool that matters most is the one a driver must be able to reach over rpc."""

@@ -161,6 +161,7 @@ class TestInit:
     def test_the_controller_watches_the_pool_of_its_trainer_id(self):
         """A policy's controller owns the pool named after its trainer id, which the role no longer determines."""
         group = TrainerController(
+            deployment_identity=make_deployment_identity(),
             trainer_id="alpha-actor",
             role="actor",
             with_ref=False,

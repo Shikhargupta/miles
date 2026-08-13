@@ -7,7 +7,7 @@ import socket
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.utils.misc import exec_command
+from miles.utils.external_utils.command_utils.common import run_shell_command
 
 logger = logging.getLogger(__name__)
 
@@ -39,17 +39,17 @@ def start_apiserver(*, run_id: str, work_dir: Path, watch_cache: bool = True) ->
     apiserver_name = f"{run_id}-apiserver"
 
     try:
-        exec_command(f"openssl genrsa -out {work_dir / _SERVICE_ACCOUNT_KEY} 2048")
+        run_shell_command(f"openssl genrsa -out {work_dir / _SERVICE_ACCOUNT_KEY} 2048")
         (work_dir / _TOKEN_FILE).write_text(f"{_TOKEN},miles-test,miles-test-uid,system:masters\n")
-        exec_command(f"docker network create {network_name}")
-        exec_command(
+        run_shell_command(f"docker network create {network_name}")
+        run_shell_command(
             f"docker run --detach --name {etcd_name} --network {network_name} {_ETCD_IMAGE} "
             f"etcd --data-dir /tmp/etcd "
             f"--advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379"
         )
-        exec_command(f"docker pull --quiet {_APISERVER_IMAGE}")
+        run_shell_command(f"docker pull --quiet {_APISERVER_IMAGE}")
         host_port = _free_host_port()
-        exec_command(
+        run_shell_command(
             f"docker run --detach --name {apiserver_name} --network {network_name} "
             f"--publish 127.0.0.1:{host_port}:{_SECURE_PORT} --volume {work_dir}:{_KEY_MOUNT_DIR}:ro "
             f"{_APISERVER_IMAGE} kube-apiserver {_apiserver_flags(etcd_name=etcd_name, watch_cache=watch_cache)}"
@@ -81,19 +81,19 @@ def _remove_environment_idempotently(*, apiserver_name: str, etcd_name: str, net
         f"docker network rm {network_name}",
     ):
         try:
-            exec_command(command)
+            run_shell_command(command)
         except Exception:
             logger.error(f"apiserver environment cleanup command failed {command=}", exc_info=True)
 
 
 def log_apiserver_diagnostics(environment: ApiserverEnvironment) -> None:
     for container in (environment.apiserver_name, environment.etcd_name):
-        logs = exec_command(f"docker logs --tail 50 {container} 2>&1", capture_output=True)
+        logs = run_shell_command(f"docker logs --tail 50 {container} 2>&1", capture_output=True)
         logger.error(f"apiserver environment diagnostics {container=}\n{logs}")
 
 
 def apiserver_started_at(environment: ApiserverEnvironment) -> str:
-    started_at = exec_command(
+    started_at = run_shell_command(
         f"docker inspect --format {{{{.State.StartedAt}}}} {environment.apiserver_name}", capture_output=True
     )
     assert started_at is not None, f"docker inspect returned nothing for {environment.apiserver_name=}"
@@ -101,16 +101,16 @@ def apiserver_started_at(environment: ApiserverEnvironment) -> str:
 
 
 def restart_apiserver(environment: ApiserverEnvironment) -> None:
-    exec_command(f"docker restart {environment.apiserver_name}")
+    run_shell_command(f"docker restart {environment.apiserver_name}")
 
 
 def compact_etcd_to_head(environment: ApiserverEnvironment) -> None:
-    status = exec_command(
+    status = run_shell_command(
         f"docker exec {environment.etcd_name} etcdctl endpoint status --write-out=json", capture_output=True
     )
     assert status is not None, f"etcdctl returned nothing for {environment.etcd_name=}"
     revision = json.loads(status)[0]["Status"]["header"]["revision"]
-    exec_command(f"docker exec {environment.etcd_name} etcdctl compact {revision} --physical")
+    run_shell_command(f"docker exec {environment.etcd_name} etcdctl compact {revision} --physical")
 
 
 def _apiserver_flags(*, etcd_name: str, watch_cache: bool) -> str:

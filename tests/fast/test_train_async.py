@@ -8,6 +8,9 @@ import train_async as train_async_driver
 from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
 
 
+_GATE_EVENTS = ["claim_trainers", "create_rollout_components", "create_training_models"]
+
+
 def _make_args(**overrides: Any) -> SimpleNamespace:
     args = SimpleNamespace(
         api_server_port=None,
@@ -55,9 +58,14 @@ def _install_driver_fakes(
     )
 
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
+        events.append("create_rollout_components")
         return components.inference_controller, components.rollout_executor, 4
 
+    async def claim_trainers(_args: SimpleNamespace) -> None:
+        events.append("claim_trainers")
+
     async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
+        events.append("create_training_models")
         return components.actor_model, components.critic_model
 
     async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
@@ -69,6 +77,7 @@ def _install_driver_fakes(
     monkeypatch.setattr(train_async_driver.object_store, "init_instance", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(train_async_driver, "init_tracking", lambda _args: None)
     monkeypatch.setattr(train_async_driver, "create_rollout_components", create_rollout_components)
+    monkeypatch.setattr(train_async_driver, "claim_trainers", claim_trainers)
     monkeypatch.setattr(train_async_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_async_driver, "maybe_start_mini_ft_controller", lambda _args: None)
     monkeypatch.setattr(train_async_driver, "update_weights", update_weights)
@@ -171,3 +180,17 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
+
+
+class TestTheTakeOverGatesRunInOrder:
+    async def test_the_trainers_are_claimed_before_the_inference_side_is_touched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A previous script can still be broadcasting into the fleet, so gate 2 must not run before gate 1 fenced it."""
+        events: list[str] = []
+        args = _make_args(num_rollout=0)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        await train_async_driver.train(args)
+
+        assert [event for event in events if event in _GATE_EVENTS] == _GATE_EVENTS
