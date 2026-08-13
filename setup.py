@@ -1,5 +1,6 @@
 import os
 import platform
+import re
 import sys
 from pathlib import Path
 
@@ -59,6 +60,60 @@ def _read_long_description():
     return _HERE.joinpath("README.md").read_text(encoding="utf-8")
 
 
+def _project_dependencies(pyproject):
+    """Return `[project].dependencies` from a pyproject.toml, or [] if absent."""
+    if not pyproject.is_file():
+        return []
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        try:
+            import tomli as tomllib
+        except ModuleNotFoundError:
+            tomllib = None
+
+    if tomllib is not None:
+        with open(pyproject, "rb") as fd:
+            return tomllib.load(fd).get("project", {}).get("dependencies", [])
+
+    # No TOML parser available. The dependency array is a flat list of quoted
+    # strings, so recover it directly rather than silently shipping an empty
+    # extra that would look installable and then fail at import time.
+    text = pyproject.read_text(encoding="utf-8")
+    block = re.search(r"^dependencies\s*=\s*\[(.*?)^\]", text, re.M | re.S)
+    if block is None:
+        return []
+    return re.findall(r"['\"]([^'\"]+)['\"]", block.group(1))
+
+
+def _third_party_extras():
+    """Runtime requirements of the bundled sglang and Megatron-LM.
+
+    Bundling their source rather than depending on their published packages
+    means their dependency metadata does not come along, so it is reproduced
+    here -- read from the pinned submodules, so it tracks whatever commit
+    third_party/* points at instead of being a hand-maintained list that rots.
+
+    These stay out of install_requires on purpose. sglang pins CUDA-13 wheels
+    (flashinfer, sglang-kernel, nvidia-cutlass-dsl, flash-attn-4) that cannot
+    resolve on a CPU-only or non-Linux machine, and putting them in the base
+    requirements would make `pip install miles-rl` fail outright there rather
+    than install the parts that do work.
+    """
+    if not _BUNDLE_THIRD_PARTY:
+        return [], []
+
+    sglang_deps = _project_dependencies(_SGLANG_SRC / "pyproject.toml")
+    megatron_deps = _project_dependencies(_MEGATRON_SRC / "pyproject.toml")
+    # megatron.training imports triton at module load, but Megatron-LM's
+    # pyproject deliberately declares it as `triton; sys_platform == 'never'`
+    # -- an unsatisfiable marker, because its own images ship triton with
+    # torch. A pip install has no such image, so request it explicitly.
+    megatron_deps = list(megatron_deps) + ["triton; sys_platform == 'linux'"]
+    return sglang_deps, megatron_deps
+
+
 def _discover_packages():
     """Return (packages, package_dir), bundling third_party/* when available."""
     packages = find_packages(include=["miles*", "miles_plugins*"])
@@ -104,6 +159,7 @@ class bdist_wheel(_bdist_wheel):
 
 
 _packages, _package_dir = _discover_packages()
+_sglang_deps, _megatron_deps = _third_party_extras()
 
 # Setup configuration
 setup(
@@ -144,6 +200,11 @@ setup(
             "uvicorn>=0.41",
             "prometheus_client>=0.24",
         ],
+        # What the bundled third-party sources need in order to actually
+        # import. Linux + CUDA 13 only; see _third_party_extras().
+        "sglang": _sglang_deps,
+        "megatron": _megatron_deps,
+        "all": _sglang_deps + _megatron_deps,
     },
     python_requires=">=3.10",
     classifiers=[
