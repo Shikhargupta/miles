@@ -19,6 +19,7 @@ from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
     split_train_data_by_dp,
+    tinker_dispatch_summary,
 )
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
@@ -156,11 +157,19 @@ class RolloutManager:
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
         sample_indices = data.get("sample_indices")
+        # Driver-visible dispatch identity (computed before the DP split so it
+        # never depends on shard layout): the tinker driver's abnormal-outcome
+        # finalizer fails these operations and releases this lease without
+        # fetching the batch back from the object store.
+        dispatch = tinker_dispatch_summary(data)
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        return dict(sample_indices=sample_indices, data_ref=data_ref)
+        pack = dict(sample_indices=sample_indices, data_ref=data_ref)
+        if dispatch is not None:
+            pack["tinker_dispatch"] = dispatch
+        return pack
 
     async def eval(
         self,

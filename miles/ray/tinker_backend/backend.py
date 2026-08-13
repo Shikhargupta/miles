@@ -431,6 +431,31 @@ class TinkerBackend:
                     result["metrics"] = operation_result_metrics(self.operations.payload(operation_id), logprobs)
                 self.operations.complete(operation_id, result)
 
+    def fail_tinker_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None = None) -> None:
+        """A dispatched data batch did NOT commit (abnormal TrainStepOutcome or
+        a raised train error): terminal-fail its still-CLAIMED operations typed
+        server and release the batch lease — the abnormal-outcome finalizer
+        that keeps a stuck batch from holding its operations CLAIMED forever.
+        Retry ownership is explicit: the failed operations are terminal, so a
+        client retry is a NEW operation (resubmit), never a silent re-claim.
+
+        Operations that already reached a terminal state are left untouched
+        (finalizing after a partial commit must never overwrite a landed
+        result). Nothing here marks dirty streams or delimits the gradient
+        window: a FAILED forward_backward IS the ledger's poison evidence
+        (``poisoned_window_blocker``), so the window's possibly-partial
+        gradients stay poisoned until an optim_step discards them. The lease
+        releases in ``finally`` — even a failing ledger walk must not strand
+        the receipt (a no-op under fixed residency either way)."""
+        try:
+            for operation_id in operation_ids:
+                operation = self.operations.get(operation_id)
+                if operation is not None and operation["state"] == "CLAIMED":
+                    self.operations.fail(operation_id, error, "server")
+        finally:
+            if lease_metadata is not None:
+                self.residency.release_batch(lease_from_metadata(lease_metadata))
+
     # ---------------- engine-facing ----------------
 
     async def abort_adapter_requests(self, adapter_name: str, registration_id: str) -> None:

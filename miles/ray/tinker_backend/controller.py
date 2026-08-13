@@ -115,6 +115,11 @@ class TinkerController:
         # normalize sequence types that crossed the Ray boundary.
         self.backend.commit_tinker_batch([tuple(key) for key in accumulated], list(operation_ids), logprobs_by_op)
 
+    def fail_tinker_batch(self, operation_ids: list, error: str, lease_metadata: dict | None = None) -> None:
+        # The abnormal-outcome finalizer for a dispatched data batch that did
+        # not commit: still-CLAIMED operations terminal-fail typed server.
+        self.backend.fail_tinker_batch(list(operation_ids), error, lease_metadata)
+
     def complete_operation(self, operation_id: str, result: dict | None = None) -> None:
         self.backend.operations.complete(operation_id, result)
 
