@@ -109,6 +109,45 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
 
+def _dedup_expert_adapter_norm_attrs(model_chunks, *, tensor_parallel_size: int, expert_tensor_parallel_size: int):
+    """Correct the grad-norm dedup attribute on TP-duplicated grouped-expert
+    adapter weights.
+
+    The bridge (upstream-ported) marks grouped-expert adapter weights
+    ``tensor_model_parallel=True`` unconditionally; at the only supported
+    multi-LoRA MoE config (expert_tensor_parallel_size=1) those weights are
+    fully TP-DUPLICATED whenever TP > 1, so the attribute makes every TP rank
+    contribute the SAME gradient to the world-reduced per-slot grad norm: the
+    reported grad_norm inflates by sqrt(TP) and grad_clip_norm under-scales by
+    the same factor (measured exactly sqrt(2) on 4xH200 GPT-OSS 20B
+    expert-only LoRA at TP=2, newly observable once radixark/Megatron-Bridge#27
+    made every rank's expert-adapter gradients real). Clearing the flag
+    restores Megatron's stock once-per-logical-param norm counting (TP rank 0
+    contributes, exactly as run-E of the 0812 matrix validated); DDP bucket
+    routing keys on ``allreduce``, which stays untouched. Must run pre-wrap so
+    the optimizer's fp32 masters copy the corrected attribute at build."""
+    if tensor_parallel_size <= (expert_tensor_parallel_size or 1):
+        return model_chunks
+    from megatron.bridge.peft.multi_lora_layers import MultiLoRAGroupedExpertLinear
+
+    cleared = 0
+    chunks = model_chunks if isinstance(model_chunks, list) else [model_chunks]
+    for chunk in chunks:
+        for module in chunk.modules():
+            if isinstance(module, MultiLoRAGroupedExpertLinear):
+                for adapter in module.adapters:
+                    for weight in (adapter.linear_in.weight, adapter.linear_out.weight):
+                        if getattr(weight, "tensor_model_parallel", False):
+                            weight.tensor_model_parallel = False
+                            cleared += 1
+    if cleared:
+        logger.info(
+            f"[multilora] cleared tensor_model_parallel on {cleared} TP-duplicated grouped-expert "
+            "adapter weights (per-slot grad-norm dedup: TP rank 0 counts each logical param once)"
+        )
+    return model_chunks
+
+
 def _setup_lora_model_via_bridge(args: Namespace) -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
@@ -182,6 +221,22 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         return transformed
 
     provider.register_pre_wrap_hook(apply_lora_hook)
+
+    if is_multi_lora_enabled(args) and targets_expert_leaves(args.target_modules):
+        # After the LoRA transform, before the DDP wrap/optimizer build: see
+        # _dedup_expert_adapter_norm_attrs (sqrt(TP)-inflated grad norms and
+        # under-scaled clipping on TP-duplicated expert adapters otherwise).
+        resolved_tp = getattr(provider, "tensor_model_parallel_size", 1) or 1
+        resolved_expert_tp = getattr(provider, "expert_tensor_parallel_size", 1) or 1
+
+        def dedup_expert_adapter_norm_attrs_hook(model_chunks):
+            return _dedup_expert_adapter_norm_attrs(
+                model_chunks,
+                tensor_parallel_size=resolved_tp,
+                expert_tensor_parallel_size=resolved_expert_tp,
+            )
+
+        provider.register_pre_wrap_hook(dedup_expert_adapter_norm_attrs_hook)
 
     is_value_model = (
         "ForTokenClassification" in hf_config.architectures[0]
