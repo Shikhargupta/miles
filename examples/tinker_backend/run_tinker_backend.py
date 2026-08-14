@@ -129,10 +129,6 @@ def _serve(args: ScriptArgs, service: bool):
         megatron_model_type="qwen3-4B",
         train_script="train_tinker_backend.py",
         megatron_path=args.megatron_path,
-        extra_env_vars={
-            # TinkerRolloutFn is class-based: it needs the experimental rollout API.
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-        },
     )
 
 
