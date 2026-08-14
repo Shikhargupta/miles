@@ -199,6 +199,12 @@ def compute_observed_cell_state(cell: dict) -> ObservedCellState:
     return ObservedCellState.SERVING if serving else ObservedCellState.RUNNING_NOT_SERVING
 
 
+def _cell_can_serve(cell: dict) -> bool:
+    if _cell_type_of(cell) != ROLLOUT_CELL_TYPE:
+        return True
+    return compute_observed_cell_state(cell) is ObservedCellState.SERVING
+
+
 @dataclasses.dataclass(frozen=True)
 class _CellEvent:
     kind: Literal["injected", "observed"]
@@ -235,10 +241,16 @@ class RecoveryWitness:
         }
 
     def num_injections(self, *, cell_type: str | None = None) -> int:
-        return sum(
-            sum(1 for event in info.events if event.kind == "injected")
-            for info in self._matching_infos(cell_type=cell_type)
-        )
+        return len(self.injected_cell_names(cell_type=cell_type))
+
+    def injected_cell_names(self, *, cell_type: str | None = None) -> list[str]:
+        return [
+            name
+            for name, info in self._info_of_cell_name.items()
+            if cell_type is None or info.cell_type == cell_type
+            for event in info.events
+            if event.kind == "injected"
+        ]
 
     def num_completed_recoveries(self, *, cell_type: str | None = None) -> int:
         return sum(
@@ -348,20 +360,35 @@ def run_fault_injection_loop(
         if time.monotonic() < next_injection_time:
             continue
 
-        # Keep >=1 cell of each kind genuinely alive: if a prior injection has not recovered yet, wait
-        # and retry on a later poll rather than killing that kind's last live replica.
-        alive_of_type: dict[str, list[dict]] = {}
+        live_replicas_of_type: dict[str, list[dict]] = {}
+        victims_of_type: dict[str, list[dict]] = {}
         for cell in gate.genuinely_alive(cells):
-            alive_of_type.setdefault(_cell_type_of(cell), []).append(cell)
-        spare_types = sorted(kind for kind, kind_cells in alive_of_type.items() if len(kind_cells) > 1)
+            cell_type = _cell_type_of(cell)
+            victims_of_type.setdefault(cell_type, []).append(cell)
+            if _cell_can_serve(cell):
+                live_replicas_of_type.setdefault(cell_type, []).append(cell)
+
+        logger.info(
+            "Live replicas %s, injectable victims %s",
+            {
+                kind: sorted(c["metadata"]["name"] for c in kind_cells)
+                for kind, kind_cells in sorted(live_replicas_of_type.items())
+            },
+            {
+                kind: sorted(c["metadata"]["name"] for c in kind_cells)
+                for kind, kind_cells in sorted(victims_of_type.items())
+            },
+        )
+
+        spare_types = sorted(kind for kind, kind_cells in live_replicas_of_type.items() if len(kind_cells) > 1)
         if not spare_types:
             logger.info(
-                "Deferring injection: no cell kind has a spare replica (%s)",
-                {kind: len(kind_cells) for kind, kind_cells in sorted(alive_of_type.items())},
+                "Deferring injection: no cell kind has a spare working replica (%s)",
+                {kind: len(kind_cells) for kind, kind_cells in sorted(live_replicas_of_type.items())},
             )
             continue
 
-        target = rng.choice(alive_of_type[rng.choice(spare_types)])
+        target = rng.choice(victims_of_type[rng.choice(spare_types)])
         cell_name = target["metadata"]["name"]
         target_type = _cell_type_of(target)
         form = form_cycles.draw(target_type, rng)
@@ -438,6 +465,10 @@ class FaultInjectorHandle:
     def stop_and_join(self) -> None:
         self._stop_event.set()
         self._thread.join(timeout=STOP_AND_JOIN_TIMEOUT_SECONDS)
+        assert not self._thread.is_alive(), (
+            f"The fault injector was still mid-injection {STOP_AND_JOIN_TIMEOUT_SECONDS}s after being asked to "
+            f"stop, so it may still crash a cell nothing will heal, and reading its witness now would race it"
+        )
         self._observe_final_snapshot()
 
     def forms_that_never_worked(self) -> list[tuple[str, str]]:
