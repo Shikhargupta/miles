@@ -13,6 +13,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers import argv_utils
 from miles.utils.workers.argv_utils import (
     CONFIG_JSON_FLAG,
+    compute_arg_types,
     config_to_argv,
     dataclass_to_values,
     parse_config_argv,
@@ -583,3 +584,22 @@ class TestRenderCliArgvAlwaysRenderFields:
             always_render_fields=("count",),
         )
         assert argv == ["--count", "6", "--model", "m"]
+
+
+class TestComputeArgTypes:
+    def test_the_flag_kinds_map_to_the_types_a_value_is_coerced_to(self):
+        """A yaml scalar is coerced by these types, so a flag kind read as the wrong type reaches the run wrong."""
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--swiglu", action="store_true")
+        parser.add_argument("--no-swiglu-either", action="store_false")
+        parser.add_argument("--bias", action=argparse.BooleanOptionalAction)
+        parser.add_argument("--normalization")
+        parser.add_argument("--num-layers", type=int)
+
+        arg_types = compute_arg_types(parser)
+
+        assert arg_types["swiglu"] is bool
+        assert arg_types["no_swiglu_either"] is bool
+        assert arg_types["bias"] is bool
+        assert arg_types["normalization"] is str
+        assert arg_types["num_layers"] is int

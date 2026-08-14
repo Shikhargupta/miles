@@ -12,6 +12,9 @@ _ConfigT = TypeVar("_ConfigT", bound=FrozenStrictBaseModel)
 _ArgsT = TypeVar("_ArgsT")
 
 
+# ==================== config argv ====================
+
+
 def config_to_argv(config: FrozenStrictBaseModel) -> list[str]:
     argv = [CONFIG_JSON_FLAG, config.model_dump_json()]
 
@@ -170,3 +173,18 @@ def _boolean_option_string(action: argparse.Action, *, value: bool) -> str:
         return positive[0]
     assert negative, f"{action.dest!r} cannot be rendered: no negative option string"
     return negative[0]
+
+
+# ==================== parser reflection ====================
+
+
+def compute_arg_types(parser: argparse.ArgumentParser) -> dict[str, type]:
+    return {action.dest: _compute_arg_type(action) for action in parser._actions}
+
+
+def _compute_arg_type(action: argparse.Action) -> type:
+    if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse.BooleanOptionalAction)):
+        return bool
+    if action.type is None:
+        return str
+    return action.type
