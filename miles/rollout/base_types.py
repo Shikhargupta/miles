@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from miles.rollout.data_source import DataSource
 from miles.utils.types import Sample
@@ -50,6 +50,32 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
 
 
 @dataclass(frozen=True)
+class RolloutFnHandoff:
+    """Opaque fn-to-driver sidecar of one train batch (same species as
+    RolloutPostprocessOptions: the fn declares, the manager forwards). The fn
+    fills ``driver_metadata`` with whatever its driver needs to finalize the
+    batch (e.g. claimed operation ids plus a dispatch lease); the manager
+    copies it onto the returned pack verbatim and never inspects a key.
+
+    The same object is the abort token: when the manager's downstream phase
+    (save/log/convert/split/store) fails AFTER the fn handed its output over,
+    the manager gives the handoff back through the fn's optional
+    ``abort_handoff`` capability so the fn can terminalize the claimed work it
+    can no longer retry — without it, the failure would orphan state only the
+    fn knows about (external review 0813 §4.1)."""
+
+    driver_metadata: dict[str, Any]
+
+
+class RolloutFnHandoffAborter(Protocol):
+    """Optional rollout-fn capability: terminalize the work behind a handoff
+    when the downstream phase fails after the output receipt. Must be safe to
+    repeat (the manager may race a retry against teardown)."""
+
+    async def abort_handoff(self, handoff: RolloutFnHandoff, error: BaseException) -> None: ...
+
+
+@dataclass(frozen=True)
 class RolloutPostprocessOptions:
     """Postprocess policy the rollout fn declares for its own output, so the
     generic manager never has to recognize fn-specific metadata keys.
@@ -77,6 +103,11 @@ class RolloutFnTrainOutput:
     conversion_metadata: dict[str, Any] | None = None
     # How the manager postprocesses samples before conversion.
     postprocess: RolloutPostprocessOptions = field(default_factory=RolloutPostprocessOptions)
+    # Opaque driver-facing sidecar (dispatch identity + abort token); the
+    # manager forwards it to the driver and hands it back to the fn's
+    # abort_handoff on a downstream failure. None for fns with no
+    # driver-visible dispatch state.
+    handoff: RolloutFnHandoff | None = None
 
 
 # TODO make it frozen
