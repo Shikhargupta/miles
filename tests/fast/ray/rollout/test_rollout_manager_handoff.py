@@ -16,6 +16,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
+import asyncio
 
 import pytest
 
@@ -334,6 +335,38 @@ class TestSuccessPathForwardsTheHandoff:
         assert pack["rollout_fn_metadata"]["operation_ids"] == ["op-A"]
         [train_data] = fake_store.puts
         assert train_data["batch_execution_lease"] == pack["rollout_fn_metadata"]["lease"]
+
+
+class TestDisposeClosesTheRolloutFn:
+    """External review 0813 §4.7: disposal must invoke the train rollout fn's
+    async lifecycle hook — a claim-holding fn (the tinker adapter) terminal-
+    fails the claims it still holds before its runtimes are dropped."""
+
+    @pytest.mark.asyncio
+    async def test_dispose_awaits_aclose_and_claims_are_terminal_failed(self, monkeypatch, quiet_manager_io):
+        args = make_args()
+        adapter, queue = make_adapter(args, valid_operation())
+        manager = make_manager(args, adapter)
+        manager._metric_checker = None
+        manager._health_monitors = []
+        manager.eval_generate_rollout = adapter  # shared instance, as in production tinker runs
+        monkeypatch.setattr(rollout_manager_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
+
+        # Park a real claimed-but-undispatched batch in the adapter.
+        await adapter._reconcile(await queue.ready_streams())
+        adapter._launch_idle_children(rollout_id=0)
+        for _ in range(200):
+            if any(r.ready_output is not None for r in adapter.runtimes.values()):
+                break
+            await asyncio.sleep(0.01)
+        assert queue.state == "CLAIMED"
+
+        await manager.dispose()
+
+        [(operation_ids, error, lease_metadata)] = adapter.abort.aborts
+        assert operation_ids == ["op-A"] and lease_metadata is None
+        assert "closed" in error
+        assert adapter.runtimes == {}
 
 
 def test_the_manager_owns_no_tinker_identity():
