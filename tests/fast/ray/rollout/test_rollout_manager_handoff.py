@@ -161,7 +161,7 @@ def make_manager(args, rollout_fn) -> object:
     manager.rollout_id = -1
     manager.weight_version = None
     manager.train_parallel_config = {"dp_size": 1}
-    manager.use_experimental_refactor = True
+    manager.use_legacy_rollout_v1 = False
     manager.generate_rollout = rollout_fn
     manager.custom_convert_samples_to_train_data_func = None
     manager.custom_reward_post_process_func = None
