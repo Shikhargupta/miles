@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import re
 from typing import Any
 
@@ -162,6 +163,37 @@ def _resolve_raw_megatron_config(value: str | None) -> "_RawMegatronConfig | Non
     if value is None:
         return None
     return _RawMegatronConfig.from_file_arg(value)
+
+
+# ---------------------------- checkpoint dirs -----------------------------
+
+
+def resolve_args_checkpoint_load(args) -> None:
+    # TODO: During loading, we need to set the start_rollout_id here.
+    if args.megatron_to_hf_mode == "bridge":
+        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
+        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
+        # Mirrors the non-bridge branch below.
+        if not _has_megatron_checkpoint(args.load):
+            args.load = args.ref_load or args.hf_checkpoint
+        args.start_rollout_id = 0
+    else:
+        if not _has_megatron_checkpoint(args.load):
+            args.no_load_optim = True
+            args.no_load_rng = True
+            args.finetune = True
+            args.load = args.ref_load
+            if args.ref_ckpt_step is not None:
+                args.ckpt_step = args.ref_ckpt_step
+            args.start_rollout_id = 0
+
+
+def _has_megatron_checkpoint(load_dir: str | None) -> bool:
+    return (
+        load_dir is not None
+        and os.path.exists(load_dir)
+        and os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
+    )
 
 
 # ---------------------------- validation -----------------------------
