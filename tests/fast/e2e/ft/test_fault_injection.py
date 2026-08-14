@@ -915,3 +915,15 @@ class TestOverlappingRecoveries:
         witness.note_injected("rollout-engine-0")
 
         assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {"rollout-engine-0": 1}
+
+
+class TestCrashIntervalValidation:
+    @pytest.mark.parametrize("interval", [0.0, -60.0, float("nan"), float("inf")])
+    def test_an_interval_that_is_not_a_duration_is_rejected_before_the_thread_starts(self, interval: float) -> None:
+        """Zero divides by zero inside the daemon thread, and a negative one crashes as fast as the loop can poll."""
+        with pytest.raises(AssertionError, match="not a duration"):
+            fi._assert_usable_crash_interval(interval)
+
+    def test_a_positive_interval_is_accepted(self) -> None:
+        """The check must stay invisible on the path every soak actually takes."""
+        fi._assert_usable_crash_interval(120.0)

@@ -4,6 +4,7 @@ import abc
 import dataclasses
 import enum
 import logging
+import math
 import random
 import threading
 import time
@@ -23,7 +24,6 @@ from miles.utils.workers.types import ClusterBackend
 logger = logging.getLogger(__name__)
 
 API_SERVER_PORT: int = 18080
-MEAN_INTERVAL_SECONDS: float = 60.0
 # Poll cell liveness this often so the gate tracks a crash->detect->heal cycle even when it
 # happens entirely between two (much sparser) injections; injections still fire on the long
 # random interval above.
@@ -128,6 +128,14 @@ CellFaultForms = dict[str, list[BaseFaultForm]]
 class InjectionTally:
     num_attempts: int = 0
     num_successes: int = 0
+
+
+def _assert_usable_crash_interval(mean_interval_seconds: float) -> None:
+    assert math.isfinite(mean_interval_seconds) and mean_interval_seconds > 0, (
+        f"A crash interval of {mean_interval_seconds}s is not a duration. Zero divides by zero inside the injector "
+        f"thread, and a negative one puts every deadline in the past, so the soak crashes cells as fast as it can "
+        f"poll instead of turning injection off"
+    )
 
 
 def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrainConfig) -> CellFaultForms:
@@ -445,6 +453,8 @@ class FaultInjectorHandle:
         cell_type: str | None,
         cell_fault_forms: CellFaultForms,
     ) -> None:
+        _assert_usable_crash_interval(mean_interval_seconds)
+
         self.recovery_witness = RecoveryWitness()
         self.tally_of_form: dict[tuple[str, str], InjectionTally] = {}
         self._base_url = base_url
