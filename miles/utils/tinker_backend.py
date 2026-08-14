@@ -168,12 +168,11 @@ def validate_tinker_args(args) -> None:
     the data, so the rollout fn and data source swap to the queue-driven pair."""
     if not getattr(args, "tinker_backend", False):
         return
-    from miles.utils.environ import enable_experimental_rollout_refactor
+    from miles.utils.environ import use_legacy_rollout_v1
 
     assert getattr(args, "multi_lora_n_adapters", 0) > 0, "--tinker-backend requires --multi-lora-n-adapters > 0"
-    assert enable_experimental_rollout_refactor(), (
-        "--tinker-backend needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
-        "(and propagate it through runtime_env when submitting via Ray)"
+    assert not use_legacy_rollout_v1(), (
+        "--tinker-backend needs the class-based rollout API (the default); " "unset MILES_USE_LEGACY_ROLLOUT_V1"
     )
     # Paths that replace or bypass the live rollout output are structurally
     # incompatible with tinker's dispatch contract: every dispatched batch
