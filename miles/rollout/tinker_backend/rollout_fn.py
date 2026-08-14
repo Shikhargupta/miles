@@ -20,16 +20,21 @@ from miles.ray.tinker_backend.config import AdapterRun
 from miles.ray.tinker_backend.residency import lease_to_metadata
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
+    RolloutFnHandoff,
     RolloutFnInput,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
     RolloutPostprocessOptions,
 )
 from miles.rollout.tinker_backend.operation_port import (
+    BatchAbortPort,
     BatchResidencyPort,
     OperationQueuePort,
+    RayTinkerBatchAbort,
     RayTinkerOperationQueue,
     RayTrainerResidencyPort,
+    StaleBindingError,
+    TransientOperationPortError,
 )
 from miles.utils.tinker_backend import EmptyBatchTimeoutError
 from miles.utils.types import AdapterRef, Sample
@@ -79,6 +84,22 @@ def batch_plan_to_metadata(batch_plan: list[dict], lease) -> dict[str, Any]:
 
 
 _CLAIM_POLL_S = 0.5
+
+# Known-transient child failures (TransientOperationPortError: provably no
+# ledger mutation) return the runtime to IDLE with this capped exponential
+# backoff instead of quarantining it.
+_CHILD_BACKOFF_BASE_S = 0.5
+_CHILD_BACKOFF_CAP_S = 30.0
+
+# Batch-lease acquisition never mutates controller state, so transient
+# transport failures are retried in-adapter (bounded) before propagating.
+_ACQUIRE_ATTEMPTS = 4
+_ACQUIRE_BACKOFF_BASE_S = 0.2
+_ACQUIRE_BACKOFF_CAP_S = 2.0
+
+# A refused batch receipt terminal-fails the exact stale claims and reselects
+# the survivors; bounded so racing registry churn cannot loop forever.
+_MAX_STALE_RESELECTS = 3
 
 Tenant = tuple[str, str]
 
@@ -218,6 +239,10 @@ class AdapterRolloutRuntime:
         self.state = self.IDLE
         self.ready_output: RolloutFnTrainOutput | None = None
         self.task: asyncio.Task | None = None
+        # Known-transient failure recovery: consecutive-failure count and the
+        # monotonic deadline before which an IDLE runtime is not relaunched.
+        self.transient_failures = 0
+        self.retry_at = 0.0
 
     @property
     def tenant(self) -> Tenant:
@@ -265,13 +290,16 @@ class TinkerOperationBatchAdapter:
         input: RolloutFnConstructorInput,
         operations: OperationQueuePort | None = None,
         residency: BatchResidencyPort | None = None,
+        abort: BatchAbortPort | None = None,
     ):
         self.args = input.args
         self.operations = operations if operations is not None else RayTinkerOperationQueue()
         self.residency = residency if residency is not None else RayTrainerResidencyPort()
+        self.abort = abort if abort is not None else RayTinkerBatchAbort()
         self.runtimes: dict[Tenant, AdapterRolloutRuntime] = {}
         self.rotation: deque[Tenant] = deque()
         self._ready = asyncio.Event()
+        self._closed = False
 
     # ------------------------------ lifecycle ------------------------------
 
@@ -280,17 +308,71 @@ class TinkerOperationBatchAdapter:
             raise ValueError(
                 "TinkerOperationBatchAdapter does not serve eval; tinker runs have no server-side eval loop"
             )
+        if self._closed:
+            raise RuntimeError("TinkerOperationBatchAdapter is closed; no new claim work may start")
         adapters = await self._trainable_adapters()
         await self._reconcile(adapters)
-        self._launch_idle_children(input.rollout_id)
-        selected = await self._select()
-        return await self._merge(selected)
+        refusal: StaleBindingError | None = None
+        for _ in range(_MAX_STALE_RESELECTS):
+            self._launch_idle_children(input.rollout_id)
+            selected = await self._select()
+            try:
+                return await self._merge(selected)
+            except StaleBindingError as e:
+                # The exact stale claims were terminal-failed inside _merge;
+                # the surviving READY batches reselect immediately.
+                refusal = e
+                continue
+        raise refusal
 
     async def aclose(self) -> None:
-        for runtime in list(self.runtimes.values()):
+        """Claim-safe shutdown (external review 0813 §4.7): stop new claim
+        work, then per runtime cancel-and-await its child FIRST — a claim can
+        land during the cancellation race — and terminal-fail any claim it
+        still holds: a READY output IS a CLAIMED operation with no lease yet,
+        so dropping it silently would block its stream forever. Ambiguous
+        in-flight claim RPCs (cancelled before any response) cannot be
+        reconciled locally; registration fencing/recovery owns those, and a
+        controller-side idempotent-claim query is the future fix. Teardown
+        never raises."""
+        self._closed = True
+        for tenant, runtime in list(self.runtimes.items()):
             await runtime.aclose()
+            output = runtime.ready_output
+            if output is None:
+                continue
+            operation_id = output.metadata["operation_id"]
+            try:
+                await self.abort.abort_batch(
+                    [operation_id],
+                    "rollout adapter closed before the claimed operation could dispatch — "
+                    "resubmit it as a new operation",
+                    None,  # no batch lease was acquired for an undispatched claim
+                )
+                logger.info(f"[tinker] terminal-failed undispatched claim '{operation_id}' for '{tenant[0]}' at close")
+            except Exception:
+                logger.exception(f"[tinker] failed to terminal-fail claim '{operation_id}' at close")
+            runtime.ready_output = None
         self.runtimes.clear()
         self.rotation.clear()
+
+    async def abort_handoff(self, handoff: RolloutFnHandoff, error: BaseException) -> None:
+        """RolloutFnHandoffAborter capability: the manager's downstream phase
+        failed after this adapter handed over a leased selection, so the
+        driver will never see the dispatch receipt. Terminal-fail the exact
+        claimed operations and release the exact lease through the one
+        idempotent controller boundary (``fail_tinker_batch`` fails only
+        still-CLAIMED operations and releases the lease in ``finally``, so a
+        repeat can never overwrite a landed result). The failed
+        forward_backwards poison their gradient windows exactly as a failed
+        train dispatch does; retry ownership stays with the client."""
+        await self.abort.abort_batch(
+            list(handoff.driver_metadata["operation_ids"]),
+            f"rollout postprocessing failed before trainer dispatch: {error}; the batch never "
+            "reached the trainer and its gradient window is poisoned — resubmit the batch and "
+            "optim_step again",
+            handoff.driver_metadata["lease"],
+        )
 
     # ------------------------------ runtimes ------------------------------
 
@@ -328,24 +410,52 @@ class TinkerOperationBatchAdapter:
         self.rotation = kept
 
     def _launch_idle_children(self, rollout_id: int) -> None:
+        if self._closed:
+            return
+        now = time.monotonic()
         for runtime in self.runtimes.values():
-            if runtime.state == AdapterRolloutRuntime.IDLE:
-                runtime.state = AdapterRolloutRuntime.IN_FLIGHT
-                runtime.task = asyncio.create_task(self._run_child(runtime, rollout_id))
+            if runtime.state != AdapterRolloutRuntime.IDLE:
+                continue
+            if now < runtime.retry_at:
+                # Transient-failure backoff: the runtime relaunches on a later
+                # cycle (bounded by the empty-batch deadline, after which the
+                # driver yields to its control phase and calls again).
+                continue
+            runtime.state = AdapterRolloutRuntime.IN_FLIGHT
+            runtime.task = asyncio.create_task(self._run_child(runtime, rollout_id))
 
     async def _run_child(self, runtime: AdapterRolloutRuntime, rollout_id: int) -> None:
         try:
             output = await runtime.child_fn(RolloutFnTrainInput(rollout_id=rollout_id))
             if not output.samples:
                 raise ValueError(f"child for '{runtime.run.name}' returned an empty batch")
+            runtime.transient_failures = 0
+            runtime.retry_at = 0.0
             runtime.ready_output = output
             runtime.state = AdapterRolloutRuntime.READY
         except asyncio.CancelledError:
             runtime.state = AdapterRolloutRuntime.IDLE
             raise
+        except TransientOperationPortError as e:
+            # Provably no ledger mutation happened: the registration stays
+            # runnable, with a capped exponential backoff so a flapping
+            # controller is not hammered (external review 0813 §4.3).
+            runtime.transient_failures += 1
+            backoff = min(_CHILD_BACKOFF_CAP_S, _CHILD_BACKOFF_BASE_S * 2 ** (runtime.transient_failures - 1))
+            runtime.retry_at = time.monotonic() + backoff
+            runtime.state = AdapterRolloutRuntime.IDLE
+            logger.warning(
+                f"[tinker] child for '{runtime.run.name}' hit a transient port failure "
+                f"(consecutive #{runtime.transient_failures}, relaunching in {backoff:.1f}s): {e}"
+            )
         except Exception as e:
-            # Child failure isolates to this adapter; other adapters keep going.
-            logger.exception(f"[tinker] child for '{runtime.run.name}' failed: {e}")
+            # Ambiguous failure (e.g. a claim RPC whose response was lost may
+            # already have turned the stream head CLAIMED): quarantine this
+            # runtime rather than retry into a possible orphan. FAILED is
+            # terminal until deregistration/re-registration removes the
+            # runtime; a controller-side idempotent-claim reconciliation is
+            # the future recovery path. Other adapters keep going.
+            logger.exception(f"[tinker] child for '{runtime.run.name}' failed (quarantined): {e}")
             runtime.state = AdapterRolloutRuntime.FAILED
         finally:
             self._ready.set()
@@ -366,6 +476,14 @@ class TinkerOperationBatchAdapter:
         coalesce_deadline: float | None = None
 
         while True:
+            # Defensive ordering: clear BEFORE the authoritative state scan.
+            # A completion then either lands before the scan (found in state)
+            # or after it (leaves the event set, so the wait returns at
+            # once). The scan-to-wait block below has no await point today —
+            # the reviewed lost-wakeup interleaving was not reachable — but
+            # clear-after-scan would silently turn any future await added in
+            # between into a full-timeout latency bubble.
+            self._ready.clear()
             runtime = self._pop_next_ready(kind_lock)
             if runtime is not None:
                 selected.append(runtime)
@@ -394,7 +512,6 @@ class TinkerOperationBatchAdapter:
                         f"--tinker-max-empty-wait-s ({self.args.tinker_max_empty_wait_s}s)"
                     )
                 timeout = empty_deadline - now
-            self._ready.clear()
             try:
                 await asyncio.wait_for(self._ready.wait(), timeout=timeout)
             except TimeoutError:
@@ -452,9 +569,12 @@ class TinkerOperationBatchAdapter:
                 metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
             # One immutable dispatch receipt for the whole selection: the
             # controller re-validates exact slot ownership before issuing it.
-            lease = await self.residency.acquire_batch(
-                [(entry["operation_id"], entry["binding"]) for entry in batch_plan]
-            )
+            lease = await self._acquire_batch_with_retry(batch_plan)
+        except StaleBindingError:
+            # Authoritative refusal: terminal-fail exactly the stale claims,
+            # keep the still-valid ones READY, and let __call__ reselect.
+            await self._terminalize_stale_claims(selected)
+            raise
         except BaseException:
             for runtime in selected:
                 runtime.state = AdapterRolloutRuntime.READY
@@ -463,6 +583,73 @@ class TinkerOperationBatchAdapter:
         for runtime in selected:
             runtime.ready_output = None
             runtime.state = AdapterRolloutRuntime.IDLE  # relaunches at the NEXT generate call
+        return self._build_selection_output(data, batch_plan, metrics, lease)
+
+    async def _acquire_batch_with_retry(self, batch_plan: list[dict]):
+        """Acquire the selection's dispatch receipt with bounded in-adapter
+        retries. ``acquire_batch`` never mutates controller state (pure
+        validate + mint), so ANY transport failure is safe to retry — without
+        this, one transient controller blip re-raised out of generate() and
+        killed the driver service (external review 0813 §4.6). An
+        executed-and-refused acquisition arrives typed (StaleBindingError)
+        and is never retried here."""
+        bindings = [(entry["operation_id"], entry["binding"]) for entry in batch_plan]
+        attempt = 1
+        while True:
+            try:
+                return await self.residency.acquire_batch(bindings)
+            except (StaleBindingError, asyncio.CancelledError):
+                raise
+            except Exception as e:
+                if attempt >= _ACQUIRE_ATTEMPTS:
+                    raise
+                backoff = min(_ACQUIRE_BACKOFF_CAP_S, _ACQUIRE_BACKOFF_BASE_S * 2 ** (attempt - 1))
+                logger.warning(
+                    f"[tinker] batch lease acquisition failed transiently "
+                    f"(attempt {attempt}/{_ACQUIRE_ATTEMPTS}, retrying in {backoff:.1f}s): {e}"
+                )
+                attempt += 1
+                await asyncio.sleep(backoff)
+
+    async def _terminalize_stale_claims(self, selected: list[AdapterRolloutRuntime]) -> None:
+        """The batch receipt was refused, so at least one claimed binding is
+        stale. Probe each selected claim individually so ONLY the stale
+        operations terminal-fail — a coalesced selection spans adapters, and
+        adapter B's valid claim must never be poisoned by adapter A's
+        deregistration. Survivors return to READY for the reselection; probe
+        receipts are discarded (fixed residency reserves nothing — a paged
+        residency will need a release verb on this path)."""
+        for runtime in selected:
+            metadata = runtime.ready_output.metadata
+            operation_id = metadata["operation_id"]
+            try:
+                await self.residency.acquire_batch([(operation_id, metadata["binding"])])
+            except StaleBindingError as probe:
+                try:
+                    await self.abort.abort_batch(
+                        [operation_id],
+                        f"execution binding went stale before dispatch: {probe}; the claim can "
+                        "never execute — resubmit it as a new operation",
+                        None,  # refused before any batch lease existed
+                    )
+                except Exception:
+                    # Keep the claim retryable: the next selection re-refuses
+                    # and re-attempts this terminalization.
+                    logger.exception(
+                        f"[tinker] failed to terminal-fail stale claim '{operation_id}'; keeping it for retry"
+                    )
+                    runtime.state = AdapterRolloutRuntime.READY
+                    continue
+                logger.warning(f"[tinker] terminal-failed stale claim '{operation_id}' for '{runtime.run.name}'")
+                runtime.ready_output = None
+                runtime.state = AdapterRolloutRuntime.IDLE
+            except Exception:
+                # Transient probe failure: undecided, stays READY for retry.
+                runtime.state = AdapterRolloutRuntime.READY
+            else:
+                runtime.state = AdapterRolloutRuntime.READY
+
+    def _build_selection_output(self, data, batch_plan, metrics, lease) -> RolloutFnTrainOutput:
         return RolloutFnTrainOutput(
             samples=data,
             metrics=metrics,
@@ -473,6 +660,16 @@ class TinkerOperationBatchAdapter:
             # the DP grid so the multi-LoRA dynamic-GBS branch sizes the step
             # to the batch instead of trimming it.
             postprocess=RolloutPostprocessOptions(pad_to_dp=True),
+            # Dispatch identity minted ONCE, here, where it is exactly known —
+            # never reconstructed from converted tensors. The driver's
+            # abnormal-outcome finalizer and the manager's downstream abort
+            # both consume this same opaque receipt.
+            handoff=RolloutFnHandoff(
+                driver_metadata={
+                    "operation_ids": [entry["operation_id"] for entry in batch_plan],
+                    "lease": lease_to_metadata(lease),
+                }
+            ),
         )
 
 

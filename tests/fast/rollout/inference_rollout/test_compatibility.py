@@ -16,6 +16,7 @@ from miles.rollout.inference_rollout.compatibility import (
     LegacyGenerateFnAdapter,
     LegacyRolloutFnAdapter,
     call_rollout_function,
+    call_rollout_function_async,
     load_generate_function,
     load_rollout_function,
 )
@@ -132,6 +133,95 @@ class TestSupportedRolloutFormats:
             assert isinstance(fn, AsyncRolloutFn)
             expected_type = RolloutFnEvalOutput if evaluation else RolloutFnTrainOutput
             assert isinstance(result, expected_type)
+
+
+class TestAsyncInvocation:
+    """``call_rollout_function_async`` — the manager's invocation path
+    (external review 0813 §4.2/§6.4): async rollout fns are awaited DIRECTLY
+    on the caller's loop so cancellation reaches the coroutine; only sync fns
+    ride a worker thread. Never a thread + the background loop for a
+    coroutine — that detached it from its caller."""
+
+    def test_async_class_runs_on_the_callers_loop(self):
+        loops = []
+
+        class AsyncRolloutFn:
+            async def __call__(self, input):
+                loops.append(asyncio.get_running_loop())
+                return RolloutFnTrainOutput(samples=[[{"text": "async"}]])
+
+        async def scenario():
+            result = await call_rollout_function_async(AsyncRolloutFn(), RolloutFnTrainInput(rollout_id=1))
+            assert result.samples == [[{"text": "async"}]]
+            assert loops == [asyncio.get_running_loop()]  # the SAME loop, no bridge
+
+        asyncio.run(scenario())
+
+    def test_cancelling_the_caller_cancels_the_rollout_coroutine(self):
+        """The 0813 review's reproduction, inverted: cancelling the invoking
+        task must cancel the rollout coroutine itself — it must never keep
+        running (and mutating external state) after its caller is gone."""
+        started = asyncio.Event()
+        observed = {"cancelled": False, "completed": False}
+
+        class BlockingAsyncRollout:
+            async def __call__(self, input):
+                started.set()
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    observed["cancelled"] = True
+                    raise
+                observed["completed"] = True
+                return RolloutFnTrainOutput(samples=[])
+
+        async def scenario():
+            task = asyncio.create_task(
+                call_rollout_function_async(BlockingAsyncRollout(), RolloutFnTrainInput(rollout_id=1))
+            )
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert observed["cancelled"] is True
+            assert observed["completed"] is False
+
+        asyncio.run(scenario())
+
+    def test_sync_class_runs_in_a_worker_thread(self):
+        import threading
+
+        threads = []
+
+        class SyncRolloutFn:
+            def __call__(self, input):
+                threads.append(threading.current_thread())
+                return RolloutFnTrainOutput(samples=[[{"text": "sync"}]])
+
+        async def scenario():
+            result = await call_rollout_function_async(SyncRolloutFn(), RolloutFnTrainInput(rollout_id=1))
+            assert result.samples == [[{"text": "sync"}]]
+            # Off the event-loop thread: a blocking legacy fn cannot stall it.
+            assert threads[0] is not threading.main_thread()
+
+        asyncio.run(scenario())
+
+    def test_sync_callable_returning_a_coroutine_awaits_on_the_callers_loop(self):
+        loops = []
+
+        def hybrid_fn(input):
+            async def inner():
+                loops.append(asyncio.get_running_loop())
+                return RolloutFnTrainOutput(samples=[[{"text": "hybrid"}]])
+
+            return inner()
+
+        async def scenario():
+            result = await call_rollout_function_async(hybrid_fn, RolloutFnTrainInput(rollout_id=1))
+            assert result.samples == [[{"text": "hybrid"}]]
+            assert loops == [asyncio.get_running_loop()]
+
+        asyncio.run(scenario())
 
 
 class TestSupportedGenerateFormats:
