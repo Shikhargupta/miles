@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from argparse import Namespace
+from pathlib import Path
 from typing import Any
 
 import pydantic
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 ACTOR_ROLE = "actor"
 CRITIC_ROLE = "critic"
 DEFAULT_MODEL_ROLE = ACTOR_ROLE
+TRAINER_CHECKPOINT_DIRNAME = "trainers"
 MODEL_ID_PATTERN = re.compile(r"\A[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z")
 LONGEST_TRAINER_POOL_PREFIX = "trainer-controller-"
 MIN_RELEASE_PREFIX_LENGTH = RELEASE_DIGEST_LENGTH + len("x-")
@@ -199,7 +201,9 @@ def _resolve_raw_megatron_config(value: str | None) -> "_RawMegatronConfig | Non
 
 
 def compute_trainer_args(args, trainer: MegatronTrainerConfig) -> Namespace:
+    megatron_config = resolve_megatron_config(args)
     ans = copy.deepcopy(args)
+    ans.trainer_model_id = trainer.model_id if megatron_config.is_multi_policy else None
 
     for key, value in trainer.overrides.items():
         assert hasattr(ans, key), (
@@ -208,10 +212,29 @@ def compute_trainer_args(args, trainer: MegatronTrainerConfig) -> Namespace:
         )
         setattr(ans, key, value)
 
+    _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
+
+    if megatron_config.is_multi_policy:
+        ans.save = _compute_trainer_checkpoint_dir(base_dir=args.save, trainer_id=trainer.trainer_id)
+        ans.load = _compute_trainer_checkpoint_dir(base_dir=args.load, trainer_id=trainer.trainer_id)
+        resolve_args_checkpoint_load(ans)
+
     return ans
 
 
+def _apply_critical_derived_overrides(ans: Namespace, *, base, trainer: MegatronTrainerConfig) -> None:
+    # TODO: most derived defaults are still computed from the base args; revisit after the arguments refactor
+    if "hf_checkpoint" in trainer.overrides and base.tokenizer_model == base.hf_checkpoint:
+        ans.tokenizer_model = ans.hf_checkpoint
+
+
 # ---------------------------- checkpoint dirs -----------------------------
+
+
+def _compute_trainer_checkpoint_dir(*, base_dir: str | None, trainer_id: str) -> str | None:
+    if base_dir is None:
+        return None
+    return str(Path(base_dir) / TRAINER_CHECKPOINT_DIRNAME / trainer_id)
 
 
 def resolve_args_checkpoint_load(args) -> None:

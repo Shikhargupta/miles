@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 from sglang_router.launch_router import RouterArgs
 
-from miles.backends.megatron_utils.megatron_config import resolve_args_checkpoint_load
+from miles.backends.megatron_utils.megatron_config import resolve_args_checkpoint_load, resolve_megatron_config
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
@@ -3143,7 +3143,8 @@ def miles_validate_args(args):
         if args.opd_teacher_urls:
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
 
-    resolve_args_checkpoint_load(args)
+    if not resolve_megatron_config(args).is_multi_policy:
+        resolve_args_checkpoint_load(args)
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
