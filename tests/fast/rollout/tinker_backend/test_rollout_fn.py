@@ -76,6 +76,16 @@ class FakeResidency:
         return BatchExecutionLease(dispatch_id="lease-1", bindings_by_operation=tuple(bindings_by_operation))
 
 
+class FakeBatchAbort:
+    """Recording BatchAbortPort: every abnormal-outcome finalization lands here."""
+
+    def __init__(self):
+        self.aborts: list[tuple] = []
+
+    async def abort_batch(self, operation_ids, error, lease_metadata):
+        self.aborts.append((list(operation_ids), error, lease_metadata))
+
+
 @pytest.fixture()
 def fast_poll(monkeypatch):
     import miles.rollout.tinker_backend.rollout_fn as rollout_module
@@ -183,6 +193,7 @@ def make_fn(soft_target=100) -> TinkerOperationBatchAdapter:
         RolloutFnConstructorInput(args=args, data_source=None),
         operations=FakeOperationQueue(),
         residency=FakeResidency(),
+        abort=FakeBatchAbort(),
     )
 
 
@@ -306,3 +317,40 @@ class TestSelectionKindLock:
         assert output.conversion_metadata["registration_by_lane"] == {0: ("A", "r-A"), 1: ("B", "r-B")}
         lease = output.conversion_metadata["batch_execution_lease"]
         assert lease["bindings_by_operation"] == [["op-A", ["A", "r-A", 7]], ["op-B", ["B", "r-B", 2]]]
+
+
+class TestDriverHandoff:
+    """The dispatch receipt (operation ids + encoded lease) is minted ONCE, in
+    ``_merge`` where it is exactly known — the generic manager forwards it
+    opaquely and the driver finalizes with it. Reconstruction from converted
+    train data no longer exists (external review 0813 §4.8/§6.1)."""
+
+    def test_merge_mints_the_handoff_with_exact_ids_and_lease(self):
+        fn = make_fn()
+        ready_runtime(fn, "A", 7, "forward_backward")
+        ready_runtime(fn, "B", 2, "forward_backward")
+        selected = asyncio.run(fn._select())
+        output = merge(fn, selected)
+        assert output.handoff.driver_metadata["operation_ids"] == ["op-A", "op-B"]
+        # One binding truth: the handoff's lease IS the conversion plane's
+        # lease — the same encoded receipt, never a second copy of anything.
+        assert output.handoff.driver_metadata["lease"] == output.conversion_metadata["batch_execution_lease"]
+
+    def test_abort_handoff_terminal_fails_the_exact_batch(self):
+        """RolloutFnHandoffAborter capability: a downstream failure after the
+        output receipt fails exactly the handoff's operations and releases
+        exactly its lease through the one idempotent batch-abort boundary
+        (external review 0813 §4.1/§6.2)."""
+        fn = make_fn()
+        ready_runtime(fn, "A", 0, "forward_backward")
+        selected = asyncio.run(fn._select())
+        output = merge(fn, selected)
+
+        asyncio.run(fn.abort_handoff(output.handoff, OSError("simulated object-store placement failure")))
+
+        [(operation_ids, error, lease_metadata)] = fn.abort.aborts
+        assert operation_ids == ["op-A"]
+        assert lease_metadata == output.handoff.driver_metadata["lease"]
+        # Retry ownership is explicit in the message: the client resubmits,
+        # and the poisoned gradient window discards on the next optim_step.
+        assert "placement failure" in error and "poisoned" in error and "resubmit" in error

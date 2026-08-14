@@ -420,6 +420,18 @@ class TestFailTinkerBatch:
         backend = ready_backend()
         backend.fail_tinker_batch(["ghost"], "abnormal train outcome", None)
 
+    def test_duplicate_finalization_is_idempotent(self):
+        # The batch-abort boundary is shared by the driver's train finalizer
+        # AND the rollout manager's downstream abort — the two may race, so a
+        # repeat must neither raise nor overwrite the first terminal error.
+        backend = ready_backend()
+        lease_metadata = self._claimed_batch(backend)
+        backend.fail_tinker_batch(["fb1"], "first failure wins", lease_metadata)
+        backend.fail_tinker_batch(["fb1"], "late duplicate", lease_metadata)
+        view = backend.operations.get("fb1")
+        assert view["state"] == "FAILED" and "first failure wins" in view["error"]
+        assert "late duplicate" not in view["error"]
+
 
 def test_service_info_reports_the_v1_matrix():
     backend = ready_backend()

@@ -139,6 +139,48 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
     validate_tinker_args(off)  # no-op without the flag
 
 
+class TestValidateRejectsDispatchBypasses:
+    """Every path that replaces or bypasses the live rollout output is
+    rejected at launch in tinker mode (external review 0813 §4.4): each one
+    would dispatch a batch whose lane maps / lease do not describe the
+    current claim, leaving operations CLAIMED forever with no valid
+    finalization receipt."""
+
+    def _args(self, **overrides):
+        import pytest
+
+        values = dict(
+            tinker_backend=True,
+            multi_lora_n_adapters=4,
+            rollout_function_path=None,
+            data_source_path="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+            use_dynamic_global_batch_size=False,
+        )
+        values.update(overrides)
+        return pytest, SimpleNamespace(**values)
+
+    def test_custom_converter_is_rejected(self):
+        from miles.utils.tinker_backend import validate_tinker_args
+
+        pytest, args = self._args(custom_convert_samples_to_train_data_path="my.module.custom_converter")
+        with pytest.raises(AssertionError, match="custom-convert-samples-to-train-data-path"):
+            validate_tinker_args(args)
+
+    def test_debug_rollout_load_is_rejected(self):
+        from miles.utils.tinker_backend import validate_tinker_args
+
+        pytest, args = self._args(load_debug_rollout_data="/data/debug_rollout_{rollout_id}.pt")
+        with pytest.raises(AssertionError, match="load-debug-rollout-data"):
+            validate_tinker_args(args)
+
+    def test_rollout_data_injection_is_rejected(self):
+        from miles.utils.tinker_backend import validate_tinker_args
+
+        pytest, args = self._args(ci_inject_rollout_data_path="/data/inject_{rollout_id}.pt")
+        with pytest.raises(AssertionError, match="ci-inject-rollout-data-path"):
+            validate_tinker_args(args)
+
+
 class TestDataBatchFinalizer:
     """train_data_batch: a NORMAL train commits rank-side; every other exit
     (abnormal TrainStepOutcome, raised train error) must fail the batch's
@@ -150,7 +192,7 @@ class TestDataBatchFinalizer:
             "dispatch_id": "lease-9",
             "bindings_by_operation": [["fb1", ["A", "r-A", 0]], ["fb2", ["B", "r-B", 1]]],
         }
-        pack = {"data_ref": None, "tinker_dispatch": {"operation_ids": ["fb1", "fb2"], "lease": lease}}
+        pack = {"data_ref": None, "rollout_fn_metadata": {"operation_ids": ["fb1", "fb2"], "lease": lease}}
         return pack, lease
 
     def test_normal_outcome_never_calls_the_finalizer(self):
@@ -205,9 +247,10 @@ class TestDataBatchFinalizer:
         assert name == "fail" and operation_ids == ["fb1", "fb2"] and lease_arg == lease
         assert "trainer rank died" in error and "poisoned" in error
 
-    def test_missing_dispatch_summary_still_finalizes_with_empty_ids(self):
-        # A pack without the summary (defensive: custom conversion path) must
-        # not crash the driver; the finalizer degrades to a lease-less no-op
+    def test_missing_handoff_metadata_still_finalizes_with_empty_ids(self):
+        # A pack without the fn's handoff sidecar (defensive; the launch
+        # validator rejects every config that could produce one) must not
+        # crash the driver; the finalizer degrades to a lease-less no-op
         # call rather than an AttributeError.
         from train_tinker_backend import train_data_batch
 
