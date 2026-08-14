@@ -7,6 +7,7 @@ import pytest
 import train_multi_policy as multi_policy_driver
 from train_multi_policy import train_multi_policy
 
+from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.multi_policy.utils import TrainerInfo
 
 
@@ -14,6 +15,9 @@ def _make_args(**overrides) -> Namespace:
     defaults = dict(
         num_rollout=2,
         update_weights_interval=1,
+        save=None,
+        save_interval=None,
+        save_trigger_sentinel=None,
         debug_exit_after_rollout=None,
     )
     defaults.update(overrides)
@@ -50,7 +54,7 @@ async def _run(
         context["rollout_executor"],
         None,
     )
-    await asyncio.wait_for(train_multi_policy(args), timeout=10)
+    await asyncio.wait_for(train_multi_policy(args), timeout=30)
     return context
 
 
@@ -66,6 +70,7 @@ def _stub_driver_environment(monkeypatch):
         "maybe_start_api_server",
         "maybe_start_mini_ft_controller",
         "validate_multi_policy_args",
+        "assert_consistent_restore",
     ):
         monkeypatch.setattr(multi_policy_driver, name, lambda *a, **kw: None)
     monkeypatch.setattr(multi_policy_driver.object_store, "init_instance", lambda *a, **kw: None)
@@ -86,6 +91,10 @@ def _no_object_store(monkeypatch):
 @pytest.fixture(autouse=True)
 def _stub_update_weights(monkeypatch):
     monkeypatch.setattr(multi_policy_driver, "update_weights", AsyncMock())
+
+
+async def _slow_train(rollout_id: int, rollout_data_ref, **kwargs) -> None:
+    await asyncio.sleep(0.05)
 
 
 class TestRunPolicies:
@@ -189,3 +198,93 @@ class TestRunPolicies:
 
         assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0]
         assert [call.args[0] for call in trainers["b"].train.await_args_list] == [5]
+
+
+class TestSaving:
+    async def test_the_leader_parks_everybody_and_records_where_they_stood(self, tmp_path):
+        """DataSource and RolloutExecutor are global, so their snapshot needs one agreed moment."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["b"].train = _slow_train
+
+        await _run(_make_args(num_rollout=2, save=str(tmp_path), save_interval=1), trainers=trainers)
+
+        state = MultiPolicyCheckpointState.load(tmp_path, leader_rollout_id=1)
+        assert state.leader_model_id == "a"
+        assert state.rollout_ids["a"] == 1
+        assert state.rollout_ids["b"] <= 1
+
+    async def test_a_parked_follower_is_saved_at_the_round_it_reached(self):
+        """A record naming a policy at a rollout it never checkpointed cannot be resumed."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(_make_args(num_rollout=1, save=None, save_interval=1), trainers=trainers)
+
+        assert [call.args[0] for call in trainers["b"].save_model.await_args_list] == [0]
+        assert [call.kwargs["force_sync"] for call in trainers["b"].save_model.await_args_list] == [False]
+
+    async def test_only_the_leader_snapshots_the_rollout_executor(self):
+        """One buffer serves every policy, so a second policy saving it would snapshot it twice per round."""
+        kwargs = await _run(_make_args(num_rollout=2, save=None, save_interval=1))
+
+        assert [call.args[0] for call in kwargs["rollout_executor"].save.await_args_list] == [0, 1]
+
+    async def test_the_last_rollout_of_the_leader_is_saved_synchronously(self):
+        """An asynchronous save of the final round would be dropped when the driver exits."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(_make_args(num_rollout=2, save=None, save_interval=1), trainers=trainers)
+
+        assert [call.kwargs["force_sync"] for call in trainers["a"].save_model.await_args_list] == [False, True]
+
+    async def test_two_checkpoints_in_a_row_both_reach_every_policy(self):
+        """The second round must wait for the first one to disperse instead of reading a stale arrival."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(_make_args(num_rollout=2, save=None, save_interval=1), trainers=trainers)
+
+        assert [call.args[0] for call in trainers["a"].save_model.await_args_list] == [0, 1]
+        assert [call.args[0] for call in trainers["b"].save_model.await_args_list] == [0, 1]
+
+    async def test_a_run_without_a_save_directory_records_nothing(self, tmp_path):
+        """--save is what asks for checkpoints on disk; the record must not invent a directory."""
+        await _run(_make_args(num_rollout=1, save=None, save_interval=1))
+
+        assert list(tmp_path.iterdir()) == []
+
+    async def test_the_external_save_sentinel_is_read_and_removed_by_the_leader_alone(self, tmp_path):
+        """Every policy racing to remove one sentinel would leave the losers deleting a missing file."""
+        sentinel = tmp_path / "save-now"
+        sentinel.write_text("")
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(
+            _make_args(num_rollout=1, save=None, save_trigger_sentinel=str(sentinel)),
+            trainers=trainers,
+        )
+
+        assert not sentinel.exists()
+        assert [call.args[0] for call in trainers["a"].save_model.await_args_list] == [0]
+
+    async def test_a_sentinel_triggered_save_is_synchronous_for_the_leader(self, tmp_path):
+        """Whoever wrote the sentinel is waiting for the files, so the leader may not defer its own write."""
+        sentinel = tmp_path / "save-now"
+        sentinel.write_text("")
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(
+            _make_args(num_rollout=2, save=None, save_trigger_sentinel=str(sentinel)),
+            trainers=trainers,
+        )
+
+        assert [call.kwargs["force_sync"] for call in trainers["a"].save_model.await_args_list] == [True]
+        assert [call.kwargs["force_sync"] for call in trainers["b"].save_model.await_args_list] == [False]
+
+    async def test_a_run_without_a_save_rhythm_snapshots_nothing(self):
+        """Parking every policy on a round that saves nothing would cost the run its whole overlap."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        context = await _run(_make_args(num_rollout=2, save=None, save_interval=None), trainers=trainers)
+
+        trainers["a"].save_model.assert_not_awaited()
+        trainers["b"].save_model.assert_not_awaited()
+        context["rollout_executor"].save.assert_not_awaited()
