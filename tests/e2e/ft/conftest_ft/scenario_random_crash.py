@@ -3,14 +3,23 @@
 
 
 from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Annotated
 
 import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
+from tests.e2e.ft.conftest_ft.cli_options import (
+    FullyAsyncOption,
+    ModeOption,
+    NumStepsOption,
+    RolloutCrashIntervalSecondsOption,
+    SeedOption,
+    TrainerCrashIntervalSecondsOption,
+)
 from tests.e2e.ft.conftest_ft.execution import (
     get_common_train_args,
     get_ft_args,
+    get_launch_plan,
     materialize_cyclic_debug_rollout_data,
     prepare,
     run_training,
@@ -43,18 +52,17 @@ DEFAULT_NUM_STEPS: int = 30
 DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS: float = 120.0
 DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 240.0
 
+HEAL_CLOCK_SKEW_TOLERANCE: timedelta = timedelta(seconds=60)
+
 
 @app.command(name="run")
 def run_ci(
-    mode: Annotated[str, typer.Option(help="Test mode variant")],
-    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = DEFAULT_SEED,
-    num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = DEFAULT_NUM_STEPS,
-    trainer_crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between trainer cell injections")
-    ] = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
-    rollout_crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between rollout engine injections")
-    ] = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    mode: ModeOption,
+    seed: SeedOption = DEFAULT_SEED,
+    num_steps: NumStepsOption = DEFAULT_NUM_STEPS,
+    trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    fully_async: FullyAsyncOption = False,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -66,8 +74,12 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
+    if fully_async:
+        assert_mode_supports_fully_async(ft_mode, mode=mode)
+
     config = command_utils.default_config()
-    dump_dir: str = resolve_dump_dir(f"{TEST_NAME}_{mode}")
+    test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
+    dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}")
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
         ft_mode.ft_components,
@@ -76,6 +88,8 @@ def run_ci(
     )
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
     print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
+    launch_plan = get_launch_plan(fully_async=fully_async)
+    print(f"Train script: {launch_plan.train_script}")
 
     prepare(ft_mode, config=config)
 
@@ -85,6 +99,7 @@ def run_ci(
             ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
         )
         + get_ft_args(ft_mode)
+        + launch_plan.extra_args
         + f"--api-server-port {API_SERVER_PORT} "
         + "--mini-ft-controller-enable "
     )
@@ -98,15 +113,32 @@ def run_ci(
     )
 
     try:
-        run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir, config=config)
+        run_training(
+            train_args=train_args,
+            mode=ft_mode,
+            dump_dir=dump_dir,
+            config=config,
+            train_script=launch_plan.train_script,
+            extra_env_vars=launch_plan.env_vars,
+        )
     finally:
         injector.stop_and_join()
 
     assert_healing(
-        ft_mode.ft_components, injector=injector, event_dir=Path(dump_dir) / "events", context=f"{TEST_NAME} {mode}"
+        ft_mode.ft_components, injector=injector, event_dir=Path(dump_dir) / "events", context=f"{test_name} {mode}"
     )
 
-    print(f"Random failure soak test PASSED (mode={mode}, seed={seed}, steps={num_steps})")
+    print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:
+    assert ft_mode.has_real_rollout, (
+        f"Mode {mode!r} has no rollout engines, so a fully-async soak would train off pre-recorded debug rollout "
+        f"data and would prove nothing about generating while training"
+    )
+    assert (
+        not ft_mode.colocate
+    ), f"Mode {mode!r} is colocated, which train_async.py rejects: a fully-async run needs engines of its own"
 
 
 def assert_healing(
@@ -120,7 +152,7 @@ def assert_healing(
         assert_soak_reconfigure_events(
             event_dir, num_successful_injections=witness.num_injections(cell_type=ACTOR_CELL_TYPE)
         )
-        assert_every_trainer_injection_healed(injector, event_dir=event_dir)
+        _assert_every_trainer_injection_healed(injector, event_dir=event_dir)
 
     if "rollout" in ft_components:
         assert_min_soak_injections(
@@ -132,30 +164,56 @@ def assert_healing(
 def _assert_every_drawn_fault_form_worked(injector: FaultInjectorHandle) -> None:
     never_worked = injector.forms_that_never_worked()
 
-    assert (
-        not never_worked
-    ), f"Fault forms drawn but never once successful: {never_worked}, out of {injector.tally_of_form}"
-
-
-def assert_every_trainer_injection_healed(injector: FaultInjectorHandle, *, event_dir: Path) -> None:
-    injected: Counter[int] = Counter(
-        parse_cell_id(name).cell_index
-        for name in injector.recovery_witness.injected_cell_names(cell_type=ACTOR_CELL_TYPE)
+    assert not never_worked, (
+        f"Fault forms that failed every time they were drawn: {never_worked}. A soak that meets its injection "
+        f"floor on the other forms would otherwise pass while this one never crashed anything "
+        f"(tallies: {injector.tally_of_form})"
     )
-    healed: Counter[int] = Counter(
-        cell_index for event in load_reconfigure_events(event_dir) for cell_index in event.healed_cell_indices
-    )
-    debt: Counter[int] = injected - healed
 
-    assert not debt, (
-        f"Trainer recovery witness failed: cell index -> accepted injection(s) never healed {dict(debt)} when "
-        f"training ended (injected {dict(injected)}, healed {dict(healed)} across the events in {event_dir})"
+
+def _assert_every_trainer_injection_healed(injector: FaultInjectorHandle, *, event_dir: Path) -> None:
+    injections: list[tuple[int, datetime]] = [
+        (parse_cell_id(name).cell_index, at)
+        for name, at in injector.recovery_witness.injections(cell_type=ACTOR_CELL_TYPE)
+    ]
+    healings: list[tuple[int, datetime]] = sorted(
+        (
+            (cell_index, event.timestamp)
+            for event in load_reconfigure_events(event_dir)
+            for cell_index in event.healed_cell_indices
+        ),
+        key=lambda one: one[1],
+    )
+    unhealed: dict[int, int] = _compute_unhealed_injections(injections, healings)
+
+    assert not unhealed, (
+        f"Trainer recovery witness failed: cell index -> accepted injection(s) never healed {unhealed} when "
+        f"training ended (injected {[one[0] for one in injections]}, healed {[one[0] for one in healings]} "
+        f"across the events in {event_dir})"
     )
 
     print(
-        f"Trainer recovery witness assertion passed: every one of {sum(injected.values())} accepted injection(s) "
-        f"is paired with a healing of the same cell ({dict(healed)})"
+        f"Trainer recovery witness assertion passed: every one of {len(injections)} accepted injection(s) "
+        f"is paired with a later healing of the same cell"
     )
+
+
+def _compute_unhealed_injections(
+    injections: list[tuple[int, datetime]], healings: list[tuple[int, datetime]]
+) -> dict[int, int]:
+    available: list[tuple[int, datetime]] = list(healings)
+    unhealed: Counter[int] = Counter()
+    for cell_index, injected_at in sorted(injections, key=lambda one: one[1]):
+        earliest = injected_at - HEAL_CLOCK_SKEW_TOLERANCE
+        match = next(
+            (one for one in available if one[0] == cell_index and one[1] >= earliest),
+            None,
+        )
+        if match is None:
+            unhealed[cell_index] += 1
+        else:
+            available.remove(match)
+    return dict(unhealed)
 
 
 def assert_every_rollout_injection_recovered(injector: FaultInjectorHandle) -> None:

@@ -1,5 +1,6 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -164,6 +165,27 @@ def get_ft_args(mode: FTTestMode) -> str:
     return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
 
 
+DEFAULT_TRAIN_SCRIPT: str = "train.py"
+FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
+
+
+@dataclasses.dataclass(frozen=True)
+class LaunchPlan:
+    train_script: str
+    extra_args: str
+    env_vars: dict[str, str]
+
+
+def get_launch_plan(*, fully_async: bool) -> LaunchPlan:
+    if not fully_async:
+        return LaunchPlan(train_script=DEFAULT_TRAIN_SCRIPT, extra_args="", env_vars={})
+    return LaunchPlan(
+        train_script=FULLY_ASYNC_TRAIN_SCRIPT,
+        extra_args="--fully-async --pause-generation-mode in_place ",
+        env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+    )
+
+
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
 _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     "NCCL_ALGO": "Ring",
@@ -193,6 +215,7 @@ def run_training(
     dump_dir: str | None = None,
     extra_env_vars: dict[str, str] | None = None,
     config: command_utils.ExecuteTrainConfig | None = None,
+    train_script: str = DEFAULT_TRAIN_SCRIPT,
 ) -> None:
     U = _resolve_config(config).create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
@@ -220,4 +243,5 @@ def run_training(
         megatron_model_type=mode.megatron_model_type,
         extra_env_vars=merged_env_vars,
         megatron_path=_MEGATRON_PATH,
+        train_script=train_script,
     )
