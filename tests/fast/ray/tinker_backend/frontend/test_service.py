@@ -723,7 +723,11 @@ def test_frontend_reads_the_backend_facade_only():
     from miles.ray.tinker_backend.frontend import service
 
     source = inspect.getsource(service)
-    for internal in ("backend.registry", "backend.operations", "backend.router_url"):
+    # Match dereferences of the injected backend (self.backend.<internal>),
+    # not module paths: importing the OperationBackpressure TYPE from
+    # miles.ray.tinker_backend.operations is part of the frontend's wire
+    # contract (429 + Retry-After), not a reach into backend state.
+    for internal in ("self.backend.registry", "self.backend.operations", "self.backend.router_url"):
         assert internal not in source, f"frontend must not read {internal}"
 
 

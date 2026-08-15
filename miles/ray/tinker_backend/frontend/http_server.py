@@ -59,7 +59,12 @@ class TinkerFrontendHTTPServer(TinkerHTTPServer):
 
     def __init__(self, backend, host="127.0.0.1", api_port=0):
         super().__init__(backend, host, api_port)
-        self.frontend = TinkerFrontend(backend)
+        self.frontend = TinkerFrontend(
+            backend,
+            # Aggregate sampling cap across ALL SDK clients, in sub-generation
+            # units (the per-client SDK limit of 64 never bounded the sum).
+            sampling_max_active_subgenerations=getattr(backend.args, "tinker_sampling_max_active_subgenerations", 64),
+        )
         self.api_key = resolve_api_key(backend.args)
 
     async def start(self) -> None:

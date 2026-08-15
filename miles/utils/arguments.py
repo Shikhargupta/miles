@@ -1874,6 +1874,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "non-loopback bind (fail closed)",
             )
             parser.add_argument(
+                "--tinker-sampling-max-active-subgenerations",
+                type=int,
+                default=64,
+                help="Global cap on concurrently executing sampling sub-generations across ALL "
+                "SDK clients (one request counts num_samples). Submissions over the cap get a "
+                "retryable 429 before consuming their identity, and the router transport holds "
+                "the same hard bound; the SDK's per-client limit of 64 never bounded the "
+                "aggregate (default: 64, validated on H200)",
+            )
+            parser.add_argument(
                 "--multi-lora-disable-service-mode",
                 action="store_false",
                 dest="multi_lora_service_mode",
