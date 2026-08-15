@@ -50,6 +50,7 @@ from miles.ray.tinker_backend.frontend.state import (
     fingerprint_of,
 )
 from miles.ray.tinker_backend.frontend.translation import UserInputError
+from miles.ray.tinker_backend.operations import OperationBackpressure
 from miles.utils.tinker_backend import cache_extra_key, make_rid, serving_lora_name
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,37 @@ class ApiError(Exception):
         self.detail = detail
 
 
+class SamplingAdmission:
+    """Global fail-fast sampling admission, counted in sub-generations: a
+    logical request weighs ``num_samples`` because each sample fans out into
+    its own router call.
+
+    The SDK's per-client ``sample_max_concurrent_requests=64`` bounds ONE
+    client; the aggregate across clients was unbounded, and >100 concurrent
+    generations hit the shared router client's implicit 100-connection/10s
+    pool deadline as empty terminal failures the SDK never retries (the Tau
+    sampling cliff). Rejecting here — BEFORE the request consumes its seq
+    identity or mints a FutureRecord — maps to HTTP 429 + Retry-After, which
+    the SDK retries with backoff using the SAME seq id, so an admitted
+    request still executes exactly once. Single event loop, no awaits
+    between check and acquire: admission is atomic with submission."""
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.in_use = 0
+        self.rejected = 0  # total backpressured submissions (observability)
+
+    def try_acquire(self, weight: int) -> bool:
+        if self.in_use + weight > self.capacity:
+            self.rejected += 1
+            return False
+        self.in_use += weight
+        return True
+
+    def release(self, weight: int) -> None:
+        self.in_use -= weight
+
+
 class TinkerFrontend:
     """One instance per controller; single event loop, no cross-await state
     mutation inside a submit or resolve step."""
@@ -77,16 +109,25 @@ class TinkerFrontend:
         poll_window_s: float = 15.0,
         poll_interval_s: float = 0.1,
         sampling_transport: SamplingTransport | None = None,
+        sampling_max_active_subgenerations: int = 64,
     ) -> None:
         self.backend = backend
         self.poll_window_s = poll_window_s
         self.poll_interval_s = poll_interval_s
+        # One capacity, two layers: fail-fast admission at submit (429 before
+        # identity consumption) and the transport's hard in-flight bound
+        # (last-resort invariant). 64 is the GPU-validated safe default, not
+        # a universal optimum — deployments tune it via
+        # --tinker-sampling-max-active-subgenerations.
+        self.sampling_admission = SamplingAdmission(sampling_max_active_subgenerations)
         # Injected sampling hop (frontend -> router); the default preserves
         # the direct-router transport this frontend always used.
         self.sampling_transport = (
             sampling_transport
             if sampling_transport is not None
-            else SGLangRouterSamplingTransport(backend.sampling_endpoint())
+            else SGLangRouterSamplingTransport(
+                backend.sampling_endpoint(), max_inflight=sampling_max_active_subgenerations
+            )
         )
         self.sessions = SessionStore()
         self.models = ModelStore()
@@ -520,9 +561,8 @@ class TinkerFrontend:
                 )
             )
             return wire.untyped_future(request_id)
-        sampler.mark_spent(request.seq_id)
 
-        record = self.futures.put(FutureRecord(request_id=request_id, kind="sample", fingerprint=fingerprint))
+        record = FutureRecord(request_id=request_id, kind="sample", fingerprint=fingerprint)
         try:
             if request.prompt_logprobs:
                 raise UserInputError("prompt_logprobs is not supported in v1")
@@ -533,9 +573,35 @@ class TinkerFrontend:
             prompt_tokens = translation._input_tokens("prompt", request.prompt)
             sglang_params = translation.sampling_params_to_sglang(request.sampling_params)
         except UserInputError as exc:
+            # Invalid payloads still consume the seq as a typed terminal (the
+            # http_server contract) — but never a permit: nothing will run.
+            sampler.mark_spent(request.seq_id)
+            self.futures.put(record)
             record.resolve(wire.terminal_failure(str(exc), "user"))
             return wire.untyped_future(request_id)
 
+        admission = self.sampling_admission
+        if request.num_samples > admission.capacity:
+            # Would 429 forever — fail typed and non-retryable, without
+            # consuming the seq, so the client can split into waves.
+            raise ApiError(
+                400,
+                f"num_samples={request.num_samples} exceeds this deployment's sampling capacity of "
+                f"{admission.capacity} concurrent sub-generations; split the request into smaller waves",
+            )
+        if not admission.try_acquire(request.num_samples):
+            # BEFORE mark_spent/FutureRecord: the identity stays unconsumed,
+            # so the SDK's backoff retry of the SAME seq id is safe. The HTTP
+            # layer maps this to 429 + Retry-After.
+            raise OperationBackpressure(
+                f"sampling capacity reached ({admission.in_use}/{admission.capacity} sub-generations "
+                "active); retry the identical request"
+            )
+        # No await from try_acquire to create_task: admission, identity
+        # consumption, and FutureRecord creation are one atomic submission
+        # step (two identical racing requests cannot both execute).
+        sampler.mark_spent(request.seq_id)
+        self.futures.put(record)
         task = asyncio.get_running_loop().create_task(
             self._run_sample(
                 record, sampler, prompt_tokens, sglang_params, request.num_samples, request.sampling_params.seed
@@ -543,6 +609,10 @@ class TinkerFrontend:
         )
         self._sample_tasks.add(task)
         task.add_done_callback(self._sample_tasks.discard)
+        # Release via done-callback, not inside the coroutine: a task
+        # cancelled before its first step never enters the coroutine body, so
+        # a `finally` there could leak the permit on shutdown.
+        task.add_done_callback(lambda _task, weight=request.num_samples: admission.release(weight))
         return wire.untyped_future(request_id)
 
     async def _run_sample(
@@ -623,7 +693,9 @@ class TinkerFrontend:
             record.resolve(wire.terminal_failure("sampling cancelled: the service is shutting down", "server"))
             raise
         except Exception as exc:  # noqa: BLE001 — every failure must resolve the future
-            record.resolve(wire.terminal_failure(f"sampling failed: {exc}", "server"))
+            # Always name the exception class: str(httpx.PoolTimeout()) is
+            # empty, and a bare "sampling failed: " is undiagnosable.
+            record.resolve(wire.terminal_failure(f"sampling failed ({type(exc).__name__}): {exc}", "server"))
 
     def _sampler_still_live(self, sampler: SamplingSessionRecord) -> bool:
         live = self.backend.registration_view(sampler.name)
