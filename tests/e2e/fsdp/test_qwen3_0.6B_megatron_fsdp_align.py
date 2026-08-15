@@ -1,12 +1,17 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=900,
     suite="stage-c-2-gpu-h200",
+    labels=["fsdp"],
+)
+register_rocm_ci(
+    est_time=800,
+    suite="nightly-stage-c-2-gpu-mi350",
     labels=["fsdp"],
 )
 
