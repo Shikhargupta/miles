@@ -21,13 +21,19 @@ MEGATRON_PATH = Path(os.environ.get("MILES_E2E_MEGATRON_PATH", "/root/Megatron-L
 RUN_DIR = Path(os.environ.get("MILES_E2E_RUN_DIR", "/tmp/miles-verifiers-e2e"))
 VERIFIERS_DIR = Path("/tmp/verifiers-v0.2.0")
 ADAPTER_DIR = Path(U.repo_base_dir) / "examples" / "experimental" / "verifiers"
+VERIFIERS_VENV = RUN_DIR / "verifiers-venv"
+VERIFIERS_SITE_PACKAGES = (
+    VERIFIERS_VENV / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+)
 
 
 def prepare():
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
+    U.exec_command_cpu(f"uv venv --clear --python {sys.executable} --system-site-packages {VERIFIERS_VENV}")
     U.exec_command_cpu(
-        f"{sys.executable} -m pip install -r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
+        f"{VERIFIERS_VENV}/bin/python -m pip install "
+        f"-r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
     )
     U.exec_command_cpu("uv tool install 'prime==0.6.19'")
     if not VERIFIERS_DIR.exists():
@@ -105,7 +111,7 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
             "MILES_USE_LEGACY_ROLLOUT_V1": "1",
-            "PYTHONPATH": f"{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}",
+            "PYTHONPATH": f"{VERIFIERS_SITE_PACKAGES}:{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}",
             "VERIFIERS_CONFIG": str(config_path),
         },
         megatron_path=str(MEGATRON_PATH),
