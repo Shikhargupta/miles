@@ -25,6 +25,7 @@ VERIFIERS_VENV = RUN_DIR / "verifiers-venv"
 VERIFIERS_SITE_PACKAGES = (
     VERIFIERS_VENV / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 )
+CODE_GOLF_DIR = RUN_DIR / "environments" / "code_golf_v1"
 
 
 def prepare():
@@ -43,7 +44,7 @@ def prepare():
         )
     shutil.copytree(
         VERIFIERS_DIR / "environments" / "code_golf_v1",
-        RUN_DIR / "environments" / "code_golf_v1",
+        CODE_GOLF_DIR,
         dirs_exist_ok=True,
     )
     U.exec_command_cpu(f"cd {RUN_DIR} && prime --plain env install code-golf-v1")
@@ -97,6 +98,7 @@ def execute():
             "--context-parallel-size 1",
             "--use-dynamic-batch-size",
             "--max-tokens-per-gpu 4096",
+            "--attention-backend flash",
             "--actor-num-nodes 1",
             f"--actor-num-gpus-per-node {NUM_GPUS}",
             "--colocate",
@@ -111,7 +113,9 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
             "MILES_USE_LEGACY_ROLLOUT_V1": "1",
-            "PYTHONPATH": f"{VERIFIERS_SITE_PACKAGES}:{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}",
+            "PYTHONPATH": (
+                f"{VERIFIERS_SITE_PACKAGES}:{CODE_GOLF_DIR}:{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}"
+            ),
             "VERIFIERS_CONFIG": str(config_path),
         },
         megatron_path=str(MEGATRON_PATH),
