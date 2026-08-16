@@ -23,6 +23,12 @@ This layer is deliberately thin: datum/loss validation and translation live
 in translation.py, execution semantics live behind the controller surface
 (register/deregister/enqueue/reject/get/ack + registry state), and sampling
 proxies to the sglang router under the registration-scoped serving name.
+
+Sampling is additionally guarded by a context preflight (prompt + max_tokens
+against the engine context limit — configured or discovered, typed 400
+before identity consumption) and observed through SamplingAdmission/
+SamplingStats counters; a background maintenance loop reaps orphaned
+sessions and futures without ever freeing an identity (code-0815 §6/§7).
 """
 
 import asyncio
@@ -86,17 +92,80 @@ class SamplingAdmission:
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
         self.in_use = 0
-        self.rejected = 0  # total backpressured submissions (observability)
+        self.rejected = 0  # total backpressured submissions (429s)
+        self.admitted = 0  # admitted logical requests
+        self.admitted_weight = 0  # admitted sub-generations (sum of weights)
+        self.peak_in_use = 0  # high-water of concurrently active sub-generations
 
     def try_acquire(self, weight: int) -> bool:
         if self.in_use + weight > self.capacity:
             self.rejected += 1
             return False
         self.in_use += weight
+        self.admitted += 1
+        self.admitted_weight += weight
+        if self.in_use > self.peak_in_use:
+            self.peak_in_use = self.in_use
         return True
 
     def release(self, weight: int) -> None:
         self.in_use -= weight
+
+
+class SamplingStats:
+    """Aggregate sampling terminal counters (the code-0815 §6.1 minimal set;
+    admission-side counts live on SamplingAdmission). Latencies are per
+    logical request: submit -> first completed sub-generation (the closest
+    observable to time-to-first-token over a non-streaming router hop) and
+    submit -> terminal."""
+
+    def __init__(self) -> None:
+        self.completed = 0
+        self.failed = 0
+        self.failures_by_class: dict[str, int] = {}
+        self.first_result_s_sum = 0.0
+        self.first_result_s_max = 0.0
+        self.first_result_count = 0
+        self.total_s_sum = 0.0
+        self.total_s_max = 0.0
+
+    def record_latency(self, first_result_s: float | None, total_s: float) -> None:
+        self.total_s_sum += total_s
+        self.total_s_max = max(self.total_s_max, total_s)
+        if first_result_s is not None:
+            self.first_result_s_sum += first_result_s
+            self.first_result_s_max = max(self.first_result_s_max, first_result_s)
+            self.first_result_count += 1
+
+    def record_failure(self, failure_class: str) -> None:
+        self.failed += 1
+        self.failures_by_class[failure_class] = self.failures_by_class.get(failure_class, 0) + 1
+
+
+# The engine context limit out of sglang's /get_server_info. The response is
+# ``{**asdict(ServerArgs), **scheduler_info, ...}``: ``context_length`` echoes
+# an explicitly configured limit (null when derived from the model config),
+# and the scheduler always reports ``max_req_input_len``, which it computes as
+# ``min(context_len - 1, kv_pool_tokens - 1) - 5`` — so ``+ 6`` reconstructs
+# the effective context (folding in the KV-pool bound when that is tighter).
+def _context_limit_from_server_info(info: Any) -> int | None:
+    if not isinstance(info, dict):
+        return None
+    context_length = info.get("context_length")
+    if isinstance(context_length, int) and not isinstance(context_length, bool) and context_length > 0:
+        return context_length
+    max_req_input_len = info.get("max_req_input_len")
+    if isinstance(max_req_input_len, int) and not isinstance(max_req_input_len, bool) and max_req_input_len > 0:
+        return max_req_input_len + 6
+    return None
+
+
+def _note_first_result(task: asyncio.Task, record: "FutureRecord") -> None:
+    """Done-callback on each sub-generation: stamps when the request's FIRST
+    sub-generation finished (queue-to-first-result latency). Cancellations
+    are not results."""
+    if not task.cancelled() and record.first_result_at is None:
+        record.first_result_at = time.time()
 
 
 class TinkerFrontend:
@@ -110,6 +179,11 @@ class TinkerFrontend:
         poll_interval_s: float = 0.1,
         sampling_transport: SamplingTransport | None = None,
         sampling_max_active_subgenerations: int = 64,
+        sampling_max_context: int | None = None,
+        session_idle_ttl_s: float = 3600.0,
+        future_unpolled_ttl_s: float = 900.0,
+        future_undelivered_ttl_s: float = 3600.0,
+        maintenance_interval_s: float = 15.0,
     ) -> None:
         self.backend = backend
         self.poll_window_s = poll_window_s
@@ -120,6 +194,22 @@ class TinkerFrontend:
         # a universal optimum — deployments tune it via
         # --tinker-sampling-max-active-subgenerations.
         self.sampling_admission = SamplingAdmission(sampling_max_active_subgenerations)
+        self.sampling_stats = SamplingStats()
+        # Engine context limit for the sampling preflight (prompt + max_tokens
+        # must fit): statically configured here, or discovered lazily from the
+        # transport's server_info on the first sample. None = not yet known;
+        # the preflight only ever rejects against a KNOWN limit.
+        self._context_limit = sampling_max_context
+        self._context_limit_source = "configured" if sampling_max_context is not None else None
+        self._context_discovery_task: asyncio.Task | None = None
+        self._context_discovery_attempts = 0
+        # Orphan reaping TTLs (<= 0 disables that class of reaping).
+        self.session_idle_ttl_s = session_idle_ttl_s
+        self.future_unpolled_ttl_s = future_unpolled_ttl_s
+        self.future_undelivered_ttl_s = future_undelivered_ttl_s
+        self.maintenance_interval_s = maintenance_interval_s
+        self._maintenance_task: asyncio.Task | None = None
+        self._stats_logged: tuple | None = None
         # Injected sampling hop (frontend -> router); the default preserves
         # the direct-router transport this frontend always used.
         self.sampling_transport = (
@@ -135,13 +225,23 @@ class TinkerFrontend:
         self.checkpoints = CheckpointCatalog()
         self.samplers = SamplingSessionStore()
         self._sample_tasks: set[asyncio.Task] = set()
+        # request_id -> task, so the reaper can cancel one orphaned sample.
+        self._sample_task_by_request: dict[str, asyncio.Task] = {}
         self._closing = False
 
     async def close(self) -> None:
-        """Idempotent shutdown barrier: gate new samples, cancel AND await
-        every in-flight sample task (so the transport observes cancellation
-        before it is closed under it), then close the transport."""
+        """Idempotent shutdown barrier: gate new samples, stop the background
+        maintenance/discovery tasks, cancel AND await every in-flight sample
+        task (so the transport observes cancellation before it is closed
+        under it), then close the transport."""
         self._closing = True
+        background = [task for task in (self._maintenance_task, self._context_discovery_task) if task is not None]
+        self._maintenance_task = None
+        self._context_discovery_task = None
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
         tasks = list(self._sample_tasks)
         for task in tasks:
             task.cancel()
@@ -150,7 +250,113 @@ class TinkerFrontend:
             # The done-callbacks discard too, but only on a later loop tick;
             # close() must return with the set verifiably drained.
             self._sample_tasks.difference_update(tasks)
+        self._sample_task_by_request.clear()
         await self.sampling_transport.close()
+
+    # ---------------- maintenance: orphan reaping + metrics summary ----------------
+
+    def start_maintenance(self) -> None:
+        """Start the background maintenance loop (idempotent). Owned by the
+        HTTP server's start — a frontend embedded in tests drives reap_once
+        directly with an injected clock instead."""
+        if self._maintenance_task is None and not self._closing:
+            self._maintenance_task = asyncio.get_running_loop().create_task(self._maintenance_loop())
+
+    async def _maintenance_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.maintenance_interval_s)
+            try:
+                self.reap_once()
+                self._log_sampling_summary()
+            except Exception:  # noqa: BLE001 — maintenance must never die silently mid-run
+                logger.exception("[tinker] frontend maintenance tick failed")
+
+    def reap_once(self, now: float | None = None) -> dict[str, int]:
+        """One reaping pass (code-0815 §7), replay-idempotency preserved by
+        construction — reaping frees bytes and capacity, NEVER identity:
+
+        - idle sessions (no heartbeat past the TTL): the session record goes,
+          but sampling sessions — which carry the spent-seq fences — stay, so
+          an already-executed identity still answers a typed terminal;
+        - orphaned sample futures (client stopped polling past the TTL): the
+          server-side generation is cancelled (releasing admission permits
+          and transport slots via the existing done-callbacks) and the future
+          resolves typed with the reap reason — the seq was spent at submit
+          and stays spent;
+        - unpolled operation-family futures past the same TTL: polled once on
+          the client's behalf, which stores the terminal bytes BEFORE acking
+          the ledger record (the existing ack-based retention order), so the
+          unacked-results budget drains for vanished clients;
+        - terminal futures never retrieved past the undelivered TTL: evicted
+          to a fingerprint tombstone — a late retry gets a typed 410, never a
+          re-execution.
+        """
+        now = time.time() if now is None else now
+        counts = {"sessions": 0, "cancelled_samples": 0, "undelivered": 0}
+        if self.session_idle_ttl_s > 0:
+            for session in self.sessions.reap_idle(self.session_idle_ttl_s, now):
+                counts["sessions"] += 1
+                logger.info(
+                    f"[tinker] reaped idle session '{session.session_id}' (no heartbeat for "
+                    f"{now - session.last_heartbeat:.0f}s; its sampling-session fences are retained)"
+                )
+        for record in list(self.futures.records.values()):
+            if record.terminal is None:
+                if self.future_unpolled_ttl_s <= 0:
+                    continue
+                idle_s = now - max(record.created_at, record.last_polled_at)
+                if idle_s <= self.future_unpolled_ttl_s:
+                    continue
+                if record.kind == "sample":
+                    task = self._sample_task_by_request.get(record.request_id)
+                    if task is not None and not task.done():
+                        record.cancel_reason = (
+                            f"sampling request '{record.request_id}' was orphaned (not polled for "
+                            f"{idle_s:.0f}s) and its generation was cancelled by the reaper; the seq "
+                            "identity stays spent — resubmitting it will not re-run the generation"
+                        )
+                        task.cancel()
+                        counts["cancelled_samples"] += 1
+                        logger.warning(
+                            f"[tinker] reaped orphaned sample '{record.request_id}': cancelled its "
+                            f"generation after {idle_s:.0f}s without a poll"
+                        )
+                else:
+                    # The training/lifecycle ledger owns execution — never
+                    # cancel it. Resolving on the vanished client's behalf
+                    # moves the terminal bytes here and acks the ledger.
+                    self._poll(record)
+            elif self.future_undelivered_ttl_s > 0 and not self.futures.is_delivered(record.request_id):
+                age_s = now - max(record.resolved_at or record.created_at, record.last_polled_at)
+                if age_s > self.future_undelivered_ttl_s:
+                    self.futures.reap_undelivered(record)
+                    counts["undelivered"] += 1
+                    logger.info(
+                        f"[tinker] reaped undelivered terminal future '{record.request_id}' "
+                        f"({record.kind}, unretrieved for {age_s:.0f}s); a tombstone keeps its identity"
+                    )
+        return counts
+
+    def _log_sampling_summary(self) -> None:
+        """Periodic aggregate line (INFO), only when something changed since
+        the last tick — the per-request lines are DEBUG/WARNING."""
+        admission, stats = self.sampling_admission, self.sampling_stats
+        snapshot = (admission.admitted, admission.rejected, stats.completed, stats.failed)
+        if snapshot == self._stats_logged:
+            return
+        self._stats_logged = snapshot
+        finished = stats.completed + stats.failed
+        mean_total = stats.total_s_sum / finished if finished else 0.0
+        mean_first = stats.first_result_s_sum / stats.first_result_count if stats.first_result_count else 0.0
+        logger.info(
+            f"[tinker] sampling summary: admitted={admission.admitted} ({admission.admitted_weight} "
+            f"sub-generations) rejected_429={admission.rejected} active={admission.in_use}"
+            f"/{admission.capacity} peak={admission.peak_in_use} completed={stats.completed} "
+            f"failed={stats.failed} failures_by_class={stats.failures_by_class} "
+            f"queue_to_first_result_s(mean/max)={mean_first:.3f}/{stats.first_result_s_max:.3f} "
+            f"total_s(mean/max)={mean_total:.3f}/{stats.total_s_max:.3f} "
+            f"context_limit={self._context_limit}"
+        )
 
     # ---------------- bootstrap ----------------
 
@@ -179,7 +385,8 @@ class TinkerFrontend:
 
     def capabilities(self) -> dict:
         info = self.backend.service_info()
-        model = {"model_name": info.get("base_model"), "max_context_length": None}
+        # None until the engine context limit is configured or discovered.
+        model = {"model_name": info.get("base_model"), "max_context_length": self._context_limit}
         return {"supported_models": [model]}
 
     def create_session(self, request: wire.CreateSessionRequest) -> dict:
@@ -589,6 +796,25 @@ class TinkerFrontend:
                 f"num_samples={request.num_samples} exceeds this deployment's sampling capacity of "
                 f"{admission.capacity} concurrent sub-generations; split the request into smaller waves",
             )
+        # Context preflight (code-0815 §6.2): a prompt that leaves no decode
+        # budget must fail HERE, typed and non-retryable — the engine itself
+        # silently truncates max_new_tokens to whatever fits (near zero for
+        # an oversized accumulated context) and returns garbage. Like the
+        # num_samples cap above: a deterministic 400 before the seq identity
+        # is consumed, so nothing executes and nothing gaps.
+        limit = self._context_limit
+        if limit is None:
+            self._ensure_context_limit_discovery()
+        else:
+            max_new_tokens = sglang_params["max_new_tokens"]
+            if len(prompt_tokens) + max_new_tokens > limit:
+                raise ApiError(
+                    400,
+                    f"prompt ({len(prompt_tokens)} tokens) + max_tokens ({max_new_tokens}) exceeds this "
+                    f"deployment's engine context limit of {limit} tokens ({self._context_limit_source}); "
+                    "shorten the prompt or lower max_tokens — the engine would silently truncate the "
+                    "decode budget instead of honoring the request",
+                )
         if not admission.try_acquire(request.num_samples):
             # BEFORE mark_spent/FutureRecord: the identity stays unconsumed,
             # so the SDK's backoff retry of the SAME seq id is safe. The HTTP
@@ -608,12 +834,75 @@ class TinkerFrontend:
             )
         )
         self._sample_tasks.add(task)
+        self._sample_task_by_request[request_id] = task
         task.add_done_callback(self._sample_tasks.discard)
+        task.add_done_callback(lambda _task, rid=request_id: self._sample_task_by_request.pop(rid, None))
         # Release via done-callback, not inside the coroutine: a task
         # cancelled before its first step never enters the coroutine body, so
         # a `finally` there could leak the permit on shutdown.
         task.add_done_callback(lambda _task, weight=request.num_samples: admission.release(weight))
         return wire.untyped_future(request_id)
+
+    # ---------------- engine context discovery ----------------
+
+    _CONTEXT_DISCOVERY_MAX_ATTEMPTS = 3
+
+    def _ensure_context_limit_discovery(self) -> None:
+        """Single-flight, non-blocking: sample submission stays synchronous
+        (admission atomicity), so discovery runs as a background task kicked
+        off by the first sample. Until it lands the preflight admits
+        everything (a permissive window, never a false reject)."""
+        if (
+            self._context_limit is not None
+            or self._closing
+            or self._context_discovery_task is not None
+            or self._context_discovery_attempts >= self._CONTEXT_DISCOVERY_MAX_ATTEMPTS
+        ):
+            return
+        server_info = getattr(self.sampling_transport, "server_info", None)
+        if server_info is None:
+            self._context_discovery_attempts = self._CONTEXT_DISCOVERY_MAX_ATTEMPTS
+            logger.warning(
+                "[tinker] sampling context preflight disabled: the sampling transport exposes no "
+                "server_info; pass --tinker-sampling-max-context to enforce a limit"
+            )
+            return
+        self._context_discovery_task = asyncio.get_running_loop().create_task(
+            self._discover_context_limit(server_info)
+        )
+
+    async def _discover_context_limit(self, server_info: Callable) -> None:
+        self._context_discovery_attempts += 1
+        attempt = f"attempt {self._context_discovery_attempts}/{self._CONTEXT_DISCOVERY_MAX_ATTEMPTS}"
+        try:
+            info = await server_info()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — discovery must never take sampling down
+            if self._context_discovery_attempts >= self._CONTEXT_DISCOVERY_MAX_ATTEMPTS:
+                logger.warning(
+                    f"[tinker] sampling context preflight disabled: engine context discovery failed "
+                    f"({attempt}: {type(exc).__name__}: {exc}); pass --tinker-sampling-max-context "
+                    "to enforce a limit"
+                )
+            else:
+                logger.info(f"[tinker] engine context discovery failed ({attempt}), will retry: {exc}")
+            return
+        finally:
+            # Cleared AFTER the outcome is recorded: the next sample may
+            # re-trigger discovery only while attempts remain.
+            self._context_discovery_task = None
+        limit = _context_limit_from_server_info(info)
+        if limit is None:
+            self._context_discovery_attempts = self._CONTEXT_DISCOVERY_MAX_ATTEMPTS
+            logger.warning(
+                "[tinker] sampling context preflight disabled: /get_server_info carried neither "
+                "context_length nor max_req_input_len; pass --tinker-sampling-max-context to enforce a limit"
+            )
+            return
+        self._context_limit = limit
+        self._context_limit_source = "discovered from the engine"
+        logger.info(f"[tinker] sampling context preflight active: engine context limit {limit} tokens (discovered)")
 
     async def _run_sample(
         self,
@@ -625,77 +914,131 @@ class TinkerFrontend:
         seed: int | None = None,
     ) -> None:
         try:
-            payload: dict = {"input_ids": tokens, "sampling_params": params, "return_logprob": True}
-            if sampler.name is not None:
-                live = self.backend.registration_view(sampler.name)
-                if live is None or live["registration_id"] != sampler.registration_id:
-                    record.resolve(
-                        wire.terminal_failure("sampler weights are no longer live (registration retired)", "user")
-                    )
-                    return
-                if live["serving_version"] != sampler.serving_version:
-                    record.resolve(
-                        wire.terminal_failure(
-                            "stale ephemeral sampler: the model was republished and this backend serves the "
-                            "latest weights only — create a new sampling client after each publish",
-                            "user",
-                        )
-                    )
-                    return
-                payload["lora_path"] = sampler.serving_name
-                payload["extra_key"] = cache_extra_key(sampler.name, sampler.registration_id, sampler.serving_version)
-
-            def per_sample_payload(index: int) -> dict:
-                one = dict(payload)
-                if seed is not None:
-                    # Deterministic per request, still diverse across samples.
-                    one["sampling_params"] = {**params, "sampling_seed": seed + index}
-                if sampler.name is not None:
-                    one["rid"] = make_rid(sampler.name, sampler.registration_id)
-                return one
-
-            # Not a bare gather: the first exception must not leave siblings
-            # running untracked — cancel them and AWAIT their cancellation
-            # before this future turns terminal, so no generation outlives
-            # its request's resolution.
-            generation_tasks = [
-                asyncio.get_running_loop().create_task(self.sampling_transport.generate(per_sample_payload(index)))
-                for index in range(num_samples)
-            ]
-            try:
-                generations = await asyncio.gather(*generation_tasks)
-            except BaseException:
-                for task in generation_tasks:
-                    task.cancel()
-                await asyncio.gather(*generation_tasks, return_exceptions=True)
-                raise
-            if sampler.name is not None and not self._sampler_still_live(sampler):
-                # Re-checked AFTER generation: a republish that landed while
-                # the request was in flight swapped the engine-side weights
-                # under the same serving name (latest-only serving), so the
-                # output cannot be attributed to the pinned version. Fail loud
-                # rather than return cross-version samples. (A publish
-                # committing between this check and delivery remains possible
-                # — the serving identity is versioned, not leased; see README.)
-                record.resolve(
-                    wire.terminal_failure(
-                        "the model was republished while this sample was in flight; create a new sampling "
-                        "client after each publish and resample",
-                        "user",
-                    )
-                )
-                return
-            sequences = [translation.generation_to_sequence(generation) for generation in generations]
-            record.resolve(translation.sequences_to_sample_response(sequences))
+            await self._execute_sample(record, sampler, tokens, params, num_samples, seed)
         except asyncio.CancelledError:
-            # Shutdown cancellation: resolve so a client polling the future
-            # sees a typed terminal instead of an identity that never lands.
-            record.resolve(wire.terminal_failure("sampling cancelled: the service is shutting down", "server"))
+            # Reaper cancellation carries its reason on the record; anything
+            # else is the shutdown barrier. Either way the future resolves so
+            # a client polling it sees a typed terminal, never an identity
+            # that silently stops progressing.
+            record.failure_class = "Cancelled"
+            record.resolve(
+                wire.terminal_failure(
+                    record.cancel_reason or "sampling cancelled: the service is shutting down", "server"
+                )
+            )
             raise
         except Exception as exc:  # noqa: BLE001 — every failure must resolve the future
             # Always name the exception class: str(httpx.PoolTimeout()) is
             # empty, and a bare "sampling failed: " is undiagnosable.
+            record.failure_class = type(exc).__name__
             record.resolve(wire.terminal_failure(f"sampling failed ({type(exc).__name__}): {exc}", "server"))
+        finally:
+            self._account_sample_terminal(record, num_samples, len(tokens), params.get("max_new_tokens"))
+
+    async def _execute_sample(
+        self,
+        record: FutureRecord,
+        sampler: SamplingSessionRecord,
+        tokens: list[int],
+        params: dict,
+        num_samples: int,
+        seed: int | None = None,
+    ) -> None:
+        payload: dict = {"input_ids": tokens, "sampling_params": params, "return_logprob": True}
+        if sampler.name is not None:
+            live = self.backend.registration_view(sampler.name)
+            if live is None or live["registration_id"] != sampler.registration_id:
+                record.resolve(
+                    wire.terminal_failure("sampler weights are no longer live (registration retired)", "user")
+                )
+                return
+            if live["serving_version"] != sampler.serving_version:
+                record.resolve(
+                    wire.terminal_failure(
+                        "stale ephemeral sampler: the model was republished and this backend serves the "
+                        "latest weights only — create a new sampling client after each publish",
+                        "user",
+                    )
+                )
+                return
+            payload["lora_path"] = sampler.serving_name
+            payload["extra_key"] = cache_extra_key(sampler.name, sampler.registration_id, sampler.serving_version)
+
+        def per_sample_payload(index: int) -> dict:
+            one = dict(payload)
+            if seed is not None:
+                # Deterministic per request, still diverse across samples.
+                one["sampling_params"] = {**params, "sampling_seed": seed + index}
+            if sampler.name is not None:
+                one["rid"] = make_rid(sampler.name, sampler.registration_id)
+            return one
+
+        # Not a bare gather: the first exception must not leave siblings
+        # running untracked — cancel them and AWAIT their cancellation
+        # before this future turns terminal, so no generation outlives
+        # its request's resolution.
+        generation_tasks = [
+            asyncio.get_running_loop().create_task(self.sampling_transport.generate(per_sample_payload(index)))
+            for index in range(num_samples)
+        ]
+        for generation_task in generation_tasks:
+            generation_task.add_done_callback(lambda task, r=record: _note_first_result(task, r))
+        try:
+            generations = await asyncio.gather(*generation_tasks)
+        except BaseException:
+            for task in generation_tasks:
+                task.cancel()
+            await asyncio.gather(*generation_tasks, return_exceptions=True)
+            raise
+        if sampler.name is not None and not self._sampler_still_live(sampler):
+            # Re-checked AFTER generation: a republish that landed while
+            # the request was in flight swapped the engine-side weights
+            # under the same serving name (latest-only serving), so the
+            # output cannot be attributed to the pinned version. Fail loud
+            # rather than return cross-version samples. (A publish
+            # committing between this check and delivery remains possible
+            # — the serving identity is versioned, not leased; see README.)
+            record.resolve(
+                wire.terminal_failure(
+                    "the model was republished while this sample was in flight; create a new sampling "
+                    "client after each publish and resample",
+                    "user",
+                )
+            )
+            return
+        sequences = [translation.generation_to_sequence(generation) for generation in generations]
+        record.resolve(translation.sequences_to_sample_response(sequences))
+
+    def _account_sample_terminal(
+        self, record: FutureRecord, num_samples: int, prompt_tokens: int, max_new_tokens: int | None
+    ) -> None:
+        """Single terminal choke point for every task-executed sample: the
+        §6.1 counters plus one per-request line carrying the latencies. Per
+        request at DEBUG (high-volume), failures at WARNING with their class."""
+        body = record.terminal or {}
+        stats = self.sampling_stats
+        admission = self.sampling_admission
+        terminal_at = record.resolved_at or time.time()
+        total_s = terminal_at - record.created_at
+        first_result_s = (record.first_result_at - record.created_at) if record.first_result_at is not None else None
+        first_result = f"{first_result_s:.3f}" if first_result_s is not None else "n/a"
+        detail = (
+            f"request='{record.request_id}' num_samples={num_samples} prompt_tokens={prompt_tokens} "
+            f"max_tokens={max_new_tokens} queue_to_first_result_s={first_result} total_s={total_s:.3f} "
+            f"active={admission.in_use}/{admission.capacity} peak={admission.peak_in_use} "
+            f"admitted={admission.admitted} rejected_429={admission.rejected}"
+        )
+        stats.record_latency(first_result_s, total_s)
+        if "error" in body:
+            failure_class = record.failure_class or body.get("category") or "unknown"
+            stats.record_failure(failure_class)
+            logger.warning(
+                f"[tinker] sample terminal failure class={failure_class} category={body.get('category')} "
+                f"{detail} error={body.get('error')!r}"
+            )
+        else:
+            stats.completed += 1
+            logger.debug(f"[tinker] sample terminal ok {detail}")
 
     def _sampler_still_live(self, sampler: SamplingSessionRecord) -> bool:
         live = self.backend.registration_view(sampler.name)
@@ -718,9 +1061,18 @@ class TinkerFrontend:
                         410,
                         f"request '{request.request_id}' was already delivered and its replay window expired",
                     )
+                if self.futures.reaped_fingerprint(request.request_id) is not None:
+                    raise ApiError(
+                        410,
+                        f"request '{request.request_id}' completed but was never retrieved within its "
+                        "retention TTL and was reaped",
+                    )
                 raise ApiError(
                     410, f"unknown request '{request.request_id}' (expired or from a previous service lifetime)"
                 )
+            # Liveness for the orphan reaper: an actively polled future is
+            # never an orphan, whatever its age.
+            record.last_polled_at = time.time()
             if record.terminal is None:
                 self._poll(record)
             if record.terminal is not None:

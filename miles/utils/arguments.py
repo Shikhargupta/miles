@@ -1884,6 +1884,44 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "aggregate (default: 64, validated on H200)",
             )
             parser.add_argument(
+                "--tinker-sampling-max-context",
+                type=int,
+                default=None,
+                help="Engine context limit (tokens) the tinker frontend preflights sample "
+                "requests against: prompt + max_tokens over the limit is a typed 400 before "
+                "the seq identity is consumed (the engine would otherwise silently truncate "
+                "the decode budget and return garbage). Default: --sglang-context-length when "
+                "set, else discovered from the router's /get_server_info on the first sample",
+            )
+            parser.add_argument(
+                "--tinker-session-idle-ttl",
+                type=float,
+                default=3600.0,
+                help="Seconds without a session heartbeat before the tinker frontend reaps the "
+                "session record (the SDK heartbeats continuously while the client lives). "
+                "Sampling-session spent-seq fences are always retained, so nothing a vanished "
+                "client executed can re-execute. <= 0 disables (default: 3600)",
+            )
+            parser.add_argument(
+                "--tinker-future-unpolled-ttl",
+                type=float,
+                default=900.0,
+                help="Seconds without a retrieve_future poll before the tinker frontend treats "
+                "a pending future as orphaned: an orphaned sample's server-side generation is "
+                "cancelled (SDK future cancellation never reaches the engine on its own) and "
+                "the future resolves typed; orphaned training futures are polled on the "
+                "client's behalf so the ledger's unacked-results budget drains. <= 0 disables "
+                "(default: 900)",
+            )
+            parser.add_argument(
+                "--tinker-future-undelivered-ttl",
+                type=float,
+                default=3600.0,
+                help="Seconds a terminal-but-never-retrieved future result is retained before "
+                "the reaper evicts it to a fingerprint tombstone (a late retry then gets a "
+                "typed 410, never a silent re-execution). <= 0 disables (default: 3600)",
+            )
+            parser.add_argument(
                 "--multi-lora-disable-service-mode",
                 action="store_false",
                 dest="multi_lora_service_mode",

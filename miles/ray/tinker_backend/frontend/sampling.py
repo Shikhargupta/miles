@@ -18,6 +18,8 @@ import httpx
 class SamplingTransport(Protocol):
     async def generate(self, payload: dict) -> dict: ...
 
+    async def server_info(self) -> dict: ...
+
     async def close(self) -> None: ...
 
 
@@ -57,6 +59,17 @@ class SGLangRouterSamplingTransport:
             if self._http is None:
                 self._http = httpx.AsyncClient(limits=self.limits, timeout=self.timeout)
             response = await self._http.post(f"{self.base_url}/generate", json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def server_info(self) -> dict:
+        """One-shot GET of the router's /get_server_info (sglang serves it on
+        engines and the router forwards it): the frontend derives the engine
+        context limit from this for the sampling preflight. A dedicated
+        short-timeout client, not the pooled one — an info probe must neither
+        take a generation permit nor wait behind a saturated pool."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{self.base_url}/get_server_info")
             response.raise_for_status()
             return response.json()
 

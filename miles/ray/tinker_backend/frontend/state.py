@@ -84,6 +84,16 @@ class SessionStore:
         record.last_heartbeat = time.time()
         return True
 
+    def reap_idle(self, ttl_s: float, now: float) -> list[SessionRecord]:
+        """Remove sessions whose client stopped heartbeating for ``ttl_s``.
+        Only the session record goes: models and sampling sessions it minted
+        keep their own identity (and the sampling spent-seq fences survive),
+        so nothing a vanished client already executed can ever re-execute."""
+        idle = [record for record in self.records.values() if now - record.last_heartbeat > ttl_s]
+        for record in idle:
+            del self.records[record.session_id]
+        return idle
+
 
 @dataclass
 class ModelRecord:
@@ -135,10 +145,23 @@ class FutureRecord:
     sampling_session_id: str | None = None
     terminal: dict | None = None
     created_at: float = field(default_factory=time.time)
+    # Lifecycle observability (metrics + the orphan reaper): when the client
+    # last long-polled this record, when the first sub-generation finished,
+    # and when the record turned terminal.
+    last_polled_at: float = field(default_factory=time.time)
+    first_result_at: float | None = None
+    resolved_at: float | None = None
+    # The reaper writes WHY it cancelled here before task.cancel(); the
+    # sample task's CancelledError handler resolves with this message so a
+    # late poll sees the true reason, not a generic shutdown notice.
+    cancel_reason: str | None = None
+    # Exception class of a task failure (terminal-failures-by-class metric).
+    failure_class: str | None = None
 
     def resolve(self, body: dict) -> dict:
         self.terminal = body
         self.forward_payload = None
+        self.resolved_at = time.time()
         return body
 
 
@@ -156,6 +179,11 @@ class FutureStore:
         self.max_expired = max_expired
         self._delivered: OrderedDict[str, None] = OrderedDict()
         self._expired: OrderedDict[str, str] = OrderedDict()
+        # Reaped-before-delivery tombstones (terminal results whose client
+        # never retrieved them within the retention TTL): same identity
+        # preservation as ``_expired``, but a late retry must hear the truth
+        # — the result was reaped unclaimed, not delivered.
+        self._reaped: OrderedDict[str, str] = OrderedDict()
 
     def put(self, record: FutureRecord) -> FutureRecord:
         self.records[record.request_id] = record
@@ -167,9 +195,16 @@ class FutureStore:
     def expired_fingerprint(self, request_id: str) -> str | None:
         return self._expired.get(request_id)
 
+    def reaped_fingerprint(self, request_id: str) -> str | None:
+        return self._reaped.get(request_id)
+
+    def is_delivered(self, request_id: str) -> bool:
+        return request_id in self._delivered
+
     def existing(self, request_id: str, fingerprint: str) -> FutureRecord | None:
         """The idempotent-retry lookup: same id + same fingerprint replays,
-        same id + different content conflicts, delivered-then-evicted expires."""
+        same id + different content conflicts, delivered-then-evicted (or
+        reaped-unclaimed) expires."""
         record = self.records.get(request_id)
         if record is None:
             expired = self._expired.get(request_id)
@@ -179,9 +214,27 @@ class FutureStore:
                     f"request '{request_id}' was already delivered and its replay window expired; "
                     "the original result cannot be reproduced"
                 )
+            reaped = self._reaped.get(request_id)
+            if reaped is not None:
+                _check_fingerprint("request", request_id, reaped, fingerprint)
+                raise ExpiredError(
+                    f"request '{request_id}' completed but was never retrieved within its retention "
+                    "TTL and was reaped; the original result cannot be reproduced"
+                )
             return None
         _check_fingerprint("request", request_id, record.fingerprint, fingerprint)
         return record
+
+    def reap_undelivered(self, record: FutureRecord) -> None:
+        """Evict a terminal-but-never-delivered record, keeping its identity
+        as a compact tombstone: the reaper frees the (potentially large)
+        terminal bytes without ever freeing the identity — a late identical
+        retry answers a typed 410 instead of silently re-executing."""
+        self.records.pop(record.request_id, None)
+        self._reaped[record.request_id] = record.fingerprint
+        self._reaped.move_to_end(record.request_id)
+        while len(self._reaped) > self.max_expired:
+            self._reaped.popitem(last=False)
 
     def mark_delivered(self, record: FutureRecord) -> None:
         if record.terminal is None:
