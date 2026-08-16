@@ -79,6 +79,7 @@ def stack(tmp_path_factory):
         backend=backend,
         driver=driver,
         router=router,
+        frontend=server.frontend,
         run=run,
     )
 
@@ -307,6 +308,44 @@ class TestSampling:
         )
         with pytest.raises(tinker.RequestFailedError, match="republished"):
             future.result()
+
+    def test_oversized_context_is_a_typed_rejection_not_silent_truncation(self, stack, service_client):
+        # The FakeRouter serves /get_server_info with max_req_input_len=4090
+        # (context_length null, the launch-derived default): the frontend
+        # reconstructs an engine context of 4096 and must reject a prompt +
+        # max_tokens over it LOUDLY — the engine itself would silently clamp
+        # the decode budget (the observed 65,235-token Tau prompt against a
+        # 65,536 context) and return garbage.
+        sampling = service_client.create_sampling_client(base_model=BASE)
+        small = sampling.sample(  # triggers (and must precede) discovery
+            prompt=types.ModelInput.from_ints([9]),
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=2),
+        ).result()
+        assert small.sequences[0].tokens == [1000, 1001]
+
+        async def discovered():
+            for _ in range(200):
+                if stack.frontend._context_limit is not None:
+                    return stack.frontend._context_limit
+                await asyncio.sleep(0.01)
+            raise TimeoutError("context discovery never landed")
+
+        assert stack.run(discovered()) == stack.router.max_req_input_len + 6 == 4096
+
+        with pytest.raises(Exception, match="context limit of 4096"):
+            sampling.sample(
+                prompt=types.ModelInput.from_ints(list(range(1, 4001))),
+                num_samples=1,
+                sampling_params=types.SamplingParams(max_tokens=2048),
+            ).result()
+        # The rejection consumed nothing: the same client keeps sampling.
+        again = sampling.sample(
+            prompt=types.ModelInput.from_ints([11]),
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=2),
+        ).result()
+        assert again.sequences[0].stop_reason in ("length", "stop")
 
 
 class TestUnload:

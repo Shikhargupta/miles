@@ -119,10 +119,16 @@ class FakeDriver:
 class FakeRouter:
     """Stands in for the sglang router's /generate contract (the shape the
     real frontend consumes): echoes deterministic tokens/logprobs and records
-    every payload for assertions."""
+    every payload for assertions. Serves /get_server_info in the real
+    response shape (ServerArgs echo + scheduler_info) so the frontend's
+    context-limit discovery runs against it: ``context_length`` stays null —
+    the launch-derived default — forcing the ``max_req_input_len + 6``
+    reconstruction the scheduler math implies."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_req_input_len: int = 4090) -> None:
         self.requests: list[dict] = []
+        self.max_req_input_len = max_req_input_len
+        self.server_info_calls = 0
 
     def app(self):
         from fastapi import FastAPI, Request
@@ -134,6 +140,11 @@ class FakeRouter:
             payload = await request.json()
             self.requests.append(payload)
             return self.response_for(payload)
+
+        @app.get("/get_server_info")
+        async def get_server_info() -> dict:
+            self.server_info_calls += 1
+            return {"context_length": None, "max_req_input_len": self.max_req_input_len, "status": "ready"}
 
         return app
 

@@ -54,16 +54,29 @@ def resolve_api_key(args: Any) -> str | None:
     return getattr(args, "tinker_api_key", None) or os.environ.get(API_KEY_ENV) or None
 
 
+def resolve_sampling_max_context(args: Any) -> int | None:
+    """Static engine context limit for the sampling preflight: the explicit
+    tinker flag wins, else the context length this deployment itself launched
+    its engines with (--sglang-context-length). None defers to lazy discovery
+    from the router's /get_server_info on the first sample."""
+    return getattr(args, "tinker_sampling_max_context", None) or getattr(args, "sglang_context_length", None) or None
+
+
 class TinkerFrontendHTTPServer(TinkerHTTPServer):
     """The registration server + the official tinker SDK protocol."""
 
     def __init__(self, backend, host="127.0.0.1", api_port=0):
         super().__init__(backend, host, api_port)
+        args = backend.args
         self.frontend = TinkerFrontend(
             backend,
             # Aggregate sampling cap across ALL SDK clients, in sub-generation
             # units (the per-client SDK limit of 64 never bounded the sum).
-            sampling_max_active_subgenerations=getattr(backend.args, "tinker_sampling_max_active_subgenerations", 64),
+            sampling_max_active_subgenerations=getattr(args, "tinker_sampling_max_active_subgenerations", 64),
+            sampling_max_context=resolve_sampling_max_context(args),
+            session_idle_ttl_s=getattr(args, "tinker_session_idle_ttl", 3600.0),
+            future_unpolled_ttl_s=getattr(args, "tinker_future_unpolled_ttl", 900.0),
+            future_undelivered_ttl_s=getattr(args, "tinker_future_undelivered_ttl", 3600.0),
         )
         self.api_key = resolve_api_key(backend.args)
 
@@ -74,6 +87,10 @@ class TinkerFrontendHTTPServer(TinkerHTTPServer):
                 f"pass --tinker-api-key or set {API_KEY_ENV}"
             )
         await super().start()
+        # The reaper + metrics-summary loop lives with the serving surface:
+        # started only once the server accepts traffic, torn down by stop()
+        # through frontend.close().
+        self.frontend.start_maintenance()
 
     async def stop(self) -> None:
         # Order matters: stop ACCEPTING first (uvicorn), then drain the
