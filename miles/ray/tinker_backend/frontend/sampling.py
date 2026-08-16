@@ -63,13 +63,31 @@ class SGLangRouterSamplingTransport:
             return response.json()
 
     async def server_info(self) -> dict:
-        """One-shot GET of the router's /get_server_info (sglang serves it on
-        engines and the router forwards it): the frontend derives the engine
-        context limit from this for the sampling preflight. A dedicated
-        short-timeout client, not the pooled one — an info probe must neither
-        take a generation permit nor wait behind a saturated pool."""
+        """Engine server info for the frontend's context-limit discovery,
+        via a dedicated short-timeout client — an info probe must neither
+        take a generation permit nor wait behind a saturated pool.
+
+        Two shapes exist behind one URL (verified live on H200): a bare
+        SGLang engine answers /get_server_info with its ServerArgs +
+        scheduler_info (context_length / max_req_input_len present), while
+        sglang-router >= 0.3 answers with router metadata
+        ({"router_manager": true, ...}) and keeps the engines one hop away
+        behind /workers. When the first answer carries no engine fields,
+        hop to the first healthy worker — miles deployments run homogeneous
+        engines, so any worker's limit is the deployment's limit."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(f"{self.base_url}/get_server_info")
+            response.raise_for_status()
+            info = response.json()
+            if isinstance(info, dict) and ("context_length" in info or "max_req_input_len" in info):
+                return info
+            workers_response = await client.get(f"{self.base_url}/workers")
+            workers_response.raise_for_status()
+            workers = (workers_response.json() or {}).get("workers") or []
+            urls = [row.get("url") for row in workers if row.get("url") and row.get("is_healthy", True)]
+            if not urls:
+                return info if isinstance(info, dict) else {}
+            response = await client.get(f"{urls[0].rstrip('/')}/get_server_info")
             response.raise_for_status()
             return response.json()
 

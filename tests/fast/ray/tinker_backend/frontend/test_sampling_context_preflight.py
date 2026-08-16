@@ -263,3 +263,99 @@ class TestLaunchResolution:
         assert resolve_sampling_max_context(deployed) == 65536
         bare = SimpleNamespace(tinker_sampling_max_context=None)  # no sglang attr at all
         assert resolve_sampling_max_context(bare) is None
+
+
+class TestTransportDiscoveryHop:
+    """The production transport's server_info against both live shapes
+    (verified on H200): a bare engine answers /get_server_info directly;
+    sglang-router >= 0.3 answers with router metadata and keeps the engine
+    one hop away behind /workers."""
+
+    @staticmethod
+    async def _serve(app):
+        import uvicorn
+
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="critical", access_log=False))
+        task = asyncio.get_running_loop().create_task(server.serve())
+        while not server.started:
+            if task.done():
+                task.result()
+            await asyncio.sleep(0.005)
+        return server, task, server.servers[0].sockets[0].getsockname()[1]
+
+    def test_router_metadata_hops_to_the_first_healthy_worker(self):
+        from fastapi import FastAPI
+
+        from miles.ray.tinker_backend.frontend.sampling import SGLangRouterSamplingTransport
+
+        async def main():
+            worker = FastAPI()
+
+            @worker.get("/get_server_info")
+            async def worker_info() -> dict:
+                return {"context_length": 8192, "max_req_input_len": 8186}
+
+            worker_server, worker_task, worker_port = await self._serve(worker)
+
+            router = FastAPI()
+
+            @router.get("/get_server_info")
+            async def router_info() -> dict:
+                # sglang-router 0.3.x: router metadata, no engine fields.
+                return {"router_manager": True, "routers_count": 1, "workers_count": 1}
+
+            @router.get("/workers")
+            async def workers() -> dict:
+                return {
+                    "workers": [
+                        {"url": "http://127.0.0.1:1", "is_healthy": False},  # skipped: unhealthy
+                        {"url": f"http://127.0.0.1:{worker_port}", "is_healthy": True},
+                    ]
+                }
+
+            router_server, router_task, router_port = await self._serve(router)
+            transport = SGLangRouterSamplingTransport(f"http://127.0.0.1:{router_port}")
+            try:
+                info = await transport.server_info()
+                assert info["context_length"] == 8192
+            finally:
+                await transport.close()
+                router_server.should_exit = True
+                worker_server.should_exit = True
+                await asyncio.gather(router_task, worker_task, return_exceptions=True)
+
+        asyncio.run(main())
+
+    def test_engine_shape_answers_without_a_hop(self):
+        from fastapi import FastAPI
+
+        from miles.ray.tinker_backend.frontend.sampling import SGLangRouterSamplingTransport
+
+        async def main():
+            engine = FastAPI()
+            workers_calls = 0
+
+            @engine.get("/get_server_info")
+            async def engine_info() -> dict:
+                # A launch-derived engine: context_length null but the
+                # scheduler field present — must NOT trigger the hop.
+                return {"context_length": None, "max_req_input_len": 40954}
+
+            @engine.get("/workers")
+            async def workers() -> dict:
+                nonlocal workers_calls
+                workers_calls += 1
+                return {"workers": []}
+
+            engine_server, engine_task, engine_port = await self._serve(engine)
+            transport = SGLangRouterSamplingTransport(f"http://127.0.0.1:{engine_port}")
+            try:
+                info = await transport.server_info()
+                assert info["max_req_input_len"] == 40954
+                assert workers_calls == 0
+            finally:
+                await transport.close()
+                engine_server.should_exit = True
+                await asyncio.gather(engine_task, return_exceptions=True)
+
+        asyncio.run(main())
