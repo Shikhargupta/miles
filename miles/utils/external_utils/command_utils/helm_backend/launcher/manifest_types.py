@@ -78,6 +78,13 @@ class Manifest(FrozenStrictBaseModel):
     def by_key(self) -> dict[str, ManifestObject]:
         return {described.key: described for described in self.objects}
 
+    def flag_value(self, flag: str) -> str | None:
+        for described in self.objects:
+            for found in described.containers:
+                if flag in found.command:
+                    return found.command[found.command.index(flag) + 1]
+        return None
+
     def state_file(self, *, container: str) -> Path | None:
         for described in self.objects:
             for found in described.containers_named(container):

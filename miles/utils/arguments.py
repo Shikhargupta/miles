@@ -3060,10 +3060,10 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
         return validate_run_uuid(given)
 
     component = DeployComponent(args.deploy_component)
-    assert not (component.is_split() and ClusterBackend(args.cluster_backend) is ClusterBackend.RAY), (
-        f"--deploy-component {component.value} on --cluster-backend {ClusterBackend.RAY.value} needs an explicit "
-        f"--run-uuid: every deployment of a run carries the same one, and only the kubernetes launcher derives it "
-        f"from the run id, so each launch would invent its own and then refuse to talk to the other"
+    assert not component.is_split(), (
+        f"--deploy-component {component.value} installs one part of a run whose other parts are installed by other "
+        f"launches, and nothing but the run uuid joins them, so the layer that deploys them all has to name it "
+        f"with --run-uuid"
     )
     return generate_run_uuid()
 
