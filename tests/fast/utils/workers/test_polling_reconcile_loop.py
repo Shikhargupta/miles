@@ -218,3 +218,40 @@ class TestPollingReconcileLoopStop:
         await asyncio.sleep(0.02)
 
         assert lister.calls == settled
+
+    async def test_stopping_twice_is_not_an_error(self):
+        """A provider disposed twice is ordinary teardown, and raising there would mask the first failure."""
+        loop, _lister = _make_loop({})
+
+        stop = await loop.start(_RecordingReconciler())
+        await stop()
+        await stop()
+
+    async def test_a_failed_initial_sync_leaves_no_polling_behind(self):
+        """start() raises, so the caller never receives a stop function and could not stop a task it left running."""
+        loop, lister = _make_loop(RuntimeError("list failed"))
+
+        with pytest.raises(RuntimeError, match="list failed"):
+            await loop.start(_RecordingReconciler())
+        settled = lister.calls
+
+        await asyncio.sleep(0.02)
+
+        assert lister.calls == settled
+
+
+class TestTwoLoopsOverOneProvider:
+    async def test_each_loop_keeps_its_own_view_of_what_it_has_seen(self):
+        """A shared seen-set would make the second loop skip the cells the first one already reported."""
+        lister = _FakeLister(answers=[{"cell-0": _cell_info("cell-0")}])
+        first = PollingReconcileLoop(list_cells=lister, poll_interval_seconds=POLL_INTERVAL_SECONDS)
+        second = PollingReconcileLoop(list_cells=lister, poll_interval_seconds=POLL_INTERVAL_SECONDS)
+
+        first_reconciler, second_reconciler = _RecordingReconciler(), _RecordingReconciler()
+        first_stop = await first.start(first_reconciler)
+        second_stop = await second.start(second_reconciler)
+        await first_stop()
+        await second_stop()
+
+        assert [cell_id for cell_id, _ in first_reconciler.calls] == ["cell-0"]
+        assert [cell_id for cell_id, _ in second_reconciler.calls] == ["cell-0"]
