@@ -888,3 +888,30 @@ class TestKubernetesRolloutFaultForms:
         forms = fi.create_cell_fault_forms(base_url="http://control", config=_config(ClusterBackend.RAY))
 
         assert fi.EXEC_SIGKILL_FORM_NAME not in [form.name for form in forms[fi.ROLLOUT_CELL_TYPE]]
+
+
+class TestOverlappingRecoveries:
+    def test_a_cell_crashed_again_mid_relaunch_is_repaid_by_one_final_serve(self) -> None:
+        """Regression: a dense soak crashes an engine before it re-serves, and pairing one-for-one went red."""
+        witness = fi.RecoveryWitness()
+        witness.observe([_staged("rollout-engine-0", _SERVING)])
+        witness.note_injected("rollout-engine-0")
+        witness.observe([_staged("rollout-engine-0", fi.ObservedCellState.PENDING)])
+        witness.observe([_staged("rollout-engine-0", fi.ObservedCellState.RUNNING_NOT_SERVING)])
+        witness.note_injected("rollout-engine-0")
+        witness.observe([_staged("rollout-engine-0", fi.ObservedCellState.PENDING)])
+        witness.observe([_staged("rollout-engine-0", _SERVING)])
+
+        assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {}
+        assert witness.num_completed_recoveries(cell_type="rollout") == 2
+
+    def test_a_serve_that_predates_the_last_crash_does_not_discharge_it(self) -> None:
+        """Otherwise the last crash of a soak is paid for by the recovery of the crash before it."""
+        witness = fi.RecoveryWitness()
+        witness.observe([_staged("rollout-engine-0", _SERVING)])
+        witness.note_injected("rollout-engine-0")
+        witness.observe([_staged("rollout-engine-0", fi.ObservedCellState.PENDING)])
+        witness.observe([_staged("rollout-engine-0", _SERVING)])
+        witness.note_injected("rollout-engine-0")
+
+        assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {"rollout-engine-0": 1}
