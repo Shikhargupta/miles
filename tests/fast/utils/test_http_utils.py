@@ -33,6 +33,7 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.utils import http_utils
 from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready, wait_tcp_ready
 
 
@@ -238,52 +239,67 @@ class TestWaitForServerReadySimulatedDelays:
         assert fake_time[0] >= timeout
 
 
+class _FakeWriter:
+    """Minimal stand-in for the writer half of an opened connection."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        pass
+
+
 class TestWaitTcpReady:
-    def test_keeps_retrying_until_the_port_accepts(self):
+    async def test_keeps_retrying_until_the_port_accepts(self, monkeypatch):
         """Readiness depends on the endpoint alone, retrying while it refuses connections."""
-        attempts: list[tuple[tuple[str, int], float | None]] = []
-        sleeps: list[float] = []
-        fake_time = [0.0]
+        attempts: list[tuple[str, int]] = []
+        writer = _FakeWriter()
 
-        def fake_sleep(duration):
-            sleeps.append(duration)
-            fake_time[0] += duration
-
-        def fake_connect(addr, timeout=None):
-            attempts.append((addr, timeout))
+        async def fake_open_connection(host, port):
+            attempts.append((host, port))
             if len(attempts) < 3:
                 raise OSError("Connection refused")
-            return _FakeSocket()
+            return object(), writer
 
-        with (
-            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
-            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
-            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
-        ):
-            wait_tcp_ready("[2001:db8::7]", 23456, timeout=30)
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
 
-        assert attempts == [(("2001:db8::7", 23456), 1)] * 3
-        assert sleeps == [0.5, 0.5]
+        await wait_tcp_ready("[2001:db8::7]", 23456, timeout=30)
 
-    def test_gives_up_when_the_deadline_passes(self):
+        assert attempts == [("2001:db8::7", 23456)] * 3
+        assert writer.closed
+
+    async def test_gives_up_when_the_deadline_passes(self, monkeypatch):
         """A port that never opens fails with a timeout instead of blocking forever."""
-        fake_time = [0.0]
 
-        def fake_sleep(duration):
-            fake_time[0] += duration
-
-        def fake_connect(addr, timeout=None):
+        async def fake_open_connection(host, port):
             raise OSError("Connection refused")
 
-        with (
-            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
-            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
-            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
-        ):
-            with pytest.raises(RuntimeError, match="Server at 127.0.0.1:23456 not ready after 1s"):
-                wait_tcp_ready("127.0.0.1", 23456, timeout=1)
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
 
-        assert fake_time[0] >= 1
+        with pytest.raises(RuntimeError, match="Server at 127.0.0.1:23456 not ready after 0.05s"):
+            await wait_tcp_ready("127.0.0.1", 23456, timeout=0.05)
+
+    async def test_a_connection_that_never_answers_is_one_refused_attempt(self, monkeypatch):
+        """A syn that hangs must not hold the whole budget; each attempt has its own small timeout."""
+        attempts: list[tuple[str, int]] = []
+
+        async def fake_open_connection(host, port):
+            attempts.append((host, port))
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(http_utils, "_CONNECT_ATTEMPT_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        with pytest.raises(RuntimeError, match="not ready"):
+            await wait_tcp_ready("127.0.0.1", 23456, timeout=0.05)
+
+        assert len(attempts) > 1
 
 
 class TestGeneralHttpClientProvider:

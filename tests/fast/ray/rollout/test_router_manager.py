@@ -43,6 +43,13 @@ def _make_two_model_args(tmp_path: Path) -> Namespace:
 _ROUTER_PROVIDERS = [object()]
 
 
+def _record_into(waited: list[tuple[str, int]]):
+    async def _wait(host: str, port: int, *, timeout: float) -> None:
+        waited.append((host, port))
+
+    return _wait
+
+
 class TestResolveRouterAddrs:
     async def test_records_every_models_router_on_args(self, monkeypatch):
         """The driver-visible router contract (primary ip/port, per-model map) is written exactly once, here."""
@@ -132,7 +139,7 @@ class TestWaitRouterReady:
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            _record_into(waited),
         )
 
         addr = await wait_router_ready(model_idx=1, provider=_FakeProvider())
@@ -148,7 +155,7 @@ class TestWaitRouterReady:
             async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
                 return {"primary": HostAndPort(host="10.0.0.9", port=12345)}
 
-        def _refuse(host: str, port: int, timeout: float) -> None:
+        async def _refuse(host: str, port: int, *, timeout: float) -> None:
             raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
         monkeypatch.setattr(
@@ -174,7 +181,7 @@ class TestWaitRouterReady:
         )
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            _record_into(waited),
         )
 
         with pytest.raises(RuntimeError, match="not registered"):
@@ -226,7 +233,7 @@ class TestWaitSessionServerReady:
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            _record_into(waited),
         )
 
         args = make_args(
@@ -260,7 +267,7 @@ class TestWaitSessionServerReady:
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            _record_into(waited),
         )
 
         args = make_args(
@@ -289,7 +296,7 @@ class TestWaitSessionServerReady:
                 self._counter += 1
                 return {"primary": HostAndPort(host="10.0.0.9", port=5004 + self._counter)}
 
-        def _refuse_one(host: str, port: int, timeout: float) -> None:
+        async def _refuse_one(host: str, port: int, *, timeout: float) -> None:
             if port == 5006:
                 raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
@@ -317,7 +324,7 @@ class TestWaitSessionServerReady:
         )
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            _record_into(waited),
         )
 
         args = make_args(use_session_server=True, hf_checkpoint="/fake/model", num_session_servers=2)
