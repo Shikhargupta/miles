@@ -1,6 +1,5 @@
 import asyncio
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -12,10 +11,10 @@ import miles.ray.train.group as group_module
 from miles.ray.train.cell import TrainerCell
 from miles.utils import object_store
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
+from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
