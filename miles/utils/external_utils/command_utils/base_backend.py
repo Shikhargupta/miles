@@ -34,6 +34,7 @@ class ExecuteTrainConfig:
     cluster_backend: ClusterBackend = ClusterBackend.RAY
     deploy_component: DeployComponent = DeployComponent.ALL
     run_id: str = field(default_factory=create_run_id)
+    run_uuid: str | None = None
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
     force: bool = False
