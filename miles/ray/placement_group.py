@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import socket
 from typing import NamedTuple
@@ -14,10 +15,18 @@ from miles.ray.specs.inference import (
     create_inference_controller_handle,
 )
 from miles.ray.specs.rollout import create_rollout_executor_handle
-from miles.ray.specs.train import ACTOR_ROLE, CRITIC_ROLE, compute_trainer_configs, create_trainer_controller_handle
+from miles.ray.specs.train import (
+    ACTOR_ROLE,
+    CRITIC_ROLE,
+    compute_trainer_configs,
+    compute_trainer_ids,
+    create_trainer_controller_handle,
+    external_trainer_controller_addrs,
+)
 from miles.ray.wiring import get_backend_capability
 from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +148,7 @@ class TrainerInfo(NamedTuple):
 
 # TODO: move (when reorganizing files)
 async def create_training_model(args, *, trainer_id: str) -> TrainerInfo:
-    handle = create_trainer_controller_handle(capability=get_backend_capability(args), trainer_id=trainer_id)
+    handle = create_trainer_controller_handle(args, capability=get_backend_capability(args), trainer_id=trainer_id)
     restored_rollout_ids = await handle.init(args)
     assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
     start_rollout_id = x if (x := args.start_rollout_id) is not None else restored_rollout_ids[0]
@@ -150,6 +159,8 @@ async def create_training_model(args, *, trainer_id: str) -> TrainerInfo:
 async def create_training_models(
     args, rollout_executor: BaseWorkerHandle
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
+    await wait_external_trainers(args)
+
     trainer_configs = compute_trainer_configs(args)
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     actor_info = await create_training_model(
@@ -179,6 +190,18 @@ async def create_training_models(
     await rollout_executor.load(args.start_rollout_id - 1)
 
     return actor_info.handle, critic_info.handle if critic_info is not None else None
+
+
+
+# TODO: move (when reorganizing files)
+async def wait_external_trainers(args) -> None:
+    """Wait for every trainer controller another launch deployed, which this run reaches by address."""
+    if args.trainer_controller_addrs is None:
+        return
+
+    addrs = external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))
+    logger.info(f"Waiting for the independently deployed trainer controllers at {addrs}")
+    await asyncio.to_thread(wait_static_addrs_ready, addrs.values())
 
 
 # TODO: move (when reorganizing files)
