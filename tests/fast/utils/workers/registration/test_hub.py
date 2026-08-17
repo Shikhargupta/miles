@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.registration.hub import REPORTER_TTL_SECONDS, RegistrationHub
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -56,6 +56,14 @@ def _snapshot(
     )
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 class _Watcher:
     def __init__(self) -> None:
         self.observations: list[tuple[str, CellInfo | None]] = []
@@ -74,9 +82,9 @@ async def _watched(**kwargs) -> tuple[RegistrationHub, _Watcher]:
     return provider, watcher
 
 
-async def _start_watch(provider: RegistrationHub, watcher: _Watcher) -> None:
+async def _start_watch(provider: RegistrationHub, watcher: _Watcher):
     with patch(f"{_PROVIDER_MODULE}.REGISTERED_CELLS_POLL_INTERVAL_SECONDS", _POLL_INTERVAL_SECONDS):
-        await provider.watch_cells(watcher.reconcile)
+        return await provider.watch_cells(watcher.reconcile)
 
 
 async def _apply(provider: RegistrationHub, snapshot: RegistrationSnapshot) -> None:
@@ -255,3 +263,64 @@ class TestFailedReconciliation:
         await _drain()
 
         assert [cell_id for cell_id, _observed in watcher.observations] == [f"{_POOL_ID}-0"]
+
+
+class TestDroppingAReporterThatStoppedReporting:
+    async def test_a_reporter_that_stopped_reporting_loses_every_cell_it_announced(self):
+        """Its deployment is gone or unreachable, and a request routed to those engines answers nothing."""
+        clock = _FakeClock()
+        provider, watcher = await _watched(clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        await _drain()
+
+        assert sorted(provider._cell_of_id) == []
+        assert watcher.observations[-1] == (f"{_POOL_ID}-0", None)
+
+    async def test_a_reporter_still_inside_its_deadline_keeps_its_cells(self):
+        """A reporter reports far more often than this, so dropping one early would flap a healthy deployment."""
+        clock = _FakeClock()
+        provider, _watcher = await _watched(clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        await _drain()
+
+        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+
+    async def test_a_reporter_that_comes_back_is_taken_in_again(self):
+        """Being dropped is not a verdict on the deployment; it announces itself anew like any first time."""
+        clock = _FakeClock()
+        provider, _watcher = await _watched(clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        await _drain()
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=9))
+
+        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+
+    async def test_dropping_a_reporter_forgets_the_reporter_itself(self):
+        """A state left behind keeps the reporter's sequence number, which would refuse its fresh snapshots."""
+        clock = _FakeClock()
+        provider = RegistrationHub(run_uuid=_RUN_UUID, clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+        assert sorted(provider._state_of_reporter_id) == [_REPORTER]
+
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        provider._remove_stale_reporters()
+
+        assert sorted(provider._state_of_reporter_id) == []
+
+    async def test_the_sweep_stops_with_the_watcher_it_was_started_for(self):
+        """A hub nobody watches serves nobody, and a task outliving it would keep the whole hub alive."""
+        clock = _FakeClock()
+        provider = RegistrationHub(run_uuid=_RUN_UUID, clock=clock)
+        stop_watch = await _start_watch(provider, _Watcher())
+
+        await stop_watch()
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]

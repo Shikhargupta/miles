@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.naming import cell_id_of_worker, parse_cell_id
-from miles.utils.workers.polling_reconcile_loop import PollingReconcileLoop
+from miles.utils.workers.polling_reconcile_loop import PollingReconcileLoop, cancel_and_await_task
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
@@ -15,11 +20,13 @@ from miles.utils.workers.worker_spec import NamedHostAndPorts
 logger = logging.getLogger(__name__)
 
 REGISTERED_CELLS_POLL_INTERVAL_SECONDS = 5.0
+REPORTER_TTL_SECONDS = 60.0
 
 
 @dataclass(kw_only=True)
 class RegistrationHub(BaseWorkerProvider):
     run_uuid: str
+    clock: Callable[[], float] = time.monotonic
     _state_of_reporter_id: dict[str, _ReporterState] = field(init=False, default_factory=dict)
     _cell_of_id: dict[str, RegisteredCellInfo] = field(init=False, default_factory=dict)
     _watched: bool = field(init=False, default=False)
@@ -34,6 +41,8 @@ class RegistrationHub(BaseWorkerProvider):
         cell_of_id = {cell.info.cell_id: cell for cell in snapshot.cells}
 
         state = self._state_of_reporter_id.setdefault(snapshot.reporter_id, _ReporterState())
+        state.last_ingest_time = self.clock()
+
         if snapshot.sequence_number <= state.sequence_number:
             logger.warning(
                 f"Ignoring snapshot {snapshot.sequence_number} of reporter {snapshot.reporter_id}: snapshot "
@@ -70,7 +79,11 @@ class RegistrationHub(BaseWorkerProvider):
             list_cells=_list_cells,
             poll_interval_seconds=REGISTERED_CELLS_POLL_INTERVAL_SECONDS,
         )
-        return await loop.start(reconcile)
+        async with contextlib.AsyncExitStack() as stack:
+            stack.push_async_callback(await loop.start(reconcile))
+            sweep_task = asyncio.create_task(self._remove_stale_reporters_forever())
+            stack.push_async_callback(partial(cancel_and_await_task, sweep_task))
+            return stack.pop_all().aclose
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         cell = self._cell_of_id[cell_id_of_worker(worker_name)]
@@ -84,9 +97,31 @@ class RegistrationHub(BaseWorkerProvider):
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [self._cell_of_id[cell_id].workers for cell_id in cell_ids]
 
+    async def _remove_stale_reporters_forever(self) -> None:
+        while True:
+            await asyncio.sleep(REGISTERED_CELLS_POLL_INTERVAL_SECONDS)
+            self._remove_stale_reporters()
+
+    def _remove_stale_reporters(self) -> None:
+        deadline = self.clock() - REPORTER_TTL_SECONDS
+        for reporter_id, state in list(self._state_of_reporter_id.items()):
+            if state.last_ingest_time <= deadline:
+                self._remove_reporter(reporter_id)
+
+    def _remove_reporter(self, reporter_id: str) -> None:
+        logger.warning(
+            f"Dropping reporter {reporter_id} and every cell it announced: it has not reported for "
+            f"{REPORTER_TTL_SECONDS}s, and this run serves requests to engines only while the deployment that "
+            f"carries them keeps saying they are there"
+        )
+        del self._state_of_reporter_id[reporter_id]
+        for cell_id in [cell_id for cell_id, cell in self._cell_of_id.items() if cell.reporter_id == reporter_id]:
+            del self._cell_of_id[cell_id]
+
 
 class _ReporterState(StrictBaseModel):
     sequence_number: int = -1
+    last_ingest_time: float = 0.0
 
 
 def _assert_snapshot_addressable(snapshot: RegistrationSnapshot) -> None:
