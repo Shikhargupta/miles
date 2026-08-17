@@ -4,11 +4,13 @@ from pathlib import Path
 import pytest
 from tests.e2e.ft.conftest_ft import fault_injection as fi
 from tests.e2e.ft.conftest_ft.modes import MODES, FTTestMode
-from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
+from tests.e2e.ft.conftest_ft.scenario_random_crash import _assert_every_drawn_fault_form_worked, assert_healing
 
+from miles.utils.external_utils import command_utils
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.workers.types import ClusterBackend
 
 _ROLLOUT_CELL_NAME = "rollout-engine-0"
 
@@ -18,10 +20,16 @@ def _mode(*ft_components: str) -> FTTestMode:
 
 
 def _injector(*, cell_type: str, num_successful_injections: int) -> fi.FaultInjectorHandle:
-    injector = fi.FaultInjectorHandle(
-        base_url="http://control", seed=0, mean_interval_seconds=1e9, cell_type=cell_type
+    forms = fi.create_cell_fault_forms(
+        base_url="http://control",
+        config=command_utils.ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY, namespace="", run_id="r"),
     )
-    injector.num_successful_injections = num_successful_injections
+    injector = fi.FaultInjectorHandle(
+        base_url="http://control", seed=0, mean_interval_seconds=1e9, cell_type=cell_type, cell_fault_forms=forms
+    )
+    injector.tally_of_form[(cell_type, "inject_fault:sigkill")] = fi.InjectionTally(
+        num_attempts=num_successful_injections, num_successes=num_successful_injections
+    )
     return injector
 
 
@@ -76,3 +84,20 @@ class TestAssertHealing:
 
         with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
             assert_healing(_mode("rollout"), injector=injector, dump_dir=str(tmp_path))
+
+
+class TestAssertEveryDrawnFaultFormWorked:
+    def test_a_form_that_never_worked_fails_the_soak(self, tmp_path: Path) -> None:
+        """Pod deletion can be refused for the whole run while the kills alone clear the injection floor."""
+        injector = _injector(cell_type="actor", num_successful_injections=3)
+        injector.tally_of_form[("actor", fi.DELETE_POD_FORM_NAME)] = fi.InjectionTally(num_attempts=4, num_successes=0)
+
+        with pytest.raises(AssertionError, match=fi.DELETE_POD_FORM_NAME):
+            _assert_every_drawn_fault_form_worked(injector)
+
+    def test_a_form_that_worked_at_least_once_is_accepted(self) -> None:
+        """A single refusal is a cluster hiccup, not proof the fault form is wired up wrong."""
+        injector = _injector(cell_type="actor", num_successful_injections=3)
+        injector.tally_of_form[("actor", fi.DELETE_POD_FORM_NAME)] = fi.InjectionTally(num_attempts=4, num_successes=1)
+
+        _assert_every_drawn_fault_form_worked(injector)

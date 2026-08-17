@@ -88,6 +88,12 @@ class DeletePodFaultForm(BaseFaultForm):
 CellFaultForms = dict[str, list[BaseFaultForm]]
 
 
+@dataclasses.dataclass
+class InjectionTally:
+    num_attempts: int = 0
+    num_successes: int = 0
+
+
 def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrainConfig) -> CellFaultForms:
     kill_forms: list[BaseFaultForm] = [
         InjectFaultForm(base_url=base_url, failure_mode=failure_mode) for failure_mode in FAILURE_MODES
@@ -246,6 +252,18 @@ def _compute_distinct_states(events: list[_CellEvent]) -> list[ObservedCellState
     return states
 
 
+class _FormCycles:
+    def __init__(self, cell_fault_forms: CellFaultForms) -> None:
+        self._cell_fault_forms = cell_fault_forms
+        self._remaining_of_type: dict[str, list[BaseFaultForm]] = {}
+
+    def draw(self, cell_type: str, rng: random.Random) -> BaseFaultForm:
+        remaining = self._remaining_of_type.get(cell_type) or list(self._cell_fault_forms[cell_type])
+        form = remaining.pop(rng.randrange(len(remaining)))
+        self._remaining_of_type[cell_type] = remaining
+        return form
+
+
 def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
     return time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
 
@@ -256,7 +274,7 @@ def run_fault_injection_loop(
     seed: int,
     mean_interval_seconds: float,
     stop_event: threading.Event,
-    on_successful_injection: Callable[[], None],
+    on_injection_attempt: Callable[[str, str, bool], None],
     cell_type: str | None,
     recovery_witness: RecoveryWitness,
     cell_fault_forms: CellFaultForms,
@@ -264,6 +282,7 @@ def run_fault_injection_loop(
 ) -> None:
     rng = random.Random(seed)
     gate = RecoveryGate()
+    form_cycles = _FormCycles(cell_fault_forms)
     next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
 
     while not stop_event.is_set():
@@ -297,16 +316,20 @@ def run_fault_injection_loop(
 
         target = rng.choice(alive_of_type[rng.choice(spare_types)])
         cell_name = target["metadata"]["name"]
-        form = rng.choice(cell_fault_forms[_cell_type_of(target)])
+        target_type = _cell_type_of(target)
+        form = form_cycles.draw(target_type, rng)
         try:
             form.inject(target, rng)
-            gate.note_injected(cell_name)
-            recovery_witness.note_injected(cell_name)
-            on_successful_injection()
-            next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
-            logger.info("Injected fault %s into %s", form.name, cell_name)
         except Exception:
+            on_injection_attempt(target_type, form.name, False)
             logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
+            continue
+
+        gate.note_injected(cell_name)
+        recovery_witness.note_injected(cell_name)
+        on_injection_attempt(target_type, form.name, True)
+        next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
+        logger.info("Injected fault %s into %s", form.name, cell_name)
 
 
 def list_cells(*, base_url: str, cell_type: str | None) -> list[dict] | None:
@@ -337,8 +360,8 @@ class FaultInjectorHandle:
         cell_type: str | None,
         cell_fault_forms: CellFaultForms,
     ) -> None:
-        self.num_successful_injections: int = 0
         self.recovery_witness = RecoveryWitness()
+        self.tally_of_form: dict[tuple[str, str], InjectionTally] = {}
         self._base_url = base_url
         self._cell_type = cell_type
         self._stop_event = threading.Event()
@@ -349,7 +372,7 @@ class FaultInjectorHandle:
                 "seed": seed,
                 "mean_interval_seconds": mean_interval_seconds,
                 "stop_event": self._stop_event,
-                "on_successful_injection": self._on_successful_injection,
+                "on_injection_attempt": self._note_injection_attempt,
                 "cell_type": cell_type,
                 "recovery_witness": self.recovery_witness,
                 "cell_fault_forms": cell_fault_forms,
@@ -357,6 +380,10 @@ class FaultInjectorHandle:
             daemon=True,
             name="ft-random-fault-injector",
         )
+
+    @property
+    def num_successful_injections(self) -> int:
+        return sum(tally.num_successes for tally in self.tally_of_form.values())
 
     def start(self) -> None:
         self._thread.start()
@@ -366,14 +393,19 @@ class FaultInjectorHandle:
         self._thread.join(timeout=timeout_seconds)
         self._observe_final_snapshot()
 
+    def forms_that_never_worked(self) -> list[tuple[str, str]]:
+        return sorted(key for key, tally in self.tally_of_form.items() if tally.num_successes == 0)
+
     def _observe_final_snapshot(self) -> None:
         cells = list_cells(base_url=self._base_url, cell_type=self._cell_type)
         if cells is None:
             return
         self.recovery_witness.observe(cells)
 
-    def _on_successful_injection(self) -> None:
-        self.num_successful_injections += 1
+    def _note_injection_attempt(self, cell_type: str, form_name: str, succeeded: bool) -> None:
+        tally = self.tally_of_form.setdefault((cell_type, form_name), InjectionTally())
+        tally.num_attempts += 1
+        tally.num_successes += int(succeeded)
 
 
 def spawn_fault_injector(

@@ -161,7 +161,7 @@ def test_loop_never_kills_the_last_live_cell_under_stale_liveness() -> None:
             seed=0,
             mean_interval_seconds=1e-6,
             stop_event=stop_event,
-            on_successful_injection=lambda: None,
+            on_injection_attempt=lambda cell_type, form_name, ok: None,
             cell_type=None,
             recovery_witness=fi.RecoveryWitness(),
             cell_fault_forms=_api_server_fault_forms(),
@@ -202,7 +202,7 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
             seed=0,
             mean_interval_seconds=1e-6,
             stop_event=stop_event,
-            on_successful_injection=lambda: None,
+            on_injection_attempt=lambda cell_type, form_name, ok: None,
             cell_type=None,
             recovery_witness=fi.RecoveryWitness(),
             cell_fault_forms=_api_server_fault_forms(),
@@ -239,7 +239,7 @@ def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> li
             seed=0,
             mean_interval_seconds=1e-6,
             stop_event=stop_event,
-            on_successful_injection=lambda: None,
+            on_injection_attempt=lambda cell_type, form_name, ok: None,
             cell_type=cell_type,
             recovery_witness=fi.RecoveryWitness(),
             cell_fault_forms=_api_server_fault_forms(),
@@ -517,7 +517,7 @@ class TestFaultInjectionLoopErrorHandling:
                 seed=0,
                 mean_interval_seconds=1e-12,
                 stop_event=stop_event,
-                on_successful_injection=lambda: None,
+                on_injection_attempt=lambda cell_type, form_name, ok: None,
                 cell_type=None,
                 recovery_witness=witness,
                 cell_fault_forms=_api_server_fault_forms(),
@@ -553,8 +553,8 @@ class TestFaultInjectionLoopErrorHandling:
                 raise RuntimeError("inject-fault refused")
             return _mock_response({})
 
-        def note_success() -> None:
-            successes["n"] += 1
+        def note_attempt(cell_type: str, form_name: str, succeeded: bool) -> None:
+            successes["n"] += int(succeeded)
 
         with patch.object(fi, "requests") as mock_requests:
             mock_requests.get.side_effect = fake_get
@@ -564,7 +564,7 @@ class TestFaultInjectionLoopErrorHandling:
                 seed=0,
                 mean_interval_seconds=1e-6,
                 stop_event=stop_event,
-                on_successful_injection=note_success,
+                on_injection_attempt=note_attempt,
                 cell_type=None,
                 recovery_witness=witness,
                 cell_fault_forms=_api_server_fault_forms(),
@@ -693,7 +693,7 @@ class TestFaultFormsOfBackendAndCellType:
                 seed=0,
                 mean_interval_seconds=1e-12,
                 stop_event=stop_event,
-                on_successful_injection=lambda: None,
+                on_injection_attempt=lambda cell_type, form_name, ok: None,
                 cell_type=None,
                 recovery_witness=fi.RecoveryWitness(),
                 cell_fault_forms=_fixed_fault_forms(
@@ -704,3 +704,63 @@ class TestFaultFormsOfBackendAndCellType:
 
             assert drawn == [fi.DELETE_POD_FORM_NAME, fi.DELETE_POD_FORM_NAME], drawn
             mock_requests.post.assert_not_called()
+
+
+class TestInjectionTallies:
+    def test_a_form_that_fails_every_time_it_is_drawn_is_reported(self) -> None:
+        """A pod deletion that is always refused would otherwise ride on the kills that did work."""
+        drawn: list[str] = []
+        stop_event = threading.Event()
+        handle_forms = _fixed_fault_forms(
+            [
+                _StubFaultForm("works", lambda cell, rng: drawn.append("works")),
+                _StubFaultForm("broken", _always_refuse),
+            ]
+        )
+        handle = fi.FaultInjectorHandle(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-6,
+            cell_type=None,
+            cell_fault_forms=handle_forms,
+        )
+        polls = {"n": 0}
+
+        def fake_get(url: str, timeout: float) -> MagicMock:
+            polls["n"] += 1
+            if polls["n"] >= 8:
+                stop_event.set()
+            return _mock_response({"items": [_typed_cell(f"actor-{i}", "actor") for i in range(3)]})
+
+        with patch.object(fi, "requests") as mock_requests:
+            mock_requests.get.side_effect = fake_get
+            fi.run_fault_injection_loop(
+                base_url="http://control",
+                seed=0,
+                mean_interval_seconds=1e-6,
+                stop_event=stop_event,
+                on_injection_attempt=handle._note_injection_attempt,
+                cell_type=None,
+                recovery_witness=fi.RecoveryWitness(),
+                cell_fault_forms=handle_forms,
+                poll_interval_seconds=1e-6,
+            )
+
+        assert handle.forms_that_never_worked() == [("actor", "broken")]
+
+    def test_every_form_of_a_kind_is_drawn_before_any_repeats(self) -> None:
+        """Uniform sampling can leave the rarest fault untried for a whole soak, which is the one worth trying."""
+        cycles = fi._FormCycles(_fixed_fault_forms([_StubFaultForm(name, _do_nothing) for name in ("a", "b", "c")]))
+        rng = random.Random(0)
+
+        first_cycle = {cycles.draw(fi.ACTOR_CELL_TYPE, rng).name for _ in range(3)}
+
+        assert first_cycle == {"a", "b", "c"}
+
+
+def _always_refuse(cell: dict, rng: random.Random) -> None:
+    raise RuntimeError("this form never works")
+
+
+def _do_nothing(cell: dict, rng: random.Random) -> None:
+    return None

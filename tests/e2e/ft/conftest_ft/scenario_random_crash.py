@@ -98,6 +98,7 @@ def compute_injected_cell_type(ft_mode: FTTestMode) -> str | None:
 
 def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_dir: str) -> None:
     assert_min_soak_injections(injector.num_successful_injections, context=f"{TEST_NAME} {ft_mode.ft_components}")
+    _assert_every_drawn_fault_form_worked(injector)
 
     if "train" in ft_mode.ft_components:
         assert_soak_reconfigure_events(
@@ -107,6 +108,14 @@ def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_d
 
     if "rollout" in ft_mode.ft_components:
         assert_every_rollout_injection_recovered(injector)
+
+
+def _assert_every_drawn_fault_form_worked(injector: FaultInjectorHandle) -> None:
+    never_worked = injector.forms_that_never_worked()
+
+    assert (
+        not never_worked
+    ), f"Fault forms drawn but never once successful: {never_worked}, out of {injector.tally_of_form}"
 
 
 def assert_every_rollout_injection_recovered(injector: FaultInjectorHandle) -> None:
