@@ -42,7 +42,7 @@ class TestLaunchOnRealRay:
                 "port": advertised.port,
             }
 
-    def test_the_advertised_address_is_one_the_worker_can_serve_on(self, manager_factory, worker_probe_factory):
+    async def test_the_advertised_address_is_one_the_worker_can_serve_on(self, manager_factory, worker_probe_factory):
         """A worker can bind the port allocated for it, and that endpoint is what the manager advertises."""
         probe = worker_probe_factory(bind_primary=True)
         handle = manager_factory(
@@ -54,7 +54,7 @@ class TestLaunchOnRealRay:
 
         assert len({(addr.host, addr.port) for addr in addrs}) == 3
         for addr in addrs:
-            wait_tcp_ready(addr.host, addr.port, timeout=30)
+            await wait_tcp_ready(addr.host, addr.port, timeout=30)
 
     def test_the_worker_process_gets_the_env_vars_declared_by_its_spec(self, manager_factory, worker_probe_factory):
         """Env vars from the spec are visible inside the launched process."""
@@ -122,7 +122,7 @@ class TestNamedManagerActor:
 
         assert isinstance(addr, HostAndPort)
         assert records["0-0"]["context"]["self_addrs"]["primary"] == {"host": addr.host, "port": addr.port}
-        wait_tcp_ready(addr.host, addr.port, timeout=30)
+        await wait_tcp_ready(addr.host, addr.port, timeout=30)
 
     def test_an_unknown_worker_name_is_not_answered_with_another_workers_address(
         self, manager_factory, worker_probe_factory
