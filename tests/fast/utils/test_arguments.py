@@ -673,15 +673,14 @@ class TestDeployComponent:
                 )
             )
 
-    def test_refuses_an_api_server_that_answers_for_cells_another_deployment_owns(self):
-        """It reads cells of its own release, so a split run's would come back missing instead of unreachable."""
-        with pytest.raises(AssertionError, match="--api-server-port"):
-            _validate_deploy_component(
-                self._parse_validated([*_PRIMARY_ARGS, "--use-fault-tolerance", *_SHARED_STORE_ARGS])
-            )
+    def test_a_split_run_keeps_the_api_server_of_the_half_that_drives_it(self):
+        """Its api server answers for the cells it deploys, which is a smaller set, not an empty one."""
+        args = self._parse_validated([*_PRIMARY_ARGS, "--use-fault-tolerance", *_SHARED_STORE_ARGS])
+
+        assert args.api_server_port
 
     def test_a_trainer_deployment_keeps_the_fault_tolerance_of_its_own_cells(self):
-        """Its controller watches its own ranks, and it runs no api server to be blind with."""
+        """Its controller watches its own ranks, and it serves them from an api server of its own."""
         _validate_deploy_component(
             self._parse_validated(
                 [

@@ -2956,9 +2956,6 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
         args.trainer_controller_addrs is not None
     ), f"--deploy-component {component.value} deploys no trainer, so it needs --trainer-controller-addrs"
     _validate_trainer_controller_addrs(args)
-    assert (
-        not args.api_server_port
-    ), f"--deploy-component {component.value} watches cells it does not deploy; pass --api-server-port 0"
 
     raise AssertionError(
         f"--deploy-component {component.value} drives inference engines that another deployment installs, and a "
