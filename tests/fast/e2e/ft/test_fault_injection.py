@@ -458,7 +458,7 @@ def test_stop_and_join_takes_one_last_snapshot_before_the_witness_is_read() -> N
             {"items": [_staged("rollout-engine-0", _SERVING)]}
         )
         handle.start()
-        handle.stop_and_join(timeout_seconds=5)
+        handle.stop_and_join()
 
     assert handle.recovery_witness.states_of_cell_name == {"rollout-engine-0": [_SERVING]}
 

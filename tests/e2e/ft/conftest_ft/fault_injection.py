@@ -32,6 +32,10 @@ POLL_INTERVAL_SECONDS: float = 2.0
 # is allowed to take, or a kill that worked gets recorded as a failed injection.
 INJECT_REQUEST_TIMEOUT_SECONDS: float = 30.0
 LIST_REQUEST_TIMEOUT_SECONDS: float = 5.0
+# A fault form cannot be cancelled once it starts, and the slowest is a pod deletion: two kubectl
+# calls, each bounded at a minute. Wait longer than that rather than judging a run beside a thread
+# that is still crashing cells.
+STOP_AND_JOIN_TIMEOUT_SECONDS: float = 180.0
 FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
 
 DELETE_POD_FORM_NAME: str = "delete_pod"
@@ -388,9 +392,9 @@ class FaultInjectorHandle:
     def start(self) -> None:
         self._thread.start()
 
-    def stop_and_join(self, *, timeout_seconds: float) -> None:
+    def stop_and_join(self) -> None:
         self._stop_event.set()
-        self._thread.join(timeout=timeout_seconds)
+        self._thread.join(timeout=STOP_AND_JOIN_TIMEOUT_SECONDS)
         self._observe_final_snapshot()
 
     def forms_that_never_worked(self) -> list[tuple[str, str]]:

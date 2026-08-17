@@ -33,7 +33,7 @@ class _StubInjector:
         self.num_successful_injections = 0
         self.recovery_witness = None
 
-    def stop_and_join(self, *, timeout_seconds: float) -> None:
+    def stop_and_join(self) -> None:
         pass
 
 
