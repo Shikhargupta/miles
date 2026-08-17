@@ -54,7 +54,7 @@ async def train_multi_policy(args) -> None:
     maybe_start_mini_ft_controller(args)
 
     for model_id, trainer in trainers.items():
-        await update_weights(trainer.handle, rollout_executor, trainer_model_id=model_id)
+        await update_weights(args, trainer.handle, rollout_executor, inference_controller, trainer_model_id=model_id)
 
     parker = Parker(num_followers=len(trainers) - 1)
     rollout_ids: dict[str, int] = {}
@@ -118,7 +118,14 @@ async def _run_policy(
             await parker.maybe_park_follower()
 
         if (rollout_id + 1) % args.update_weights_interval == 0:
-            await update_weights(trainer.handle, rollout_executor, rollout_id=rollout_id, trainer_model_id=model_id)
+            await update_weights(
+                args,
+                trainer.handle,
+                rollout_executor,
+                inference_controller,
+                rollout_id=rollout_id,
+                trainer_model_id=model_id,
+            )
 
         if (x := args.debug_exit_after_rollout) is not None and (rollout_id - trainer.start_rollout_id + 1) >= x:
             logger.info(f"debug_exit_after_rollout={x} reached at rollout_id={rollout_id}, exiting")
