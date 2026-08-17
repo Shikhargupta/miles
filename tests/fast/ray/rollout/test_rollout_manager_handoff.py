@@ -354,7 +354,7 @@ class TestDisposeClosesTheRolloutFn:
 
         # Park a real claimed-but-undispatched batch in the adapter.
         await adapter._reconcile(await queue.ready_streams())
-        adapter._launch_idle_children(rollout_id=0)
+        adapter._launch_idle_children()
         for _ in range(200):
             if any(r.ready_output is not None for r in adapter.runtimes.values()):
                 break
