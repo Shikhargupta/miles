@@ -89,7 +89,7 @@ class TestServingTheFaultToleranceOfItsOwnCells:
         fake = _FakeDeployment()
         _injected(monkeypatch, fake)
 
-        deployment_entrypoint._maybe_serve_own_cells(
+        deployment_entrypoint._maybe_serve_own_fault_tolerance(
             _args(api_server_port=18080, ft_components=["train"]), component=DeployComponent.TRAINER
         )
 
@@ -102,7 +102,7 @@ class TestServingTheFaultToleranceOfItsOwnCells:
         fake = _FakeDeployment()
         _injected(monkeypatch, fake)
 
-        deployment_entrypoint._maybe_serve_own_cells(
+        deployment_entrypoint._maybe_serve_own_fault_tolerance(
             _args(api_server_port=0, ft_components=["train"]), component=DeployComponent.TRAINER
         )
 
@@ -113,7 +113,7 @@ class TestServingTheFaultToleranceOfItsOwnCells:
         fake = _FakeDeployment()
         _injected(monkeypatch, fake)
 
-        deployment_entrypoint._maybe_serve_own_cells(
+        deployment_entrypoint._maybe_serve_own_fault_tolerance(
             _args(api_server_port=18080, ft_components=["train"]), component=DeployComponent.INFERENCE
         )
 

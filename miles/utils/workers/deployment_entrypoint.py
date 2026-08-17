@@ -31,7 +31,7 @@ async def _serve_deployed_workers(args) -> None:
 
     _worker_manager = launch_worker_manager(args)
     logger.info(f"Deployed the {component.value} workers of this run: {[spec.name for spec in compute_specs(args)]}")
-    _maybe_serve_own_cells(args, component=component)
+    _maybe_serve_own_fault_tolerance(args, component=component)
     logger.info(
         "This deployment carries no orchestration script, so it has no training to finish and stays up until it is "
         "torn down"
@@ -40,7 +40,7 @@ async def _serve_deployed_workers(args) -> None:
     await asyncio.Event().wait()
 
 
-def _maybe_serve_own_cells(args, *, component: DeployComponent) -> None:
+def _maybe_serve_own_fault_tolerance(args, *, component: DeployComponent) -> None:
     if not args.api_server_port or not component.selects(DeployComponent.TRAINER):
         return
 
