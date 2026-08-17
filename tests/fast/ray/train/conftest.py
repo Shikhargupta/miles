@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +12,7 @@ import miles.ray.train.group as group_module
 from miles.ray.train.cell import TrainerCell
 from miles.utils import object_store
 from miles.utils.ft_utils.api_server.models import TriState
+from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
@@ -20,6 +22,11 @@ from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 fake_worker_manager: FakeWorkerManager | None = None
 
 FAKE_STORE_ADDR = "10.0.0.7:29500"
+
+
+def make_deployment_identity(**overrides: Any) -> DeploymentIdentity:
+    defaults: dict[str, Any] = dict(run_uuid="0123456789abcdef", deploy_component="trainer")
+    return DeploymentIdentity(**{**defaults, **overrides})
 
 
 @pytest.fixture(autouse=True)
