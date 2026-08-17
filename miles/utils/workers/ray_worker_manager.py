@@ -14,7 +14,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.http_utils import wrap_ipv6
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
@@ -324,7 +324,7 @@ class _BaseActorManager(Generic[SpecT]):
                 if port_info.allow_dynamic
                 else port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
             )
-            self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+            self.self_addrs[port_info.name] = HostAndPort(host=wrap_ipv6(node_ip), port=port)
 
     @property
     def launch_context(self) -> WorkerLaunchContext:
