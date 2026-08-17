@@ -3,10 +3,10 @@ from functools import partial
 import ray.actor
 
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
-from miles.utils.workers.reconcile.list_based import ListBasedReconcileLoop
+from miles.utils.workers.polling_reconcile_loop import PollingReconcileLoop
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
@@ -32,9 +32,9 @@ class RayWorkerProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
 
-    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         pool_ids = self._watched_pool_ids()
-        loop = ListBasedReconcileLoop(
+        loop = PollingReconcileLoop(
             list_cells=partial(self._list_alive_cells, pool_ids=pool_ids),
             poll_interval_seconds=self._poll_interval_seconds,
         )

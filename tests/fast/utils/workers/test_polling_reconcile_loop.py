@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from miles.utils.workers.reconcile.list_based import ListBasedReconcileLoop
+from miles.utils.workers.polling_reconcile_loop import PollingReconcileLoop
 from miles.utils.workers.worker_provider.base import CellInfo
 
 POLL_INTERVAL_SECONDS = 0.001
@@ -63,9 +63,9 @@ class _AlwaysFailingReconciler(_RecordingReconciler):
         raise RuntimeError("reconcile rejected the cell")
 
 
-def _make_loop(*answers: Any) -> tuple[ListBasedReconcileLoop, _FakeLister]:
+def _make_loop(*answers: Any) -> tuple[PollingReconcileLoop, _FakeLister]:
     lister = _FakeLister(answers=list(answers))
-    loop = ListBasedReconcileLoop(list_cells=lister, poll_interval_seconds=POLL_INTERVAL_SECONDS)
+    loop = PollingReconcileLoop(list_cells=lister, poll_interval_seconds=POLL_INTERVAL_SECONDS)
     return loop, lister
 
 
@@ -76,7 +76,7 @@ async def _wait_until(predicate, *, timeout_seconds: float = 2.0) -> None:
         await asyncio.sleep(0.001)
 
 
-class TestListBasedReconcileLoopInitialSync:
+class TestPollingReconcileLoopInitialSync:
     async def test_every_initial_cell_is_reconciled_before_start_returns(self):
         """Callers may assume the whole listing is observed once start returns."""
         infos = {"cell-a": _cell_info("cell-a"), "cell-b": _cell_info("cell-b")}
@@ -112,7 +112,7 @@ class TestListBasedReconcileLoopInitialSync:
         assert lister.calls == 1
 
 
-class TestListBasedReconcileLoopPolling:
+class TestPollingReconcileLoopPolling:
     async def test_an_unchanged_cell_is_not_reconciled_again(self):
         """Re-reconciling every tick would restart cells every interval."""
         info = _cell_info("cell-a")
@@ -205,7 +205,7 @@ class TestListBasedReconcileLoopPolling:
             await stop()
 
 
-class TestListBasedReconcileLoopStop:
+class TestPollingReconcileLoopStop:
     async def test_stopping_ends_the_polling(self):
         """The returned stop function must actually stop the loop, not just detach from it."""
         loop, lister = _make_loop({})
