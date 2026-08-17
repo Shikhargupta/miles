@@ -2,8 +2,8 @@ from functools import partial
 
 import ray.actor
 
-from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.polling_reconcile_loop import PollingReconcileLoop
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn

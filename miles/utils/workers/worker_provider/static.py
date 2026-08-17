@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Iterable
 
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import wrap_ipv6, wait_tcp_ready
+from miles.utils.http_utils import wait_tcp_ready, wrap_ipv6
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo

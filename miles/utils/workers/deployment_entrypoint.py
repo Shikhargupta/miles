@@ -1,9 +1,10 @@
 import asyncio
 import logging
 
+from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
+
 # TODO: this entrypoint reaches into miles.ray; fix the layering later
 from miles.ray.specs.entrypoint import compute_specs
-from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE
 from miles.ray.specs.train import create_trainer_controller_handle
 from miles.ray.wiring import get_backend_capability, launch_worker_manager
 from miles.utils.arguments import parse_args
