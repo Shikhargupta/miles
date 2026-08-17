@@ -6,8 +6,8 @@ from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 
 def compute_specs(args) -> list[BaseWorkerSpec]:
-    selector = DeployComponent(args.deploy_component)
-    return [spec for spec in _compute_all_specs(args) if selector.selects(spec.deploy_component)]
+    component = DeployComponent(args.deploy_component)
+    return [spec for spec in _compute_all_specs(args) if component.selects(spec.deploy_component)]
 
 
 def _compute_all_specs(args) -> list[BaseWorkerSpec]:
@@ -16,6 +16,7 @@ def _compute_all_specs(args) -> list[BaseWorkerSpec]:
         multi_lora.spec_multi_lora_controller(args),
         inference.spec_inference_controller(args),
         *inference.specs_router(args),
+        *inference.specs_registration_reporter(args),
         inference.spec_session_server(args),
         *inference.specs_inference_engine(args),
         *train.specs_trainer_controller(args),
