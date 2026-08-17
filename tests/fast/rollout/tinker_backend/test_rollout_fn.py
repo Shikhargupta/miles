@@ -21,6 +21,7 @@ from miles.rollout.inference_rollout.compatibility import call_rollout_function_
 from miles.rollout.tinker_backend.operation_port import StaleBindingError, TransientOperationPortError
 from miles.rollout.tinker_backend.rollout_fn import (
     AdapterRolloutRuntime,
+    ClaimedOperationBatch,
     QueueChildRolloutFn,
     TinkerOperationBatchAdapter,
     TinkerOperationSource,
@@ -127,12 +128,11 @@ class TestQueueChild:
         assert stamped.metadata["team"] == "t1"  # run metadata merged in
         assert stamped.status == stamped.Status.COMPLETED
         assert [group[0].index for group in output.samples] == [0, 1]  # result-plane row identity
-        assert output.metadata == dict(
-            operation_id="op1",
-            operation_kind="forward_backward",
-            loss_spec={"loss_fn": "cross_entropy"},
-            binding=ResidentBinding(registration_key=("X", "rx"), training_slot=3),
-        )
+        assert isinstance(output, ClaimedOperationBatch)
+        assert output.operation_id == "op1"
+        assert output.kind == "forward_backward"
+        assert output.loss_spec == {"loss_fn": "cross_entropy"}
+        assert output.binding == ResidentBinding(registration_key=("X", "rx"), training_slot=3)
 
     def test_client_supplied_row_index_is_overwritten(self):
         # index is server-owned: a client -1 would alias the DP-padding
@@ -148,13 +148,13 @@ class TestQueueChild:
     def test_child_waits_for_a_claim(self, fast_poll):
         queue = FakeOperationQueue([None, None, op()])
         output = asyncio.run(make_child(make_run(), queue)(RolloutFnTrainInput(rollout_id=0)))
-        assert output.metadata["operation_id"] == "op1"
+        assert output.operation_id == "op1"
 
     def test_bad_payload_fails_its_operation_and_the_child_continues(self):
         queue = FakeOperationQueue([op("bad", payload={"samples": []}), op("good")])
         output = asyncio.run(make_child(make_run(), queue)(RolloutFnTrainInput(rollout_id=0)))
 
-        assert output.metadata["operation_id"] == "good"
+        assert output.operation_id == "good"
         [(failed_id, error, category)] = queue.failed
         assert failed_id == "bad" and category == "user" and "no samples" in error
 
@@ -162,8 +162,8 @@ class TestQueueChild:
         payload = {"samples": [{"prompt": "p", "tokens": [1, 2], "response_length": 1, "loss_mask": [1]}]}
         queue = FakeOperationQueue([op("fwd", kind="forward", payload=payload)])
         output = asyncio.run(make_child(make_run(), queue)(RolloutFnTrainInput(rollout_id=0)))
-        assert output.metadata["operation_kind"] == "forward"
-        assert output.metadata["loss_spec"] is None
+        assert output.kind == "forward"
+        assert output.loss_spec is None
         assert queue.failed == []
 
 
@@ -173,14 +173,12 @@ def ready_runtime(fn: TinkerOperationBatchAdapter, name: str, slot: int, kind: s
     run = make_run(name=name, reg=f"r-{name}", slot=9)
     runtime = AdapterRolloutRuntime(fn.args, run)
     runtime.state = AdapterRolloutRuntime.READY
-    runtime.ready_output = RolloutFnTrainOutput(
+    runtime.ready_output = ClaimedOperationBatch(
+        operation_id=f"op-{name}",
+        kind=kind,
+        loss_spec=None,
+        binding=ResidentBinding(registration_key=(name, f"r-{name}"), training_slot=slot),
         samples=[[SimpleNamespace(adapter=None, metadata={})]],
-        metadata=dict(
-            operation_id=f"op-{name}",
-            operation_kind=kind,
-            loss_spec=None,
-            binding=ResidentBinding(registration_key=(name, f"r-{name}"), training_slot=slot),
-        ),
     )
     fn.runtimes[(run.name, run.registration_id)] = runtime
     fn._sync_rotation()

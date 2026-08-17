@@ -14,6 +14,7 @@ import copy
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 from miles.ray.tinker_backend.config import AdapterRun
@@ -106,6 +107,22 @@ Tenant = tuple[str, str]
 DATA_OPERATION_KINDS = ("forward_backward", "forward")
 
 
+@dataclass(frozen=True)
+class ClaimedOperationBatch:
+    """One claimed client operation, decoded and stamped into a complete batch
+    (external review 0813 §6.5): the single typed claim result that flows from
+    the claim path through READY state and selection into the merge. The
+    binding is the claim's fixed execution binding, resolved atomically with
+    the claim (claim-and-bind) — the one dispatch truth; the long-lived
+    runtime's AdapterRun view never is."""
+
+    operation_id: str
+    kind: str
+    loss_spec: dict | None
+    binding: Any  # duck-typed port binding; production ships ResidentBinding
+    samples: list[list[Sample]]
+
+
 class TinkerOperationSource:
     """Per-registration stand-in for a data source: tinker adapters have no
     dataset, so this only carries the child args and the current run view used
@@ -165,7 +182,7 @@ class TinkerNullDataSource:
 
 class QueueChildRolloutFn:
     """Awaits the registration's next data-bearing operation and returns it as
-    one complete batch. Blocking while the client queue is idle is normal: the
+    one ClaimedOperationBatch. Blocking while the client queue is idle is normal: the
     runtime simply stays IN_FLIGHT and other adapters keep training. Claims go
     through the injected OperationQueuePort — this class knows no Ray."""
 
@@ -174,7 +191,7 @@ class QueueChildRolloutFn:
         self.source: TinkerOperationSource = input.data_source
         self.operations = operations if operations is not None else RayTinkerOperationQueue()
 
-    async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
+    async def __call__(self, input: RolloutFnTrainInput) -> ClaimedOperationBatch:
         key = (self.source.run.name, self.source.run.registration_id)
         while True:
             operation = await self.operations.claim_data(key)
@@ -189,7 +206,7 @@ class QueueChildRolloutFn:
                 logger.exception(f"[tinker] ({key[0]}) operation '{operation['operation_id']}' rejected: {e}")
                 await self.operations.fail(operation["operation_id"], f"invalid operation payload: {e}", "user")
 
-    def _batch_from_operation(self, operation: dict) -> RolloutFnTrainOutput:
+    def _batch_from_operation(self, operation: dict) -> ClaimedOperationBatch:
         if operation["kind"] not in DATA_OPERATION_KINDS:
             raise ValueError(f"operation kind '{operation['kind']}' is not a data operation")
         payload = operation.get("payload") or {}
@@ -206,17 +223,12 @@ class QueueChildRolloutFn:
             # alias it (rows silently dropped) or collide in the collector.
             raw["index"] = i
             groups.append([Sample.from_dict(raw)])
-        return RolloutFnTrainOutput(
+        return ClaimedOperationBatch(
+            operation_id=operation["operation_id"],
+            kind=operation["kind"],
+            loss_spec=payload.get("loss"),
+            binding=operation["binding"],
             samples=self.source.stamp(groups),
-            metadata=dict(
-                operation_id=operation["operation_id"],
-                operation_kind=operation["kind"],
-                loss_spec=payload.get("loss"),
-                # Fixed binding resolved atomically with the claim (claim-and-
-                # bind); the long-lived runtime's AdapterRun.slot is never the
-                # dispatch truth.
-                binding=operation["binding"],
-            ),
         )
 
 
@@ -236,7 +248,7 @@ class AdapterRolloutRuntime:
         child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
         self.child_fn = QueueChildRolloutFn(child_input, operations)
         self.state = self.IDLE
-        self.ready_output: RolloutFnTrainOutput | None = None
+        self.ready_output: ClaimedOperationBatch | None = None
         self.task: asyncio.Task | None = None
         # Known-transient failure recovery: consecutive-failure count and the
         # monotonic deadline before which an IDLE runtime is not relaunched.
@@ -247,7 +259,7 @@ class AdapterRolloutRuntime:
     def ready_kind(self) -> str | None:
         if self.ready_output is None:
             return None
-        return self.ready_output.metadata["operation_kind"]
+        return self.ready_output.kind
 
     def refresh(self, run: AdapterRun) -> None:
         self.run = run
@@ -338,7 +350,7 @@ class TinkerOperationBatchAdapter:
             output = runtime.ready_output
             if output is None:
                 continue
-            operation_id = output.metadata["operation_id"]
+            operation_id = output.operation_id
             try:
                 await self.abort.abort_batch(
                     [operation_id],
@@ -539,26 +551,24 @@ class TinkerOperationBatchAdapter:
         # output).
         try:
             for runtime in selected:
-                output = runtime.ready_output
-                run = runtime.run
-                data.extend(output.samples)
+                claim = runtime.ready_output
+                data.extend(claim.samples)
                 # The claim's binding is the dispatch truth (resolved
                 # atomically with the claim); the runtime's AdapterRun view
                 # only names the metrics stream.
-                binding = output.metadata["binding"]
-                name, registration_id = binding.registration_key
+                name, registration_id = claim.binding.registration_key
                 batch_plan.append(
                     dict(
                         name=name,
                         registration_id=registration_id,
-                        operation_id=output.metadata["operation_id"],
-                        operation_kind=output.metadata["operation_kind"],
-                        loss_spec=output.metadata.get("loss_spec"),
-                        sample_count=sum(len(group) for group in output.samples),
-                        binding=binding,
+                        operation_id=claim.operation_id,
+                        operation_kind=claim.kind,
+                        loss_spec=claim.loss_spec,
+                        sample_count=sum(len(group) for group in claim.samples),
+                        binding=claim.binding,
                     )
                 )
-                metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
+                metrics[f"{runtime.run.name}/operation_samples"] = sum(len(group) for group in claim.samples)
             # One immutable dispatch receipt for the whole selection: the
             # controller re-validates exact slot ownership before issuing it.
             lease = await self._acquire_batch_with_retry(batch_plan)
@@ -612,10 +622,10 @@ class TinkerOperationBatchAdapter:
         receipts are discarded (fixed residency reserves nothing — a paged
         residency will need a release verb on this path)."""
         for runtime in selected:
-            metadata = runtime.ready_output.metadata
-            operation_id = metadata["operation_id"]
+            claim = runtime.ready_output
+            operation_id = claim.operation_id
             try:
-                await self.residency.acquire_batch([(operation_id, metadata["binding"])])
+                await self.residency.acquire_batch([(operation_id, claim.binding)])
             except StaleBindingError as probe:
                 try:
                     await self.abort.abort_batch(
