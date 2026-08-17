@@ -5,6 +5,7 @@ import json
 import shlex
 
 import pytest
+from tests.fast.charts.utils import REPO_ROOT
 from tests.fast.ray.rollout.conftest import make_args_with_sglang_config
 
 from miles.ray.specs.entrypoint import compute_specs
@@ -101,3 +102,10 @@ class TestTheRunIdLeavesRoomForTheComponentSuffix:
         """helm would refuse the install itself, long after the launch computed every object name from it."""
         with pytest.raises(AssertionError, match=str(_HELM_RELEASE_NAME_MAX)):
             RunNames.release(run_id="a" * (RUN_ID_MAX_LENGTH + 1))
+
+
+def test_the_chart_accepts_exactly_the_run_ids_the_launcher_will_name_a_release_for() -> None:
+    """Two copies of one bound drift apart silently: the launcher would build values helm then rejects."""
+    schema = json.loads((REPO_ROOT / "charts" / "miles-run" / "values.schema.json").read_text())
+
+    assert schema["definitions"]["RunValues"]["properties"]["id"]["maxLength"] == RUN_ID_MAX_LENGTH
