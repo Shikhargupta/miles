@@ -8,7 +8,6 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args_with_sglang_config
 
 from miles.ray.specs.entrypoint import compute_specs
-from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo, MooncakePlan
 from miles.utils.external_utils.command_utils.helm_backend.naming import (
@@ -79,12 +78,15 @@ class TestTwoReleasesOfOneRun:
         assert master != MooncakeInfo.master_service_host(_release(DeployComponent.TRAINER), NAMESPACE)
 
 
-def test_a_run_id_ending_in_a_component_name_is_refused() -> None:
-    """Its unsplit release would carry the very name another run's split launch installs its own release under."""
-    with pytest.raises(AssertionError, match="ends in a component name"):
-        entrypoint.execute_train(
-            request=None, config=ExecuteTrainConfig(run_id=f"{RUN_ID}-trainer", namespace=NAMESPACE)
-        )
+def test_a_run_id_ending_in_a_component_name_collides_with_nothing() -> None:
+    """Every release carries its own component suffix, so no run id can spell another run's release name."""
+    named = {
+        RunNames.release(run_id=run_id, deploy_component=component)
+        for run_id in (RUN_ID, f"{RUN_ID}-trainer")
+        for component in DeployComponent
+    }
+
+    assert len(named) == 2 * len(DeployComponent)
 
 
 class TestTheRunIdLeavesRoomForTheComponentSuffix:

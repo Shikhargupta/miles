@@ -188,9 +188,9 @@ LONGEST_RUN_ID = "a" * RUN_ID_MAX_LENGTH
 
 
 class TestReleaseName:
-    def test_a_release_is_the_chart_name_and_the_run_id(self):
+    def test_a_release_is_the_chart_name_the_run_id_and_the_component(self):
         """The launcher finds a run's release again from the run id alone, so the rule is fixed."""
-        assert RunNames.release(run_id="260101-000000-000") == "miles-run-260101-000000-000"
+        assert RunNames.release(run_id="260101-000000-000") == "miles-run-260101-000000-000-all"
 
     def test_the_same_run_id_always_names_the_same_release(self):
         """Relaunching a run upgrades its release; a fresh name would deploy a second copy instead."""

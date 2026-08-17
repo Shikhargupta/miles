@@ -61,10 +61,6 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     assert _RUN_ID_PATTERN.fullmatch(
         run_id
     ), f"run_id {run_id!r} names every object this run installs, so it has to match {_RUN_ID_PATTERN.pattern}"
-    assert not any(run_id.endswith(f"-{component.value}") for component in DeployComponent), (
-        f"run_id {run_id!r} ends in a component name, so its unsplit release would carry the very name a split "
-        f"launch of another run installs its {run_id.rpartition('-')[2]} release under"
-    )
 
     namespace = config.namespace
     release = RunNames.release(run_id=run_id, deploy_component=config.deploy_component)

@@ -10,9 +10,7 @@ from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAM
 ORCHESTRATOR_COMPONENT = "orchestrator"
 
 _HELM_RELEASE_NAME_MAX = 53
-_LONGEST_COMPONENT_SUFFIX = max(
-    len(f"-{component.value}") for component in DeployComponent if component is not DeployComponent.ALL
-)
+_LONGEST_COMPONENT_SUFFIX = max(len(f"-{component.value}") for component in DeployComponent)
 RUN_ID_MAX_LENGTH = _HELM_RELEASE_NAME_MAX - len(f"{CHART_NAME}-") - _LONGEST_COMPONENT_SUFFIX
 
 _UNINSTALL_COMPONENT = "uninstall"
@@ -33,8 +31,6 @@ class RunNames:
             f"{_HELM_RELEASE_NAME_MAX}, and a run id has to name a legal release under every component this run "
             f"may be split into, so it takes at most {RUN_ID_MAX_LENGTH}"
         )
-        if deploy_component is DeployComponent.ALL:
-            return f"{CHART_NAME}-{run_id}"
         return f"{CHART_NAME}-{run_id}-{deploy_component.value}"
 
     @staticmethod
