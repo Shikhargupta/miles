@@ -48,9 +48,13 @@ class KubernetesCommandBackend(BaseCommandBackend):
         assert not self.config.deploy_component.is_split(), (
             f"The api server, and the mini ft controller polling it, answer for the cells of their own deployment, "
             f"so a split run is refused one (--api-server-port 0) and nothing listens on the "
-            f"{self.config.deploy_component.value} deployment for this host to name"
+            f"{self.config.deploy_component} deployment for this host to name"
         )
         return RunNames.orchestrator_host(
-            release=RunNames.release(run_id=self.config.run_id, deploy_component=self.config.deploy_component),
+            release=RunNames.release(
+                run_id=self.config.run_id,
+                deploy_component=self.config.deploy_component,
+                deploy_instance=self.config.deploy_instance,
+            ),
             namespace=self.config.namespace,
         )

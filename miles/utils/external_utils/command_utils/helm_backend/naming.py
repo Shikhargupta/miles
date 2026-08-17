@@ -27,15 +27,26 @@ _STATE_FILE_GLOB = "orchestrator-*.state"
 
 class RunNames:
     @staticmethod
-    def release(*, run_id: str, deploy_component: DeployComponent = DeployComponent.ALL) -> str:
+    def release(
+        *, run_id: str, deploy_component: DeployComponent = DeployComponent.ALL, deploy_instance: str | None = None
+    ) -> str:
         assert len(run_id) <= RUN_ID_MAX_LENGTH, (
             f"run_id {run_id!r} is {len(run_id)} characters, but helm bounds a release name at "
             f"{_HELM_RELEASE_NAME_MAX}, and a run id has to name a legal release under every component this run "
             f"may be split into, so it takes at most {RUN_ID_MAX_LENGTH}"
         )
-        if deploy_component is DeployComponent.ALL:
-            return f"{CHART_NAME}-{run_id}"
-        return f"{CHART_NAME}-{run_id}-{deploy_component.value}"
+        parts = [CHART_NAME, run_id]
+        if deploy_component is not DeployComponent.ALL:
+            parts.append(deploy_component.value)
+        if deploy_instance is not None:
+            parts.append(deploy_instance)
+        name = "-".join(parts)
+        assert len(name) <= _HELM_RELEASE_NAME_MAX, (
+            f"the release {name!r} is {len(name)} characters, but helm bounds a release name at "
+            f"{_HELM_RELEASE_NAME_MAX}, and this launch names its instance {deploy_instance!r} on top of "
+            f"the run id, so shorten one of them"
+        )
+        return name
 
     @staticmethod
     def service_fqdn(*, name: str, namespace: str) -> str:

@@ -127,7 +127,9 @@ def _compute_spec_trainer_controller(
         worker_class=TRAINER_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             deployment_identity=DeploymentIdentity(
-                run_uuid=args.run_uuid, deploy_component=args.deploy_component
+                run_uuid=args.run_uuid,
+                deploy_component=DeployComponent(args.deploy_component).value,
+                deploy_instance=trainer_id,
             ),
             trainer_id=trainer_id,
             role=config.role,

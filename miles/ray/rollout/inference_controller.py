@@ -26,6 +26,8 @@ from miles.utils.context_lock import (
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin, SimpleTicker
+from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -80,6 +82,25 @@ class InferenceController(NodeProbeMixin):
         dashboard_hooks.register_router(self.args)
 
         await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+
+    # -------------------------- registration -----------------------------
+
+    @lock_exempt
+    async def registration_ingest(self, *, snapshot: RegistrationSnapshot) -> None:
+        registration_hub = self._engine_provider
+        assert isinstance(registration_hub, RegistrationHub), (
+            f"reporter {snapshot.reporter_id} registers the engines of its deployment into this run, but this run "
+            f"was launched without --expected-num-registration-reporters, so it counts on the engines it launches "
+            f"itself and would never wait for the ones being announced"
+        )
+        assert snapshot.run_uuid == self.args.run_uuid, (
+            f"reporter {snapshot.reporter_id} was deployed for run {snapshot.run_uuid!r} and this run is "
+            f"{self.args.run_uuid!r}; every component of one run is given the same --run-uuid by the script that "
+            f"deploys it, so a reporter that presents another one found the wrong run, which is what a resume "
+            f"reusing a run id looks like while the reporter of the previous training is still up"
+        )
+        _assert_every_cell_serves_a_model_of_this_run(snapshot, model_ids=set(self.servers))
+        await registration_hub.ingest(snapshot)
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
@@ -314,6 +335,14 @@ class UpdatableEngines:
 
 
 # TODO may move and generalize later
+def _assert_every_cell_serves_a_model_of_this_run(snapshot: RegistrationSnapshot, *, model_ids: set[str]) -> None:
+    for cell in snapshot.cells:
+        assert (model_id := cell.info.meta.get("model_id")) in model_ids, (
+            f"reporter {snapshot.reporter_id} reports cell {cell.info.cell_id}, which serves model {model_id!r}, and "
+            f"this run serves {sorted(model_ids)}, so no router of this run would ever send it a request"
+        )
+
+
 def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
     return ServerCellMetadata(
         model_id=info.meta["model_id"],

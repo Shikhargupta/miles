@@ -33,6 +33,7 @@ class ExecuteTrainConfig:
     output_dir: str = "/root/shared_data"
     cluster_backend: ClusterBackend = ClusterBackend.RAY
     deploy_component: DeployComponent = DeployComponent.ALL
+    deploy_instance: str | None = None
     run_id: str = field(default_factory=create_run_id)
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
@@ -69,6 +70,7 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
 
 CLUSTER_BACKEND_FLAG = "--cluster-backend"
 _DEPLOY_COMPONENT_FLAG = "--deploy-component"
+_DEPLOY_INSTANCE_FLAG = "--deploy-instance"
 
 TRAINER_ROLE = "trainer"
 _PREPARE_CMD_ROLES = frozenset({TRAINER_ROLE})
@@ -109,6 +111,8 @@ class BaseCommandBackend(ABC):
             train_argv, deploy_component=self.config.deploy_component.value
         )
         train_args = f"{train_args} {_DEPLOY_COMPONENT_FLAG} {self.config.deploy_component.value}"
+        if self.config.deploy_instance is not None:
+            train_args = f"{train_args} {_DEPLOY_INSTANCE_FLAG} {self.config.deploy_instance}"
 
         self._execute_train_inner(
             ExecuteTrainRequest(

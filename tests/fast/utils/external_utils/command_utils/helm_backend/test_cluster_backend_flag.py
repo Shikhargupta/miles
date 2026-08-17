@@ -10,6 +10,7 @@ from tests.fast.ray.test_wiring import stub_kubernetes_capability
 from miles.ray import wiring
 from miles.utils.external_utils.command_utils.base_backend import (
     _DEPLOY_COMPONENT_FLAG,
+    _DEPLOY_INSTANCE_FLAG,
     CLUSTER_BACKEND_FLAG,
     ExecuteTrainConfig,
     ExecuteTrainRequest,
@@ -33,16 +34,25 @@ def declared_deploy_components(argv: list[str]) -> list[str]:
     return ArgvManipulator.values_of(argv, _DEPLOY_COMPONENT_FLAG)
 
 
+def declared_deploy_instances(argv: list[str]) -> list[str]:
+    return ArgvManipulator.values_of(argv, _DEPLOY_INSTANCE_FLAG)
+
+
 NAMESPACE = "rl"
 RUN_ID = "260101-000000-000"
 
 
-def _config(run_id: str = RUN_ID, deploy_component: DeployComponent = DeployComponent.ALL) -> ExecuteTrainConfig:
+def _config(
+    run_id: str = RUN_ID,
+    deploy_component: DeployComponent = DeployComponent.ALL,
+    deploy_instance: str | None = None,
+) -> ExecuteTrainConfig:
     return ExecuteTrainConfig(
         cluster_backend=ClusterBackend.KUBERNETES,
         namespace=NAMESPACE,
         run_id=run_id,
         deploy_component=deploy_component,
+        deploy_instance=deploy_instance,
     )
 
 
@@ -76,6 +86,7 @@ def launch_argv(
     train_args: str,
     run_id: str = RUN_ID,
     deploy_component: DeployComponent = DeployComponent.ALL,
+    deploy_instance: str | None = None,
     recorded_releases: list[str] | None = None,
 ) -> list[str]:
     recorded: list[list[str]] = []
@@ -87,8 +98,12 @@ def launch_argv(
     def fake_parse_args() -> SimpleNamespace:
         argv = list(sys.argv[1:])
         declared = declared_deploy_components(argv)
+        instances = declared_deploy_instances(argv)
         return SimpleNamespace(
-            colocate=False, deploy_component=declared[-1] if declared else DeployComponent.ALL.value, argv=argv
+            colocate=False,
+            deploy_component=declared[-1] if declared else DeployComponent.ALL.value,
+            deploy_instance=instances[-1] if instances else None,
+            argv=argv,
         )
 
     def fake_upgrade(**kwargs: Any) -> None:
@@ -105,7 +120,7 @@ def launch_argv(
     monkeypatch.setattr(Helm, "upgrade", staticmethod(fake_upgrade))
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
 
-    KubernetesCommandBackend(_config(run_id, deploy_component)).execute_train(
+    KubernetesCommandBackend(_config(run_id, deploy_component, deploy_instance)).execute_train(
         train_args=f"--train-backend fsdp {train_args}", num_gpus_per_node=8, megatron_model_type=None
     )
     assert len(recorded) == 1
@@ -275,10 +290,18 @@ class TestApiServerHost:
 
         assert host == f"miles-run-{RUN_ID}-orchestrator.{NAMESPACE}.svc.cluster.local"
 
-    @pytest.mark.parametrize("component", [DeployComponent.PRIMARY, DeployComponent.TRAINER])
-    def test_no_deployment_of_a_split_run_has_an_api_server_to_name(self, component):
+    @pytest.mark.parametrize(
+        ("component", "instance"),
+        [
+            (DeployComponent.PRIMARY, None),
+            (DeployComponent.TRAINER, None),
+            (DeployComponent.TRAINER, "actor"),
+            (DeployComponent.INFERENCE, None),
+        ],
+    )
+    def test_no_deployment_of_a_split_run_has_an_api_server_to_name(self, component, instance):
         """A split run is refused an api server, so any host answered here would only ever time out."""
-        backend = KubernetesCommandBackend(_config(deploy_component=component))
+        backend = KubernetesCommandBackend(_config(deploy_component=component, deploy_instance=instance))
 
         with pytest.raises(AssertionError, match="--api-server-port 0"):
             backend.api_server_host()

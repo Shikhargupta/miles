@@ -112,9 +112,11 @@ def _create_placement_group(num_gpus) -> PlacementGroupInfo:
 
 
 def _get_placement_group_layout(args) -> tuple[int, int]:
-    selector = DeployComponent(args.deploy_component)
-    trainer_num_gpus = _compute_trainer_num_gpus(args) if selector.selects(DeployComponent.TRAINER) else 0
-    rollout_num_gpus = args.rollout_num_gpus + args.eval_num_gpus if selector.selects(DeployComponent.INFERENCE) else 0
+    component = DeployComponent(args.deploy_component)
+    trainer_num_gpus = _compute_trainer_pg_num_gpus(args) if component.selects(DeployComponent.TRAINER) else 0
+    rollout_num_gpus = (
+        args.rollout_num_gpus + args.eval_num_gpus if component.selects(DeployComponent.INFERENCE) else 0
+    )
 
     if args.debug_train_only:
         return trainer_num_gpus, trainer_num_gpus
@@ -127,9 +129,9 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
     return trainer_num_gpus + rollout_num_gpus, trainer_num_gpus
 
 
-def _compute_trainer_num_gpus(args) -> int:
-    num_policies = len([config for config in compute_trainer_configs(args) if config.role == ACTOR_ROLE])
-    return args.actor_num_nodes * args.actor_num_gpus_per_node * num_policies
+def _compute_trainer_pg_num_gpus(args) -> int:
+    num_actors = sum(1 for config in compute_trainer_configs(args) if config.role != CRITIC_ROLE)
+    return args.actor_num_nodes * args.actor_num_gpus_per_node * num_actors
 
 
 def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
@@ -146,7 +148,7 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
         "actor": PlacementGroupInfo(pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
         "rollout": PlacementGroupInfo(pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
     }
-    if args.use_critic:
+    if any(config.role == CRITIC_ROLE for config in compute_trainer_configs(args)):
         ans["critic"] = ans["actor"]
     return ans
 
@@ -219,11 +221,13 @@ async def wait_external_trainers(args) -> None:
         for trainer_id in trainer_ids
     ]
     identities = await asyncio.gather(*[handle.get_deployment_identity() for handle in handles])
-    for identity in identities:
-        _assert_external_trainer_belongs_to_this_run(identity, args=args)
+    for trainer_id, identity in zip(trainer_ids, identities, strict=True):
+        _assert_external_trainer_belongs_to_this_run(identity, args=args, instance=trainer_id)
 
 
-def _assert_external_trainer_belongs_to_this_run(identity: DeploymentIdentity, *, args) -> None:
+def _assert_external_trainer_belongs_to_this_run(
+    identity: DeploymentIdentity, *, args, instance: str | None = None
+) -> None:
     assert identity.run_uuid == args.run_uuid, (
         f"{TRAINER_CONTROLLER_ADDRS_FLAG} names the {identity.deploy_component} deployment of run "
         f"{identity.run_uuid}, but this launch drives run {args.run_uuid}: every deployment a split run reaches has "
@@ -234,6 +238,11 @@ def _assert_external_trainer_belongs_to_this_run(identity: DeploymentIdentity, *
         f"{identity.run_uuid}, and only a deployment that carries nothing but the trainer is reached by address: "
         f"an {DeployComponent.ALL.value} release of this run runs an orchestration script of its own, so both "
         f"scripts would drive the same trainer"
+    )
+    assert instance is None or identity.deploy_instance == instance, (
+        f"{TRAINER_CONTROLLER_ADDRS_FLAG} names the {identity.deploy_instance!r} of run {identity.run_uuid} as its "
+        f"{instance!r}, so this launch would drive the ranks of one trainer through the workflow of another; "
+        f"the entries of {TRAINER_CONTROLLER_ADDRS_FLAG} are keyed by trainer id, and two of them are swapped"
     )
 
 

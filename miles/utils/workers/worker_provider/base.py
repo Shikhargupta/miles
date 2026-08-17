@@ -40,6 +40,9 @@ class BaseWorkerProvider(abc.ABC):
     def expected_num_cells(self, *, group_id: str) -> int | None:
         return None
 
+    def extra_expected_num_cells(self, *, group_id: str) -> int:
+        return 0
+
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
         (infos,) = self.get_worker_infos(cell_ids=[cell_id_of_worker(worker_name)])
         handles = self.get_handles_of_worker_infos(infos)

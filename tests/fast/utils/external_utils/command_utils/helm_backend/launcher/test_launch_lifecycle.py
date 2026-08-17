@@ -21,7 +21,6 @@ from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state im
     OrchestratorStatus,
 )
 from miles.utils.workers.k8s_types import ContainerState, ContainerStatus, Pod, PodMetadata, PodStatus
-from miles.utils.workers.types import DeployComponent
 
 
 def _write(path: Path, status: OrchestratorStatus, exit_code: int | None = None) -> None:
@@ -34,7 +33,7 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False, deploy_co
     monkeypatch.setattr(
         entrypoint,
         "parse_args",
-        lambda: SimpleNamespace(colocate=colocate, deploy_component=deploy_component, argv=[]),
+        lambda: SimpleNamespace(colocate=colocate, deploy_component=deploy_component, deploy_instance=None, argv=[]),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: followed.append(kwargs))
@@ -298,7 +297,7 @@ def _launch(
             namespace="rl",
             run_id=_RUN_ID,
             helm_values=(str(_launchable_infra_file(tmp_path)),),
-            deploy_component=DeployComponent(deploy_component),
+            deploy_component=deploy_component,
         ),
     )
     return followed

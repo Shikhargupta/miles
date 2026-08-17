@@ -2,6 +2,7 @@ import logging
 import os
 import shlex
 import sys
+from typing import Any
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
@@ -15,6 +16,7 @@ from miles.utils.workers.argv_utils import config_to_argv
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.reporter import RegistrationReporter
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -62,12 +64,25 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
             pin_to_head=args.pin_rollout_manager_to_head,
         ),
         worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
-        ctor_kwargs=lambda ctx: dict(
-            args=args,
-            engine_provider=compute_engine_provider(args, capability=ctx.capability),
-            router_providers=compute_router_providers(args, capability=ctx.capability),
-        ),
+        ctor_kwargs=lambda ctx: _compute_inference_controller_kwargs(args, capability=ctx.capability),
     )
+
+
+def _compute_inference_controller_kwargs(args, *, capability: BackendCapability) -> dict[str, Any]:
+    registration_hub = compute_registration_hub(args)
+    return dict(
+        args=args,
+        engine_provider=(
+            compute_engine_provider(args, capability=capability) if registration_hub is None else registration_hub
+        ),
+        router_providers=compute_router_providers(args, capability=capability),
+    )
+
+
+def compute_registration_hub(args) -> RegistrationHub | None:
+    if args.expected_num_registration_reporters == 0:
+        return None
+    return RegistrationHub(expected_num_reporters=args.expected_num_registration_reporters)
 
 
 def specs_registration_reporter(args) -> list[ServeWorkerSpec]:

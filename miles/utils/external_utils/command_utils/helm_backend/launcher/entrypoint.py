@@ -61,20 +61,23 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     assert _RUN_ID_PATTERN.fullmatch(
         run_id
     ), f"run_id {run_id!r} names every object this run installs, so it has to match {_RUN_ID_PATTERN.pattern}"
-    assert not any(run_id.endswith(f"-{component.value}") for component in DeployComponent), (
-        f"run_id {run_id!r} ends in a component name, so its unsplit release would carry the very name a split "
-        f"launch of another run installs its {run_id.rpartition('-')[2]} release under"
+    component_values = {component.value for component in DeployComponent}
+    assert not (named := sorted(component_values.intersection(run_id.split("-")))), (
+        f"run_id {run_id!r} carries the component name(s) {named} among its dash separated parts, so its unsplit "
+        f"release would carry the very name a split launch of another run installs its {named[0]} release under"
     )
 
     namespace = config.namespace
-    release = RunNames.release(run_id=run_id, deploy_component=config.deploy_component)
-    pod_argv, args = _compute_train_argv(request, run_id=run_id, release=release, namespace=namespace)
-    deploy_component = DeployComponent(args.deploy_component)
-    assert deploy_component is config.deploy_component, (
-        f"the run's pods are told {deploy_component.value} while everything this launch installs is named after "
-        f"{config.deploy_component.value}"
+    release = RunNames.release(
+        run_id=run_id, deploy_component=config.deploy_component, deploy_instance=config.deploy_instance
     )
-    deploys_orchestration_script = deploy_component.deploys_orchestration_script()
+    pod_argv, args = _compute_train_argv(request, run_id=run_id, release=release, namespace=namespace)
+    component = DeployComponent(args.deploy_component)
+    assert (component, args.deploy_instance) == (config.deploy_component, config.deploy_instance), (
+        f"the run's pods are told {component.value} while everything this launch installs is named after "
+        f"{config.deploy_component}"
+    )
+    deploys_orchestration_script = component.deploys_orchestration_script()
 
     specs = compute_specs(args)
     chart = chart_dir(repo_base_dir=repo_base_dir)
@@ -145,7 +148,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         )
         return
 
-    if deploy_component.is_split():
+    if component.is_split():
         logger.info(
             f"The other deployments of this run share the object store of {release}, so give each of them "
             f"{_describe_shared_object_store(_compute_mooncake_plan(args), release=release, namespace=namespace)}"
@@ -261,10 +264,15 @@ def _releases_of_run(run_id: str) -> set[str]:
     return {RunNames.release(run_id=run_id, deploy_component=component) for component in DeployComponent}
 
 
+def _belongs_to_run(release: str, *, run_id: str) -> bool:
+    unsplit = RunNames.release(run_id=run_id)
+    components = _releases_of_run(run_id) - {unsplit}
+    return release == unsplit or release in components or any(release.startswith(f"{one}-") for one in components)
+
+
 def _uninstall_leftover_ci_releases(namespace: str, *, keep_run_id: str) -> list[str]:
-    kept = _releases_of_run(keep_run_id)
     listed = Helm.list_releases(namespace=namespace, selector=f"{CI_LABEL}=true")
-    releases = [release for release in listed if release not in kept]
+    releases = [release for release in listed if not _belongs_to_run(release, run_id=keep_run_id)]
     for release in releases:
         logger.info(f"Uninstalling the leftover ci release {release} before this run installs its own")
         Helm.uninstall(release=release, namespace=namespace)

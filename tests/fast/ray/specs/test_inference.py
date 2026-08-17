@@ -24,6 +24,7 @@ from miles.ray.specs.inference import (
     compute_expected_num_cells_by_model,
     compute_inference_controller_provider,
     compute_inference_engine_env_vars,
+    compute_registration_hub,
     compute_registration_reporter_id,
     compute_router_pool_id,
     inference_controller_worker_name,
@@ -37,6 +38,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.build
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import parse_config_argv
+from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.worker_provider.kubernetes.helm.env import RELEASE_ENV_VAR
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
 from miles.utils.workers.worker_spec import (
@@ -829,6 +831,32 @@ class TestRegistrationWiring:
     @staticmethod
     def _ctor_context(capability: FakeBackendCapability) -> WorkerCtorContext:
         return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+    def test_a_run_that_expects_nobody_keeps_the_engine_provider_it_always_had(self, tmp_path):
+        """Every unsplit run must reach its own engines exactly as it did before registration existed."""
+        args = self._args(tmp_path)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert not isinstance(kwargs["engine_provider"], RegistrationHub)
+
+    def test_a_run_that_expects_reporters_serves_from_its_own_engines_and_the_reported_ones(self, tmp_path):
+        """The rest of the run must not know which deployment launched an engine it generates from."""
+        args = self._args(tmp_path, expected_num_registration_reporters=2)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert isinstance(kwargs["engine_provider"], RegistrationHub)
+
+    def test_the_registry_waits_for_as_many_reporters_as_the_launch_named(self, tmp_path):
+        """It would otherwise start rolling out before the engines of every deployment have been announced."""
+        args = self._args(tmp_path, expected_num_registration_reporters=1)
+
+        provider = compute_registration_hub(args)
+
+        assert provider.expected_num_reporters == 1
 
     def test_an_engine_deployment_reports_into_the_controller_it_was_given(self, tmp_path):
         """It derives no name of another release, so this address is the only way it finds the run."""

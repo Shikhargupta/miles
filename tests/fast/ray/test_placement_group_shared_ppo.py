@@ -26,9 +26,31 @@ def _layout_args(**overrides):
         "critic_lr": None,
         "critic_lr_warmup_iters": None,
         "deploy_component": "all",
+        "deploy_instance": None,
+        "critic_num_nodes": 1,
+        "critic_num_gpus_per_node": 3,
     }
     values.update(overrides)
     return Namespace(**values)
+
+
+class TestTheLayoutOfOneTrainerDeployment:
+    def test_a_trainer_deployment_reserves_the_gpus_of_the_trainer_its_arguments_describe(self):
+        """Its arguments carry one model and never learn of the others, so they alone size the release."""
+        args = _layout_args(
+            deploy_component="trainer",
+            deploy_instance="a-actor",
+            use_critic=False,
+            megatron_config=encode_megatron_config("a"),
+        )
+
+        assert _get_placement_group_layout(args) == (2, 2)
+
+    def test_a_whole_run_still_reserves_every_trainer_it_drives(self):
+        """An unsplit run carries the whole multi-model config, and its layout must not move."""
+        args = _layout_args(use_critic=False, megatron_config=encode_megatron_config("a", "b"))
+
+        assert _get_placement_group_layout(args) == (8, 4)
 
 
 @pytest.mark.parametrize(
@@ -101,10 +123,6 @@ class TestTheLayoutOfASplitDeployment:
         """This release installs no engine, so a rollout slice over its bundles would hand them out twice."""
         assert _get_placement_group_layout(_layout_args(deploy_component="trainer")) == (2, 2)
 
-    def test_an_inference_deployment_bundles_the_engine_gpus_alone(self):
-        """The trainer serves out of its own release's group, so reserving its gpus here strands them."""
-        assert _get_placement_group_layout(_layout_args(deploy_component="inference")) == (4, 0)
-
     def test_an_inference_deployment_counts_the_eval_engines_too(self):
         """--eval-num-gpus buys engines that live in this release, so its group has to hold them."""
         assert _get_placement_group_layout(_layout_args(deploy_component="inference", eval_num_gpus=3)) == (7, 0)
@@ -117,6 +135,13 @@ class TestTheLayoutOfASplitDeployment:
     def test_a_primary_deployment_bundles_nothing(self):
         """It holds no engine and no rank of its own, so every gpu it reserved would sit idle."""
         assert _get_placement_group_layout(_layout_args(deploy_component="primary")) == (0, 0)
+
+    @pytest.mark.parametrize("deploy_instance", [None, "extra"])
+    def test_an_inference_deployment_bundles_the_engine_gpus_alone(self, deploy_instance):
+        """An engine release carries the same engines the primary would, and never a trainer rank."""
+        args = _layout_args(deploy_component="inference", deploy_instance=deploy_instance)
+
+        assert _get_placement_group_layout(args) == (4, 0)
 
     def test_a_trainer_deployment_of_a_rollout_only_run_bundles_nothing(self):
         """--debug-rollout-only trains nothing, so this release has no rank to place."""
@@ -362,7 +387,9 @@ class TestTheRunWaitsForEveryTrainerItReachesByAddress:
 class _IdentifyingHandle:
     def __init__(self, *, trainer_id: str, run_uuid: str, deploy_component: str, calls: list[tuple[str, str]]) -> None:
         self.trainer_id = trainer_id
-        self.identity = DeploymentIdentity(run_uuid=run_uuid, deploy_component=deploy_component)
+        self.identity = DeploymentIdentity(
+            run_uuid=run_uuid, deploy_component=deploy_component, deploy_instance=trainer_id
+        )
         self.calls = calls
 
     async def get_deployment_identity(self) -> DeploymentIdentity:
