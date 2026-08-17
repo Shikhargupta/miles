@@ -3055,6 +3055,19 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
     return bool(args.ft_components) and args.api_server_port != 0
 
 
+def _resolve_run_uuid(args: argparse.Namespace) -> str:
+    if (given := args.run_uuid) is not None:
+        return validate_run_uuid(given)
+
+    component = DeployComponent(args.deploy_component)
+    assert not (component.is_split() and ClusterBackend(args.cluster_backend) is ClusterBackend.RAY), (
+        f"--deploy-component {component.value} on --cluster-backend {ClusterBackend.RAY.value} needs an explicit "
+        f"--run-uuid: every deployment of a run carries the same one, and only the kubernetes launcher derives it "
+        f"from the run id, so each launch would invent its own and then refuse to talk to the other"
+    )
+    return generate_run_uuid()
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
@@ -3669,7 +3682,7 @@ def miles_validate_args(args):
             )
             args.object_store_backend = ObjectStoreBackend.MOONCAKE.value
 
-    args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
+    args.run_uuid = _resolve_run_uuid(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
