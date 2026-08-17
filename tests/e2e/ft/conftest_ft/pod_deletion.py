@@ -13,7 +13,7 @@ KUBECTL_TIMEOUT_SECONDS: float = 60.0
 
 
 def delete_one_pod_of_cell(*, namespace: str, release: str, cell_id: str, rng: random.Random) -> str:
-    pod_names = _list_pod_names_of_cell(namespace=namespace, release=release, cell_id=cell_id)
+    pod_names = list_pod_names_of_cell(namespace=namespace, release=release, cell_id=cell_id)
     assert pod_names, f"Release {release} has no pod of cell {cell_id} in {namespace}, so there is nothing to delete"
 
     pod_name = rng.choice(pod_names)
@@ -27,7 +27,7 @@ def delete_one_pod_of_cell(*, namespace: str, release: str, cell_id: str, rng: r
     return pod_name
 
 
-def _list_pod_names_of_cell(*, namespace: str, release: str, cell_id: str) -> list[str]:
+def list_pod_names_of_cell(*, namespace: str, release: str, cell_id: str) -> list[str]:
     result = run_process(
         [
             "kubectl",

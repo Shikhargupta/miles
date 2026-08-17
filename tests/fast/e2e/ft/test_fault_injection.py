@@ -764,3 +764,20 @@ def _always_refuse(cell: dict, rng: random.Random) -> None:
 
 def _do_nothing(cell: dict, rng: random.Random) -> None:
     return None
+
+
+class TestKubernetesRolloutFaultForms:
+    def test_a_kubernetes_engine_can_be_crashed_in_place_as_well_as_deleted(self) -> None:
+        """Deleting the pod reschedules it; this is the process-level crash the ray backend already has."""
+        forms = fi.create_cell_fault_forms(base_url="http://control", config=_config(ClusterBackend.KUBERNETES))
+
+        assert [form.name for form in forms[fi.ROLLOUT_CELL_TYPE]] == [
+            fi.EXEC_SIGKILL_FORM_NAME,
+            fi.DELETE_POD_FORM_NAME,
+        ]
+
+    def test_ray_gains_no_exec_form(self) -> None:
+        """There is no pod to reach into, and its engines already take an in-process kill."""
+        forms = fi.create_cell_fault_forms(base_url="http://control", config=_config(ClusterBackend.RAY))
+
+        assert fi.EXEC_SIGKILL_FORM_NAME not in [form.name for form in forms[fi.ROLLOUT_CELL_TYPE]]
