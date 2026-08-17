@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Iterable
 
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import _wrap_ipv6, wait_tcp_ready
+from miles.utils.http_utils import wrap_ipv6, wait_tcp_ready
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
@@ -67,7 +67,7 @@ class StaticWorkerProvider(BaseWorkerProvider):
         )
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
-        return self._addrs_by_worker[worker_name]
+        return self._addrs_of(worker_name)
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not enumerate workers")
@@ -76,9 +76,15 @@ class StaticWorkerProvider(BaseWorkerProvider):
         assert (
             self._worker_class is not None
         ), f"pool {self._pool_id} is launched as a command rather than served, so its rpc methods are unknown"
-        return build_rpc_handle(
-            worker_class=load_function(self._worker_class), addrs=self._addrs_by_worker[worker_name]
+        return build_rpc_handle(worker_class=load_function(self._worker_class), addrs=self._addrs_of(worker_name))
+
+    def _addrs_of(self, worker_name: str) -> NamedHostAndPorts:
+        addrs = self._addrs_by_worker.get(worker_name)
+        assert addrs is not None, (
+            f"{worker_name} is not a worker of pool {self._pool_id}, which addresses "
+            f"{sorted(self._addrs_by_worker)} statically"
         )
+        return addrs
 
 
 async def wait_static_addrs_ready(addrs: Iterable[HostAndPort]) -> None:
@@ -90,4 +96,9 @@ async def wait_static_addrs_ready(addrs: Iterable[HostAndPort]) -> None:
 def parse_host_and_port(addr: str) -> HostAndPort:
     host, separator, port = addr.rpartition(":")
     assert separator and port.isdigit() and "/" not in addr, f"static address {addr!r} must be host:port"
-    return HostAndPort(host=_wrap_ipv6(host), port=int(port))
+    assert host, f"static address {addr!r} names a port but no host to dial it on"
+    assert ":" not in host or (host.startswith("[") and host.endswith("]")), (
+        f"static address {addr!r} reads as a bare ipv6 address, whose own colons cannot be told from the port "
+        f"separator; write it as [{host}]:<port>"
+    )
+    return HostAndPort(host=wrap_ipv6(host), port=int(port))

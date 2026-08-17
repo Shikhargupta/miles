@@ -75,17 +75,17 @@ class TestAddresses:
 
     def test_refuses_a_worker_of_another_pool(self):
         """One provider answers one pool, and guessing across pools would return a plausible wrong host."""
-        with pytest.raises(KeyError, match="inference-router-0-0-0"):
+        with pytest.raises(AssertionError, match="inference-router-0-0-0"):
             asyncio.run(_provider().get_addrs("inference-router-0-0-0"))
 
     def test_refuses_a_worker_the_cell_never_holds(self):
         """A worker index beyond the cell size would be answered with cell zero's ports."""
-        with pytest.raises(KeyError, match="trainer-controller-0-3"):
+        with pytest.raises(AssertionError, match="trainer-controller-0-3"):
             asyncio.run(_provider().get_addrs("trainer-controller-0-3"))
 
     def test_refuses_a_cell_the_run_never_deployed(self):
         """A cell beyond the replica count has no workload object, so its host would never resolve."""
-        with pytest.raises(KeyError, match="trainer-controller-7-0"):
+        with pytest.raises(AssertionError, match="trainer-controller-7-0"):
             asyncio.run(_provider().get_addrs("trainer-controller-7-0"))
 
 
@@ -149,12 +149,12 @@ class TestAddressesGivenExplicitly:
 
     def test_refuses_a_worker_nobody_named(self):
         """Answering an address for an instance that was never given would invent a host out of thin air."""
-        with pytest.raises(KeyError, match=f"{_ADDR_POOL_ID}-3-0"):
+        with pytest.raises(AssertionError, match=f"{_ADDR_POOL_ID}-3-0"):
             asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-3-0"))
 
     def test_refuses_a_second_worker_in_a_cell(self):
         """A statically addressed controller is one process, so worker one of its cell does not exist."""
-        with pytest.raises(KeyError, match=f"{_ADDR_POOL_ID}-0-1"):
+        with pytest.raises(AssertionError, match=f"{_ADDR_POOL_ID}-0-1"):
             asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-0-1"))
 
     def test_builds_an_rpc_handle_on_the_given_address(self):
@@ -217,4 +217,15 @@ class TestParseHostAndPort:
     def test_refuses_an_address_written_as_a_url(self, addr):
         """A scheme is not part of an address here, and silently dropping it would hide a wrong flag value."""
         with pytest.raises(AssertionError, match="host:port"):
+            parse_host_and_port(addr)
+
+    def test_refuses_an_address_that_names_no_host(self):
+        """A port with no host parses cleanly and then dials whatever the empty host resolves to."""
+        with pytest.raises(AssertionError, match="no host"):
+            parse_host_and_port(":8000")
+
+    @pytest.mark.parametrize("addr", ["2001:db8::1", "fd00::1"])
+    def test_refuses_a_bare_ipv6_address_written_without_brackets(self, addr):
+        """Its own colons parse as the port separator, so it becomes a truncated host and a one-digit port."""
+        with pytest.raises(AssertionError, match="ipv6"):
             parse_host_and_port(addr)
