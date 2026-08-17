@@ -2,6 +2,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 import contextlib
+import math
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -28,7 +29,11 @@ from miles.utils.test_utils.comparisons.inference_engine_checksums import (
     assert_engine_weights_moved,
     compare_inference_engine_checksums,
 )
-from miles.utils.test_utils.comparisons.metrics import assert_every_metric_is_classified, compare_metrics
+from miles.utils.test_utils.comparisons.metrics import (
+    assert_every_metric_is_classified,
+    compare_metrics,
+    read_metric_series,
+)
 from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections, assert_reconfigure_events
 
 TEST_NAME: str = "rollout_deterministic"
@@ -37,8 +42,8 @@ COMPARED_METRIC_PREFIXES: tuple[str, ...] = ("train/", "rollout/")
 UNCOMPARED_METRIC_PREFIXES: tuple[str, ...] = ("perf/",)
 SEED: int = 42
 CRASH_INTERVAL_SECONDS: float = 120.0
-INJECTOR_STOP_TIMEOUT_SECONDS: float = 5.0
 HEALTH_CHECK_INTERVAL_SECONDS: float = 5.0
+MIN_TRAINED_ROLLOUTS: int = 2
 
 
 def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
@@ -57,6 +62,7 @@ def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> 
     args += "--sglang-disable-radix-cache "
     args += f"--rollout-health-check-interval {HEALTH_CHECK_INTERVAL_SECONDS} "
     args += get_true_on_policy_args(mode)
+    args += "--weight-decay 0 "
     args += get_train_env_vars_arg(mode, deterministic=True)
     return args
 
@@ -77,7 +83,7 @@ def _inject_rollout_faults(
     try:
         yield
     finally:
-        injector.stop_and_join(timeout_seconds=INJECTOR_STOP_TIMEOUT_SECONDS)
+        injector.stop_and_join()
 
     assert_min_soak_injections(
         compute_num_injections(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
@@ -93,9 +99,10 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     for side_dir in (baseline_dir, target_dir):
         assert_reconfigure_events(Path(f"{side_dir}/events"), expected=[])
 
-    assert_every_metric_is_classified(
-        baseline_dir, compared=COMPARED_METRIC_PREFIXES, ignored=UNCOMPARED_METRIC_PREFIXES
-    )
+    for side_dir in (baseline_dir, target_dir):
+        assert_every_metric_is_classified(
+            side_dir, compared=COMPARED_METRIC_PREFIXES, ignored=UNCOMPARED_METRIC_PREFIXES
+        )
     compare_metrics(
         baseline_dir=baseline_dir,
         target_dir=target_dir,
@@ -117,8 +124,19 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
 
     for side, side_dir in (("baseline", baseline_dir), ("target", target_dir)):
         assert_engine_weights_moved(side=side, dump_dir=side_dir)
+        _assert_gradients_were_nonzero(side=side, dump_dir=side_dir)
 
     print("Rollout ft deterministic comparison test PASSED")
+
+
+def _assert_gradients_were_nonzero(*, side: str, dump_dir: str) -> None:
+    series = read_metric_series(dump_dir, key="train/grad_norm")
+    usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
+
+    assert len(usable) >= MIN_TRAINED_ROLLOUTS, (
+        f"{side}: train/grad_norm is finite and non-zero in only {len(usable)} of {len(series)} rollout(s) "
+        f"({series}), so this run's weights could have moved on weight decay alone"
+    )
 
 
 app, run_ci = create_comparison_app_and_run_ci(
