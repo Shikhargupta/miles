@@ -19,13 +19,7 @@ from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput, RolloutFnTrainOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function_async
 from miles.rollout.tinker_backend.operation_port import StaleBindingError, TransientOperationPortError
-from miles.rollout.tinker_backend.rollout_fn import (
-    AdapterRolloutRuntime,
-    QueueChildRolloutFn,
-    TinkerOperationBatchAdapter,
-    TinkerOperationSource,
-    TinkerRolloutFn,
-)
+from miles.rollout.tinker_backend.rollout_fn import AdapterRolloutRuntime, ClaimedOperationBatch, TinkerRolloutFn
 from miles.utils.tinker_backend import BatchExecutionLease, EmptyBatchTimeoutError
 
 
@@ -34,14 +28,20 @@ def make_run(name="X", reg="rx", slot=3, version=2) -> AdapterRun:
     return AdapterRun(name=name, config=config, slot=slot, version=version, registration_id=reg)
 
 
-def make_child(run: AdapterRun, operations) -> QueueChildRolloutFn:
-    source = TinkerOperationSource(SimpleNamespace(), run)
-    return QueueChildRolloutFn(RolloutFnConstructorInput(args=source.args, data_source=source), operations)
+def claim_batch(run: AdapterRun, operations) -> ClaimedOperationBatch:
+    """Drive the adapter's claim path for one registration runtime."""
+    fn = TinkerRolloutFn(
+        RolloutFnConstructorInput(args=SimpleNamespace(), data_source=None),
+        operations=operations,
+        residency=FakeResidency(),
+        abort=FakeBatchAbort(),
+    )
+    return asyncio.run(fn._claim_batch(AdapterRolloutRuntime(run)))
 
 
 def sample_payload(n=2) -> dict:
     return {
-        "batch_id": "batch-7",
+        "batch_id": "batch-7",  # client-side bookkeeping key the server ignores
         "samples": [
             {"prompt": "p", "tokens": [1, 2, 3, 4], "response_length": 2, "loss_mask": [1, 1]} for _ in range(n)
         ],
@@ -116,9 +116,9 @@ def op(op_id="op1", kind="forward_backward", payload=None, slot=3):
     )
 
 
-class TestQueueChild:
+class TestClaimBatch:
     def test_one_operation_becomes_one_stamped_batch(self):
-        output = asyncio.run(make_child(make_run(), FakeOperationQueue([op()]))(RolloutFnTrainInput(rollout_id=0)))
+        output = claim_batch(make_run(), FakeOperationQueue([op()]))
 
         assert len(output.samples) == 2 and all(len(group) == 1 for group in output.samples)
         stamped = output.samples[0][0]
@@ -127,13 +127,11 @@ class TestQueueChild:
         assert stamped.metadata["team"] == "t1"  # run metadata merged in
         assert stamped.status == stamped.Status.COMPLETED
         assert [group[0].index for group in output.samples] == [0, 1]  # result-plane row identity
-        assert output.metadata == dict(
-            operation_id="op1",
-            operation_kind="forward_backward",
-            batch_id="batch-7",
-            loss_spec={"loss_fn": "cross_entropy"},
-            binding=ResidentBinding(registration_key=("X", "rx"), training_slot=3),
-        )
+        assert isinstance(output, ClaimedOperationBatch)
+        assert output.operation_id == "op1"
+        assert output.kind == "forward_backward"
+        assert output.loss_spec == {"loss_fn": "cross_entropy"}
+        assert output.binding == ResidentBinding(registration_key=("X", "rx"), training_slot=3)
 
     def test_client_supplied_row_index_is_overwritten(self):
         # index is server-owned: a client -1 would alias the DP-padding
@@ -143,72 +141,66 @@ class TestQueueChild:
         payload["samples"][0]["index"] = -1
         payload["samples"][1]["index"] = 0
         queue = FakeOperationQueue([op(payload=payload)])
-        output = asyncio.run(make_child(make_run(), queue)(RolloutFnTrainInput(rollout_id=0)))
+        output = claim_batch(make_run(), queue)
         assert [group[0].index for group in output.samples] == [0, 1]
 
     def test_child_waits_for_a_claim(self, fast_poll):
         queue = FakeOperationQueue([None, None, op()])
-        output = asyncio.run(make_child(make_run(), queue)(RolloutFnTrainInput(rollout_id=0)))
-        assert output.metadata["operation_id"] == "op1"
+        output = claim_batch(make_run(), queue)
+        assert output.operation_id == "op1"
 
     def test_bad_payload_fails_its_operation_and_the_child_continues(self):
         queue = FakeOperationQueue([op("bad", payload={"samples": []}), op("good")])
-        output = asyncio.run(make_child(make_run(), queue)(RolloutFnTrainInput(rollout_id=0)))
+        output = claim_batch(make_run(), queue)
 
-        assert output.metadata["operation_id"] == "good"
+        assert output.operation_id == "good"
         [(failed_id, error, category)] = queue.failed
         assert failed_id == "bad" and category == "user" and "no samples" in error
 
     def test_forward_operations_build_batches_too(self):
         payload = {"samples": [{"prompt": "p", "tokens": [1, 2], "response_length": 1, "loss_mask": [1]}]}
         queue = FakeOperationQueue([op("fwd", kind="forward", payload=payload)])
-        output = asyncio.run(make_child(make_run(), queue)(RolloutFnTrainInput(rollout_id=0)))
-        assert output.metadata["operation_kind"] == "forward"
-        assert output.metadata["loss_spec"] is None
+        output = claim_batch(make_run(), queue)
+        assert output.kind == "forward"
+        assert output.loss_spec is None
         assert queue.failed == []
 
 
-def ready_runtime(fn: TinkerOperationBatchAdapter, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
+def ready_runtime(fn: TinkerRolloutFn, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
     # The runtime's stamped slot (9) is deliberately stale: the claim's
     # binding, not the long-lived AdapterRun view, is the dispatch truth.
     run = make_run(name=name, reg=f"r-{name}", slot=9)
-    runtime = AdapterRolloutRuntime(fn.args, run)
+    runtime = AdapterRolloutRuntime(run)
     runtime.state = AdapterRolloutRuntime.READY
-    runtime.ready_output = RolloutFnTrainOutput(
+    runtime.ready_output = ClaimedOperationBatch(
+        operation_id=f"op-{name}",
+        kind=kind,
+        loss_spec=None,
+        binding=ResidentBinding(registration_key=(name, f"r-{name}"), training_slot=slot),
         samples=[[SimpleNamespace(adapter=None, metadata={})]],
-        metadata=dict(
-            operation_id=f"op-{name}",
-            operation_kind=kind,
-            loss_spec=None,
-            binding=ResidentBinding(registration_key=(name, f"r-{name}"), training_slot=slot),
-        ),
     )
-    fn.runtimes[runtime.tenant] = runtime
+    fn.runtimes[(run.name, run.registration_id)] = runtime
     fn._sync_rotation()
     return runtime
 
 
-def merge(fn: TinkerOperationBatchAdapter, selected) -> RolloutFnTrainOutput:
+def merge(fn: TinkerRolloutFn, selected) -> RolloutFnTrainOutput:
     return asyncio.run(fn._merge(selected))
 
 
-def make_fn(soft_target=100) -> TinkerOperationBatchAdapter:
+def make_fn(soft_target=100) -> TinkerRolloutFn:
     args = SimpleNamespace(
         rollout_batch_size=soft_target,
         n_samples_per_prompt=1,
         tinker_max_coalesce_wait_s=0.05,
         tinker_max_empty_wait_s=0.05,
     )
-    return TinkerOperationBatchAdapter(
+    return TinkerRolloutFn(
         RolloutFnConstructorInput(args=args, data_source=None),
         operations=FakeOperationQueue(),
         residency=FakeResidency(),
         abort=FakeBatchAbort(),
     )
-
-
-def test_the_historical_import_path_is_an_alias():
-    assert TinkerRolloutFn is TinkerOperationBatchAdapter
 
 
 class TestSelectionKindLock:
@@ -464,7 +456,7 @@ class TestStaleBindingTerminalization:
             tinker_max_coalesce_wait_s=0.05,
             tinker_max_empty_wait_s=2.0,
         )
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=KeyedQueue({"A": keyed_op("A", 0), "B": keyed_op("B", 1)}),
             residency=StaleSetResidency(["op-A"]),
@@ -501,7 +493,7 @@ class TestTransientChildRecovery:
             tinker_max_coalesce_wait_s=0.02,
             tinker_max_empty_wait_s=0.15,
         )
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=FlakyOnceQueue(),
             residency=FakeResidency(),
@@ -542,19 +534,19 @@ class TestTransientChildRecovery:
         class FailsOnce:
             calls = 0
 
-            async def __call__(self, _input):
+            async def claim_data(self, _key):
                 type(self).calls += 1
                 raise RuntimeError("claim RPC response lost")
 
-        runtime.child_fn = FailsOnce()
+        fn.operations = FailsOnce()
         runtime.state = AdapterRolloutRuntime.IN_FLIGHT
-        asyncio.run(fn._run_child(runtime, rollout_id=0))
+        asyncio.run(fn._run_child(runtime))
         assert runtime.state == AdapterRolloutRuntime.FAILED
 
         async def cycles():
-            for cycle in range(3):
+            for _cycle in range(3):
                 await fn._reconcile({"A": run})
-                fn._launch_idle_children(rollout_id=1 + cycle)
+                fn._launch_idle_children()
 
         asyncio.run(cycles())
         assert fn.runtimes[("A", "rid-A")] is runtime
@@ -575,7 +567,7 @@ class TestClaimSafeClose:
             tinker_max_empty_wait_s=1.0,
         )
         queue = FakeOperationQueue(claims=[op()], ready={"X": make_run()})
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=queue,
             residency=FakeResidency(),
@@ -587,7 +579,7 @@ class TestClaimSafeClose:
         async def scenario():
             fn = self._adapter_with_ready_claim()
             await fn._reconcile(await fn.operations.ready_streams())
-            fn._launch_idle_children(rollout_id=0)
+            fn._launch_idle_children()
             for _ in range(200):
                 if any(r.state == AdapterRolloutRuntime.READY for r in fn.runtimes.values()):
                     break
@@ -635,7 +627,7 @@ class TestClaimSafeClose:
             tinker_max_empty_wait_s=1.0,
         )
         queue = BlockedQueue()
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=queue,
             residency=FakeResidency(),
@@ -644,7 +636,7 @@ class TestClaimSafeClose:
 
         async def scenario():
             await fn._reconcile(await fn.operations.ready_streams())
-            fn._launch_idle_children(rollout_id=0)
+            fn._launch_idle_children()
             await asyncio.wait_for(queue.entered.wait(), timeout=2.0)
             await fn.aclose()
             assert fn.abort.aborts == []  # nothing claimed, nothing aborted
@@ -679,7 +671,7 @@ class TestCallerCancellation:
             tinker_max_empty_wait_s=30.0,
         )
         queue = GatedQueue()
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=queue,
             residency=FakeResidency(),
@@ -730,7 +722,7 @@ class TestSelectionWakeup:
             tinker_max_coalesce_wait_s=0.02,
             tinker_max_empty_wait_s=5.0,
         )
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=FakeOperationQueue(),
             residency=FakeResidency(),

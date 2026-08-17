@@ -1,19 +1,19 @@
-"""Tinker rollout frontend: one child per registration, each child turning one
-claimed client operation into one complete batch. The wrapper selects whole
-child batches with a persistent round-robin under a KIND LOCK — a selection is
-all forward_backward or all forward, never mixed — and the BatchPlan, shipped
-already converted as the output's conversion-metadata contribution, is the
-only rollout-to-train control plane.
+"""Tinker rollout frontend: one claim task per registration, each turning one
+claimed client operation into one complete batch. The adapter selects whole
+claimed batches with a persistent round-robin under a KIND LOCK — a selection
+is all forward_backward or all forward, never mixed — and the BatchPlan,
+shipped already converted as the output's conversion-metadata contribution, is
+the only rollout-to-train control plane.
 
 Nothing here generates: data operations arrive fully tokenized from the
 client, and sampling happens against the router directly.
 """
 
 import asyncio
-import copy
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 from miles.ray.tinker_backend.config import AdapterRun
@@ -22,7 +22,6 @@ from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnHandoff,
     RolloutFnInput,
-    RolloutFnTrainInput,
     RolloutFnTrainOutput,
     RolloutPostprocessOptions,
 )
@@ -106,38 +105,59 @@ Tenant = tuple[str, str]
 DATA_OPERATION_KINDS = ("forward_backward", "forward")
 
 
-class TinkerOperationSource:
-    """Per-registration stand-in for a data source: tinker adapters have no
-    dataset, so this only carries the child args and the current run view used
-    for stamping serving identity."""
+@dataclass(frozen=True)
+class ClaimedOperationBatch:
+    """One claimed client operation, decoded and stamped into a complete batch
+    (external review 0813 §6.5): the single typed claim result that flows from
+    the claim path through READY state and selection into the merge. The
+    binding is the claim's fixed execution binding, resolved atomically with
+    the claim (claim-and-bind) — the one dispatch truth; the long-lived
+    runtime's AdapterRun view never is."""
 
-    def __init__(self, args, run: AdapterRun):
-        self.args = copy.copy(args)
-        self.run = run
+    operation_id: str
+    kind: str
+    loss_spec: dict | None
+    binding: Any  # duck-typed port binding; production ships ResidentBinding
+    samples: list[list[Sample]]
 
-    def refresh(self, run: AdapterRun) -> None:
-        """Serving version advances between batches; identity stays fixed."""
-        self.run = run
 
-    def stamp(self, groups: list[list[Sample]]) -> list[list[Sample]]:
-        run = self.run
-        ref = AdapterRef(
-            name=run.name,
-            registration_id=run.registration_id,
-            serving_version=run.version,
-            slot=run.slot,
-        )
-        for group in groups:
-            for sample in group:
-                sample.adapter = ref
-                sample.metadata = {**run.config.metadata, **sample.metadata}
-        return groups
-
-    def save(self, rollout_id) -> None:
-        pass
-
-    def load(self, rollout_id=None) -> None:
-        pass
+def decode_operation(operation: dict, run: AdapterRun) -> ClaimedOperationBatch:
+    """Decode one claimed operation into its stamped ClaimedOperationBatch:
+    validate the data kind and payload, assign server-owned row indices, and
+    stamp the registration's CURRENT serving identity (the version advances
+    between batches; identity stays fixed) onto every sample."""
+    if operation["kind"] not in DATA_OPERATION_KINDS:
+        raise ValueError(f"operation kind '{operation['kind']}' is not a data operation")
+    payload = operation.get("payload") or {}
+    raw_samples = payload.get("samples")
+    if not raw_samples:
+        raise ValueError(f"{operation['kind']} payload carries no samples")
+    ref = AdapterRef(
+        name=run.name,
+        registration_id=run.registration_id,
+        serving_version=run.version,
+        slot=run.slot,
+    )
+    groups: list[list[Sample]] = []
+    for i, raw in enumerate(raw_samples):
+        raw = dict(raw)
+        raw.setdefault("status", Sample.Status.COMPLETED.value)
+        # Row identity within the operation is server-owned: the result
+        # plane returns per-datum logprobs in this order, and a negative
+        # index is the DP-padding sentinel — a client-supplied value could
+        # alias it (rows silently dropped) or collide in the collector.
+        raw["index"] = i
+        sample = Sample.from_dict(raw)
+        sample.adapter = ref
+        sample.metadata = {**run.config.metadata, **sample.metadata}
+        groups.append([sample])
+    return ClaimedOperationBatch(
+        operation_id=operation["operation_id"],
+        kind=operation["kind"],
+        loss_spec=payload.get("loss"),
+        binding=operation["binding"],
+        samples=groups,
+    )
 
 
 class TinkerNullDataSource:
@@ -163,67 +183,9 @@ class TinkerNullDataSource:
         pass
 
 
-class QueueChildRolloutFn:
-    """Awaits the registration's next data-bearing operation and returns it as
-    one complete batch. Blocking while the client queue is idle is normal: the
-    runtime simply stays IN_FLIGHT and other adapters keep training. Claims go
-    through the injected OperationQueuePort — this class knows no Ray."""
-
-    def __init__(self, input: RolloutFnConstructorInput, operations: OperationQueuePort | None = None):
-        assert isinstance(input.data_source, TinkerOperationSource)
-        self.source: TinkerOperationSource = input.data_source
-        self.operations = operations if operations is not None else RayTinkerOperationQueue()
-
-    async def __call__(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
-        key = (self.source.run.name, self.source.run.registration_id)
-        while True:
-            operation = await self.operations.claim_data(key)
-            if operation is None:
-                await asyncio.sleep(_CLAIM_POLL_S)
-                continue
-            try:
-                return self._batch_from_operation(operation)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001 - a bad payload fails its op, not the adapter
-                logger.exception(f"[tinker] ({key[0]}) operation '{operation['operation_id']}' rejected: {e}")
-                await self.operations.fail(operation["operation_id"], f"invalid operation payload: {e}", "user")
-
-    def _batch_from_operation(self, operation: dict) -> RolloutFnTrainOutput:
-        if operation["kind"] not in DATA_OPERATION_KINDS:
-            raise ValueError(f"operation kind '{operation['kind']}' is not a data operation")
-        payload = operation.get("payload") or {}
-        raw_samples = payload.get("samples")
-        if not raw_samples:
-            raise ValueError(f"{operation['kind']} payload carries no samples")
-        groups: list[list[Sample]] = []
-        for i, raw in enumerate(raw_samples):
-            raw = dict(raw)
-            raw.setdefault("status", Sample.Status.COMPLETED.value)
-            # Row identity within the operation is server-owned: the result
-            # plane returns per-datum logprobs in this order, and a negative
-            # index is the DP-padding sentinel — a client-supplied value could
-            # alias it (rows silently dropped) or collide in the collector.
-            raw["index"] = i
-            groups.append([Sample.from_dict(raw)])
-        return RolloutFnTrainOutput(
-            samples=self.source.stamp(groups),
-            metadata=dict(
-                operation_id=operation["operation_id"],
-                operation_kind=operation["kind"],
-                batch_id=payload.get("batch_id"),
-                loss_spec=payload.get("loss"),
-                # Fixed binding resolved atomically with the claim (claim-and-
-                # bind); the long-lived runtime's AdapterRun.slot is never the
-                # dispatch truth.
-                binding=operation["binding"],
-            ),
-        )
-
-
 class AdapterRolloutRuntime:
-    """One per registration: at most one in-flight child call and one ready
-    output."""
+    """One per registration: at most one in-flight child claim task and one
+    ready output."""
 
     IDLE = "IDLE"
     IN_FLIGHT = "IN_FLIGHT"
@@ -231,13 +193,10 @@ class AdapterRolloutRuntime:
     SELECTED = "SELECTED"
     FAILED = "FAILED"
 
-    def __init__(self, args, run: AdapterRun, operations: OperationQueuePort | None = None):
+    def __init__(self, run: AdapterRun):
         self.run = run
-        self.data_source = TinkerOperationSource(args, run)
-        child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
-        self.child_fn = QueueChildRolloutFn(child_input, operations)
         self.state = self.IDLE
-        self.ready_output: RolloutFnTrainOutput | None = None
+        self.ready_output: ClaimedOperationBatch | None = None
         self.task: asyncio.Task | None = None
         # Known-transient failure recovery: consecutive-failure count and the
         # monotonic deadline before which an IDLE runtime is not relaunched.
@@ -245,18 +204,14 @@ class AdapterRolloutRuntime:
         self.retry_at = 0.0
 
     @property
-    def tenant(self) -> Tenant:
-        return (self.run.name, self.run.registration_id)
-
-    @property
     def ready_kind(self) -> str | None:
         if self.ready_output is None:
             return None
-        return self.ready_output.metadata["operation_kind"]
+        return self.ready_output.kind
 
     def refresh(self, run: AdapterRun) -> None:
+        """Serving version advances between batches; identity stays fixed."""
         self.run = run
-        self.data_source.refresh(run)
 
     async def aclose(self) -> None:
         if self.task is not None and not self.task.done():
@@ -268,7 +223,7 @@ class AdapterRolloutRuntime:
         self.task = None
 
 
-class TinkerOperationBatchAdapter:
+class TinkerRolloutFn:
     """Operation-to-batch adapter (codex-rollout-fullparameter-design-0810
     §4.5): turns claimed client operations into whole training batches —
     persistent round-robin, homogeneous kind lock, coalesce timeout,
@@ -276,8 +231,8 @@ class TinkerOperationBatchAdapter:
     BatchResidencyPort), so a future RolloutExecutor loads this adapter
     unchanged and unit tests need no Ray — "unchanged" is the executor/Ray
     boundary only. The adapter is NOT parameterization-neutral: its runtimes
-    build ``TinkerOperationSource``/``AdapterRun`` views and stamp samples
-    with ``AdapterRef``, so a full-parameter deployment reuses the operation/
+    hold ``AdapterRun`` views and the claim path stamps samples with
+    ``AdapterRef``, so a full-parameter deployment reuses the operation/
     result semantics but still needs a small sample-stamping extraction here
     (external review 0811: soften, do not pre-build the hook).
 
@@ -305,16 +260,16 @@ class TinkerOperationBatchAdapter:
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
         if input.evaluation:
-            raise ValueError(
-                "TinkerOperationBatchAdapter does not serve eval; tinker runs have no server-side eval loop"
-            )
+            raise ValueError("TinkerRolloutFn does not serve eval; tinker runs have no server-side eval loop")
         if self._closed:
-            raise RuntimeError("TinkerOperationBatchAdapter is closed; no new claim work may start")
-        adapters = await self._trainable_adapters()
+            raise RuntimeError("TinkerRolloutFn is closed; no new claim work may start")
+        # READY streams only: a retiring registration's queued operations are
+        # fenced terminal, so a child claim would never return for it.
+        adapters = await self.operations.ready_streams()
         await self._reconcile(adapters)
         refusal: StaleBindingError | None = None
         for _ in range(_MAX_STALE_RESELECTS):
-            self._launch_idle_children(input.rollout_id)
+            self._launch_idle_children()
             selected = await self._select()
             try:
                 return await self._merge(selected)
@@ -341,7 +296,7 @@ class TinkerOperationBatchAdapter:
             output = runtime.ready_output
             if output is None:
                 continue
-            operation_id = output.metadata["operation_id"]
+            operation_id = output.operation_id
             try:
                 await self.abort.abort_batch(
                     [operation_id],
@@ -376,11 +331,6 @@ class TinkerOperationBatchAdapter:
 
     # ------------------------------ runtimes ------------------------------
 
-    async def _trainable_adapters(self) -> dict[str, AdapterRun]:
-        # READY only: a retiring registration's queued operations are fenced
-        # terminal, so a child claim would never return for it.
-        return await self.operations.ready_streams()
-
     async def _reconcile(self, adapters: dict[str, AdapterRun]) -> None:
         live = {(name, run.registration_id) for name, run in adapters.items()}
         for tenant in [t for t in self.runtimes if t not in live]:
@@ -393,7 +343,7 @@ class TinkerOperationBatchAdapter:
             if tenant in self.runtimes:
                 self.runtimes[tenant].refresh(run)
                 continue
-            self.runtimes[tenant] = AdapterRolloutRuntime(self.args, run, self.operations)
+            self.runtimes[tenant] = AdapterRolloutRuntime(run)
             logger.info(f"[tinker] created child runtime for '{name}' ({run.registration_id[:8]})")
         self._sync_rotation()
 
@@ -409,7 +359,7 @@ class TinkerOperationBatchAdapter:
                 kept.append(tenant)
         self.rotation = kept
 
-    def _launch_idle_children(self, rollout_id: int) -> None:
+    def _launch_idle_children(self) -> None:
         if self._closed:
             return
         now = time.monotonic()
@@ -422,13 +372,31 @@ class TinkerOperationBatchAdapter:
                 # driver yields to its control phase and calls again).
                 continue
             runtime.state = AdapterRolloutRuntime.IN_FLIGHT
-            runtime.task = asyncio.create_task(self._run_child(runtime, rollout_id))
+            runtime.task = asyncio.create_task(self._run_child(runtime))
 
-    async def _run_child(self, runtime: AdapterRolloutRuntime, rollout_id: int) -> None:
+    async def _claim_batch(self, runtime: AdapterRolloutRuntime) -> ClaimedOperationBatch:
+        """Await the registration's next data-bearing operation and decode it
+        into one complete stamped batch (0813 review §6.5). Blocking while the
+        client queue is idle is normal: the runtime simply stays IN_FLIGHT and
+        other adapters keep training. A malformed payload fails its own
+        operation — never the adapter — and the claim loop continues."""
+        key = (runtime.run.name, runtime.run.registration_id)
+        while True:
+            operation = await self.operations.claim_data(key)
+            if operation is None:
+                await asyncio.sleep(_CLAIM_POLL_S)
+                continue
+            try:
+                return decode_operation(operation, runtime.run)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - a bad payload fails its op, not the adapter
+                logger.exception(f"[tinker] ({key[0]}) operation '{operation['operation_id']}' rejected: {e}")
+                await self.operations.fail(operation["operation_id"], f"invalid operation payload: {e}", "user")
+
+    async def _run_child(self, runtime: AdapterRolloutRuntime) -> None:
         try:
-            output = await runtime.child_fn(RolloutFnTrainInput(rollout_id=rollout_id))
-            if not output.samples:
-                raise ValueError(f"child for '{runtime.run.name}' returned an empty batch")
+            output = await self._claim_batch(runtime)
             runtime.transient_failures = 0
             runtime.retry_at = 0.0
             runtime.ready_output = output
@@ -547,26 +515,24 @@ class TinkerOperationBatchAdapter:
         # output).
         try:
             for runtime in selected:
-                output = runtime.ready_output
-                run = runtime.run
-                data.extend(output.samples)
+                claim = runtime.ready_output
+                data.extend(claim.samples)
                 # The claim's binding is the dispatch truth (resolved
                 # atomically with the claim); the runtime's AdapterRun view
                 # only names the metrics stream.
-                binding = output.metadata["binding"]
-                name, registration_id = binding.registration_key
+                name, registration_id = claim.binding.registration_key
                 batch_plan.append(
                     dict(
                         name=name,
                         registration_id=registration_id,
-                        operation_id=output.metadata["operation_id"],
-                        operation_kind=output.metadata["operation_kind"],
-                        loss_spec=output.metadata.get("loss_spec"),
-                        sample_count=sum(len(group) for group in output.samples),
-                        binding=binding,
+                        operation_id=claim.operation_id,
+                        operation_kind=claim.kind,
+                        loss_spec=claim.loss_spec,
+                        sample_count=sum(len(group) for group in claim.samples),
+                        binding=claim.binding,
                     )
                 )
-                metrics[f"{run.name}/operation_samples"] = sum(len(group) for group in output.samples)
+                metrics[f"{runtime.run.name}/operation_samples"] = sum(len(group) for group in claim.samples)
             # One immutable dispatch receipt for the whole selection: the
             # controller re-validates exact slot ownership before issuing it.
             lease = await self._acquire_batch_with_retry(batch_plan)
@@ -620,10 +586,10 @@ class TinkerOperationBatchAdapter:
         receipts are discarded (fixed residency reserves nothing — a paged
         residency will need a release verb on this path)."""
         for runtime in selected:
-            metadata = runtime.ready_output.metadata
-            operation_id = metadata["operation_id"]
+            claim = runtime.ready_output
+            operation_id = claim.operation_id
             try:
-                await self.residency.acquire_batch([(operation_id, metadata["binding"])])
+                await self.residency.acquire_batch([(operation_id, claim.binding)])
             except StaleBindingError as probe:
                 try:
                     await self.abort.abort_batch(
@@ -671,8 +637,3 @@ class TinkerOperationBatchAdapter:
                 }
             ),
         )
-
-
-# Stable import path: --rollout-function-path defaults keep working, and the
-# historical name survives as an alias of the adapter it always was.
-TinkerRolloutFn = TinkerOperationBatchAdapter

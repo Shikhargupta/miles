@@ -7,7 +7,7 @@ would be orphaned with the exception.
 
 Driven end-to-end through the production manager ``generate()`` implementation
 (the raw class behind ``@ray.remote``, in-process so monkeypatch reaches its
-dependencies) with a REAL TinkerOperationBatchAdapter on fake ports — no Ray.
+dependencies) with a REAL TinkerRolloutFn on fake ports — no Ray.
 """
 
 from types import SimpleNamespace
@@ -24,7 +24,7 @@ import miles.ray.rollout.rollout_manager as rollout_manager_module
 from miles.ray.tinker_backend.config import AdapterRun, AdapterRunConfig
 from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
-from miles.rollout.tinker_backend.rollout_fn import TinkerOperationBatchAdapter
+from miles.rollout.tinker_backend.rollout_fn import TinkerRolloutFn
 from miles.utils import object_store
 from miles.utils.tinker_backend import BatchExecutionLease
 
@@ -172,7 +172,7 @@ def make_manager(args, rollout_fn) -> object:
 
 def make_adapter(args, operation, abort=None):
     queue = OneShotQueue(operation)
-    adapter = TinkerOperationBatchAdapter(
+    adapter = TinkerRolloutFn(
         RolloutFnConstructorInput(args=args, data_source=None),
         operations=queue,
         residency=RecordingResidency(),
@@ -354,7 +354,7 @@ class TestDisposeClosesTheRolloutFn:
 
         # Park a real claimed-but-undispatched batch in the adapter.
         await adapter._reconcile(await queue.ready_streams())
-        adapter._launch_idle_children(rollout_id=0)
+        adapter._launch_idle_children()
         for _ in range(200):
             if any(r.ready_output is not None for r in adapter.runtimes.values()):
                 break
