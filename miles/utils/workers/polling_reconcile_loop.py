@@ -20,7 +20,7 @@ class PollingReconcileLoop:
         # the initial sync must complete (and raise on failure) before the watch is considered established
         await self._poll_once(reconcile, seen_infos=seen_infos)
         task = asyncio.create_task(self._watch_loop(reconcile, seen_infos))
-        return partial(_cancel_and_await_task, task)
+        return partial(cancel_and_await_task, task)
 
     async def _watch_loop(self, reconcile: CellReconcileFn, seen_infos: dict[str, CellInfo]) -> None:
         while True:
@@ -43,7 +43,7 @@ class PollingReconcileLoop:
                 seen_infos[cell_id] = observed_info
 
 
-async def _cancel_and_await_task(task) -> None:
+async def cancel_and_await_task(task) -> None:
     task.cancel()
     try:
         await task
