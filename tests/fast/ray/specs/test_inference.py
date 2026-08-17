@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import shlex
 import sys
 from argparse import Namespace
@@ -20,6 +21,7 @@ from miles.ray.specs.inference import (
     _compute_session_server_primary_port_info,
     _compute_spec_router,
     compute_engine_pool_ids,
+    compute_inference_controller_provider,
     compute_inference_engine_env_vars,
     compute_router_pool_id,
     inference_controller_worker_name,
@@ -33,7 +35,15 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.build
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import parse_config_argv
-from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerCtorContext, WorkerMetaContext
+from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.worker_provider.static import StaticWorkerProvider
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    HostAndPort,
+    LaunchCommandContext,
+    WorkerCtorContext,
+    WorkerMetaContext,
+)
 
 
 def _controller_layout() -> LaunchPlan:
@@ -817,3 +827,66 @@ class TestRegistrationWiring:
     @staticmethod
     def _ctor_context(capability: FakeBackendCapability) -> WorkerCtorContext:
         return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+    def test_a_run_serving_its_own_engines_keeps_the_engine_provider_it_always_had(self, tmp_path):
+        """Every unsplit run must reach its own engines exactly as it did before registration existed."""
+        args = self._args(tmp_path)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert not isinstance(kwargs["engine_provider"], RegistrationHub)
+
+    def test_a_run_that_deploys_no_engines_of_its_own_serves_from_the_registered_ones(self, tmp_path):
+        """The rest of the run must not know which deployment launched an engine it generates from."""
+        args = self._args(tmp_path, deploy_component="primary")
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert isinstance(kwargs["engine_provider"], RegistrationHub)
+
+    def test_an_engine_deployment_reports_into_the_controller_it_was_given(self, tmp_path):
+        """It derives no name of another release, so this address is the only way it finds the run."""
+        args = self._args(
+            tmp_path,
+            deploy_component="inference",
+            inference_controller_addr="controller:9000",
+        )
+        capability = FakeBackendCapability(cells_provider=object())
+
+        provider = compute_inference_controller_provider(args, capability=capability)
+
+        assert isinstance(provider, StaticWorkerProvider)
+        addrs = asyncio.run(provider.get_addrs(f"{INFERENCE_CONTROLLER_POOL_ID}-0-0"))
+        assert addrs[RPC_PORT_NAME] == HostAndPort(host="controller", port=9000)
+        assert capability.requested_static_pool_ids == []
+
+    def test_a_run_that_holds_its_controller_addresses_it_by_its_own_release(self, tmp_path):
+        """Naming another release's pods from here is exactly what a split run may not do."""
+        args = self._args(tmp_path)
+        capability = FakeBackendCapability(static_provider=object())
+
+        compute_inference_controller_provider(args, capability=capability)
+
+        assert capability.requested_static_pool_ids == [INFERENCE_CONTROLLER_POOL_ID]
+
+    def test_the_engine_pools_of_an_engine_deployment_are_born_naming_that_deployment(self, tmp_path):
+        """Two engine groups of one run install the same pools, and a shared name would collide in the run."""
+        args = self._args(tmp_path, deploy_component="inference", deploy_instance_id="west")
+
+        assert compute_engine_pool_ids(args) == ["inference-engine-west-0-0"]
+
+    def test_an_unsplit_run_names_its_engine_pools_exactly_as_it_always_did(self, tmp_path):
+        """It deploys one group of engines, so there is nothing to tell apart and no name may move."""
+        assert compute_engine_pool_ids(self._args(tmp_path)) == ["inference-engine-all-0-0"]
+
+    def test_an_engine_deployment_names_its_pools_after_the_instance_it_deploys(self, tmp_path):
+        """Two engine groups of one run install the same pools, and a shared name would collide in the run."""
+        args = self._args(tmp_path, deploy_component="inference", deploy_instance_id="west")
+
+        assert compute_engine_pool_ids(args) == ["inference-engine-west-0-0"]
+
+    def test_a_run_deploying_its_own_engines_names_its_pools_after_the_component(self, tmp_path):
+        """Every pool id carries a segment, so the unsplit run falls back to the component it deploys."""
+        assert compute_engine_pool_ids(self._args(tmp_path)) == ["inference-engine-all-0-0"]
