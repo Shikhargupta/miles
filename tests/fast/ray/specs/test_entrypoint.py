@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.ray.rollout.conftest import make_args, make_args_with_sglang_config, make_sglang_config_yaml
 
 from miles.ray.specs.entrypoint import compute_specs
@@ -142,3 +143,42 @@ class TestDeployComponentFiltering:
         ]
 
         assert sorted(whole) == sorted(parts)
+
+    def test_a_named_trainer_deployment_holds_the_one_trainer_its_arguments_describe(self, tmp_path):
+        """Its arguments give one model's configuration, so the instance names the release and selects nothing."""
+        args = self._args(
+            tmp_path,
+            deploy_component="trainer",
+            deploy_instance_id="a-actor",
+            use_critic=False,
+            megatron_config=encode_megatron_config("a"),
+        )
+
+        specs = compute_specs(args)
+
+        assert [spec.name for spec in specs] == ["trainer-controller-a-actor", "trainer-engine-a-actor"]
+
+    def test_an_inference_deployment_holds_the_engines_and_the_one_reporter(self, tmp_path):
+        """An engine release carries no controller and no router; it only announces the engines it launches."""
+        specs = compute_specs(
+            self._args(
+                tmp_path,
+                deploy_component="inference",
+                inference_controller_addr="controller:8000",
+            )
+        )
+
+        assert [spec.name for spec in specs] == ["inference-registration-reporter", "inference-engine-0-0"]
+
+    def test_the_primary_deployment_keeps_engines_of_its_own(self, tmp_path):
+        """An engine deployment adds engines to a run rather than moving the run's own engines out of it."""
+        specs = compute_specs(self._args(tmp_path, deploy_component="primary"))
+
+        assert "inference-engine-0-0" in [spec.name for spec in specs]
+
+    @pytest.mark.parametrize("component", ["all", "primary", "trainer"])
+    def test_only_an_inference_deployment_carries_a_reporter(self, tmp_path, component):
+        """A reporter beside the controller it reports into would register a deployment into itself."""
+        specs = compute_specs(self._args(tmp_path, deploy_component=component))
+
+        assert "inference-registration-reporter" not in [spec.name for spec in specs]
