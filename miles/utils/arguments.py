@@ -2960,6 +2960,12 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
         not args.api_server_port
     ), f"--deploy-component {component.value} watches cells it does not deploy; pass --api-server-port 0"
 
+    raise AssertionError(
+        f"--deploy-component {component.value} drives inference engines that another deployment installs, and a "
+        f"deployment reaches engines of another deployment only through the registration M25 adds; until then "
+        f"{DeployComponent.TRAINER.value} is the only component that can be installed on its own"
+    )
+
 
 def _validate_trainer_controller_addrs(args: argparse.Namespace) -> None:
     external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))

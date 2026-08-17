@@ -647,9 +647,10 @@ class TestDeployComponent:
         with pytest.raises(AssertionError, match="--trainer-controller-addrs"):
             _validate_deploy_component(self._parse(["--deploy-component", "primary", *_SHARED_STORE_ARGS]))
 
-    def test_a_fully_addressed_primary_deployment_validates(self):
-        """The address is what makes an orchestration script able to run without its own trainer."""
-        _validate_deploy_component(self._parse([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
+    def test_a_fully_addressed_primary_deployment_is_still_refused_until_engines_can_be_registered(self):
+        """Every other requirement is met, and the run is still unservable because its engines live elsewhere."""
+        with pytest.raises(AssertionError, match="M25"):
+            _validate_deploy_component(self._parse([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
 
     def test_a_primary_deployment_shares_an_object_store_too(self):
         """It writes the rollout data the trainer deployment reads, which its own store alone cannot carry."""
@@ -711,9 +712,10 @@ class TestDeployComponent:
         """Its trainer controllers listen on rpc ports, which a launch against another ray cluster can dial."""
         _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
 
-    def test_the_dialing_half_of_a_ray_run_splits_too(self):
-        """The primary half runs the script, and rpc is what lets it call a trainer it never deployed."""
-        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, *_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
+    def test_the_dialing_half_of_a_ray_run_clears_every_check_except_the_engine_one(self):
+        """rpc is what lets it call a trainer it never deployed, so only the engine gap is left to refuse it."""
+        with pytest.raises(AssertionError, match="M25"):
+            _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, *_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
 
     def test_refuses_a_primary_deployment_that_leaves_one_of_its_roles_unaddressed(self):
         """Installing the release first and finding the critic missing at init leaves a broken run running."""
