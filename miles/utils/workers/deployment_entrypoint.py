@@ -43,8 +43,6 @@ async def _serve_deployed_workers(args) -> None:
 def _maybe_serve_own_cells(args, *, component: DeployComponent) -> None:
     if not args.api_server_port or not component.selects(DeployComponent.TRAINER):
         return
-    if "train" not in args.ft_components:
-        return
 
     capability = get_backend_capability(args)
     start_api_server(
@@ -52,7 +50,7 @@ def _maybe_serve_own_cells(args, *, component: DeployComponent) -> None:
         actor_model=create_trainer_controller_handle(args, capability=capability, trainer_id=ACTOR_ROLE),
         inference_controller=None,
         port=args.api_server_port,
-        ft_components=["train"],
+        ft_components=args.ft_components,
         cell_operations=capability.cell_operations(),
     )
     maybe_start_mini_ft_controller(args)

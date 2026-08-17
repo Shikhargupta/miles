@@ -695,6 +695,13 @@ class TestDeployComponent:
             )
         )
 
+    def test_refuses_a_trainer_deployment_asked_to_answer_for_cells_it_does_not_deploy(self):
+        """rollout defaults on, and its engines live in another release, which this launch cannot suspend."""
+        with pytest.raises(AssertionError, match="--ft-components train"):
+            _validate_deploy_component(
+                self._parse_validated(["--deploy-component", "trainer", "--use-fault-tolerance", *_SHARED_STORE_ARGS])
+            )
+
     def test_refuses_to_split_a_colocated_run(self):
         """Colocated trainers and engines share gpus, so they can only be installed as one unit."""
         with pytest.raises(AssertionError, match="--colocate"):

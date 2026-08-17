@@ -97,17 +97,6 @@ class TestServingTheFaultToleranceOfItsOwnCells:
         assert fake.api_server_calls[0]["ft_components"] == ["train"]
         assert fake.api_server_calls[0]["inference_controller"] is None
 
-    def test_it_never_answers_for_rollout_cells_another_deployment_owns(self, monkeypatch):
-        """The engines live in another release, and claiming them would report them missing rather than remote."""
-        fake = _FakeDeployment()
-        _injected(monkeypatch, fake)
-
-        deployment_entrypoint._maybe_serve_own_cells(
-            _args(api_server_port=18080, ft_components=["train", "rollout"]), component=DeployComponent.TRAINER
-        )
-
-        assert fake.api_server_calls[0]["ft_components"] == ["train"]
-
     def test_a_deployment_without_an_api_server_port_starts_nothing(self, monkeypatch):
         """Port zero is how a run says it wants no api server, and a split run must not override that."""
         fake = _FakeDeployment()
