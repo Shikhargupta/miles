@@ -61,10 +61,10 @@ class ManifestObject(FrozenOpenBaseModel):
         pod = self.spec.template.spec
         return list(pod.containers) if pod is not None else []
 
-    def containers_named(self, container: str) -> list[Container]:
-        if self.kind != "StatefulSet":
-            return []
-        return [described for described in self.containers if described.name == container]
+    def container_named(self, container: str) -> Container | None:
+        found = [described for described in self.containers if described.name == container]
+        assert len(found) <= 1, f"{self.key} declares {len(found)} containers named {container!r}"
+        return found[0] if found else None
 
 
 class Manifest(FrozenStrictBaseModel):
@@ -78,16 +78,22 @@ class Manifest(FrozenStrictBaseModel):
     def by_key(self) -> dict[str, ManifestObject]:
         return {described.key: described for described in self.objects}
 
-    def flag_value(self, flag: str) -> str | None:
-        for described in self.objects:
-            for found in described.containers:
-                if flag in found.command:
-                    return found.command[found.command.index(flag) + 1]
-        return None
+    def flag_value(self, flag: str, *, stateful_set: str, container: str) -> str | None:
+        described = self.by_key.get(f"StatefulSet/{stateful_set}")
+        if described is None:
+            return None
 
-    def state_file(self, *, container: str) -> Path | None:
-        for described in self.objects:
-            for found in described.containers_named(container):
-                if STATE_FILE_FLAG in found.command:
-                    return Path(found.command[found.command.index(STATE_FILE_FLAG) + 1])
-        return None
+        found = described.container_named(container)
+        if found is None or flag not in found.command:
+            return None
+
+        value_index = found.command.index(flag) + 1
+        assert value_index < len(found.command), (
+            f"container {container!r} of {stateful_set} ends its command with {flag}, which takes a value, so this "
+            f"launch cannot tell what the installed release was told"
+        )
+        return found.command[value_index]
+
+    def state_file(self, *, stateful_set: str, container: str) -> Path | None:
+        named = self.flag_value(STATE_FILE_FLAG, stateful_set=stateful_set, container=container)
+        return Path(named) if named is not None else None

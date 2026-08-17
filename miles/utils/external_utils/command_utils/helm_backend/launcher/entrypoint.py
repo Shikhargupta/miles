@@ -73,7 +73,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     namespace = config.namespace
     release = RunNames.release(run_id=run_id, deploy_component=config.deploy_component)
     installed_manifest = Helm.get_manifest(release, namespace)
-    run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest)
+    run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
     pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace)
     deploy_component = DeployComponent(args.deploy_component)
     assert deploy_component is config.deploy_component, (
@@ -213,7 +213,7 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
         raise SystemExit(outcome.exit_code)
 
 
-def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifest | None) -> str:
+def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifest | None, release: str) -> str:
     if (given := config.run_uuid) is not None:
         return validate_run_uuid(given)
 
@@ -223,8 +223,14 @@ def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifes
         f"them all has to name it"
     )
 
-    if installed_manifest is not None and (installed := installed_manifest.flag_value(_RUN_UUID_FLAG)) is not None:
-        return installed
+    if installed_manifest is not None:
+        installed = installed_manifest.flag_value(
+            _RUN_UUID_FLAG,
+            stateful_set=RunNames.orchestrator_object(release=release),
+            container=naming.ORCHESTRATOR_COMPONENT,
+        )
+        if installed is not None:
+            return installed
 
     return generate_run_uuid()
 
@@ -265,7 +271,9 @@ def _compute_state_file(*, installed_manifest: Manifest | None, run_directory: P
     if installed_manifest is None:
         return RunFiles.new_state_file(run_directory=run_directory)
 
-    attached_state_file = installed_manifest.state_file(container=naming.ORCHESTRATOR_COMPONENT)
+    attached_state_file = installed_manifest.state_file(
+        stateful_set=RunNames.orchestrator_object(release=release), container=naming.ORCHESTRATOR_COMPONENT
+    )
     assert attached_state_file is not None, (
         f"Run {release} is installed but its orchestrator names no state file, so this launch cannot tell what it "
         f"is watching; uninstall it, or launch under a new run id"
