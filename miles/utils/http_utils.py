@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 MILES_HOST_IP_ENV = "MILES_HOST_IP"
 
+_CONNECT_ATTEMPT_TIMEOUT_SECONDS = 1.0
+_CONNECT_RETRY_INTERVAL_SECONDS = 0.5
+
 
 def find_available_port(base_port: int):
     port = base_port + random.randint(100, 1000)
@@ -65,15 +68,20 @@ def wait_for_server_ready(
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 
-def wait_tcp_ready(host: str, port: int, *, timeout: float = 30) -> None:
+async def wait_tcp_ready(host: str, port: int, *, timeout: float = 30) -> None:
     """Poll until a TCP port accepts connections."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
         try:
-            with socket.create_connection((host.strip("[]"), port), timeout=1):
-                return
-        except OSError:
-            time.sleep(0.5)
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host.strip("[]"), port), timeout=_CONNECT_ATTEMPT_TIMEOUT_SECONDS
+            )
+            writer.close()
+            await writer.wait_closed()
+            return
+        except (OSError, TimeoutError):
+            await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SECONDS)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 
