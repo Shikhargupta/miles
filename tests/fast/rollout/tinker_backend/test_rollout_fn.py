@@ -19,12 +19,7 @@ from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput, RolloutFnTrainOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function_async
 from miles.rollout.tinker_backend.operation_port import StaleBindingError, TransientOperationPortError
-from miles.rollout.tinker_backend.rollout_fn import (
-    AdapterRolloutRuntime,
-    ClaimedOperationBatch,
-    TinkerOperationBatchAdapter,
-    TinkerRolloutFn,
-)
+from miles.rollout.tinker_backend.rollout_fn import AdapterRolloutRuntime, ClaimedOperationBatch, TinkerRolloutFn
 from miles.utils.tinker_backend import BatchExecutionLease, EmptyBatchTimeoutError
 
 
@@ -35,7 +30,7 @@ def make_run(name="X", reg="rx", slot=3, version=2) -> AdapterRun:
 
 def claim_batch(run: AdapterRun, operations) -> ClaimedOperationBatch:
     """Drive the adapter's claim path for one registration runtime."""
-    fn = TinkerOperationBatchAdapter(
+    fn = TinkerRolloutFn(
         RolloutFnConstructorInput(args=SimpleNamespace(), data_source=None),
         operations=operations,
         residency=FakeResidency(),
@@ -171,7 +166,7 @@ class TestClaimBatch:
         assert queue.failed == []
 
 
-def ready_runtime(fn: TinkerOperationBatchAdapter, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
+def ready_runtime(fn: TinkerRolloutFn, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
     # The runtime's stamped slot (9) is deliberately stale: the claim's
     # binding, not the long-lived AdapterRun view, is the dispatch truth.
     run = make_run(name=name, reg=f"r-{name}", slot=9)
@@ -189,27 +184,23 @@ def ready_runtime(fn: TinkerOperationBatchAdapter, name: str, slot: int, kind: s
     return runtime
 
 
-def merge(fn: TinkerOperationBatchAdapter, selected) -> RolloutFnTrainOutput:
+def merge(fn: TinkerRolloutFn, selected) -> RolloutFnTrainOutput:
     return asyncio.run(fn._merge(selected))
 
 
-def make_fn(soft_target=100) -> TinkerOperationBatchAdapter:
+def make_fn(soft_target=100) -> TinkerRolloutFn:
     args = SimpleNamespace(
         rollout_batch_size=soft_target,
         n_samples_per_prompt=1,
         tinker_max_coalesce_wait_s=0.05,
         tinker_max_empty_wait_s=0.05,
     )
-    return TinkerOperationBatchAdapter(
+    return TinkerRolloutFn(
         RolloutFnConstructorInput(args=args, data_source=None),
         operations=FakeOperationQueue(),
         residency=FakeResidency(),
         abort=FakeBatchAbort(),
     )
-
-
-def test_the_historical_import_path_is_an_alias():
-    assert TinkerRolloutFn is TinkerOperationBatchAdapter
 
 
 class TestSelectionKindLock:
@@ -465,7 +456,7 @@ class TestStaleBindingTerminalization:
             tinker_max_coalesce_wait_s=0.05,
             tinker_max_empty_wait_s=2.0,
         )
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=KeyedQueue({"A": keyed_op("A", 0), "B": keyed_op("B", 1)}),
             residency=StaleSetResidency(["op-A"]),
@@ -502,7 +493,7 @@ class TestTransientChildRecovery:
             tinker_max_coalesce_wait_s=0.02,
             tinker_max_empty_wait_s=0.15,
         )
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=FlakyOnceQueue(),
             residency=FakeResidency(),
@@ -576,7 +567,7 @@ class TestClaimSafeClose:
             tinker_max_empty_wait_s=1.0,
         )
         queue = FakeOperationQueue(claims=[op()], ready={"X": make_run()})
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=queue,
             residency=FakeResidency(),
@@ -636,7 +627,7 @@ class TestClaimSafeClose:
             tinker_max_empty_wait_s=1.0,
         )
         queue = BlockedQueue()
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=queue,
             residency=FakeResidency(),
@@ -680,7 +671,7 @@ class TestCallerCancellation:
             tinker_max_empty_wait_s=30.0,
         )
         queue = GatedQueue()
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=queue,
             residency=FakeResidency(),
@@ -731,7 +722,7 @@ class TestSelectionWakeup:
             tinker_max_coalesce_wait_s=0.02,
             tinker_max_empty_wait_s=5.0,
         )
-        fn = TinkerOperationBatchAdapter(
+        fn = TinkerRolloutFn(
             RolloutFnConstructorInput(args=args, data_source=None),
             operations=FakeOperationQueue(),
             residency=FakeResidency(),

@@ -223,7 +223,7 @@ class AdapterRolloutRuntime:
         self.task = None
 
 
-class TinkerOperationBatchAdapter:
+class TinkerRolloutFn:
     """Operation-to-batch adapter (codex-rollout-fullparameter-design-0810
     §4.5): turns claimed client operations into whole training batches —
     persistent round-robin, homogeneous kind lock, coalesce timeout,
@@ -260,11 +260,9 @@ class TinkerOperationBatchAdapter:
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
         if input.evaluation:
-            raise ValueError(
-                "TinkerOperationBatchAdapter does not serve eval; tinker runs have no server-side eval loop"
-            )
+            raise ValueError("TinkerRolloutFn does not serve eval; tinker runs have no server-side eval loop")
         if self._closed:
-            raise RuntimeError("TinkerOperationBatchAdapter is closed; no new claim work may start")
+            raise RuntimeError("TinkerRolloutFn is closed; no new claim work may start")
         # READY streams only: a retiring registration's queued operations are
         # fenced terminal, so a child claim would never return for it.
         adapters = await self.operations.ready_streams()
@@ -639,8 +637,3 @@ class TinkerOperationBatchAdapter:
                 }
             ),
         )
-
-
-# Stable import path: --rollout-function-path defaults keep working, and the
-# historical name survives as an alias of the adapter it always was.
-TinkerRolloutFn = TinkerOperationBatchAdapter
