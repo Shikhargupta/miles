@@ -211,7 +211,6 @@ class QueueChildRolloutFn:
             metadata=dict(
                 operation_id=operation["operation_id"],
                 operation_kind=operation["kind"],
-                batch_id=payload.get("batch_id"),
                 loss_spec=payload.get("loss"),
                 # Fixed binding resolved atomically with the claim (claim-and-
                 # bind); the long-lived runtime's AdapterRun.slot is never the
@@ -243,10 +242,6 @@ class AdapterRolloutRuntime:
         # monotonic deadline before which an IDLE runtime is not relaunched.
         self.transient_failures = 0
         self.retry_at = 0.0
-
-    @property
-    def tenant(self) -> Tenant:
-        return (self.run.name, self.run.registration_id)
 
     @property
     def ready_kind(self) -> str | None:
@@ -310,7 +305,9 @@ class TinkerOperationBatchAdapter:
             )
         if self._closed:
             raise RuntimeError("TinkerOperationBatchAdapter is closed; no new claim work may start")
-        adapters = await self._trainable_adapters()
+        # READY streams only: a retiring registration's queued operations are
+        # fenced terminal, so a child claim would never return for it.
+        adapters = await self.operations.ready_streams()
         await self._reconcile(adapters)
         refusal: StaleBindingError | None = None
         for _ in range(_MAX_STALE_RESELECTS):
@@ -375,11 +372,6 @@ class TinkerOperationBatchAdapter:
         )
 
     # ------------------------------ runtimes ------------------------------
-
-    async def _trainable_adapters(self) -> dict[str, AdapterRun]:
-        # READY only: a retiring registration's queued operations are fenced
-        # terminal, so a child claim would never return for it.
-        return await self.operations.ready_streams()
 
     async def _reconcile(self, adapters: dict[str, AdapterRun]) -> None:
         live = {(name, run.registration_id) for name, run in adapters.items()}

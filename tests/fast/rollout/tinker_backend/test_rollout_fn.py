@@ -41,7 +41,7 @@ def make_child(run: AdapterRun, operations) -> QueueChildRolloutFn:
 
 def sample_payload(n=2) -> dict:
     return {
-        "batch_id": "batch-7",
+        "batch_id": "batch-7",  # client-side bookkeeping key the server ignores
         "samples": [
             {"prompt": "p", "tokens": [1, 2, 3, 4], "response_length": 2, "loss_mask": [1, 1]} for _ in range(n)
         ],
@@ -130,7 +130,6 @@ class TestQueueChild:
         assert output.metadata == dict(
             operation_id="op1",
             operation_kind="forward_backward",
-            batch_id="batch-7",
             loss_spec={"loss_fn": "cross_entropy"},
             binding=ResidentBinding(registration_key=("X", "rx"), training_slot=3),
         )
@@ -183,7 +182,7 @@ def ready_runtime(fn: TinkerOperationBatchAdapter, name: str, slot: int, kind: s
             binding=ResidentBinding(registration_key=(name, f"r-{name}"), training_slot=slot),
         ),
     )
-    fn.runtimes[runtime.tenant] = runtime
+    fn.runtimes[(run.name, run.registration_id)] = runtime
     fn._sync_rotation()
     return runtime
 
