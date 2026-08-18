@@ -1,0 +1,125 @@
+import dataclasses
+import math
+
+from examples.infra_features.split_deployment.run_solver_verifier_gsm8k_split import (
+    build_deployment_train_args,
+    compute_deployment_identities,
+)
+from examples.multi_policy.run_solver_verifier_gsm8k import (
+    LEADER_MODEL_ID,
+    MODEL_IDS,
+    ScriptArgs,
+    compute_events_dir,
+    compute_megatron_config,
+    launch_train,
+    prepare,
+)
+from tests.e2e.conftest_multi_policy import (
+    TRAIN_REWARD_BOUNDS,
+    assert_every_policy_learned,
+    assert_every_rank_trained_with_its_own_policy_args,
+)
+from tests.e2e.deploy.conftest_deploy.app import create_split_single_run_app_and_run_ci
+from tests.e2e.deploy.conftest_deploy.split_deployment import RunDeployment, run_split_training_into
+
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.run_uuid import generate_run_uuid
+from miles.utils.test_utils.comparisons.metrics import assert_metric_was_finite_and_nonzero, read_metric_series
+
+TEST_NAME: str = "split_multi_policy"
+MIN_TRAINED_ROLLOUTS: int = 2
+MAX_TRAIN_ROLLOUT_LOGPROB_ABS_DIFF: float = 0.5
+
+
+def _run(args: ScriptArgs) -> None:
+    prepare(args)
+
+    config = dataclasses.replace(args, run_uuid=generate_run_uuid())
+    run_split_training_into(
+        deployments=_build_deployments(config),
+        launch=launch_train,
+        config=config,
+        dump_dir=_compute_dump_dir(config),
+    )
+
+    _verify(args)
+
+
+def _build_deployments(args: ScriptArgs) -> list[RunDeployment]:
+    return [
+        RunDeployment(
+            deploy_component=deploy_component,
+            deploy_instance_id=deploy_instance_id,
+            train_args=build_deployment_train_args(
+                dataclasses.replace(args, deploy_component=deploy_component, deploy_instance_id=deploy_instance_id)
+            ),
+        )
+        for deploy_component, deploy_instance_id in compute_deployment_identities(args)
+    ]
+
+
+def _verify(args: ScriptArgs) -> None:
+    events_dir = compute_events_dir(args)
+    dump_dir = _compute_dump_dir(args)
+
+    assert events_dir.is_dir(), (
+        f"no run wrote anything under {events_dir}, so every assertion below would read an empty log and report "
+        f"missing metrics rather than the run that is missing; a verification of a previous run has to be handed "
+        f"that run's id through MILES_SCRIPT_RUN_ID, and this process was given run id {args.run_id!r}"
+    )
+
+    assert_every_rank_trained_with_its_own_policy_args(events_dir, megatron_config=compute_megatron_config(args))
+    assert_every_policy_learned(events_dir, bounds=TRAIN_REWARD_BOUNDS)
+    _assert_the_leader_policy_ran_every_rollout(dump_dir, num_rollout=args.num_rollout)
+
+    for model_id in MODEL_IDS:
+        assert_metric_was_finite_and_nonzero(
+            side=model_id,
+            dump_dir=dump_dir,
+            key=f"{model_id}/train/grad_norm",
+            min_rollouts=MIN_TRAINED_ROLLOUTS,
+        )
+        assert_metric_was_finite_and_nonzero(
+            side=model_id, dump_dir=dump_dir, key=f"{model_id}/train/loss", min_rollouts=MIN_TRAINED_ROLLOUTS
+        )
+        _assert_the_trainer_scores_what_its_engines_generated(dump_dir, model_id=model_id)
+
+    print("Split multi policy deployment test PASSED")
+
+
+def _assert_the_leader_policy_ran_every_rollout(dump_dir: str, *, num_rollout: int) -> None:
+    series = read_metric_series(dump_dir, key=f"{LEADER_MODEL_ID}/train/grad_norm")
+    trained_rollout_ids = sorted({rollout_id for rollout_id, _ in series})
+
+    assert trained_rollout_ids == list(range(num_rollout)), (
+        f"the leader policy {LEADER_MODEL_ID!r} trained on rollouts {trained_rollout_ids} ({series}), and it is "
+        f"the policy whose loop ends the run after {num_rollout}; a run missing one of them was cut short by a "
+        f"deployment that failed rather than by finishing"
+    )
+
+
+def _assert_the_trainer_scores_what_its_engines_generated(dump_dir: str, *, model_id: str) -> None:
+    key = f"{model_id}/train/train_rollout_logprob_abs_diff"
+    series = read_metric_series(dump_dir, key=key)
+
+    assert len(series) >= MIN_TRAINED_ROLLOUTS, (
+        f"{key} was reported for only {len(series)} rollout(s) ({series}), so nothing here compares what the "
+        f"engines of policy {model_id!r} generated against what its trainer scored"
+    )
+
+    worst = max(value for _, value in series)
+    assert math.isfinite(worst) and worst <= MAX_TRAIN_ROLLOUT_LOGPROB_ABS_DIFF, (
+        f"policy {model_id!r} scores the tokens its engines generated {worst} apart in log probability "
+        f"({series}), above {MAX_TRAIN_ROLLOUT_LOGPROB_ABS_DIFF}; the trainer and the engines of a deployment "
+        f"split across releases are serving different weights"
+    )
+
+
+def _compute_dump_dir(config: ExecuteTrainConfig) -> str:
+    return str(compute_events_dir(config).parent)
+
+
+app, run_ci = create_split_single_run_app_and_run_ci(config_class=ScriptArgs, run_fn=_run, verify_fn=_verify)
+
+if __name__ == "__main__":
+    app()

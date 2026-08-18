@@ -43,5 +43,27 @@ def _gate_on_the_cluster(run_ci: Callable[[str | None], None]) -> Callable[[], N
     return run_ci_where_a_run_can_be_deployed
 
 
+def create_split_single_run_app_and_run_ci(
+    *,
+    config_class: type[command_utils.ExecuteTrainConfig],
+    run_fn: Callable[[command_utils.ExecuteTrainConfig], None],
+    verify_fn: Callable[[command_utils.ExecuteTrainConfig], None],
+) -> tuple[typer.Typer, Callable[[], None]]:
+    def run_ci_where_a_run_can_be_deployed() -> None:
+        config = command_utils.default_config(config_class)
+        if not is_cluster_ready_for_helm_runs(config):
+            return
+        run_fn(config)
+
+    def verify_what_a_previous_run_left() -> None:
+        verify_fn(command_utils.default_config(config_class))
+
+    app: typer.Typer = typer.Typer()
+    app.command(name="run")(run_ci_where_a_run_can_be_deployed)
+    app.command(name="verify")(verify_what_a_previous_run_left)
+
+    return app, run_ci_where_a_run_can_be_deployed
+
+
 def _baseline_args_are_built_once_the_side_has_its_config(mode: FTTestMode, dump_dir: str, enable_dumper: bool) -> str:
     return ""
