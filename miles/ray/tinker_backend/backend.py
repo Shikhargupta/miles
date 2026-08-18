@@ -508,18 +508,30 @@ def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict
     """Recompute a forward_backward operation's loss from its own payload and
     the returned logprobs, keyed ``name:reduction`` so the tinker SDK combiner
     can merge chunked operations (``:sum`` adds across chunks — the same
-    chunk-additivity the gradient sum has)."""
+    chunk-additivity the gradient sum has).
+
+    ``unmasked_tokens:sum`` counts loss_mask-active positions and is NOT a
+    weighted-CE denominator: a teacher-forced SFT datum excludes its prompt
+    via ``loss_weights=0`` while the mask stays 1, so dividing by it dilutes
+    the per-token loss by the prompt length. Cross-entropy therefore also
+    reports ``loss_weight:sum`` (Σ weight·mask, chunk-additive like the loss);
+    ``loss:sum / loss_weight:sum`` is the correct weighted-mean CE — equal to
+    the completion-token mean under 0/1 prompt masking, and still right for
+    fractional weights. Callers must guard the division: weights are any
+    finite floats, so the sum can be zero or negative."""
     spec = payload.get("loss") or {}
     loss_fn = spec.get("loss_fn", "cross_entropy")
     config = spec.get("loss_fn_config") or {}
     total = 0.0
     weighted_tokens = 0.0
+    loss_weight_sum = 0.0
     for sample, sample_logprobs in zip(payload.get("samples") or [], logprobs, strict=False):
         mask = sample.get("loss_mask") or [1.0] * len(sample_logprobs)
         weighted_tokens += sum(1.0 for m in mask if m)
         if loss_fn == "cross_entropy":
             weights = sample.get("loss_weights") or []
             total += sum(-lp * w * m for lp, w, m in zip(sample_logprobs, weights, mask, strict=False))
+            loss_weight_sum += sum(w * m for w, m in zip(weights, mask, strict=False))
         else:
             old = sample.get("rollout_log_probs") or []
             advantages = sample.get("advantages") or []
@@ -534,4 +546,10 @@ def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict
                     high = config.get("clip_high_threshold", 1.2)
                     surrogate = min(surrogate, min(max(ratio, low), high) * advantage)
                 total += -surrogate * m
-    return {"loss:sum": total, "unmasked_tokens:sum": weighted_tokens}
+    metrics = {"loss:sum": total, "unmasked_tokens:sum": weighted_tokens}
+    if loss_fn == "cross_entropy":
+        # CE only: IS/PPO have no loss_weights channel, and the SDK combiner
+        # drops any metric missing from one chunk — a loss_fn is uniform
+        # across an operation's chunks, so the key is uniformly present.
+        metrics["loss_weight:sum"] = loss_weight_sum
+    return metrics

@@ -107,4 +107,47 @@ def test_sdk_combiner_merges_our_chunked_metrics():
     whole_metrics = operation_result_metrics(whole, whole_logprobs)
     assert combined.metrics["loss:sum"] == pytest.approx(whole_metrics["loss:sum"])
     assert combined.metrics["unmasked_tokens:sum"] == pytest.approx(whole_metrics["unmasked_tokens:sum"])
+    assert combined.metrics["loss_weight:sum"] == pytest.approx(whole_metrics["loss_weight:sum"])
     assert len(combined.loss_fn_outputs) == 3
+
+
+class TestLossWeightSum:
+    """The SFT per-token denominator (codex-0817-sft-fix §7): a teacher-forced
+    datum excludes its prompt via loss_weights=0 while loss_mask stays 1, so
+    ``unmasked_tokens:sum`` over-counts. CE additionally reports
+    ``loss_weight:sum`` = Σ weight·mask; the old key keeps its meaning."""
+
+    def test_prompt_masked_sft_gets_the_completion_denominator(self):
+        payload = ce_payload([[0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]])
+        metrics = operation_result_metrics(payload, [[-0.5] * 7])
+        assert metrics["unmasked_tokens:sum"] == 7.0  # mask-active positions, unchanged
+        assert metrics["loss_weight:sum"] == pytest.approx(4.0)
+        assert metrics["loss:sum"] / metrics["loss_weight:sum"] == pytest.approx(0.5)
+
+    def test_fractional_weights_get_a_weighted_mean_denominator(self):
+        # A nonzero-position COUNT could not normalize fractional weighting.
+        metrics = operation_result_metrics(ce_payload([[0.0, 0.5, 0.0, 2.0]]), [[-0.5] * 4])
+        assert metrics["loss:sum"] == pytest.approx(1.25)
+        assert metrics["loss_weight:sum"] == pytest.approx(2.5)
+
+    def test_mask_gates_the_weight_sum_like_the_loss(self):
+        metrics = operation_result_metrics(ce_payload([[1.0, 1.0]], masks=[[1, 0]]), [[-1.0, -9.0]])
+        assert metrics["loss_weight:sum"] == pytest.approx(1.0)
+
+    def test_all_zero_weight_chunk_still_reports_the_key(self):
+        # The SDK combiner drops a merged metric when ANY chunk lacks the key:
+        # a fully prompt-masked chunk must emit loss_weight:sum == 0.
+        metrics = operation_result_metrics(ce_payload([[0.0, 0.0]]), [[-1.0, -1.0]])
+        assert metrics["loss_weight:sum"] == 0.0
+
+    def test_non_ce_losses_do_not_report_it(self):
+        # IS/PPO have no loss_weights channel; within one operation the
+        # loss_fn is uniform, so the key is uniformly present or absent.
+        sample = {
+            "tokens": [1, 1, 1],
+            "response_length": 2,
+            "rollout_log_probs": [-1.0, -1.0],
+            "advantages": [1.0, 1.0],
+        }
+        payload = {"samples": [sample], "loss": {"loss_fn": "importance_sampling"}}
+        assert "loss_weight:sum" not in operation_result_metrics(payload, [[-0.5, -1.5]])
