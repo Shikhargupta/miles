@@ -14,7 +14,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.external_utils.command_utils.helm_backend.naming import (
     _HELM_RELEASE_NAME_MAX,
     RUN_ID_MAX_LENGTH,
-    RunNames,
+    ReleaseName,
 )
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
@@ -37,7 +37,7 @@ def _args(tmp_path, *, component: DeployComponent):
 
 
 def _release(component: DeployComponent) -> str:
-    return RunNames.release(run_id=RUN_ID, deploy_component=component)
+    return ReleaseName(run_id=RUN_ID, deploy_component=component, deploy_instance_id=None).serialize()
 
 
 def _object_names(tmp_path, *, component: DeployComponent) -> set[str]:
@@ -82,7 +82,7 @@ class TestTwoReleasesOfOneRun:
 def test_a_run_id_ending_in_a_component_name_collides_with_nothing() -> None:
     """Every release carries its own component suffix, so no run id can spell another run's release name."""
     named = {
-        RunNames.release(run_id=run_id, deploy_component=component)
+        ReleaseName(run_id=run_id, deploy_component=component, deploy_instance_id=None).serialize()
         for run_id in (RUN_ID, f"{RUN_ID}-trainer")
         for component in DeployComponent
     }
@@ -96,12 +96,16 @@ class TestTheRunIdLeavesRoomForTheComponentSuffix:
         run_id = "a" * RUN_ID_MAX_LENGTH
 
         for component in DeployComponent:
-            assert len(RunNames.release(run_id=run_id, deploy_component=component)) <= _HELM_RELEASE_NAME_MAX
+            name = ReleaseName(run_id=run_id, deploy_component=component, deploy_instance_id=None)
+
+            assert len(name.serialize()) <= _HELM_RELEASE_NAME_MAX
 
     def test_a_longer_run_id_is_refused_where_the_release_is_named(self):
         """helm would refuse the install itself, long after the launch computed every object name from it."""
         with pytest.raises(AssertionError, match=str(_HELM_RELEASE_NAME_MAX)):
-            RunNames.release(run_id="a" * (RUN_ID_MAX_LENGTH + 1))
+            ReleaseName(
+                run_id="a" * (RUN_ID_MAX_LENGTH + 1), deploy_component=DeployComponent.ALL, deploy_instance_id=None
+            )
 
 
 def test_the_chart_accepts_exactly_the_run_ids_the_launcher_will_name_a_release_for() -> None:
@@ -109,3 +113,59 @@ def test_the_chart_accepts_exactly_the_run_ids_the_launcher_will_name_a_release_
     schema = json.loads((REPO_ROOT / "charts" / "miles-run" / "values.schema.json").read_text())
 
     assert schema["definitions"]["RunValues"]["properties"]["id"]["maxLength"] == RUN_ID_MAX_LENGTH
+
+
+class TestReleaseNameRoundTrip:
+    @pytest.mark.parametrize(
+        "deploy_component, deploy_instance_id",
+        [
+            (DeployComponent.ALL, None),
+            (DeployComponent.PRIMARY, None),
+            (DeployComponent.TRAINER, "a-actor"),
+            (DeployComponent.INFERENCE, "inf-east"),
+        ],
+    )
+    def test_a_release_name_parses_back_to_what_serialized_it(self, deploy_component, deploy_instance_id):
+        """The launcher names a release and later reads other launches' releases back; the two must agree."""
+        name = ReleaseName(run_id=RUN_ID, deploy_component=deploy_component, deploy_instance_id=deploy_instance_id)
+
+        assert ReleaseName.parse(name.serialize()) == name
+
+    def test_a_run_id_carrying_a_component_name_still_parses_back(self):
+        """Every release ends in its component, so the rightmost one is the separator no matter what precedes it."""
+        name = ReleaseName(
+            run_id=f"{RUN_ID}-trainer", deploy_component=DeployComponent.INFERENCE, deploy_instance_id=None
+        )
+
+        assert ReleaseName.parse(name.serialize()) == name
+
+    def test_a_release_of_another_chart_is_not_ours(self):
+        """The launcher lists every release in the namespace, and must not read someone else's as a run of ours."""
+        assert ReleaseName.parse("something-else-260101-all") is None
+
+    def test_a_name_naming_no_component_is_not_ours(self):
+        """A release this launcher wrote always names its component, so one without is not from here."""
+        assert ReleaseName.parse(f"miles-run-{RUN_ID}") is None
+
+
+class TestReleaseNameRefuses:
+    def test_an_instance_id_carrying_a_component_name_is_refused(self):
+        """It would give the release two component tokens, and parsing back would split it at the wrong one."""
+        with pytest.raises(AssertionError, match="component name"):
+            ReleaseName(run_id=RUN_ID, deploy_component=DeployComponent.TRAINER, deploy_instance_id="all")
+
+    def test_a_run_id_too_long_for_a_release_is_refused(self):
+        """helm would refuse the install itself, long after the launch computed every object name from it."""
+        with pytest.raises(AssertionError, match=str(RUN_ID_MAX_LENGTH)):
+            ReleaseName(
+                run_id="a" * (RUN_ID_MAX_LENGTH + 1), deploy_component=DeployComponent.ALL, deploy_instance_id=None
+            )
+
+    def test_an_instance_id_that_overruns_the_release_name_is_refused(self):
+        """The run id fits every component, but an instance id on top of it can still overrun helm's bound."""
+        with pytest.raises(AssertionError, match=str(_HELM_RELEASE_NAME_MAX)):
+            ReleaseName(
+                run_id="a" * RUN_ID_MAX_LENGTH,
+                deploy_component=DeployComponent.INFERENCE,
+                deploy_instance_id="b" * 20,
+            )
