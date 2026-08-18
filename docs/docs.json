@@ -59,7 +59,6 @@
        "user-guide/fully-async",
        "user-guide/training-backend",
        "user-guide/monitoring",
-       "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/generate-endpoint",
        "user-guide/agentic-rollout",
@@ -405,6 +404,11 @@
   {
    "source": "/examples/openhermes-sft",
    "destination": "/models/qwen/qwen3",
+   "permanent": true
+  },
+  {
+   "source": "/user-guide/dashboard",
+   "destination": "/user-guide/monitoring#miles-dashboard",
    "permanent": true
   }
  ],

@@ -339,8 +339,8 @@ last-broadcast version, which equals the actor's current weights when
 
 ### Performance metrics
 
-For performance work, the [Miles dashboard](/user-guide/dashboard) is the recommended
-view: its [Compute Utilization view](/user-guide/dashboard#compute-utilization) draws
+For performance work, the [Miles dashboard](/user-guide/monitoring#miles-dashboard) is the
+recommended view: its per-GPU timeline draws
 the rollout and training phases against per-engine SGLang state on one time axis. The
 metrics below are a basic reference for where to start:
 
