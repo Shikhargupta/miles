@@ -81,9 +81,7 @@ class RegistrationHub(BaseWorkerProvider):
         )
         async with contextlib.AsyncExitStack() as stack:
             stack.push_async_callback(await loop.start(reconcile))
-            sweep_task = asyncio.create_task(
-                self._remove_stale_reporters_forever(interval_seconds=REGISTERED_CELLS_POLL_INTERVAL_SECONDS)
-            )
+            sweep_task = asyncio.create_task(self._remove_stale_reporters_forever())
             stack.push_async_callback(partial(cancel_and_await_task, sweep_task))
             return stack.pop_all().aclose
 
@@ -99,9 +97,9 @@ class RegistrationHub(BaseWorkerProvider):
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [self._cell_of_id[cell_id].workers for cell_id in cell_ids]
 
-    async def _remove_stale_reporters_forever(self, *, interval_seconds: float) -> None:
+    async def _remove_stale_reporters_forever(self) -> None:
         while True:
-            await asyncio.sleep(interval_seconds)
+            await asyncio.sleep(REGISTERED_CELLS_POLL_INTERVAL_SECONDS)
             self._remove_stale_reporters()
 
     def _remove_stale_reporters(self) -> None:

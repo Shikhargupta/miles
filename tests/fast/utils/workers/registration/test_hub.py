@@ -63,6 +63,12 @@ def _snapshot(
     )
 
 
+@pytest.fixture(autouse=True)
+def _poll_as_fast_as_the_test_drains():
+    with patch(f"{_PROVIDER_MODULE}.REGISTERED_CELLS_POLL_INTERVAL_SECONDS", _POLL_INTERVAL_SECONDS):
+        yield
+
+
 class _FakeClock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -90,8 +96,7 @@ async def _watched(**kwargs) -> tuple[RegistrationHub, _Watcher]:
 
 
 async def _start_watch(provider: RegistrationHub, watcher: _Watcher):
-    with patch(f"{_PROVIDER_MODULE}.REGISTERED_CELLS_POLL_INTERVAL_SECONDS", _POLL_INTERVAL_SECONDS):
-        return await provider.watch_cells(watcher.reconcile)
+    return await provider.watch_cells(watcher.reconcile)
 
 
 async def _apply(provider: RegistrationHub, snapshot: RegistrationSnapshot) -> None:
