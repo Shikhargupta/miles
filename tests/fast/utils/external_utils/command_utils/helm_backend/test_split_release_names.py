@@ -16,6 +16,8 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import (
     _HELM_RELEASE_NAME_MAX,
     RUN_ID_MAX_LENGTH,
     ReleaseName,
+    assert_deploy_instance_id_fits,
+    deploy_instance_id_budget,
 )
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
@@ -179,3 +181,37 @@ class TestReleaseNameRefuses:
                 deploy_component=DeployComponent.INFERENCE,
                 deploy_instance_id="b" * 20,
             )
+
+
+class TestTheRunIdAndTheInstanceIdShareOneReleaseName:
+    @pytest.mark.parametrize("run_id_length", [10, 17, 20, RUN_ID_MAX_LENGTH - 2])
+    def test_the_budget_is_the_longest_instance_id_the_release_name_still_holds(self, run_id_length):
+        """Two bounds derived apart drift apart, so the number the launcher reports has to be the real one."""
+        run_id = "a" * run_id_length
+        budget = deploy_instance_id_budget(run_id=run_id)
+
+        ReleaseName(run_id=run_id, deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * budget)
+        with pytest.raises(ValidationError, match=str(_HELM_RELEASE_NAME_MAX)):
+            ReleaseName(
+                run_id=run_id, deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * (budget + 1)
+            )
+
+    def test_a_run_id_filling_the_whole_budget_leaves_no_room_for_an_instance_id(self):
+        """The longest accepted run id fits every component exactly, which is a run that cannot be split by id."""
+        assert deploy_instance_id_budget(run_id="a" * RUN_ID_MAX_LENGTH) < 1
+
+    def test_the_default_length_run_id_is_refused_the_length_the_flag_alone_accepts(self):
+        """The per-flag bound is 17, and a 17 character run id leaves 15, which nothing else would catch."""
+        run_id = "260101-000000-000"
+        assert deploy_instance_id_budget(run_id=run_id) == 15
+
+        with pytest.raises(AssertionError, match="leaves 15 for it"):
+            assert_deploy_instance_id_fits(run_id=run_id, deploy_instance_id="b" * 16)
+
+    def test_an_instance_id_inside_the_budget_is_taken(self):
+        """The check must not narrow what a split run could always name."""
+        assert_deploy_instance_id_fits(run_id="260101-000000-000", deploy_instance_id="b" * 15)
+
+    def test_a_deployment_naming_no_instance_is_bounded_by_the_run_id_alone(self):
+        """`all` and `primary` carry no instance id, so there is nothing here to budget for."""
+        assert_deploy_instance_id_fits(run_id="a" * RUN_ID_MAX_LENGTH, deploy_instance_id=None)

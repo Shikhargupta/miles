@@ -13,7 +13,8 @@ from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAM
 ORCHESTRATOR_COMPONENT = "orchestrator"
 
 _HELM_RELEASE_NAME_MAX = 53
-_LONGEST_COMPONENT_SUFFIX = max(len(f"-{component.value}") for component in DeployComponent)
+_LONGEST_COMPONENT_VALUE = max((component.value for component in DeployComponent), key=len)
+_LONGEST_COMPONENT_SUFFIX = len(f"-{_LONGEST_COMPONENT_VALUE}")
 RUN_ID_MAX_LENGTH = _HELM_RELEASE_NAME_MAX - len(f"{CHART_NAME}-") - _LONGEST_COMPONENT_SUFFIX
 _COMPONENT_VALUES = frozenset(component.value for component in DeployComponent)
 
@@ -73,6 +74,21 @@ class ReleaseName(FrozenStrictBaseModel):
             )
         except ValidationError:
             return None
+
+
+def assert_deploy_instance_id_fits(*, run_id: str, deploy_instance_id: str | None) -> None:
+    if deploy_instance_id is None:
+        return
+
+    budget = deploy_instance_id_budget(run_id=run_id)
+    assert len(deploy_instance_id) <= budget, (
+        f"--deploy-instance-id {deploy_instance_id!r} is {len(deploy_instance_id)} characters, and run_id "
+        f"{run_id!r} leaves {budget} for it in the release name"
+    )
+
+
+def deploy_instance_id_budget(*, run_id: str) -> int:
+    return _HELM_RELEASE_NAME_MAX - len(f"{CHART_NAME}-{run_id}-{_LONGEST_COMPONENT_VALUE}-")
 
 
 class RunNames:
