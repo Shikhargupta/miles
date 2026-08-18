@@ -5,6 +5,7 @@ import json
 import shlex
 
 import pytest
+from pydantic import ValidationError
 from tests.fast.charts.utils import REPO_ROOT
 from tests.fast.ray.rollout.conftest import make_args_with_sglang_config
 
@@ -147,6 +148,10 @@ class TestReleaseNameRoundTrip:
         """A release this launcher wrote always names its component, so one without is not from here."""
         assert ReleaseName.parse(f"miles-run-{RUN_ID}") is None
 
+    def test_a_legal_helm_name_this_launcher_could_never_have_written_is_not_ours(self):
+        """Listing a namespace turns up other tools' releases, and parse answers None rather than stopping the run."""
+        assert ReleaseName.parse(f"miles-run-{'a' * (RUN_ID_MAX_LENGTH + 1)}-all") is None
+
 
 class TestReleaseNameRefuses:
     def test_an_instance_id_carrying_a_component_name_is_refused(self):
@@ -160,6 +165,11 @@ class TestReleaseNameRefuses:
             ReleaseName(
                 run_id="a" * (RUN_ID_MAX_LENGTH + 1), deploy_component=DeployComponent.ALL, deploy_instance_id=None
             )
+
+    def test_an_instance_id_that_names_nothing_is_refused(self):
+        """It serializes to a trailing dash, which parses back as no instance at all, so the two would disagree."""
+        with pytest.raises(ValidationError, match="deploy_instance_id is empty"):
+            ReleaseName(run_id=RUN_ID, deploy_component=DeployComponent.TRAINER, deploy_instance_id="")
 
     def test_an_instance_id_that_overruns_the_release_name_is_refused(self):
         """The run id fits every component, but an instance id on top of it can still overrun helm's bound."""

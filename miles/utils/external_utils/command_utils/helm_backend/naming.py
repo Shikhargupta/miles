@@ -4,7 +4,7 @@ import random
 import time
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import ValidationError, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.types import DeployComponent
@@ -38,6 +38,7 @@ class ReleaseName(FrozenStrictBaseModel):
             len(self.run_id) <= RUN_ID_MAX_LENGTH
         ), f"run_id {self.run_id!r} is {len(self.run_id)} characters, at most {RUN_ID_MAX_LENGTH}"
         if self.deploy_instance_id is not None:
+            assert self.deploy_instance_id, "deploy_instance_id is empty; a component deployed once carries None"
             intersected = sorted(_COMPONENT_VALUES.intersection(self.deploy_instance_id.split("-")))
             assert not intersected, (
                 f"--deploy-instance-id {self.deploy_instance_id!r} carries the component name(s) {intersected}, "
@@ -64,11 +65,14 @@ class ReleaseName(FrozenStrictBaseModel):
         if index == 0:
             return None
 
-        return cls(
-            run_id="-".join(tokens[:index]),
-            deploy_component=DeployComponent(tokens[index]),
-            deploy_instance_id="-".join(tokens[index + 1 :]) or None,
-        )
+        try:
+            return cls(
+                run_id="-".join(tokens[:index]),
+                deploy_component=DeployComponent(tokens[index]),
+                deploy_instance_id="-".join(tokens[index + 1 :]) or None,
+            )
+        except ValidationError:
+            return None
 
 
 class RunNames:
