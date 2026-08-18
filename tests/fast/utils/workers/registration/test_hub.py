@@ -13,6 +13,8 @@ from miles.utils.workers.worker_spec import HostAndPort
 
 _REPORTER = "miles-run-r1-inference"
 _POOL_ID = f"{_REPORTER}-inference-engine-0-0"
+_OTHER_REPORTER = "miles-run-r1-inference-b"
+_OTHER_POOL_ID = f"{_OTHER_REPORTER}-inference-engine-0-0"
 _PROVIDER_MODULE = "miles.utils.workers.registration.hub"
 _RUN_UUID = "run-uuid-1"
 _POLL_INTERVAL_SECONDS = 0.001
@@ -25,13 +27,14 @@ def _cell(
     model_id: str = "default",
     generation: int = 0,
     reporter_id: str = _REPORTER,
+    pool_id: str = _POOL_ID,
 ) -> RegisteredCellInfo:
-    cell_id = f"{_POOL_ID}-{cell_index}"
+    cell_id = f"{pool_id}-{cell_index}"
     return RegisteredCellInfo(
         reporter_id=reporter_id,
         info=CellInfo(
             cell_id=cell_id,
-            pool_id=_POOL_ID,
+            pool_id=pool_id,
             alive=True,
             worker_names=[f"{cell_id}-0"],
             workers_hash=f"hash-{host}",
@@ -46,6 +49,10 @@ def _cell(
             )
         ],
     )
+
+
+def _other_cell(cell_index: int, *, host: str = "10.0.0.5") -> RegisteredCellInfo:
+    return _cell(cell_index, host=host, reporter_id=_OTHER_REPORTER, pool_id=_OTHER_POOL_ID)
 
 
 def _snapshot(
@@ -151,28 +158,28 @@ class TestSnapshotMembership:
         provider, _watcher = await _watched()
         await _apply(provider, _snapshot([_cell(0)]))
 
-        with pytest.raises(AssertionError, match="share a pool id"):
+        with pytest.raises(AssertionError, match="is reported by both"):
             await provider.ingest(_snapshot([_cell(0, reporter_id="other")], reporter_id="other"))
 
     async def test_a_snapshot_of_another_run_is_refused(self):
         """A resume reusing a run id leaves the reporter of the previous training announcing into this one."""
         provider, _watcher = await _watched()
 
-        with pytest.raises(AssertionError, match="expected"):
+        with pytest.raises(AssertionError, match="carries run_uuid"):
             await provider.ingest(_snapshot([_cell(0)]).model_copy(update=dict(run_uuid="another-run")))
 
     async def test_a_snapshot_carrying_a_cell_of_another_reporter_is_refused(self):
         """A snapshot is the membership of one deployment, so a cell of another one was assembled in by mistake."""
         provider, _watcher = await _watched()
 
-        with pytest.raises(AssertionError, match="membership of two deployments"):
+        with pytest.raises(AssertionError, match="snapshot of reporter"):
             await provider.ingest(_snapshot([_cell(0, reporter_id="other")]))
 
     async def test_a_cell_carried_twice_by_one_snapshot_is_refused(self):
         """Either entry could be the truth, so holding one would hold a membership nobody announced."""
         provider, _watcher = await _watched()
 
-        with pytest.raises(AssertionError, match="more than once in one snapshot"):
+        with pytest.raises(AssertionError, match="more than once"):
             await provider.ingest(_snapshot([_cell(0), _cell(0, host="10.0.0.6")]))
 
         assert sorted(provider._cell_of_id) == []
@@ -191,8 +198,29 @@ class TestSnapshotMembership:
         provider, _watcher = await _watched()
         cell = _cell(0).model_copy(update=dict(workers=_cell(1).workers))
 
-        with pytest.raises(AssertionError, match="do not all belong to it"):
+        with pytest.raises(AssertionError, match="name cells"):
             await provider.ingest(_snapshot([cell]))
+
+
+class TestPartitioningCellsByReporter:
+    async def test_a_snapshot_replaces_only_the_cells_of_the_reporter_that_sent_it(self):
+        """A snapshot declares one deployment's membership, so taking it as the run's would drop every other engine."""
+        provider, _watcher = await _watched()
+        await _apply(provider, _snapshot([_cell(0), _cell(1)]))
+        await _apply(provider, _snapshot([_other_cell(0), _other_cell(1)], reporter_id=_OTHER_REPORTER))
+
+        await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=2))
+
+        assert sorted(provider._cell_of_id) == sorted([f"{_POOL_ID}-0", f"{_POOL_ID}-1", f"{_OTHER_POOL_ID}-0"])
+
+    async def test_each_reporter_is_sequenced_on_its_own(self):
+        """Deployments count their own snapshots, so one that has run for longer must not silence a fresh one."""
+        provider, _watcher = await _watched()
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=7))
+
+        await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=1))
+
+        assert sorted(provider._cell_of_id) == sorted([f"{_POOL_ID}-0", f"{_OTHER_POOL_ID}-0"])
 
 
 class TestResendingTheSameMembership:

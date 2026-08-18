@@ -209,6 +209,19 @@ class TestSnapshotSequencing:
         ]
 
 
+class TestObservingItsOwnCells:
+    async def test_a_cell_that_came_or_went_wakes_the_reporter(self):
+        """Waiting out the whole period would leave the run without engines its deployment already has."""
+        reporter, provider, _hub_endpoint = await _synced()
+        assert reporter._trigger.notified == 1
+
+        await provider.reconcile(f"{_POOL_ID}-1", _cell_info(1))
+        await provider.reconcile(f"{_POOL_ID}-1", None)
+
+        assert reporter._trigger.notified == 3
+        assert sorted(reporter._info_of_cell_id) == [f"{_POOL_ID}-0"]
+
+
 class TestReporterWorker:
     def test_the_worker_the_engine_release_serves_answers_no_call(self):
         """Its whole value is the reporting loop its constructor starts, so it exposes nothing to call."""
