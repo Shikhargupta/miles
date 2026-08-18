@@ -90,9 +90,9 @@ def make_selection_samples(inputs) -> list[Sample]:
             loss_mask=[1] * RESPONSE_LENS[i],
             index=row,
             status=Sample.Status.COMPLETED,
-            loss_weights=LOSS_WEIGHTS[i],
-            advantages=ADVANTAGES[i],
-            rollout_log_probs=inputs["rollout_log_probs"][i].tolist(),
+            loss_weights=LOSS_WEIGHTS[i] if name == "A" else None,
+            advantages=ADVANTAGES[i] if name == "B" else None,
+            rollout_log_probs=inputs["rollout_log_probs"][i].tolist() if name == "B" else None,
         )
         sample.adapter = AdapterRef(name=name, registration_id=f"r-{name}", serving_version=1, slot=9)
         samples.append(sample)
