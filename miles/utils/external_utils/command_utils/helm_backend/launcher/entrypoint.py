@@ -36,7 +36,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.launch_recor
     LaunchRecord,
     installed_launch_record_file,
 )
-from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest, ManifestObjectKey
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import farewell, with_observability
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.diagnosis import collect_diagnosis
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import pod_phase
@@ -141,6 +141,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             chart=chart,
             values_files=values_files,
             force=config.force,
+            allow_diff_object_keys=frozenset(),
         )
 
     record.write(path=record_path)
@@ -294,11 +295,14 @@ def _assert_upgrade_only_resizes(
     chart: Path,
     values_files: list[str | Path],
     force: bool,
+    allow_diff_object_keys: frozenset[ManifestObjectKey],
 ) -> None:
     proposed_manifest = Helm.render_upgrade(
         release=release, namespace=namespace, chart=chart, values_files=values_files
     )
-    diff = manifest_diff.diff_manifests(before=installed_manifest, after=proposed_manifest)
+    diff = manifest_diff.diff_manifests(
+        before=installed_manifest, after=proposed_manifest, allow_diff_object_keys=allow_diff_object_keys
+    )
 
     if diff.is_allowed:
         logger.info(
@@ -306,8 +310,10 @@ def _assert_upgrade_only_resizes(
         )
         return
 
+    allowed = sorted(f"{key.kind}/{key.name}" for key in allow_diff_object_keys)
     message = (
-        f"Run {release} already exists and the relaunch would change more than its size:\n"
+        f"Run {release} already exists and the relaunch would change more than its size, and more than the objects "
+        f"this launch is allowed to rebuild ({allowed}):\n"
         f"{diff.describe()}\n"
         f"launch under a new run id, or pass force=True to apply this anyway and accept the restarts"
     )

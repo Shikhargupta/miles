@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
@@ -20,6 +21,7 @@ class LaunchRecord(FrozenStrictBaseModel):
     orchestrator_command: list[str]
     env: dict[str, str]
     reachable_at: dict[str, str]
+    restart_at: datetime.datetime | None = None
 
     @classmethod
     def compute(cls, *, plan: LaunchPlan, values_file: Path, reachable_at: dict[str, str]) -> LaunchRecord:
@@ -29,6 +31,7 @@ class LaunchRecord(FrozenStrictBaseModel):
             namespace=plan.namespace,
             state_file=plan.state_file,
             values_file=str(values_file),
+            restart_at=plan.restart_at,
             worker_argv=redact_argv(plan.worker_argv),
             orchestrator_command=redact_argv(plan.orchestrator_command),
             env=redact_env_vars(plan.env),
