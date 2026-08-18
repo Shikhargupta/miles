@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from miles.backends.megatron_utils.tinker_backend.optimizer import step_adapter_slots, zero_adapter_slot_grads
-from miles.backends.training_utils.tinker_execution import StepRequest
+from miles.backends.training_utils.operation_execution import StepRequest
 from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.utils.tinker_backend import BatchExecutionLease
 

@@ -17,7 +17,12 @@ import pytest
 from miles.ray.tinker_backend.config import AdapterRun, AdapterRunConfig
 from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainOutput
-from miles.rollout.tinker_backend.rollout_fn import AdapterRolloutRuntime, ClaimedOperationBatch, TinkerRolloutFn
+from miles.rollout.tinker_backend.rollout_fn import (
+    AdapterRolloutRuntime,
+    ClaimedOperationBatch,
+    MultiLoraOperationBatchFn,
+    TinkerRolloutFn,
+)
 from miles.utils.tinker_backend import BatchExecutionLease, EmptyBatchTimeoutError
 
 
@@ -26,9 +31,13 @@ def make_run(name="X", reg="rx", slot=3, version=2) -> AdapterRun:
     return AdapterRun(name=name, config=config, slot=slot, version=version, registration_id=reg)
 
 
+def test_legacy_rollout_fn_name_is_a_compatibility_alias():
+    assert TinkerRolloutFn is MultiLoraOperationBatchFn
+
+
 def claim_batch(run: AdapterRun, operations) -> ClaimedOperationBatch:
     """Drive the adapter's claim path for one registration runtime."""
-    fn = TinkerRolloutFn(
+    fn = MultiLoraOperationBatchFn(
         RolloutFnConstructorInput(args=SimpleNamespace(), data_source=None),
         operations=operations,
         residency=FakeResidency(),
@@ -145,7 +154,7 @@ class TestClaimBatch:
         assert queue.failed == []
 
 
-def ready_runtime(fn: TinkerRolloutFn, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
+def ready_runtime(fn: MultiLoraOperationBatchFn, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
     # The runtime's stamped slot (9) is deliberately stale: the claim's
     # binding, not the long-lived AdapterRun view, is the dispatch truth.
     run = make_run(name=name, reg=f"r-{name}", slot=9)
@@ -163,18 +172,18 @@ def ready_runtime(fn: TinkerRolloutFn, name: str, slot: int, kind: str) -> Adapt
     return runtime
 
 
-def merge(fn: TinkerRolloutFn, selected) -> RolloutFnTrainOutput:
+def merge(fn: MultiLoraOperationBatchFn, selected) -> RolloutFnTrainOutput:
     return asyncio.run(fn._merge(selected))
 
 
-def make_fn(soft_target=100) -> TinkerRolloutFn:
+def make_fn(soft_target=100) -> MultiLoraOperationBatchFn:
     args = SimpleNamespace(
         rollout_batch_size=soft_target,
         n_samples_per_prompt=1,
         tinker_max_coalesce_wait_s=0.05,
         tinker_max_empty_wait_s=0.05,
     )
-    return TinkerRolloutFn(
+    return MultiLoraOperationBatchFn(
         RolloutFnConstructorInput(args=args, data_source=None),
         operations=FakeOperationQueue(),
         residency=FakeResidency(),

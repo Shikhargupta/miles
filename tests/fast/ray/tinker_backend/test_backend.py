@@ -1,4 +1,4 @@
-"""TinkerBackend control plane: registration resolution, the v1 compatibility
+"""MultiLoraOperationBackend control plane: registration resolution, the v1 compatibility
 preflight (boundary rejection, never GPU-side), control-operation claims with
 authoritative clocks and dirty gates, and commit bookkeeping."""
 
@@ -12,13 +12,13 @@ import asyncio
 
 import pytest
 
-from miles.ray.tinker_backend.backend import TinkerBackend
+from miles.ray.tinker_backend.backend import MultiLoraOperationBackend, TinkerBackend
 from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.registry import AdapterState
 from miles.utils.tinker_backend import make_rid, parse_adapter
 
 
-def make_backend(max_adapters: int = 4) -> TinkerBackend:
+def make_backend(max_adapters: int = 4) -> MultiLoraOperationBackend:
     args = SimpleNamespace(
         multi_lora_n_adapters=max_adapters,
         save="/tmp/tinker-test-save",
@@ -26,7 +26,11 @@ def make_backend(max_adapters: int = 4) -> TinkerBackend:
         lora_alpha=64,
         hf_checkpoint="Qwen/Qwen3-0.6B",
     )
-    return TinkerBackend(args, "http://unused")
+    return MultiLoraOperationBackend(args, "http://unused")
+
+
+def test_legacy_backend_name_is_a_compatibility_alias():
+    assert TinkerBackend is MultiLoraOperationBackend
 
 
 def register(backend, name="X", **overrides) -> dict:
@@ -458,9 +462,10 @@ def test_trainer_readiness_flag_flips_once_marked():
 def test_advertised_host_is_the_bind_host():
     # A loopback bind must never advertise the node IP: that URL would not
     # reach the socket.
-    from miles.ray.tinker_backend.http_server import TinkerHTTPServer
+    from miles.ray.tinker_backend.http_server import AdapterRunControlServer, TinkerHTTPServer
 
-    assert TinkerHTTPServer(None, host="127.0.0.1").advertised_host == "127.0.0.1"
+    assert AdapterRunControlServer(None, host="127.0.0.1").advertised_host == "127.0.0.1"
+    assert TinkerHTTPServer is AdapterRunControlServer
 
 
 class TestRejectOperation:
@@ -509,7 +514,7 @@ class TestGapTimeoutSurface:
     def test_flag_reaches_the_ledger_with_a_default(self):
         assert make_backend().operations.gap_timeout == 600.0
         args = SimpleNamespace(multi_lora_n_adapters=4, tinker_operation_gap_timeout=5.0)
-        assert TinkerBackend(args, "http://unused").operations.gap_timeout == 5.0
+        assert MultiLoraOperationBackend(args, "http://unused").operations.gap_timeout == 5.0
 
     def test_stall_is_typed_and_observable_before_expiry(self):
         backend, clock = self.stalled_backend()

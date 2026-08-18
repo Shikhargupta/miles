@@ -2,7 +2,7 @@
 of 0.24.1) drives the frontend over a live localhost HTTP server.
 
 The stack is the production one minus GPUs and Ray: TinkerFrontendHTTPServer
--> TinkerFrontend -> real TinkerBackend (registry + ledger + validation),
+-> TinkerFrontend -> real MultiLoraOperationBackend (registry + ledger + validation),
 executed by the FakeDriver (the documented trainer verbs), sampling proxied
 to a stub sglang router. The SDK is never mocked, monkeypatched, or called
 below its public surface (the one exception: models.unload is a low-level

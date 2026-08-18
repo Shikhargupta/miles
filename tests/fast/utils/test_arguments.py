@@ -551,7 +551,7 @@ class TestMultiLoRAValidation:
 
     def test_rejects_multi_lora_without_tinker_backend(self):
         # The dataset-driven adapter-sample-level path was removed; multi-LoRA
-        # is only served through the tinker-compatible operation backend.
+        # currently requires the Tinker adapter for the Multi-LoRA operation backend.
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
         args = parser.parse_args(
@@ -591,7 +591,7 @@ class TestMultiLoRAValidation:
 
         miles_validate_args(args)
 
-        assert args.rollout_function_path == "miles.rollout.tinker_backend.rollout_fn.TinkerRolloutFn"
+        assert args.rollout_function_path == "miles.rollout.tinker_backend.rollout_fn.MultiLoraOperationBatchFn"
         assert args.data_source_path == "miles.rollout.tinker_backend.rollout_fn.TinkerNullDataSource"
         assert args.rollout_global_dataset is True
 

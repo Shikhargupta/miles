@@ -1799,7 +1799,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--tinker-backend",
                 action="store_true",
                 default=False,
-                help="Serve the multi-LoRA slots through the tinker-compatible operation backend "
+                help="Enable the Tinker protocol adapter for the Multi-LoRA operation backend "
                 "(client-driven forward_backward/optim_step; no dataset or reward on the server). "
                 "Requires --multi-lora-n-adapters > 0.",
             )
@@ -1851,8 +1851,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
-                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                    "Dotted path to an AdapterRunControlServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: AdapterRunControlServer)"
                 ),
             )
             parser.add_argument(
@@ -1860,8 +1860,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
+                    "Dotted path to a MultiLoraOperationBackend subclass for the multi-LoRA controller, "
+                    "e.g. to add custom adapter validation via validate_adapter "
+                    "(default: MultiLoraOperationBackend)"
                 ),
             )
             parser.add_argument(

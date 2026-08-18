@@ -198,7 +198,7 @@ class AdapterRolloutRuntime:
         self.task = None
 
 
-class TinkerRolloutFn:
+class MultiLoraOperationBatchFn:
     """Operation-to-batch adapter (codex-rollout-fullparameter-design-0810
     §4.5): turns claimed client operations into whole training batches —
     persistent round-robin, homogeneous kind lock, coalesce timeout,
@@ -232,7 +232,9 @@ class TinkerRolloutFn:
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
         if input.evaluation:
-            raise ValueError("TinkerRolloutFn does not serve eval; tinker runs have no server-side eval loop")
+            raise ValueError(
+                "MultiLoraOperationBatchFn does not serve eval; tinker runs have no server-side eval loop"
+            )
         # READY streams only: a retiring registration's queued operations are
         # fenced terminal, so a child claim would never return for it.
         adapters = await self.operations.ready_streams()
@@ -440,3 +442,8 @@ class TinkerRolloutFn:
             # to the batch instead of trimming it.
             postprocess=RolloutPostprocessOptions(pad_to_dp=True),
         )
+
+
+# Compatibility for existing rollout-function paths. The implementation is
+# concrete Multi-LoRA because it stamps AdapterRef and consumes adapter slots.
+TinkerRolloutFn = MultiLoraOperationBatchFn

@@ -18,7 +18,7 @@ import asyncio
 
 import pytest
 
-from miles.ray.tinker_backend.backend import TinkerBackend
+from miles.ray.tinker_backend.backend import MultiLoraOperationBackend
 from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
 from miles.ray.tinker_backend.residency import (
@@ -39,7 +39,7 @@ def register_ready(registry, name) -> tuple[str, str]:
     return (name, registry.find(name).registration_id)
 
 
-def make_backend(max_adapters=1) -> TinkerBackend:
+def make_backend(max_adapters=1) -> MultiLoraOperationBackend:
     args = SimpleNamespace(
         multi_lora_n_adapters=max_adapters,
         save="/tmp/tinker-test-save",
@@ -47,7 +47,7 @@ def make_backend(max_adapters=1) -> TinkerBackend:
         lora_alpha=64,
         hf_checkpoint="Qwen/Qwen3-0.6B",
     )
-    return TinkerBackend(args, "http://unused")
+    return MultiLoraOperationBackend(args, "http://unused")
 
 
 def fb_payload():

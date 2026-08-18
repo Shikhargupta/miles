@@ -1,1 +1,1 @@
-"""tinker-compatible-backend control plane (adapter-batch-level)."""
+"""Tinker compatibility facade over the Multi-LoRA operation backend."""

@@ -1,18 +1,18 @@
-# Tinker-compatible backend
+# Multi-LoRA operation backend with Tinker compatibility
 
-Serve many LoRA training runs on one shared base model through a
-[tinker](https://tinker-docs.thinkingmachines.ai/)-style operation API: clients
-drive training with explicit `forward_backward` / `optim_step` operations and
-sample through the shared engines — no dataset, no reward function, and no
-batch schedule on the server.
+Serve many LoRA training runs on one shared base model through the
+`MultiLoraOperationBackend`. The
+[tinker](https://tinker-docs.thinkingmachines.ai/)-compatible frontend maps the
+official SDK onto explicit `forward_backward` / `optim_step` operations and
+shared-engine sampling — no dataset, reward function, or batch schedule on the
+server.
 
 ```
-official tinker SDK ──HTTP──> TinkerController (head node)
-                                ├─ tinker frontend      /api/v1 (--tinker-frontend; the REST
-                                │                       protocol tinker==0.24.1 speaks)
-                                ├─ registration plane   /adapter_runs (operator surface)
-                                ├─ operation ledger     enqueue → claim → complete → ack
-                                └─ serving plane        sglang router (sampling proxied)
+official Tinker SDK ──HTTP──> Tinker protocol/frontend adapter
+                                  └─ MultiLoraOperationBackend (head node)
+                                       ├─ registration + operation ledger
+                                       ├─ adapter-slot execution
+                                       └─ serving plane ─────────> SGLang router
 trainer ranks <──Ray── driver loop (train_tinker_backend.py)
 ```
 
@@ -50,7 +50,7 @@ Key flags:
 
 | flag | meaning |
 |------|---------|
-| `--tinker-backend` | enable the operation backend (requires `--multi-lora-n-adapters > 0`) |
+| `--tinker-backend` | enable the Tinker protocol adapter for the Multi-LoRA operation backend (requires `--multi-lora-n-adapters > 0`) |
 | `--multi-lora-n-adapters N` | fixed slot count; a registration binds a slot for life (queue when full) |
 | `--lora-rank` / `--lora-alpha` | deployment-wide ceiling / fixed alpha — clients may lower `rank`, never set `alpha` |
 | `--multi-lora-disable-service-mode` | exit once all adapters retire (by default the service keeps serving with zero adapters) |
@@ -82,6 +82,15 @@ steps forever at `grad_norm=0.0` without learning (4xH200 GPT-OSS 20B repro,
 bridge, same config).
 
 ## Operation contract
+
+`Tinker` names the compatibility boundary, not the trainer implementation.
+The current concrete is `MultiLoraOperationBackend`; its queue-backed
+`MultiLoraOperationBatchFn` batches already-tokenized operations, and the
+Megatron `MultiLoraParameterExecutor` applies them to adapter slots. A future
+full-parameter implementation can reuse the explicit operation contract by
+providing a different executor; full-parameter training is not implemented by
+this stack today. The former `TinkerBackend`, `TinkerRolloutFn`,
+`TinkerHTTPServer`, and `tinker_execution` imports remain compatibility aliases.
 
 `enqueue_operation(name, operation_id, ordinal, kind, payload)` — ordinals are
 consecutive per registration starting at 1; arrival may be out of order
@@ -270,7 +279,7 @@ weights-only restore (`load_state` / `create_training_client_from_state` —
 the backend restores the full training state; use the `_with_optimizer`
 variants), named persistent sampler checkpoints
 (`save_weights_for_sampler(name)` / `create_sampling_client(model_path=...)`),
-`ttl_seconds` (no reaper runs; a recorded TTL would be a false promise),
+`ttl_seconds` (checkpoint/sampler TTL expiry is not implemented),
 `prompt_logprobs` / `topk_prompt_logprobs`, sparse-CSR tensors, and negative
 token ids anywhere (targets, inputs, prompts, stop tokens). A sampling
 `seed` maps to sglang `sampling_seed`, offset per sample so
@@ -282,17 +291,18 @@ server-derived serving identity (`rid`/`lora_path`/`extra_key` are never
 client-controllable — the wire models drop unknown fields and the sglang
 params are rebuilt from an allowlist). SGLang's continuous batching is the
 only sampling batcher: the frontend never coalesces prompts, and the
-training-operation scheduler (`TinkerRolloutFn`) never sees a sampling
+training-operation scheduler (`MultiLoraOperationBatchFn`) never sees a sampling
 request. The legacy datasource rollout pipeline
 (`RolloutManager.generate()`: datasets, rewards, training-data conversion)
 is not on this path — the frontend shares only the router the rollout
 engines already serve.
 
-Trust boundary (v1): the frontend authenticates clients but does not meter
-them — token ids are not checked against the vocabulary (upper bound), and
-request/fan-out/output quotas (`num_samples`, `max_tokens`, body bytes) are
-not enforced. Run it loopback/VPN-facing for trusted clients; per-tenant
-quotas are future work.
+Trust boundary (v1): the frontend authenticates clients and bounds aggregate
+active sub-generations, rejects one request whose `num_samples` exceeds that
+capacity, and preflights `prompt + max_tokens` against the discovered engine
+limit. It still does not validate token ids against the vocabulary upper bound
+or enforce request-body/output-byte quotas. Run it loopback/VPN-facing for
+trusted clients; per-tenant quotas are future work.
 
 ## v1 compatibility matrix
 

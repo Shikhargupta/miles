@@ -1,12 +1,12 @@
-"""Named Ray actor wrapping the tinker backend + its HTTP surface."""
+"""Tinker compatibility actor over the Multi-LoRA operation control surface."""
 
 from functools import cache
 from typing import Any
 
 import ray
 
-from miles.ray.tinker_backend.backend import TinkerBackend
-from miles.ray.tinker_backend.http_server import TinkerHTTPServer
+from miles.ray.tinker_backend.backend import MultiLoraOperationBackend
+from miles.ray.tinker_backend.http_server import AdapterRunControlServer
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import compute_ray_pin_head_options
 
@@ -32,8 +32,8 @@ class TinkerController:
     # Loopback by default: the control plane executes client-referenced work
     # and must be fronted by the (future) authenticated tinker frontend.
     def __init__(self, args, router_url: str, host: str = "127.0.0.1") -> None:
-        backend_cls = _load_subclass(getattr(args, "multi_lora_backend_path", None), TinkerBackend)
-        server_cls = _load_subclass(getattr(args, "multi_lora_http_server_path", None), TinkerHTTPServer)
+        backend_cls = _load_subclass(getattr(args, "multi_lora_backend_path", None), MultiLoraOperationBackend)
+        server_cls = _load_subclass(getattr(args, "multi_lora_http_server_path", None), AdapterRunControlServer)
         self.backend = backend_cls(args, router_url)
         self.server = server_cls(self.backend, host, api_port=getattr(args, "multi_lora_api_port", 0))
 
