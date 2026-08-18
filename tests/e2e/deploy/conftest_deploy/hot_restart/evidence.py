@@ -61,7 +61,7 @@ class ObservationCounts(FrozenStrictBaseModel):
 
 class HotRestartRecord(FrozenStrictBaseModel):
     index: int
-    saved_iteration_at_trigger: int
+    saved_iteration_at_trigger: int | None
     finished_rollout_id_at_trigger: int
 
 

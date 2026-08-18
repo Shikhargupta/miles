@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +15,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
     ObservationCounts,
     compute_hot_restart_workloads,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.gate import compute_next_gate, compute_record_of_open_gate
+from tests.e2e.deploy.conftest_deploy.hot_restart.gate import HotRestartGate, compute_next_gate
 from tests.e2e.deploy.conftest_deploy.hot_restart.progress import RunProgress, read_run_progress
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ class HotRestartDriver:
     namespace: str
     trainer_id: str
     num_restarts: int
+    build_gate: Callable[[Sequence[HotRestartRecord]], HotRestartGate] = compute_next_gate
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS
     gate_timeout_seconds: float = GATE_TIMEOUT_SECONDS
     consecutive_failure_limit: int = CONSECUTIVE_FAILURE_LIMIT
@@ -46,7 +47,7 @@ class HotRestartDriver:
         self._failures: list[BaseException] = []
         self._relaunch_threads: list[threading.Thread] = []
         self._thread = threading.Thread(target=self._run, daemon=True, name="hot-restart-driver")
-        self._gate = compute_next_gate(self.records)
+        self._gate = self.build_gate(self.records)
         self._deadline = 0.0
         self._max_finished_rollout_id: int | None = None
         self._attempts_of_read: Counter[str] = Counter()
@@ -100,7 +101,7 @@ class HotRestartDriver:
         )
         assert len(self.records) == self.num_restarts, (
             f"the run ended after {len(self.records)} of {self.num_restarts} hot restart(s), so it never proved "
-            f"that a second take-over of trainers a first one already took over works"
+            f"what a take-over of the trainers of a run that is still training costs"
         )
         assert len(self.snapshots) >= 2, (
             f"the cluster was observed {len(self.snapshots)} time(s), which is too few to tell a pod that survived "
@@ -135,17 +136,18 @@ class HotRestartDriver:
 
         if not self._gate.observe(progress):
             assert time.monotonic() < self._deadline, (
-                f"hot restart {len(self.records)} waited {self.gate_timeout_seconds}s for a checkpoint "
-                f"and a step after it, and the run only reached {progress} with its gate at {self._gate.stage.name}"
+                f"hot restart {len(self.records)} waited {self.gate_timeout_seconds}s for {self._gate.awaited}, "
+                f"and the run only reached {progress} with its gate at {self._gate.stage.name}"
             )
             return
 
-        record = compute_record_of_open_gate(self._gate, index=len(self.records), progress=progress)
+        record = self._gate.compute_record(index=len(self.records), progress=progress)
         self.records.append(record)
         logger.info(f"Hot restart {record.index} is due: {record}")
         self._trigger(record.index)
-        self._gate = compute_next_gate(self.records)
-        self._deadline = time.monotonic() + self.gate_timeout_seconds
+        if len(self.records) < self.num_restarts:
+            self._gate = self.build_gate(self.records)
+            self._deadline = time.monotonic() + self.gate_timeout_seconds
 
     def _assert_the_run_never_lost_a_step_outside_a_take_over(self, progress: RunProgress) -> None:
         finished = progress.last_finished_rollout_id

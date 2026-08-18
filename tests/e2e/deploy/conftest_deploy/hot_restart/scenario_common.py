@@ -1,6 +1,6 @@
 import hashlib
 import shlex
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,7 +20,8 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_process import (
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_only_the_orchestration_side_restarted
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import HotRestartDriver, driving_hot_restarts
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
+from tests.e2e.deploy.conftest_deploy.hot_restart.gate import HotRestartGate, compute_next_gate
 from tests.e2e.deploy.conftest_deploy.hot_restart.relaunch import compute_release_of_config, relaunch_with_hot_restart
 from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
@@ -99,6 +100,7 @@ def driving_the_take_overs_of(
     dump_dir: str,
     config: command_utils.ExecuteTrainConfig,
     num_restarts: int,
+    build_gate: Callable[[Sequence[HotRestartRecord]], HotRestartGate] = compute_next_gate,
 ) -> Iterator[None]:
     release = compute_release_of_config(config)
     driver = HotRestartDriver(
@@ -111,6 +113,7 @@ def driving_the_take_overs_of(
         namespace=config.namespace,
         trainer_id=DEFAULT_TRAINER_ID,
         num_restarts=num_restarts,
+        build_gate=build_gate,
     )
 
     with driving_hot_restarts(driver, dump_dir=dump_dir):

@@ -2,9 +2,10 @@ import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.gate import (
     GateStage,
+    NoCheckpointGate,
     RestartGate,
     compute_next_gate,
-    compute_record_of_open_gate,
+    compute_next_no_checkpoint_gate,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.progress import RunProgress
 
@@ -70,7 +71,7 @@ class TestComputeNextGate:
         assert compute_next_gate([record]).minimum_saved_iteration == 3
 
 
-class TestComputeRecordOfOpenGate:
+class TestTheRecordARestartGateComputes:
     def test_the_record_is_what_the_run_had_reached_when_the_restart_was_triggered(self):
         """A take-over lands seconds later, so this records the trigger, not the window that followed."""
         gate = RestartGate()
@@ -78,13 +79,73 @@ class TestComputeRecordOfOpenGate:
         progress = RunProgress(last_saved_iteration=2, last_finished_rollout_id=3)
         gate.observe(progress)
 
-        record = compute_record_of_open_gate(gate, index=0, progress=progress)
+        record = gate.compute_record(index=0, progress=progress)
 
         assert record == HotRestartRecord(index=0, saved_iteration_at_trigger=1, finished_rollout_id_at_trigger=3)
 
     def test_a_gate_that_never_opened_records_nothing(self):
         """Recording a restart that was not due would claim steps were redone that never ran twice."""
         with pytest.raises(AssertionError):
-            compute_record_of_open_gate(
-                RestartGate(), index=0, progress=RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)
+            RestartGate().compute_record(
+                index=0, progress=RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)
             )
+
+
+class TestNoCheckpointGate:
+    def test_a_run_that_has_finished_no_step_keeps_the_gate_shut(self):
+        """A take-over before the first step would redo nothing and prove nothing about redoing anything."""
+        gate = NoCheckpointGate()
+
+        assert not gate.observe(RunProgress(last_saved_iteration=None, last_finished_rollout_id=None))
+        assert gate.stage is GateStage.AWAITING_STEP
+
+    def test_one_finished_step_of_a_run_that_has_saved_nothing_opens_the_gate(self):
+        """This is the whole precondition: work to throw away, and no checkpoint to resume from."""
+        gate = NoCheckpointGate()
+
+        assert gate.observe(RunProgress(last_saved_iteration=None, last_finished_rollout_id=0))
+        assert gate.stage is GateStage.OPEN
+
+    def test_a_save_that_lands_before_the_restart_could_fire_fails_instead_of_waiting(self):
+        """Waiting on it would silently restart a run that has a checkpoint, which another scenario covers."""
+        gate = NoCheckpointGate()
+
+        with pytest.raises(AssertionError, match="before anything took it over"):
+            gate.observe(RunProgress(last_saved_iteration=1, last_finished_rollout_id=1))
+
+    def test_a_gate_that_opened_stays_open_once_the_restart_makes_the_run_save(self):
+        """The take-over is already in flight by then, and the save it triggers is not a gate violation."""
+        gate = NoCheckpointGate()
+        gate.observe(RunProgress(last_saved_iteration=None, last_finished_rollout_id=0))
+
+        assert gate.observe(RunProgress(last_saved_iteration=4, last_finished_rollout_id=4))
+
+    def test_the_record_says_that_no_checkpoint_existed_when_the_restart_was_triggered(self):
+        """Only the record tells the comparison which of the two take-over paths this dump describes."""
+        gate = NoCheckpointGate()
+        progress = RunProgress(last_saved_iteration=None, last_finished_rollout_id=2)
+        gate.observe(progress)
+
+        record = gate.compute_record(index=0, progress=progress)
+
+        assert record == HotRestartRecord(index=0, saved_iteration_at_trigger=None, finished_rollout_id_at_trigger=2)
+
+    def test_a_gate_that_never_opened_records_nothing(self):
+        """Recording a restart that was not due would claim a step was redone that never ran twice."""
+        with pytest.raises(AssertionError, match="still AWAITING_STEP"):
+            NoCheckpointGate().compute_record(
+                index=0, progress=RunProgress(last_saved_iteration=None, last_finished_rollout_id=2)
+            )
+
+
+class TestComputeNextNoCheckpointGate:
+    def test_the_first_restart_of_a_run_that_has_saved_nothing_is_allowed(self):
+        """Nothing has taken this run over yet, so it can still be holding no checkpoint."""
+        assert compute_next_no_checkpoint_gate([]).stage is GateStage.AWAITING_STEP
+
+    def test_a_second_restart_of_the_same_run_is_refused(self):
+        """The take-over makes the run save, so no later restart finds it without a checkpoint again."""
+        record = HotRestartRecord(index=0, saved_iteration_at_trigger=None, finished_rollout_id_at_trigger=2)
+
+        with pytest.raises(AssertionError, match="restarted once"):
+            compute_next_no_checkpoint_gate([record])

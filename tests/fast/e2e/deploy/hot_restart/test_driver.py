@@ -11,6 +11,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
     HotRestartRecord,
     ObservationCounts,
 )
+from tests.e2e.deploy.conftest_deploy.hot_restart.gate import GateStage
 from tests.e2e.deploy.conftest_deploy.hot_restart.progress import RunProgress
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     NAMESPACE,
@@ -34,6 +35,30 @@ def _driver(tmp_path: Path, **overrides: Any) -> HotRestartDriver:
     )
     kwargs.update(overrides)
     return HotRestartDriver(**kwargs)
+
+
+class _GateThatIsAlreadyOpen:
+    awaited: str = "a finished step"
+    stage: GateStage = GateStage.OPEN
+
+    def __init__(self) -> None:
+        self.observations = 0
+
+    def observe(self, progress: RunProgress) -> bool:
+        self.observations += 1
+        return True
+
+    def compute_record(self, *, index: int, progress: RunProgress) -> HotRestartRecord:
+        return HotRestartRecord(
+            index=index,
+            saved_iteration_at_trigger=progress.last_saved_iteration,
+            finished_rollout_id_at_trigger=progress.last_finished_rollout_id,
+        )
+
+
+def _append_gate(gates: list[_GateThatIsAlreadyOpen]) -> _GateThatIsAlreadyOpen:
+    gates.append(gate := _GateThatIsAlreadyOpen())
+    return gate
 
 
 class TestHotRestartDriverStart:
@@ -72,6 +97,30 @@ class TestHotRestartDriverProgressGuard:
         driver._assert_the_run_never_lost_a_step_outside_a_take_over(
             RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)
         )
+
+
+class TestHotRestartDriverGates:
+    def test_no_gate_is_built_or_read_once_the_last_restart_was_triggered(self, tmp_path, monkeypatch):
+        """A gate built after the final take-over would keep waiting for a restart nobody will trigger."""
+        gates: list[_GateThatIsAlreadyOpen] = []
+        driver = _driver(tmp_path, num_restarts=1, build_gate=lambda _records: _append_gate(gates))
+        monkeypatch.setattr(
+            driver_module,
+            "read_run_progress",
+            lambda **_kwargs: RunProgress(last_saved_iteration=None, last_finished_rollout_id=0),
+        )
+        monkeypatch.setattr(
+            driver_module,
+            "read_cluster_snapshot",
+            lambda **_kwargs: SnapshotAttempt(snapshot=None, reads_attempted=(POD_KIND,), reads_failed=()),
+        )
+
+        driver._observe_once()
+        driver._observe_once()
+
+        assert len(driver.records) == 1
+        assert len(gates) == 1
+        assert gates[0].observations == 1
 
 
 class TestHotRestartDriverSnapshots:
