@@ -17,10 +17,7 @@ from miles.backends.training_utils.operation_execution import (
     resolve_adam_params,
     run_optim_controls,
 )
-from miles.backends.training_utils.tinker_execution import BatchExecutionLease as LegacyBatchExecutionLease
-from miles.backends.training_utils.tinker_execution import BindingT as LegacyBindingT
-from miles.backends.training_utils.tinker_execution import run_optim_controls as legacy_run_optim_controls
-from miles.utils.tinker_backend import BatchExecutionLease, BindingT
+from miles.utils.operation_contract import BatchExecutionLease
 
 
 class FakeExecutor:
@@ -47,12 +44,6 @@ class FakeExecutor:
 
 
 LEASE = BatchExecutionLease(dispatch_id="d", bindings_by_operation=(("opt1", "opaque-1"), ("opt2", "opaque-2")))
-
-
-def test_legacy_module_reexports_operation_execution():
-    assert legacy_run_optim_controls is run_optim_controls
-    assert LegacyBatchExecutionLease is BatchExecutionLease
-    assert LegacyBindingT is BindingT
 
 
 def optim(op_id, adam=None, poison=None):

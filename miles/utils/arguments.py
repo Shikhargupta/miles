@@ -3205,7 +3205,7 @@ def miles_validate_args(args):
 
     validate_multi_lora_args(args)
 
-    from miles.utils.tinker_backend import validate_tinker_args
+    from miles.utils.tinker import validate_tinker_args
 
     validate_tinker_args(args)
 

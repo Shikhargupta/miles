@@ -19,15 +19,8 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import pytest
 
-from miles.utils.multi_lora import is_multi_lora_enabled, validate_multi_lora_args
-from miles.utils.tinker_backend import (
-    is_tinker_enabled,
-    uses_explicit_training_operations,
-    uses_multi_lora_operation_executor,
-    uses_multi_lora_tinker_executor,
-    uses_tinker_operation_semantics,
-    validate_tinker_args,
-)
+from miles.utils.multi_lora import is_multi_lora_enabled, uses_multi_lora_operation_executor, validate_multi_lora_args
+from miles.utils.tinker import is_tinker_enabled, uses_explicit_training_operations, validate_tinker_args
 
 
 def _args(tinker_backend: bool, n_adapters: int) -> SimpleNamespace:
@@ -39,10 +32,6 @@ def _args(tinker_backend: bool, n_adapters: int) -> SimpleNamespace:
 
 
 class TestPredicateRoles:
-    def test_legacy_predicate_names_are_compatibility_aliases(self):
-        assert uses_tinker_operation_semantics is uses_explicit_training_operations
-        assert uses_multi_lora_tinker_executor is uses_multi_lora_operation_executor
-
     def test_operation_semantics_is_the_protocol_flag_alone(self):
         assert uses_explicit_training_operations(_args(True, 0))
         assert uses_explicit_training_operations(_args(True, 4))
