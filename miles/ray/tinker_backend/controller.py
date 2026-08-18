@@ -144,7 +144,7 @@ class TinkerController:
         return self.backend.operations.cancel(operation_id)
 
     def get_operation(self, operation_id: str) -> dict | None:
-        return self.backend.operations.get(operation_id)
+        return self.backend.operation_view(operation_id)
 
     def ack_operation(self, operation_id: str) -> None:
         self.backend.operations.ack(operation_id)

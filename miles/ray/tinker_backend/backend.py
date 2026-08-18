@@ -45,7 +45,10 @@ class TinkerBackend:
     def __init__(self, args: Any, router_url: str) -> None:
         self.args = args
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
-        self.operations = OperationLedger()
+        # The gap timeout is liveness, not ordering: a stalled queue's blocked
+        # operations eventually terminal-fail typed; nothing ever skips or
+        # overtakes a missing ordinal (--tinker-operation-gap-timeout).
+        self.operations = OperationLedger(gap_timeout=getattr(args, "tinker_operation_gap_timeout", 600.0))
         # Registration-keyed step/dirty authority (parameterization-neutral);
         # the registry only mirrors its transitions into lifecycle pins.
         self.gradient_windows = GradientWindowTracker()
@@ -334,6 +337,9 @@ class TinkerBackend:
         ``BatchExecutionLease`` for the whole control batch is the single
         binding truth, returned alongside as
         ``{"operations": [...], "lease": <encoded> | None}``."""
+        # The driver polls this every control phase: the heartbeat that
+        # enforces the gap timeout even when no client is polling results.
+        self.operations.sweep_gap_timeouts()
         ready: list[dict] = []
         bindings: list[tuple[str, ResidentBinding]] = []
         for name, registration_id in self.operations.claimable_control_tenants():
@@ -510,7 +516,18 @@ class TinkerBackend:
         )
 
     def operation_view(self, operation_id: str) -> dict | None:
-        return self.operations.get(operation_id)
+        """One operation's client-facing view. Result polls route here, so the
+        sweep runs on the exact path a caller stuck behind a hole is watching;
+        a still-QUEUED operation blocked by an arrival gap says so (typed
+        stall surface: which ordinal it waits on and for how long)."""
+        self.operations.sweep_gap_timeouts()
+        view = self.operations.get(operation_id)
+        if view is not None and view["state"] == "QUEUED":
+            for stall in self.operations.gap_stalls():
+                if (stall["name"], stall["registration_id"]) == (view["name"], view["registration_id"]):
+                    view["waiting_on_ordinal"] = stall["missing_ordinal"]
+                    view["gap_stalled_for"] = stall["stalled_for"]
+        return view
 
     def ack_operation(self, operation_id: str) -> None:
         self.operations.ack(operation_id)
@@ -525,7 +542,9 @@ class TinkerBackend:
     def service_info(self) -> dict:
         """Deployment facts a tinker frontend needs for get_server_capabilities
         and weights_info: one base model per deployment, the rank ceiling,
-        slot occupancy, and the v1 loss allowlist."""
+        slot occupancy, and the v1 loss allowlist — plus the gap-stall
+        observability surface (current stalls and the configured timeout)."""
+        self.operations.sweep_gap_timeouts()
         args = self.args
         return dict(
             base_model=getattr(args, "hf_checkpoint", None),
@@ -534,6 +553,8 @@ class TinkerBackend:
             occupied_slots=self.registry.slot_pool.occupied_slot_ids(),
             ready_adapters=sorted(self.registry.in_state(AdapterState.READY)),
             supported_loss_fns=list(SUPPORTED_LOSS_FNS),
+            operation_gap_timeout=self.operations.gap_timeout,
+            gap_stalls=self.operations.gap_stalls(),
         )
 
 
@@ -541,18 +562,30 @@ def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict
     """Recompute a forward_backward operation's loss from its own payload and
     the returned logprobs, keyed ``name:reduction`` so the tinker SDK combiner
     can merge chunked operations (``:sum`` adds across chunks — the same
-    chunk-additivity the gradient sum has)."""
+    chunk-additivity the gradient sum has).
+
+    ``unmasked_tokens:sum`` counts loss_mask-active positions and is NOT a
+    weighted-CE denominator: a teacher-forced SFT datum excludes its prompt
+    via ``loss_weights=0`` while the mask stays 1, so dividing by it dilutes
+    the per-token loss by the prompt length. Cross-entropy therefore also
+    reports ``loss_weight:sum`` (Σ weight·mask, chunk-additive like the loss);
+    ``loss:sum / loss_weight:sum`` is the correct weighted-mean CE — equal to
+    the completion-token mean under 0/1 prompt masking, and still right for
+    fractional weights. Callers must guard the division: weights are any
+    finite floats, so the sum can be zero or negative."""
     spec = payload.get("loss") or {}
     loss_fn = spec.get("loss_fn", "cross_entropy")
     config = spec.get("loss_fn_config") or {}
     total = 0.0
     weighted_tokens = 0.0
+    loss_weight_sum = 0.0
     for sample, sample_logprobs in zip(payload.get("samples") or [], logprobs, strict=False):
         mask = sample.get("loss_mask") or [1.0] * len(sample_logprobs)
         weighted_tokens += sum(1.0 for m in mask if m)
         if loss_fn == "cross_entropy":
             weights = sample.get("loss_weights") or []
             total += sum(-lp * w * m for lp, w, m in zip(sample_logprobs, weights, mask, strict=False))
+            loss_weight_sum += sum(w * m for w, m in zip(weights, mask, strict=False))
         else:
             old = sample.get("rollout_log_probs") or []
             advantages = sample.get("advantages") or []
@@ -567,4 +600,10 @@ def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict
                     high = config.get("clip_high_threshold", 1.2)
                     surrogate = min(surrogate, min(max(ratio, low), high) * advantage)
                 total += -surrogate * m
-    return {"loss:sum": total, "unmasked_tokens:sum": weighted_tokens}
+    metrics = {"loss:sum": total, "unmasked_tokens:sum": weighted_tokens}
+    if loss_fn == "cross_entropy":
+        # CE only: IS/PPO have no loss_weights channel, and the SDK combiner
+        # drops any metric missing from one chunk — a loss_fn is uniform
+        # across an operation's chunks, so the key is uniformly present.
+        metrics["loss_weight:sum"] = loss_weight_sum
+    return metrics
