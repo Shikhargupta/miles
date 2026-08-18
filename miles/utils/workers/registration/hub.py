@@ -20,7 +20,7 @@ from miles.utils.workers.worker_spec import NamedHostAndPorts
 logger = logging.getLogger(__name__)
 
 REGISTERED_CELLS_POLL_INTERVAL_SECONDS = 5.0
-REPORTER_TTL_SECONDS = 60.0
+REPORTER_TTL_SECONDS = 240.0
 
 
 @dataclass(kw_only=True)
