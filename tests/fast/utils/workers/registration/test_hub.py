@@ -301,6 +301,20 @@ class TestDroppingAReporterThatStoppedReporting:
 
         assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
 
+    async def test_a_snapshot_dropped_as_late_does_not_keep_its_reporter_alive(self):
+        """A reporter that restarted resends from sequence 1, and only the deadline ends that stalemate."""
+        clock = _FakeClock()
+        provider = RegistrationHub(run_uuid=_RUN_UUID, clock=clock)
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=5))
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        await provider.ingest(_snapshot([_cell(0)], sequence_number=1))
+        clock.now += 2.0
+        provider._remove_stale_reporters()
+
+        assert sorted(provider._state_of_reporter_id) == []
+        assert sorted(provider._cell_of_id) == []
+
     async def test_dropping_a_reporter_forgets_the_reporter_itself(self):
         """A state left behind keeps the reporter's sequence number, which would refuse its fresh snapshots."""
         clock = _FakeClock()

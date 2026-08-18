@@ -41,7 +41,6 @@ class RegistrationHub(BaseWorkerProvider):
         cell_of_id = {cell.info.cell_id: cell for cell in snapshot.cells}
 
         state = self._state_of_reporter_id.setdefault(snapshot.reporter_id, _ReporterState())
-        state.last_ingest_time = self.clock()
 
         if snapshot.sequence_number <= state.sequence_number:
             logger.warning(
@@ -50,6 +49,7 @@ class RegistrationHub(BaseWorkerProvider):
             )
             return
 
+        state.last_ingest_time = self.clock()
         self._replace_cells_of_reporter(reporter_id=snapshot.reporter_id, cell_of_id=cell_of_id)
         state.sequence_number = snapshot.sequence_number
 
