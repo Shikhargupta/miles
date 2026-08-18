@@ -423,10 +423,18 @@ class TestTheRunWaitsForEveryTrainerItReachesByAddress:
 
 
 class _IdentifyingHandle:
-    def __init__(self, *, trainer_id: str, run_uuid: str, deploy_component: str, calls: list[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        *,
+        trainer_id: str,
+        run_uuid: str,
+        deploy_component: str,
+        deploy_instance_id: str,
+        calls: list[tuple[str, str]],
+    ) -> None:
         self.trainer_id = trainer_id
         self.identity = DeploymentIdentity(
-            run_uuid=run_uuid, deploy_component=deploy_component, deploy_instance_id=trainer_id
+            run_uuid=run_uuid, deploy_component=deploy_component, deploy_instance_id=deploy_instance_id
         )
         self.calls = calls
 
@@ -448,7 +456,9 @@ def _split_run_args(**overrides):
     )
 
 
-def _patch_identifying_handles(monkeypatch, *, identities: dict[str, tuple[str, str]]) -> list[tuple[str, str]]:
+def _patch_identifying_handles(
+    monkeypatch, *, identities: dict[str, tuple[str, str]], instance_ids: dict[str, str] | None = None
+) -> list[tuple[str, str]]:
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: FakeBackendCapability())
     monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", lambda addrs: None)
@@ -459,6 +469,7 @@ def _patch_identifying_handles(monkeypatch, *, identities: dict[str, tuple[str, 
             trainer_id=trainer_id,
             run_uuid=identities[trainer_id][0],
             deploy_component=identities[trainer_id][1],
+            deploy_instance_id=(instance_ids or {}).get(trainer_id, trainer_id),
             calls=calls,
         ),
     )
@@ -492,11 +503,39 @@ class TestEveryAddressedTrainerIsCheckedBeforeAnyInitRuns:
 
         assert ("actor", "init") not in calls
 
+    async def test_two_addresses_that_reach_each_other_s_trainer_are_refused(self, monkeypatch):
+        """Swapped addresses leave each workflow driving the ranks of the other trainer, with both curves normal."""
+        calls = _patch_identifying_handles(
+            monkeypatch,
+            identities={"actor": ("0" * 16, "trainer"), "critic": ("0" * 16, "trainer")},
+            instance_ids={"actor": "critic", "critic": "actor"},
+        )
+
+        with pytest.raises(AssertionError, match="are keyed by trainer id"):
+            await placement_group_module.create_training_models(
+                _split_run_args(), rollout_executor=_RecordingRolloutExecutor()
+            )
+
+        assert ("actor", "init") not in calls
+
+    async def test_every_identity_is_checked_against_the_trainer_whose_address_answered_it(self, monkeypatch):
+        """The answers are paired with the addresses by position, so a wrong pairing would name the wrong trainer."""
+        _patch_identifying_handles(
+            monkeypatch,
+            identities={"actor": ("0" * 16, "trainer"), "critic": ("0" * 16, "trainer")},
+            instance_ids={"critic": "somebody-else"},
+        )
+
+        with pytest.raises(AssertionError, match="trainer 'critic' answers as deployment 'somebody-else'"):
+            await placement_group_module.create_training_models(
+                _split_run_args(), rollout_executor=_RecordingRolloutExecutor()
+            )
+
 
 class TestTheAddressesNameOneRun:
     @staticmethod
     def _identity(
-        *, run_uuid: str, deploy_component: str = "trainer", deploy_instance_id: str | None = None
+        *, run_uuid: str, deploy_component: str = "trainer", deploy_instance_id: str | None = "actor"
     ) -> DeploymentIdentity:
         return DeploymentIdentity(
             run_uuid=run_uuid, deploy_component=deploy_component, deploy_instance_id=deploy_instance_id
@@ -506,14 +545,18 @@ class TestTheAddressesNameOneRun:
         """Every deployment of one run carries the same run uuid, so the usual case must pass silently."""
         args = _training_models_args(run_uuid="0123456789abcdef")
 
-        _assert_external_trainer_belongs_to_this_run(self._identity(run_uuid=args.run_uuid), args=args)
+        _assert_external_trainer_belongs_to_this_run(
+            self._identity(run_uuid=args.run_uuid), args=args, trainer_id="actor"
+        )
 
     def test_a_deployment_of_another_run_stops_the_launch(self):
         """Pointing at last run's release trains weights this run never updates, and looks like bad rewards."""
         args = _training_models_args(run_uuid="0123456789abcdef")
 
         with pytest.raises(AssertionError, match="drives run"):
-            _assert_external_trainer_belongs_to_this_run(self._identity(run_uuid="ffffffffffffffff"), args=args)
+            _assert_external_trainer_belongs_to_this_run(
+                self._identity(run_uuid="ffffffffffffffff"), args=args, trainer_id="actor"
+            )
 
     def test_an_unsplit_release_of_this_run_stops_the_launch(self):
         """It carries an orchestration script of its own, which drives the very trainer this launch would drive."""
@@ -521,7 +564,7 @@ class TestTheAddressesNameOneRun:
 
         with pytest.raises(AssertionError, match="nothing but the trainer"):
             _assert_external_trainer_belongs_to_this_run(
-                self._identity(run_uuid=args.run_uuid, deploy_component="all"), args=args
+                self._identity(run_uuid=args.run_uuid, deploy_component="all"), args=args, trainer_id="actor"
             )
 
     def test_a_deployment_reached_as_another_trainer_stops_the_launch(self):
@@ -533,10 +576,11 @@ class TestTheAddressesNameOneRun:
                 self._identity(run_uuid=args.run_uuid, deploy_instance_id="critic"), args=args, trainer_id="actor"
             )
 
-    def test_a_deployment_that_was_never_named_is_accepted_as_any_trainer(self):
-        """It was launched without --deploy-instance-id, so there is no name here to check the workflow against."""
+    def test_a_deployment_that_names_no_trainer_at_all_stops_the_launch(self):
+        """A controller answers with the trainer id it holds, so a missing one cannot be checked and is refused."""
         args = _training_models_args(run_uuid="0123456789abcdef")
 
-        _assert_external_trainer_belongs_to_this_run(
-            self._identity(run_uuid=args.run_uuid), args=args, trainer_id="actor"
-        )
+        with pytest.raises(AssertionError, match="are keyed by trainer id"):
+            _assert_external_trainer_belongs_to_this_run(
+                self._identity(run_uuid=args.run_uuid, deploy_instance_id=None), args=args, trainer_id="actor"
+            )
