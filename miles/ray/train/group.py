@@ -351,6 +351,15 @@ class TrainerController(NodeProbeMixin):
     async def is_initialized(self) -> bool:
         return self._init_called
 
+    async def load_state(self) -> list[Any]:
+        assert self._init_called
+
+        not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
+        assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
+
+        cell_results = await asyncio.gather(*[cell.load_state() for cell in self._cells])
+        return [item for sublist in cell_results for item in sublist]
+
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
