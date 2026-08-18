@@ -401,7 +401,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             f"source: {len(source_ptrs)}, target: {len(target_ptrs)}, "
             f"missing_on_remote[:8]: {missing[:8]}"
         )
-        for name, slen in zip(valid_names, source_lens):
+        for name, slen in zip(valid_names, source_lens, strict=True):
             _, r_numel, r_ele = remote_session.weights_info[name]
             assert (
                 r_numel * r_ele == slen
