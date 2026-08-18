@@ -77,3 +77,20 @@ class TestAScriptReadsItsLauncherConfigFromTheEnvironment:
         bound = inspect.signature(train).parameters[field].annotation.__metadata__[0].envvar
 
         assert bound == f"{SCRIPT_ENV_VAR_PREFIX}{field.upper()}"
+
+
+class TestAHotRestartIsRefusedOutsideKubernetes:
+    def test_the_ray_backend_refuses_a_hot_restart_before_it_cleans_anything_up(self):
+        """Its first act is to pkill every sglang, miles and ray process, i.e. exactly what the flag keeps alive."""
+        backend = ExecuteTrainConfig(
+            cluster_backend=ClusterBackend.RAY, hot_restart="orchestration,rollout_executor"
+        ).create_backend()
+
+        with pytest.raises(AssertionError, match="only supported on the kubernetes backend"):
+            backend.execute_train(train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type=None)
+
+    def test_an_ordinary_ray_config_asks_for_no_hot_restart_at_all(self):
+        """The refusal reads this answer, so a launch without the flag must not present a restart to it."""
+        config = ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY)
+
+        assert config.parsed_hot_restart == []
