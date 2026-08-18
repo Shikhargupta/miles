@@ -871,16 +871,6 @@ class TestRegistrationWiring:
 
         assert capability.requested_static_pool_ids == [INFERENCE_CONTROLLER_POOL_ID]
 
-    def test_the_engine_pools_of_an_engine_deployment_are_born_naming_that_deployment(self, tmp_path):
-        """Two engine groups of one run install the same pools, and a shared name would collide in the run."""
-        args = self._args(tmp_path, deploy_component="inference", deploy_instance_id="west")
-
-        assert compute_engine_pool_ids(args) == ["inference-engine-west-0-0"]
-
-    def test_an_unsplit_run_names_its_engine_pools_exactly_as_it_always_did(self, tmp_path):
-        """It deploys one group of engines, so there is nothing to tell apart and no name may move."""
-        assert compute_engine_pool_ids(self._args(tmp_path)) == ["inference-engine-all-0-0"]
-
     def test_an_engine_deployment_names_its_pools_after_the_instance_it_deploys(self, tmp_path):
         """Two engine groups of one run install the same pools, and a shared name would collide in the run."""
         args = self._args(tmp_path, deploy_component="inference", deploy_instance_id="west")
