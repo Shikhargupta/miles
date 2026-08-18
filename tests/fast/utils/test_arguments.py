@@ -608,8 +608,8 @@ class TestDeployComponent:
 
     def test_rejects_a_component_that_names_no_part_of_a_run(self):
         """The values partition the run, so an unknown name would deploy an undefined subset."""
-        with pytest.raises(AssertionError, match="--deploy-component"):
-            _validate_deploy_component(self._parse(["--deploy-component", "rollout"]))
+        with pytest.raises(SystemExit):
+            self._parse(["--deploy-component", "rollout"])
 
     def test_rejects_an_instance_of_a_component_a_run_has_exactly_one_of(self):
         """Two primaries would be two orchestration scripts driving one run against each other."""
@@ -624,16 +624,9 @@ class TestDeployComponent:
         """It calls nobody: the orchestration script calls it, so it has nothing to be told."""
         _validate_deploy_component(self._parse(["--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
 
-    def test_an_inference_deployment_needs_no_addresses_either(self):
-        """It serves the engines the run calls into, so nothing addresses anything from here."""
-        _validate_deploy_component(self._parse(["--deploy-component", "inference", *_SHARED_STORE_ARGS]))
-
-    def test_an_inference_deployment_has_to_share_an_object_store_too(self):
-        """Its engines write rollout data the orchestration script of another deployment reads."""
-        with pytest.raises(AssertionError, match="--object-store-backend"):
-            _validate_deploy_component(
-                self._parse(["--deploy-component", "inference", "--object-store-backend", "ray"])
-            )
+    def test_an_inference_deployment_needs_no_shared_object_store(self):
+        """Its engines are called over http and redeem no reference of the run, so nothing crosses stores."""
+        _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--object-store-backend", "ray"]))
 
     def test_a_trainer_deployment_has_to_share_an_object_store(self):
         """A ray reference is redeemable only inside the deployment that made it, and the data crosses deployments."""
@@ -834,9 +827,9 @@ class TestDeployComponent:
                 _parse_deploy_args(["--deploy-component", "trainer", *_SHARED_STORE_ARGS], use_critic=True)
             )
 
-    def test_rejects_a_trainer_deployment_that_carries_nothing_but_the_critic(self, tmp_path):
-        """A critic is deployed together with the run that drives it; on its own it is not supported yet."""
-        with pytest.raises(AssertionError, match="deploying one on its own"):
+    def test_rejects_a_trainer_deployment_whose_config_declares_the_critic(self, tmp_path):
+        """A run synthesizes its critic from --use-critic, so no deployment can be handed one to carry."""
+        with pytest.raises(AssertionError, match="declares a critic"):
             _validate_deploy_component(
                 self._parse(
                     [

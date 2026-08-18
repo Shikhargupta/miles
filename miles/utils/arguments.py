@@ -3034,15 +3034,16 @@ def _validate_deploy_instance_id(args: argparse.Namespace, *, component: DeployC
 
 
 def _validate_deployed_trainer_is_the_only_one_its_arguments_describe(args: argparse.Namespace) -> None:
+    assert not args.use_critic, (
+        "--use-critic grows this run by a critic trainer, and --deploy-component trainer carries exactly the "
+        "one trainer its config describes; deploy the critic separately with an explicit single-trainer config"
+    )
+
     trainers = resolve_megatron_config(args).trainers
     assert len(trainers) == 1, (
         f"--deploy-component trainer deploys one trainer and its arguments describe {len(trainers)} "
         f"({[t.trainer_id for t in trainers]}); give this deployment the config of the one trainer it carries, "
         f"and launch every other trainer as a deployment of its own"
-    )
-    assert not args.use_critic, (
-        "--use-critic grows this run by a critic trainer, and --deploy-component trainer carries exactly the "
-        "one trainer its config describes; deploy the critic separately with an explicit single-trainer config"
     )
     assert trainers[0].role != CRITIC_ROLE, (
         f"--deploy-component trainer carries the trainer {trainers[0].trainer_id!r}, whose role is "
