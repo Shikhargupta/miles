@@ -24,6 +24,7 @@ from miles.utils.context_lock import (
     with_lock,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin, SimpleTicker
 from miles.utils.workers.registration.hub import RegistrationHub
@@ -49,6 +50,7 @@ class InferenceController(NodeProbeMixin):
         engine_provider: BaseWorkerProvider,
         router_providers: Sequence[BaseWorkerProvider],
     ) -> None:
+        self._init_once = InitOnce(type(self).__name__)
         self.args = args
         self._engine_provider = engine_provider
         self._router_providers = router_providers
@@ -59,6 +61,7 @@ class InferenceController(NodeProbeMixin):
         self._ticker: SimpleTicker | None = None
 
     @lock_exempt
+    @init_once
     async def init(self) -> None:
         configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
 
@@ -82,6 +85,10 @@ class InferenceController(NodeProbeMixin):
         dashboard_hooks.register_router(self.args)
 
         await asyncio.gather(*[srv.wait_init_expected_num_cells() for srv in self.servers.values()])
+
+    @lock_exempt
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
 
     # -------------------------- registration -----------------------------
 

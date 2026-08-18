@@ -25,6 +25,7 @@ from miles.utils.data import RolloutDataPack, remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
+from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
@@ -61,6 +62,7 @@ class TrainerController(NodeProbeMixin):
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
+        self._init_once = InitOnce(type(self).__name__)
         self._deployment_identity = deployment_identity
         self._trainer_id = trainer_id
         self._role = role
@@ -298,6 +300,7 @@ class TrainerController(NodeProbeMixin):
 
     # ------------------------ API :: others ------------------------
 
+    @init_once
     async def init(self, args: Pickled) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
@@ -343,6 +346,9 @@ class TrainerController(NodeProbeMixin):
             ]
         )
         return [item for sublist in cell_results for item in sublist]
+
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""

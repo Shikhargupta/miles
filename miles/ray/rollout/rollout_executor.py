@@ -33,6 +33,7 @@ from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
+from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import NodeProbeMixin
@@ -60,6 +61,8 @@ class RolloutExecutor(NodeProbeMixin):
         session_server_provider: BaseWorkerProvider | None,
         inference_controller_provider: BaseWorkerProvider,
     ):
+        self._init_once = InitOnce(type(self).__name__)
+
         event_logger_checkpoint.restore(args)
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
@@ -72,6 +75,7 @@ class RolloutExecutor(NodeProbeMixin):
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
 
+    @init_once
     async def init(self) -> None:
         args = self.args
         if not args.debug_train_only:
@@ -115,6 +119,9 @@ class RolloutExecutor(NodeProbeMixin):
         self._eval_fleet: RolloutExecutorEvalFleet | None = None
 
         self._metric_checker = MetricChecker.maybe_create(args)
+
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
 
     # -------------------------- lifecycle -----------------------------
 
