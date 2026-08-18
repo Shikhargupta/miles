@@ -29,7 +29,13 @@ class RayWorkerHandle(BaseWorkerHandle):
 
         return call
 
-    async def wait_ready(self, *, timeout: float) -> None:
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
+        if allow_server_uuid_change:
+            raise NotImplementedError(
+                "a ray actor handle carries no boot uuid to unpin, so it cannot adopt a worker that restarted; only "
+                "the rpc communication backend can"
+            )
+
         try:
             await asyncio.wait_for(self._actor_handle.__ray_ready__.remote(), timeout=timeout)
         except ray.exceptions.RayActorError as e:
