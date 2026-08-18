@@ -146,7 +146,7 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
 def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8)
+    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -174,7 +174,7 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
 def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8)
+    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -197,3 +197,35 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
         LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
     )
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+
+
+def _load_model_state_with(*, finetune: bool, iteration: int):
+    from miles.backends.megatron_utils.model import load_model_state
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0)))
+        _patch_initialize_side_effects(stack)
+        return load_model_state(
+            Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=finetune),
+            model=[_FakeModelChunk()],
+            optimizer=None,
+            opt_param_scheduler=None,
+            role="actor",
+            checkpointing_context=None,
+        )
+
+
+def test_a_finetune_load_starts_the_run_at_rollout_zero():
+    """--finetune means there is no run to continue, so rollout 0 is still ahead rather than behind."""
+    assert _load_model_state_with(finetune=True, iteration=0).start_rollout_id == 0
+
+
+def test_a_resumed_load_starts_the_run_after_the_checkpoint_it_read():
+    """The checkpoint's own rollout is done, so the run continues at the next one."""
+    assert _load_model_state_with(finetune=False, iteration=100).start_rollout_id == 101
+
+
+def test_a_finetune_load_that_found_a_checkpoint_is_refused():
+    """--finetune promises iteration 0; anything else means the two disagree about where the run stands."""
+    with pytest.raises(AssertionError):
+        _load_model_state_with(finetune=True, iteration=100)
