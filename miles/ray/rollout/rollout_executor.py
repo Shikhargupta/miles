@@ -290,8 +290,10 @@ class RolloutExecutor(NodeProbeMixin):
             self.generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
-    def load(self, rollout_id: int | None = None) -> None:
-        self.data_source.load(rollout_id)
+    def load(self, rollout_id: int | None = None, *, require_state: bool = False) -> None:
+        loaded = self.data_source.load(rollout_id)
+        if require_state:
+            assert loaded
         if self.use_experimental_refactor:
             self.generate_rollout.load(rollout_id)
 

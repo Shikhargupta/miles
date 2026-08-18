@@ -126,9 +126,8 @@ class MultiLoRAAsyncDataSource(DataSource):
         for source in self.sources.values():
             source.save(rollout_id)
 
-    def load(self, rollout_id=None):
-        for source in self.sources.values():
-            source.load(rollout_id)
+    def load(self, rollout_id=None) -> bool:
+        return all([source.load(rollout_id) for source in self.sources.values()])
 
     def close(self) -> None:
         from miles.rollout.multi_lora.async_rollout import AsyncMultiLoRAWorker

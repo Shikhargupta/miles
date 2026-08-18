@@ -38,9 +38,9 @@ class DataSource(abc.ABC):
         """
 
     @abc.abstractmethod
-    def load(self, rollout_id=None):
+    def load(self, rollout_id=None) -> bool:
         """
-        Load the state of the data source
+        Load the state of the data source, answering whether a state was found and loaded
         """
 
     def get_buffer_length(self) -> int | None:
@@ -140,17 +140,17 @@ class RolloutDataSource(DataSource):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state_dict, path)
 
-    def load(self, rollout_id=None):
+    def load(self, rollout_id=None) -> bool:
         if not self.args.rollout_global_dataset:
-            return
+            return False
 
         if self.args.load is None:
-            return
+            return False
 
         path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
         if not os.path.exists(path):
             logger.info(f"Checkpoint {path} does not exist.")
-            return
+            return False
 
         logger.info(f"load metadata from {path}")
         logger.info(f"load metadata: {self.metadata}")
@@ -163,6 +163,8 @@ class RolloutDataSource(DataSource):
 
         if self.args.rollout_global_dataset and self.args.rollout_shuffle:
             self.dataset.shuffle(self.epoch_id)
+
+        return True
 
 
 class RolloutDataSourceWithBuffer(RolloutDataSource):
