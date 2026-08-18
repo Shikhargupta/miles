@@ -271,15 +271,21 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
         # This is safe because the rollout engine runs post_load_weights on its own GPU
         # after RDMA transfer, at end_weight_update.
-        from sglang.srt.layers.quantization import fp8 as fp8_quant_module
         from sglang.srt.model_loader import loader as model_loader_module
 
         original_post_load_weights = model_loader_module.post_load_weights
+        original_initialize_model = model_loader_module._initialize_model
+
+        def _initialize_model_defer_finalize(*args, **kwargs):
+            built = original_initialize_model(*args, **kwargs)
+            for _, module in built.named_modules():
+                quant_method = getattr(module, "quant_method", None)
+                if quant_method is not None:
+                    quant_method.process_weights_after_loading = lambda layer: None
+            return built
+
         model_loader_module.post_load_weights = lambda *args, **kwargs: None
-        original_fp8_linear_pwal = fp8_quant_module.Fp8LinearMethod.process_weights_after_loading
-        original_fp8_moe_pwal = fp8_quant_module.Fp8MoEMethod.process_weights_after_loading
-        fp8_quant_module.Fp8LinearMethod.process_weights_after_loading = lambda self, layer: None
-        fp8_quant_module.Fp8MoEMethod.process_weights_after_loading = lambda self, layer: None
+        model_loader_module._initialize_model = _initialize_model_defer_finalize
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
@@ -289,13 +295,24 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 )
         finally:
             model_loader_module.post_load_weights = original_post_load_weights
-            fp8_quant_module.Fp8LinearMethod.process_weights_after_loading = original_fp8_linear_pwal
-            fp8_quant_module.Fp8MoEMethod.process_weights_after_loading = original_fp8_moe_pwal
-        moe_ue8m0 = self.args.sglang_moe_runner_backend == "deep_gemm" or (
-            self.args.sglang_moe_runner_backend == "auto"
-            and self.args.sglang_moe_a2a_backend in ["deepep", "mooncake"]
-        )
-        _repack_fp8_scales(model, moe_ue8m0=moe_ue8m0)
+            model_loader_module._initialize_model = original_initialize_model
+
+        # Run the real quant finalize the loader skipped, module by module on the
+        # trainer GPU (the transforms are CUDA-only), mirroring the loader loop.
+        # This leaves the replica in the exact post-finalize layout the engine
+        # registers, for any quantization method.
+        for _, module in model.named_modules():
+            quant_method = getattr(module, "quant_method", None)
+            if quant_method is None:
+                continue
+            if "process_weights_after_loading" in quant_method.__dict__:
+                del quant_method.process_weights_after_loading
+            if hasattr(module, "is_weights_quantized") and module.is_weights_quantized():
+                continue
+            module.to("cuda")
+            quant_method.process_weights_after_loading(module)
+            module.to("cpu")
+            torch.cuda.empty_cache()
 
         # Also patch the instance method for subsequent load_weights() calls
         # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
@@ -410,30 +427,3 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         ret = self._transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
         if ret < 0:
             raise RuntimeError(f"[P2P-Shared] Transfer failed for session {session_id}, error: {ret}")
-
-
-def _repack_fp8_scales(model: torch.nn.Module, moe_ue8m0: bool) -> None:
-    """Rebuild fp8 weight_scale_inv params in the layout the converter sends.
-
-    The replica is built with quant finalize disabled, so its scale params keep
-    the checkpoint layout; the converter emits ue8m0-packed scales whenever the
-    engine would requant (deep_gemm path). The packing kernel is CUDA-only and
-    requires power-of-two inputs, hence ones_like on the GPU.
-    """
-    from miles.backends.megatron_utils.sglang import should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
-
-    if not should_deepgemm_weight_requant_ue8m0(weight_block_size=[128, 128]):
-        return
-
-    params = dict(model.named_parameters())
-    for name, param in params.items():
-        if not name.endswith("weight_scale_inv"):
-            continue
-        if ".experts." in name and not moe_ue8m0:
-            continue
-        weight = params.get(name.replace("weight_scale_inv", "weight"))
-        assert weight is not None, f"[P2P-Shared] scale without weight: {name}"
-        assert param.data.dtype == torch.float32, f"[P2P-Shared] unexpected scale dtype for {name}: {param.data.dtype}"
-        packed = transform_scale_ue8m0(torch.ones_like(param.data, device="cuda"), mn=weight.shape[-2])
-        param.data = packed.cpu()
-        param.format_ue8m0 = True
