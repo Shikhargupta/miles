@@ -40,6 +40,7 @@ class RunSideRequest:
     train_args: str
     dump_dir: str
     config: command_utils.ExecuteTrainConfig
+    enable_dumper: bool
 
 
 RunSideFn = Callable[[RunSideRequest], None]
@@ -104,6 +105,7 @@ def run_pipeline(
                             train_args=build_args(ft_mode, side_dump, enable_dumper),
                             dump_dir=side_dump,
                             config=config,
+                            enable_dumper=enable_dumper,
                         )
                     )
 
@@ -166,6 +168,7 @@ def create_comparison_app_and_run_ci(
                     train_args=args,
                     dump_dir=full_dump_dir,
                     config=config,
+                    enable_dumper=enable_dumper,
                 )
             )
 

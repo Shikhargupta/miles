@@ -83,7 +83,7 @@ class _Pipeline:
         _, run_ci = create_split_comparison_app_and_run_ci(
             test_name=TEST_NAME,
             mode=MODE,
-            build_baseline_args=_build_args,
+            build_baseline_args=_build_baseline_args,
             build_target_args=_build_args,
             build_deployments=self.build_deployments,
             compare_fn=self.compare,
@@ -112,6 +112,10 @@ class _Pipeline:
 
 
 def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+    return "--some-flag some-value "
+
+
+def _build_baseline_args(request: RunSideRequest) -> str:
     return "--some-flag some-value "
 
 
