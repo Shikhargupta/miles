@@ -19,12 +19,12 @@ from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
     split_train_data_by_dp,
+    tinker_dispatch_summary,
 )
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
-    RolloutFnHandoff,
     RolloutFnTrainInput,
     RolloutPostprocessOptions,
     call_rollout_fn,
@@ -50,18 +50,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class TrainRolloutResult:
-    """Typed internal return of ``_get_rollout_data``: postprocessed samples
-    plus the fn's opaque driver sidecar (a positional tuple would make the
-    handoff easy to drop on the floor)."""
-
-    data: list
-    metadata: dict
-    metrics: dict | None
-    handoff: RolloutFnHandoff | None = None
 
 
 @ray.remote
@@ -158,37 +146,29 @@ class RolloutManager:
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
-            rollout = await self._get_rollout_data(rollout_id=rollout_id)
-        # Downstream phase, cleanup-safe: once the rollout fn hands its output
-        # over, a failure anywhere before this method returns would strand any
-        # dispatch state only the fn knows about (its driver-visible receipt
-        # would be lost with the exception) — so every step from here to the
-        # return aborts the handoff before re-raising.
-        try:
-            data, metadata = rollout.data, rollout.metadata
-            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
-            log_rollout_data(rollout_id, self.args, data, rollout.metrics, time.time() - start_time)
-            data = convert_samples_to_train_data(
-                self.args,
-                data,
-                metadata=metadata,
-                custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
-                custom_reward_post_process_func=self.custom_reward_post_process_func,
-            )
-            sample_indices = data.get("sample_indices")
-            if self.args.delay_split_train_data_by_dp:
-                data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-            else:
-                data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        except BaseException as e:
-            await self._abort_rollout_handoff(rollout.handoff, e)
-            raise
+            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
+        log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+        data = convert_samples_to_train_data(
+            self.args,
+            data,
+            metadata=metadata,
+            custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+            custom_reward_post_process_func=self.custom_reward_post_process_func,
+        )
+        sample_indices = data.get("sample_indices")
+        # Driver-visible dispatch identity (computed before the DP split so it
+        # never depends on shard layout): the tinker driver's abnormal-outcome
+        # finalizer fails these operations and releases this lease without
+        # fetching the batch back from the object store.
+        dispatch = tinker_dispatch_summary(data)
+        if self.args.delay_split_train_data_by_dp:
+            data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        else:
+            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
         pack = dict(sample_indices=sample_indices, data_ref=data_ref)
-        if rollout.handoff is not None:
-            # Opaque fn-to-driver sidecar (minted by the fn before any manager
-            # work, so it never depends on conversion or shard layout); the
-            # driver interprets it, this manager never does.
-            pack["rollout_fn_metadata"] = rollout.handoff.driver_metadata
+        if dispatch is not None:
+            pack["tinker_dispatch"] = dispatch
         return pack
 
     async def eval(
@@ -263,37 +243,31 @@ class RolloutManager:
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
 
-    async def _get_rollout_data(self, rollout_id) -> TrainRolloutResult:
+    async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
-            return TrainRolloutResult(data=data, metadata=metadata, metrics=None)
-
-        if not self.use_legacy_rollout_v1:
-            output = await asyncio.to_thread(
-                call_rollout_function,
-                self.generate_rollout,
-                RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
-            )
+            metrics = None
         else:
-            output = await asyncio.to_thread(
-                call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
-            )
-        handoff = getattr(output, "handoff", None)
-        # The output receipt exists from here on: postprocessing failures are
-        # part of the downstream phase and must abort the handoff too.
-        try:
-            metrics = output.metrics
-            conversion_metadata = getattr(output, "conversion_metadata", None) or {}
-            postprocess = getattr(output, "postprocess", None) or RolloutPostprocessOptions()
+            if not self.use_legacy_rollout_v1:
+                data = await asyncio.to_thread(
+                    call_rollout_function,
+                    self.generate_rollout,
+                    RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
+                )
+            else:
+                data = await asyncio.to_thread(
+                    call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
+                )
+            metrics = data.metrics
+            conversion_metadata = getattr(data, "conversion_metadata", None) or {}
+            postprocess = getattr(data, "postprocess", None) or RolloutPostprocessOptions()
+            data = data.samples
             data, metadata = postprocess_rollout_data(
                 self.args,
-                output.samples,
+                data,
                 train_parallel_config=self.train_parallel_config,
                 pad_to_dp=postprocess.pad_to_dp,
             )
-            # The fn's conversion-metadata contribution is opaque here: it is
-            # merged verbatim, so fn-specific control planes convert on the
-            # fn's side, never in this manager.
             metadata.update(conversion_metadata)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
@@ -302,38 +276,8 @@ class RolloutManager:
                     self.args, generated=generated_data, injected=data, rollout_id=rollout_id
                 )
                 metrics = None
-        except BaseException as e:
-            await self._abort_rollout_handoff(handoff, e)
-            raise
-        return TrainRolloutResult(data=data, metadata=metadata, metrics=metrics, handoff=handoff)
 
-    async def _abort_rollout_handoff(self, handoff: RolloutFnHandoff | None, error: BaseException) -> None:
-        """Give the rollout fn its one chance to terminalize the claimed work
-        behind a handoff when the downstream phase fails after the output
-        receipt. The abort is shielded from a caller cancellation and awaited
-        to completion before the original failure propagates; an abort failure
-        is logged loudly but never replaces the original failure. (A repeated
-        cancellation while the abort runs would detach it — acceptable while
-        nothing cancels generate(); revisit with the PR #1842 executor.)"""
-        if handoff is None:
-            return
-        aborter = getattr(self.generate_rollout, "abort_handoff", None)
-        if aborter is None:
-            return
-        abort_task = asyncio.ensure_future(aborter(handoff, error))
-        try:
-            await asyncio.shield(abort_task)
-        except asyncio.CancelledError:
-            # The manager task was cancelled while the abort ran; the shielded
-            # abort continues — wait for it before propagating cancellation.
-            if not abort_task.done():
-                try:
-                    await abort_task
-                except Exception:
-                    logger.exception(f"rollout handoff abort failed after downstream error: {error!r}")
-            raise
-        except Exception:
-            logger.exception(f"rollout handoff abort failed after downstream error: {error!r}")
+        return data, metadata, metrics
 
     # -------------------------- checkpointing -----------------------------
 

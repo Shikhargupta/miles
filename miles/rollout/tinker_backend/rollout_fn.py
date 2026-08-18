@@ -20,16 +20,13 @@ from miles.ray.tinker_backend.config import AdapterRun
 from miles.ray.tinker_backend.residency import lease_to_metadata
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
-    RolloutFnHandoff,
     RolloutFnInput,
     RolloutFnTrainOutput,
     RolloutPostprocessOptions,
 )
 from miles.rollout.tinker_backend.operation_port import (
-    BatchAbortPort,
     BatchResidencyPort,
     OperationQueuePort,
-    RayTinkerBatchAbort,
     RayTinkerOperationQueue,
     RayTrainerResidencyPort,
 )
@@ -223,12 +220,10 @@ class TinkerRolloutFn:
         input: RolloutFnConstructorInput,
         operations: OperationQueuePort | None = None,
         residency: BatchResidencyPort | None = None,
-        abort: BatchAbortPort | None = None,
     ):
         self.args = input.args
         self.operations = operations if operations is not None else RayTinkerOperationQueue()
         self.residency = residency if residency is not None else RayTrainerResidencyPort()
-        self.abort = abort if abort is not None else RayTinkerBatchAbort()
         self.runtimes: dict[Tenant, AdapterRolloutRuntime] = {}
         self.rotation: deque[Tenant] = deque()
         self._ready = asyncio.Event()
@@ -251,24 +246,6 @@ class TinkerRolloutFn:
             await runtime.aclose()
         self.runtimes.clear()
         self.rotation.clear()
-
-    async def abort_handoff(self, handoff: RolloutFnHandoff, error: BaseException) -> None:
-        """RolloutFnHandoffAborter capability: the manager's downstream phase
-        failed after this adapter handed over a leased selection, so the
-        driver will never see the dispatch receipt. Terminal-fail the exact
-        claimed operations and release the exact lease through the one
-        idempotent controller boundary (``fail_tinker_batch`` fails only
-        still-CLAIMED operations and releases the lease in ``finally``, so a
-        repeat can never overwrite a landed result). The failed
-        forward_backwards poison their gradient windows exactly as a failed
-        train dispatch does; retry ownership stays with the client."""
-        await self.abort.abort_batch(
-            list(handoff.driver_metadata["operation_ids"]),
-            f"rollout postprocessing failed before trainer dispatch: {error}; the batch never "
-            "reached the trainer and its gradient window is poisoned — resubmit the batch and "
-            "optim_step again",
-            handoff.driver_metadata["lease"],
-        )
 
     # ------------------------------ runtimes ------------------------------
 
@@ -462,14 +439,4 @@ class TinkerRolloutFn:
             # the DP grid so the multi-LoRA dynamic-GBS branch sizes the step
             # to the batch instead of trimming it.
             postprocess=RolloutPostprocessOptions(pad_to_dp=True),
-            # Dispatch identity minted ONCE, here, where it is exactly known —
-            # never reconstructed from converted tensors. The driver's
-            # abnormal-outcome finalizer and the manager's downstream abort
-            # both consume this same opaque receipt.
-            handoff=RolloutFnHandoff(
-                driver_metadata={
-                    "operation_ids": [entry["operation_id"] for entry in batch_plan],
-                    "lease": lease_to_metadata(lease),
-                }
-            ),
         )

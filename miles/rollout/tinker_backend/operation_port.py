@@ -44,19 +44,6 @@ class BatchResidencyPort(Protocol[BindingT]):
     async def acquire_batch(self, bindings_by_operation: list) -> object: ...
 
 
-class BatchAbortPort(Protocol):
-    """Abnormal-outcome finalizer for claimed operations that will never reach
-    the trainer: terminal-fail the still-CLAIMED operations typed server and
-    release the batch lease (``lease_metadata=None`` when no lease was
-    acquired yet). One idempotent controller boundary — the same
-    ``fail_tinker_batch`` the driver's train finalizer uses: it fails only
-    still-CLAIMED operations and releases the lease in ``finally``, so
-    repeating it (or racing it against a commit) can never overwrite a landed
-    terminal result."""
-
-    async def abort_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None) -> None: ...
-
-
 class RayTinkerOperationQueue:
     """Only this class (and its residency sibling) knows get_tinker_controller(),
     .remote(), and ray.get."""
@@ -89,17 +76,4 @@ class RayTrainerResidencyPort:
 
         return await asyncio.to_thread(
             ray.get, get_tinker_controller().acquire_batch_lease.remote(list(bindings_by_operation))
-        )
-
-
-class RayTinkerBatchAbort:
-    """BatchAbortPort concrete over the controller's idempotent
-    ``fail_tinker_batch`` boundary."""
-
-    async def abort_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None) -> None:
-        from miles.ray.tinker_backend.controller import get_tinker_controller
-
-        await asyncio.to_thread(
-            ray.get,
-            get_tinker_controller().fail_tinker_batch.remote(list(operation_ids), error, lease_metadata),
         )
