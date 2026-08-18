@@ -1078,7 +1078,21 @@ class TestCellsReadyIsScopedToTheTargetedModel:
         assert controller._get_servers_of_model_id("a") == [srv]
 
 
-def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UUID) -> RegistrationSnapshot:
+def _registration_snapshot(
+    *, model_id: str = "model-a", run_uuid: str = _RUN_UUID, drop_meta_keys: tuple[str, ...] = ()
+) -> RegistrationSnapshot:
+    meta = dict(
+        model_id=model_id,
+        worker_type="regular",
+        num_gpus_per_engine=1,
+        gpu_offset=0,
+        sglang_api_key=None,
+        needs_offload=False,
+        update_weights=True,
+    )
+    for key in drop_meta_keys:
+        del meta[key]
+
     cell = RegisteredCellInfo(
         reporter_id="west",
         info=CellInfo(
@@ -1087,7 +1101,7 @@ def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UU
             alive=True,
             worker_names=["west-inference-engine-0-0-0-0"],
             workers_hash="hash-1",
-            meta=dict(model_id=model_id, worker_type="regular"),
+            meta=meta,
         ),
         workers=[
             WorkerInfo(
@@ -1140,3 +1154,25 @@ class TestRegistrationSnapshotEndpoint:
 
         with pytest.raises(AssertionError, match="serves model 'other'"):
             await controller.registration_ingest(snapshot=_registration_snapshot(model_id="other"))
+
+    @pytest.mark.asyncio
+    async def test_a_cell_that_describes_itself_incompletely_is_refused(self):
+        """A reporter of another version would otherwise raise KeyError inside the reconcile loop, which eats it."""
+        registry = RegistrationHub(run_uuid=_RUN_UUID)
+        controller = _make_controller({"model-a": _RecordingServer(model_name="model-a")}, registration_hub=registry)
+
+        with pytest.raises(AssertionError, match=r"reports no \['gpu_offset', 'needs_offload'\]"):
+            await controller.registration_ingest(
+                snapshot=_registration_snapshot(drop_meta_keys=("gpu_offset", "needs_offload"))
+            )
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_cell_keeps_the_whole_snapshot_out(self):
+        """The snapshot is the reporter's whole membership, so a half-taken one would drop the cells it omits."""
+        registry = RegistrationHub(run_uuid=_RUN_UUID)
+        controller = _make_controller({"model-a": _RecordingServer(model_name="model-a")}, registration_hub=registry)
+
+        with pytest.raises(AssertionError, match="reports no"):
+            await controller.registration_ingest(snapshot=_registration_snapshot(drop_meta_keys=("worker_type",)))
+
+        assert registry._cell_of_id == {}

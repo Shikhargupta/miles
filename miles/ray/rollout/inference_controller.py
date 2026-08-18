@@ -38,6 +38,16 @@ CELL_TICK_TIMEOUT_SECONDS = 120.0
 CELLS_READY_POLL_INTERVAL_SECONDS = 2.0
 CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
+_REQUIRED_CELL_META_KEYS: tuple[str, ...] = (
+    "model_id",
+    "worker_type",
+    "num_gpus_per_engine",
+    "gpu_offset",
+    "sglang_api_key",
+    "needs_offload",
+    "update_weights",
+)
+
 
 @enforce_lock_discipline
 class InferenceController(NodeProbeMixin):
@@ -92,8 +102,13 @@ class InferenceController(NodeProbeMixin):
             f"(reporter {snapshot.reporter_id})"
         )
         for cell in snapshot.cells:
+            missing = [key for key in _REQUIRED_CELL_META_KEYS if key not in cell.info.meta]
+            assert not missing, (
+                f"cell {cell.info.cell_id} of reporter {snapshot.reporter_id} reports no {missing}; "
+                f"a registered engine describes itself with {list(_REQUIRED_CELL_META_KEYS)}"
+            )
             assert (
-                model_id := cell.info.meta.get("model_id")
+                model_id := cell.info.meta["model_id"]
             ) in self.servers, (
                 f"cell {cell.info.cell_id} serves model {model_id!r}, this run serves {sorted(self.servers)}"
             )
