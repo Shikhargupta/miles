@@ -225,7 +225,9 @@ async def wait_external_trainers(args) -> None:
         _assert_external_trainer_belongs_to_this_run(identity, args=args, trainer_id=trainer_id)
 
 
-def _assert_external_trainer_belongs_to_this_run(identity: DeploymentIdentity, *, args, trainer_id: str) -> None:
+def _assert_external_trainer_belongs_to_this_run(
+    identity: DeploymentIdentity, *, args, trainer_id: str | None = None
+) -> None:
     assert identity.run_uuid == args.run_uuid, (
         f"{TRAINER_CONTROLLER_ADDRS_FLAG} names the {identity.deploy_component} deployment of run "
         f"{identity.run_uuid}, but this launch drives run {args.run_uuid}: every deployment a split run reaches has "
@@ -237,7 +239,7 @@ def _assert_external_trainer_belongs_to_this_run(identity: DeploymentIdentity, *
         f"an {DeployComponent.ALL.value} release of this run runs an orchestration script of its own, so both "
         f"scripts would drive the same trainer"
     )
-    assert identity.deploy_instance_id == trainer_id, (
+    assert identity.deploy_instance_id is None or identity.deploy_instance_id == trainer_id, (
         f"trainer {trainer_id!r} answers as deployment {identity.deploy_instance_id!r}; "
         f"{TRAINER_CONTROLLER_ADDRS_FLAG} entries are keyed by trainer id"
     )

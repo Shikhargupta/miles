@@ -129,7 +129,7 @@ def _compute_spec_trainer_controller(
             deployment_identity=DeploymentIdentity(
                 run_uuid=args.run_uuid,
                 deploy_component=args.deploy_component,
-                deploy_instance_id=trainer_id,
+                deploy_instance_id=args.deploy_instance_id,
             ),
             trainer_id=trainer_id,
             role=config.role,
