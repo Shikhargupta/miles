@@ -16,7 +16,6 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import (
     _HELM_RELEASE_NAME_MAX,
     RUN_ID_MAX_LENGTH,
     ReleaseName,
-    assert_deploy_instance_id_fits,
     deploy_instance_id_budget,
 )
 from miles.utils.workers.types import DeployComponent
@@ -176,7 +175,7 @@ class TestReleaseNameRefuses:
 
     def test_an_instance_id_that_overruns_the_release_name_is_refused(self):
         """The run id fits every component, but an instance id on top of it can still overrun helm's bound."""
-        with pytest.raises(ValidationError, match=f"at most {_HELM_RELEASE_NAME_MAX}"):
+        with pytest.raises(ValidationError, match="leaves -1 for it"):
             ReleaseName(
                 run_id="a" * RUN_ID_MAX_LENGTH,
                 deploy_component=DeployComponent.INFERENCE,
@@ -192,7 +191,7 @@ class TestTheRunIdAndTheInstanceIdShareOneReleaseName:
         budget = deploy_instance_id_budget(run_id=run_id)
 
         ReleaseName(run_id=run_id, deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * budget)
-        with pytest.raises(ValidationError, match=f"at most {_HELM_RELEASE_NAME_MAX}"):
+        with pytest.raises(ValidationError, match=f"leaves {budget} for it"):
             ReleaseName(
                 run_id=run_id, deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * (budget + 1)
             )
@@ -206,13 +205,15 @@ class TestTheRunIdAndTheInstanceIdShareOneReleaseName:
         run_id = "260101-000000-000"
         assert deploy_instance_id_budget(run_id=run_id) == 15
 
-        with pytest.raises(AssertionError, match="leaves 15 for it"):
-            assert_deploy_instance_id_fits(run_id=run_id, deploy_instance_id="b" * 16)
+        with pytest.raises(ValidationError, match="leaves 15 for it"):
+            ReleaseName(run_id=run_id, deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * 16)
 
     def test_an_instance_id_inside_the_budget_is_taken(self):
         """The check must not narrow what a split run could always name."""
-        assert_deploy_instance_id_fits(run_id="260101-000000-000", deploy_instance_id="b" * 15)
+        ReleaseName(
+            run_id="260101-000000-000", deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * 15
+        )
 
     def test_a_deployment_naming_no_instance_is_bounded_by_the_run_id_alone(self):
         """`all` and `primary` carry no instance id, so there is nothing here to budget for."""
-        assert_deploy_instance_id_fits(run_id="a" * RUN_ID_MAX_LENGTH, deploy_instance_id=None)
+        ReleaseName(run_id="a" * RUN_ID_MAX_LENGTH, deploy_component=DeployComponent.ALL, deploy_instance_id=None)

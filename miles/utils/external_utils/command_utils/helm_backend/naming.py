@@ -40,6 +40,11 @@ class ReleaseName(FrozenStrictBaseModel):
         ), f"run_id {self.run_id!r} is {len(self.run_id)} characters, at most {RUN_ID_MAX_LENGTH}"
         if self.deploy_instance_id is not None:
             assert self.deploy_instance_id, "deploy_instance_id is empty; a component deployed once carries None"
+            budget = deploy_instance_id_budget(run_id=self.run_id)
+            assert len(self.deploy_instance_id) <= budget, (
+                f"deploy_instance_id {self.deploy_instance_id!r} is {len(self.deploy_instance_id)} characters, and "
+                f"run_id {self.run_id!r} leaves {budget} for it in the release name"
+            )
             intersected = sorted(_COMPONENT_VALUES.intersection(self.deploy_instance_id.split("-")))
             assert not intersected, (
                 f"--deploy-instance-id {self.deploy_instance_id!r} carries the component name(s) {intersected}, "
@@ -71,17 +76,6 @@ class ReleaseName(FrozenStrictBaseModel):
             deploy_component=DeployComponent(tokens[index]),
             deploy_instance_id="-".join(tokens[index + 1 :]) or None,
         )
-
-
-def assert_deploy_instance_id_fits(*, run_id: str, deploy_instance_id: str | None) -> None:
-    if deploy_instance_id is None:
-        return
-
-    budget = deploy_instance_id_budget(run_id=run_id)
-    assert len(deploy_instance_id) <= budget, (
-        f"--deploy-instance-id {deploy_instance_id!r} is {len(deploy_instance_id)} characters, and run_id "
-        f"{run_id!r} leaves {budget} for it in the release name"
-    )
 
 
 def deploy_instance_id_budget(*, run_id: str) -> int:
