@@ -186,14 +186,43 @@ class TestConvert:
         assert "adapter_slots" not in data
 
     def test_mixed_channels_default_to_zeros(self):
-        metadata = plan_metadata([plan_entry("A", 0), plan_entry("B", 1, op_id="op-B")])
+        plan = [
+            plan_entry("A", 0, loss={"loss_fn": "cross_entropy"}),
+            plan_entry("B", 1, op_id="op-B", loss={"loss_fn": "importance_sampling"}),
+        ]
         samples = [
             make_sample("A", 0, loss_weights=[1.0, 1.0]),
             make_sample("B", 0, advantages=[0.5, -0.5]),
         ]
-        data = convert(samples, metadata)
+        pure_ce_data = convert(samples[:1], plan_metadata(plan[:1]))
+        assert "rollout_log_probs" not in pure_ce_data
+
+        samples[1].rollout_log_probs = [-0.1, -0.2]
+        data = convert(samples, plan_metadata(plan))
         assert data["loss_weights"] == [[1.0, 1.0], [0.0, 0.0]]
         assert data["advantages"] == [[0.0, 0.0], [0.5, -0.5]]
+        assert data["rollout_log_probs"] == [[0.0, 0.0], [-0.1, -0.2]]
+
+        reversed_data = convert(samples[::-1], plan_metadata(plan[::-1]))
+        assert reversed_data["loss_weights"] == [[0.0, 0.0], [1.0, 1.0]]
+        assert reversed_data["advantages"] == [[0.5, -0.5], [0.0, 0.0]]
+        assert reversed_data["rollout_log_probs"] == [[-0.1, -0.2], [0.0, 0.0]]
+
+    def test_legacy_batch_keeps_first_sample_optional_channel_semantics(self):
+        samples = [make_sample("A"), make_sample("B")]
+        samples[1].rollout_log_probs = [-0.1, -0.2]
+
+        data = convert_samples_to_train_data(
+            SimpleNamespace(
+                advantage_estimator="grpo", rewards_normalization=False, use_dynamic_global_batch_size=False
+            ),
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert "rollout_log_probs" not in data
 
     def test_client_channels_survive_the_dp_shard_split(self):
         # The DP packager ships an explicit key list; a channel missing from it

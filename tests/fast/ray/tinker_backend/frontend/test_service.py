@@ -456,7 +456,13 @@ class TestSampling:
             # Deterministic yet diverse: each fanned-out sample gets seed + i.
             seeds = sorted(r["sampling_params"]["sampling_seed"] for r in stack.router.requests[-2:])
             assert seeds == [40, 41]
-            probe = self.sample_request(sampler_id, seq_id=1)
+            calls = len(stack.router.requests)
+            overflow = self.sample_request(sampler_id, seq_id=1, num_samples=2, seed=2**63 - 1)
+            failed = await stack.retrieve(stack.frontend.sample(overflow)["request_id"])
+            assert failed["category"] == "user" and "signed 64-bit" in failed["error"]
+            assert len(stack.router.requests) == calls
+
+            probe = self.sample_request(sampler_id, seq_id=2)
             probe.prompt_logprobs = True
             failed = await stack.retrieve(stack.frontend.sample(probe)["request_id"])
             assert failed["category"] == "user" and "prompt_logprobs" in failed["error"]

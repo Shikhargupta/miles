@@ -151,13 +151,14 @@ class SamplingStats:
 def _context_limit_from_server_info(info: Any) -> int | None:
     if not isinstance(info, dict):
         return None
+    limits = []
     context_length = info.get("context_length")
     if isinstance(context_length, int) and not isinstance(context_length, bool) and context_length > 0:
-        return context_length
+        limits.append(context_length)
     max_req_input_len = info.get("max_req_input_len")
     if isinstance(max_req_input_len, int) and not isinstance(max_req_input_len, bool) and max_req_input_len > 0:
-        return max_req_input_len + 6
-    return None
+        limits.append(max_req_input_len + 6)
+    return min(limits, default=None)
 
 
 def _note_first_result(task: asyncio.Task, record: "FutureRecord") -> None:
@@ -273,11 +274,11 @@ class TinkerFrontend:
 
     def reap_once(self, now: float | None = None) -> dict[str, int]:
         """One reaping pass (code-0815 §7), replay-idempotency preserved by
-        construction — reaping frees bytes and capacity, NEVER identity:
+        construction — reaping frees bytes and capacity without permitting
+        re-execution:
 
-        - idle sessions (no heartbeat past the TTL): the session record goes,
-          but sampling sessions — which carry the spent-seq fences — stay, so
-          an already-executed identity still answers a typed terminal;
+        - idle sessions (no heartbeat past the TTL): the session record and
+          its sampling sessions go together; old sampler ids fail closed;
         - orphaned sample futures (client stopped polling past the TTL): the
           server-side generation is cancelled (releasing admission permits
           and transport slots via the existing done-callbacks) and the future
@@ -294,11 +295,13 @@ class TinkerFrontend:
         now = time.time() if now is None else now
         counts = {"sessions": 0, "cancelled_samples": 0, "undelivered": 0}
         if self.session_idle_ttl_s > 0:
-            for session in self.sessions.reap_idle(self.session_idle_ttl_s, now):
+            idle_sessions = self.sessions.reap_idle(self.session_idle_ttl_s, now)
+            self.samplers.remove_for_sessions({session.session_id for session in idle_sessions})
+            for session in idle_sessions:
                 counts["sessions"] += 1
                 logger.info(
                     f"[tinker] reaped idle session '{session.session_id}' (no heartbeat for "
-                    f"{now - session.last_heartbeat:.0f}s; its sampling-session fences are retained)"
+                    f"{now - session.last_heartbeat:.0f}s; its sampling sessions were retired)"
                 )
         for record in list(self.futures.records.values()):
             if record.terminal is None:
@@ -573,6 +576,8 @@ class TinkerFrontend:
         model = self._model_for(request.model_id)
 
         def build() -> dict:
+            if self.sessions.get(model.session_id) is None:
+                raise UserInputError("the parent session expired; create a new session before publishing a sampler")
             if request.path is not None:
                 raise UserInputError(
                     "named sampler checkpoints are not supported in v1 (latest-only serving); use "
@@ -779,6 +784,9 @@ class TinkerFrontend:
                 raise UserInputError("num_samples must be >= 1")
             prompt_tokens = translation._input_tokens("prompt", request.prompt)
             sglang_params = translation.sampling_params_to_sglang(request.sampling_params)
+            seed = request.sampling_params.seed
+            if seed is not None and seed + request.num_samples - 1 >= 2**63:
+                raise UserInputError("sampling_params.seed + num_samples must fit in a signed 64-bit integer")
         except UserInputError as exc:
             # Invalid payloads still consume the seq as a typed terminal (the
             # http_server contract) — but never a permit: nothing will run.
@@ -835,6 +843,15 @@ class TinkerFrontend:
         )
         self._sample_tasks.add(task)
         self._sample_task_by_request[request_id] = task
+        task.add_done_callback(
+            lambda done: self._terminalize_prestart_cancelled_sample(
+                done,
+                record,
+                request.num_samples,
+                len(prompt_tokens),
+                sglang_params.get("max_new_tokens"),
+            )
+        )
         task.add_done_callback(self._sample_tasks.discard)
         task.add_done_callback(lambda _task, rid=request_id: self._sample_task_by_request.pop(rid, None))
         # Release via done-callback, not inside the coroutine: a task
@@ -903,6 +920,23 @@ class TinkerFrontend:
         self._context_limit = limit
         self._context_limit_source = "discovered from the engine"
         logger.info(f"[tinker] sampling context preflight active: engine context limit {limit} tokens (discovered)")
+
+    def _terminalize_prestart_cancelled_sample(
+        self,
+        task: asyncio.Task,
+        record: FutureRecord,
+        num_samples: int,
+        prompt_tokens: int,
+        max_new_tokens: int | None,
+    ) -> None:
+        """Resolve a task cancelled before its coroutine body ever ran."""
+        if not task.cancelled() or record.terminal is not None:
+            return
+        record.failure_class = "Cancelled"
+        record.resolve(
+            wire.terminal_failure(record.cancel_reason or "sampling cancelled: the service is shutting down", "server")
+        )
+        self._account_sample_terminal(record, num_samples, prompt_tokens, max_new_tokens)
 
     async def _run_sample(
         self,
@@ -1144,6 +1178,10 @@ class TinkerFrontend:
         if kind == "load_state":
             return translation.load_weights_result_to_response(record.tinker_path, model.model_id)
         if kind == "save_weights_for_sampler":
+            if self.sessions.get(model.session_id) is None:
+                return wire.terminal_failure(
+                    "the parent session expired before sampler publication completed; create a new session", "user"
+                )
             existing = self.samplers.get(record.sampling_session_id)
             if existing is not None and existing.fingerprint != record.fingerprint:
                 # Never overwrite a live sampler identity: a base sampler (or

@@ -1911,9 +1911,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=3600.0,
                 help="Seconds without a session heartbeat before the tinker frontend reaps the "
-                "session record (the SDK heartbeats continuously while the client lives). "
-                "Sampling-session spent-seq fences are always retained, so nothing a vanished "
-                "client executed can re-execute. <= 0 disables (default: 3600)",
+                "session and its sampling sessions (the SDK heartbeats continuously while the "
+                "client lives). Old sampler ids then fail closed, so nothing a vanished client "
+                "executed can re-execute. <= 0 disables (default: 3600)",
             )
             parser.add_argument(
                 "--tinker-future-unpolled-ttl",

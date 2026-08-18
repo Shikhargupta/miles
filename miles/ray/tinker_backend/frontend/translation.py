@@ -215,6 +215,14 @@ def sampling_params_to_sglang(params: wire.SamplingParams) -> dict:
     per request, still diverse across num_samples)."""
     if params.max_tokens is None or params.max_tokens < 1:
         raise UserInputError("sampling_params.max_tokens is required (>= 1) in v1")
+    if not math.isfinite(params.temperature) or params.temperature < 0:
+        raise UserInputError("sampling_params.temperature must be a non-negative finite number")
+    if not math.isfinite(params.top_p) or not 0 < params.top_p <= 1:
+        raise UserInputError("sampling_params.top_p must be a finite number in (0, 1]")
+    if params.top_k != -1 and params.top_k < 1:
+        raise UserInputError("sampling_params.top_k must be -1 or at least 1")
+    if params.seed is not None and not -(2**63) <= params.seed < 2**63:
+        raise UserInputError("sampling_params.seed must fit in a signed 64-bit integer")
     sglang_params: dict = {
         "max_new_tokens": params.max_tokens,
         "temperature": params.temperature,

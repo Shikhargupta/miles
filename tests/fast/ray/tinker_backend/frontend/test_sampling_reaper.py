@@ -1,10 +1,9 @@
 """Orphan reaper + sampling observability (code-0815 §7 / §6.1).
 
-The reaper frees bytes and capacity, NEVER identity — that is the invariant
-every test here closes over: a reaped sample's seq stays spent (typed
-terminal on resubmit, no re-execution), a reaped result leaves a fingerprint
-tombstone (typed 410, no re-execution), and reaped sessions keep their
-sampling fences. Unpolled operation futures are polled on the vanished
+The reaper frees bytes and capacity without permitting re-execution: a reaped
+sample's seq stays spent while its parent session is live, a reaped result
+leaves a fingerprint tombstone, and reaped parent sessions retire their whole
+sampler namespace fail-closed. Unpolled operation futures are polled on the vanished
 client's behalf, which stores the terminal bytes BEFORE acking the ledger —
 the existing retention order, so the unacked-results budget drains without
 ever acking an undelivered result away."""
@@ -142,6 +141,31 @@ class TestOrphanedSamples:
 
         asyncio.run(main())
 
+    def test_prestart_orphan_cancellation_still_terminalizes_the_future(self):
+        async def main():
+            transport = GatedTransport()
+            backend, frontend, sampler_id = await make_frontend(transport, cap=4)
+            try:
+                submitted = frontend.sample(sample_request(sampler_id, seq=0))
+                request_id = submitted["request_id"]
+                task = frontend._sample_task_by_request[request_id]
+                counts = frontend.reap_once(now=time.time() + frontend.future_unpolled_ttl_s + 1)
+                assert counts["cancelled_samples"] == 1
+                await asyncio.gather(task, return_exceptions=True)
+                await drain_callbacks()
+
+                assert not transport.started.is_set()
+                assert frontend.sampling_admission.in_use == 0
+                assert frontend.sampling_stats.failures_by_class == {"Cancelled": 1}
+                body = await retrieve(frontend, request_id)
+                assert body["category"] == "server" and "orphaned" in body["error"]
+            finally:
+                transport.release.set()
+                await frontend.close()
+                await backend.close()
+
+        asyncio.run(main())
+
     def test_an_actively_polled_sample_is_never_an_orphan(self):
         async def main():
             transport = GatedTransport()
@@ -193,7 +217,7 @@ class TestUndeliveredResults:
         async def main():
             transport = GatedTransport()
             transport.release.set()
-            backend, frontend, sampler_id = await make_frontend(transport, cap=4)
+            backend, frontend, sampler_id = await make_frontend(transport, cap=4, session_idle_ttl_s=0)
             frontend.futures.max_expired = 1
             try:
                 submitted = frontend.sample(sample_request(sampler_id, seq=0))
@@ -263,13 +287,24 @@ class TestUndeliveredResults:
 
 
 class TestIdleSessions:
-    def test_idle_session_is_reaped_but_its_sampling_fence_survives(self):
+    def test_idle_session_retires_all_child_samplers_fail_closed(self):
         async def main():
             transport = GatedTransport()
             transport.release.set()
             backend, frontend, sampler_id = await make_frontend(transport, cap=4)
             try:
                 session_id = frontend.samplers.get(sampler_id).session_id
+                sampler_ids = [sampler_id]
+                for seq in range(1, 257):
+                    sampler_ids.append(
+                        frontend.create_sampling_session(
+                            wire.CreateSamplingSessionRequest(
+                                session_id=session_id,
+                                sampling_session_seq_id=seq,
+                                base_model=BASE,
+                            )
+                        )["sampling_session_id"]
+                    )
                 done = frontend.sample(sample_request(sampler_id, seq=0))
                 body = await retrieve(frontend, done["request_id"])
                 await drain_callbacks()
@@ -281,12 +316,15 @@ class TestIdleSessions:
                 with pytest.raises(ApiError) as heartbeat:
                     frontend.session_heartbeat(wire.SessionHeartbeatRequest(session_id=session_id))
                 assert heartbeat.value.status_code == 404
-                # ...but the sampling session record IS the spent-seq fence:
-                # it survives, so the executed identity still replays typed.
-                assert frontend.samplers.get(sampler_id) is not None
-                assert frontend.samplers.get(sampler_id).is_spent(0)
+                assert all(frontend.samplers.get(sampler) is None for sampler in sampler_ids)
                 calls = transport.calls
                 assert (await retrieve(frontend, done["request_id"])) == body
+                with pytest.raises(ApiError) as get_sampler:
+                    frontend.get_sampler(sampler_id)
+                assert get_sampler.value.status_code == 404
+                with pytest.raises(ApiError) as resubmit:
+                    frontend.sample(sample_request(sampler_id, seq=0))
+                assert resubmit.value.status_code == 404
                 assert transport.calls == calls
             finally:
                 await frontend.close()
