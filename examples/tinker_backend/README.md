@@ -63,9 +63,19 @@ strictly ordinal-ordered; retries with the same `operation_id`, same ordinal,
 and identical payload return the original operation — anything else is a
 typed conflict.
 
+A stream stalled on a never-arriving ordinal (the 0.24.1 SDK consumes a
+seq_id and can then fail BEFORE HTTP — see the SDK limitations below) expires
+after `--tinker-operation-gap-timeout` (default 600 s, `<= 0` disables): the
+blocked, never-claimed operations terminal-fail `FAILED(user)` naming the
+missing ordinal, and the hole is sealed — the missing identity never executes
+(a late arrival is a typed conflict), nothing overtakes it, and the client
+resubmits as new operations. Stalls are observable before expiry:
+`service_info()` reports `gap_stalls`, and a blocked operation's
+`get_operation` view carries `waiting_on_ordinal` / `gap_stalled_for`.
+
 | kind | payload | success result |
 |------|---------|----------------|
-| `forward_backward` | `{samples: [Datum...], loss: {loss_fn, loss_fn_config?}}` | `{logprobs: [[...]], metrics: {"loss:sum", "unmasked_tokens:sum"}}` |
+| `forward_backward` | `{samples: [Datum...], loss: {loss_fn, loss_fn_config?}}` | `{logprobs: [[...]], metrics: {"loss:sum", "unmasked_tokens:sum", "loss_weight:sum" (CE only)}}` |
 | `forward` | `{samples: [Datum...]}` | `{logprobs: [[...]]}` (zero gradient, structurally) |
 | `optim_step` | `{adam_params: {learning_rate, beta1, beta2, eps, weight_decay, grad_clip_norm}}` | `{grad_norm, learning_rate}` |
 | `save_weights_for_sampler` | `{}` | `{serving_version, serving_name}` — completes only after the weights are live |
@@ -78,6 +88,13 @@ token sums (`Σ(-logp·w)` for `cross_entropy`), so K chunked forward_backward
 calls accumulate exactly like one; `loss_weights` own the scale and no server
 normalization or scheduler ever touches a tinker slot. Result `metrics` use
 the SDK combiner's `name:reduction` keys.
+
+For an SFT-style per-token loss, divide `loss:sum` by `loss_weight:sum`
+(cross-entropy only: Σ weight·mask, chunk-additive like the loss) — NOT by
+`unmasked_tokens:sum`, which counts every loss_mask-active position and so
+includes the weight-0 prompt tokens of a teacher-forced datum, silently
+diluting the displayed loss. Guard the division: weights are arbitrary
+finite floats, so the sum can be zero or negative.
 
 Operation states: `QUEUED → CLAIMED → SUCCEEDED | FAILED(user|server) | CANCELLED`;
 poll `get_operation`, then `ack_operation` to release the record. In v1 these
@@ -104,6 +121,33 @@ shifted); async/off-policy sampling against pinned snapshots;
 cross-world-size state restore; state restore into a slot whose per-rank
 optimizer ownership differs from the save (cross-slot restore requires an
 identical dense-and-expert ownership signature); idle slot GC.
+
+## Known tinker SDK (0.24.1) client-side limitations
+
+The official `tinker==0.24.1` TrainingClient takes its per-model seq counter
+BEFORE it serializes and POSTs a request, so a submission can die client-side
+with the ordinal already spent (verified against the live stack,
+codex-0817-sft-fix §4-§6):
+
+- **Pre-HTTP serialization failure** — e.g. `AdamParams(learning_rate=nan)`
+  raises a local JSON `ValueError`; the request never reaches Miles and later
+  operations of the same client queue behind the hole. The gap timeout above
+  terminal-fails them typed, and the SAME TrainingClient can resubmit
+  afterwards (its turn counter did advance). Validate that Adam params and
+  custom scalars are finite before calling the SDK to avoid the stall.
+- **`.future().cancel()` on an SDK future** can spend the request id without
+  advancing the SDK's internal turn counter: later operations of that client
+  wait forever CLIENT-side and Miles receives nothing it could terminalize —
+  no server-side mitigation exists. Do not cancel underlying SDK futures;
+  `.result(timeout=...)` is safe (non-destructive, the future stays
+  retrievable). After an immediate cancel, discard the TrainingClient and
+  create a new one (a fresh registration). When some submissions did reach
+  the server, the gap timeout converts the surviving stall into typed
+  failures instead of a hang.
+- The server never skips a missing ordinal and never guesses what it would
+  have been: the gap timeout only fails what is blocked and seals the hole,
+  so strict per-registration ordering, idempotent retries, and anti-replay
+  all hold.
 
 ## Files
 
