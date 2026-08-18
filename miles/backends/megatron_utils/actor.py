@@ -57,7 +57,7 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
-from .initialize import init, is_first_replica_megatron_main_rank
+from .initialize import init, is_first_replica_megatron_main_rank, set_random_seed_from_args
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import (
     LoadCheckpointOutput,
@@ -68,6 +68,7 @@ from .model import (
     save,
     train,
 )
+from .optimizer_utils import reset_optimizer_state
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
@@ -285,6 +286,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.is_initialized()
 
         save_dir = self.args.save
+        resume_from_save_ckpt = read_checkpoint_tracker_iteration(save_dir) is not None
 
         # reloading does not support things like these
         assert not self.args.debug_rollout_only
@@ -296,7 +298,15 @@ class MegatronTrainRayActor(TrainRayActor):
         assert not self.args.offload_train
         assert not self.args.use_pytorch_profiler
         assert not self.args.record_memory_history
-        assert read_checkpoint_tracker_iteration(save_dir) is not None
+        if not resume_from_save_ckpt:
+            assert not self.args.fp16
+            assert not self.args.use_precision_aware_optimizer
+            assert not self.args.optimizer_cpu_offload
+            assert not self.args.offload_optimizer_states
+            assert self.args.finetune
+            assert self.args.no_load_optim
+            assert self.args.no_load_rng
+            assert self.args.ckpt_step == self.args.ref_ckpt_step
 
         if self._asleep:
             self.wake_up()
@@ -306,9 +316,19 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.opt_param_scheduler is not None:
             self.opt_param_scheduler.num_steps = 0
 
-        overrider_for_loading: dict[str, object] = dict(
-            load=save_dir, ckpt_step=None, finetune=False, no_load_optim=False, no_load_rng=False
-        )
+        if resume_from_save_ckpt:
+            overrider_for_loading: dict[str, object] = dict(
+                load=save_dir, ckpt_step=None, finetune=False, no_load_optim=False, no_load_rng=False
+            )
+        else:
+            logger.info(
+                f"load_state found no checkpoint under --save {save_dir!r}; loading the state the run started from"
+            )
+            overrider_for_loading = {}
+            set_random_seed_from_args(self.args)
+            if self.optimizer is not None:
+                reset_optimizer_state(self.optimizer)
+
         load_output = self._load_state_core(
             checkpointing_context=None,
             overrider_for_loading=overrider_for_loading,
