@@ -8,6 +8,7 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=90, suite="stage-a-cpu")
 
 import asyncio
+import time
 
 import pytest
 from tests.fast.ray.tinker_backend.frontend.fake_stack import make_backend
@@ -174,6 +175,29 @@ class TestSamplerIdentityRetention:
 
         asyncio.run(main())
 
+    def test_publish_completion_after_parent_reap_cannot_recreate_a_sampler(self):
+        async def main():
+            backend, frontend, session_id = await make_frontend(StaticTransport())
+            try:
+                model_id, model = await create_ready_model(backend, frontend, session_id)
+                publish = frontend.save_weights_for_sampler(
+                    wire.SaveWeightsForSamplerRequest(model_id=model_id, seq_id=1, sampling_session_seq_id=0)
+                )
+                frontend.reap_once(now=time.time() + frontend.session_idle_ttl_s + 1)
+                assert frontend.sessions.get(session_id) is None
+
+                claimed = backend.claim_ready_control_operations()["operations"]
+                backend.registry.record_weight_update([model.name])
+                backend.complete_control_operations({claimed[0]["operation_id"]: {"ok": True}})
+                body = await frontend.retrieve_future(wire.FutureRetrieveRequest(request_id=publish["request_id"]))
+                assert body["category"] == "user" and "parent session expired" in body["error"]
+                assert not frontend.samplers.records
+            finally:
+                await frontend.close()
+                await backend.close()
+
+        asyncio.run(main())
+
     def test_sample_identity_does_not_reexecute_after_tombstone_rollover(self):
         """Bounded retention forgets bytes and tombstones; the per-session
         spent-sequence fence must still refuse to re-run a spent seq (a fresh
@@ -292,6 +316,24 @@ class TestAsyncLifecycle:
                     frontend.sample(sample_request(sampler_id, seq=1))
                 assert excinfo.value.status_code == 503
                 await frontend.close()  # idempotent
+            finally:
+                await backend.close()
+
+        asyncio.run(main())
+
+    def test_close_terminalizes_sample_cancelled_before_its_first_step(self):
+        async def main():
+            transport = BlockingTransport()
+            backend, frontend, session_id = await make_frontend(transport)
+            sampler_id = base_sampler(frontend, session_id)
+            future = frontend.sample(sample_request(sampler_id))
+            try:
+                await frontend.close()
+                assert not transport.started.is_set()
+                assert frontend.sampling_admission.in_use == 0
+                assert frontend.sampling_stats.failures_by_class == {"Cancelled": 1}
+                body = await frontend.retrieve_future(wire.FutureRetrieveRequest(request_id=future["request_id"]))
+                assert body["category"] == "server" and "shutting down" in body["error"]
             finally:
                 await backend.close()
 

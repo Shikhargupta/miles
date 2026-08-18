@@ -11,6 +11,8 @@ from miles.ray.tinker_backend.frontend.state import (
     ExpiredError,
     FutureRecord,
     FutureStore,
+    SamplingSessionRecord,
+    SamplingSessionStore,
     SessionStore,
     fingerprint_of,
 )
@@ -87,3 +89,20 @@ class TestSessions:
     def test_fingerprints_are_canonical(self):
         assert fingerprint_of({"a": 1, "b": 2}) == fingerprint_of({"b": 2, "a": 1})
         assert fingerprint_of({"a": 1}) != fingerprint_of({"a": 2})
+
+    def test_child_sampler_namespaces_are_retired_in_one_bulk_pass(self):
+        store = SamplingSessionStore()
+        for session_id in ("sess-a", "sess-b", "sess-live"):
+            for suffix in range(2):
+                store.add(
+                    SamplingSessionRecord(
+                        sampling_session_id=f"{session_id}:sample:{suffix}",
+                        session_id=session_id,
+                        fingerprint=f"fp-{session_id}-{suffix}",
+                        base_model="test-model",
+                    )
+                )
+
+        store.remove_for_sessions({"sess-a", "sess-b"})
+
+        assert set(store.records) == {"sess-live:sample:0", "sess-live:sample:1"}

@@ -86,9 +86,8 @@ class SessionStore:
 
     def reap_idle(self, ttl_s: float, now: float) -> list[SessionRecord]:
         """Remove sessions whose client stopped heartbeating for ``ttl_s``.
-        Only the session record goes: models and sampling sessions it minted
-        keep their own identity (and the sampling spent-seq fences survive),
-        so nothing a vanished client already executed can ever re-execute."""
+        Child sampling sessions are retired separately by their lifecycle
+        owner; their old ids then fail closed instead of becoming reusable."""
         idle = [record for record in self.records.values() if now - record.last_heartbeat > ttl_s]
         for record in idle:
             del self.records[record.session_id]
@@ -324,3 +323,12 @@ class SamplingSessionStore:
             return None
         _check_fingerprint("sampling session", sampling_session_id, record.fingerprint, fingerprint)
         return record
+
+    def remove_for_sessions(self, session_ids: set[str]) -> None:
+        """Retire child sampler namespaces for multiple parents in one pass."""
+        if not session_ids:
+            return
+        for sampling_session_id in [
+            key for key, record in self.records.items() if record.session_id in session_ids
+        ]:
+            del self.records[sampling_session_id]

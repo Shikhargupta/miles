@@ -152,6 +152,22 @@ class TestSampling:
         # seed is injected per fanned-out sample by the service, not here.
         assert "sampling_seed" not in translation.sampling_params_to_sglang(self.params(seed=1))
 
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"temperature": -1.0}, "temperature"),
+            ({"temperature": float("nan")}, "temperature"),
+            ({"top_p": 0.0}, "top_p"),
+            ({"top_p": float("inf")}, "top_p"),
+            ({"top_k": 0}, "top_k"),
+            ({"seed": -(2**63) - 1}, "seed"),
+            ({"seed": 2**63}, "seed"),
+        ],
+    )
+    def test_invalid_sampling_ranges_are_rejected_locally(self, overrides, message):
+        with pytest.raises(UserInputError, match=message):
+            translation.sampling_params_to_sglang(self.params(**overrides))
+
     def test_generation_maps_tokens_logprobs_and_stop_reason(self):
         sequence = translation.generation_to_sequence(
             {

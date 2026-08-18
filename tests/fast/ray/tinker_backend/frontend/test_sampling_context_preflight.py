@@ -159,7 +159,7 @@ class TestConfiguredLimit:
 
 
 class TestDiscovery:
-    def test_explicit_context_length_wins(self):
+    def test_tighter_discovered_limit_wins(self):
         async def main():
             transport = InfoTransport(info={"context_length": 128, "max_req_input_len": 100})
             backend, frontend, sampler_id = await make_frontend(transport)
@@ -168,14 +168,14 @@ class TestDiscovery:
                 assert model["max_context_length"] is None  # unknown until discovered
                 done = frontend.sample(sample_request(sampler_id, seq=0))  # triggers discovery
                 await wait_discovery(frontend)
-                assert frontend._context_limit == 128
+                assert frontend._context_limit == 106
                 await retrieve(frontend, done["request_id"])
 
-                with pytest.raises(ApiError, match="context limit of 128"):
+                with pytest.raises(ApiError, match="context limit of 106"):
                     frontend.sample(sample_request(sampler_id, seq=1, prompt_len=120, max_tokens=16))
                 assert transport.info_calls == 1  # discovered exactly once
                 [model] = frontend.capabilities()["supported_models"]
-                assert model["max_context_length"] == 128
+                assert model["max_context_length"] == 106
             finally:
                 await frontend.close()
                 await backend.close()
@@ -188,7 +188,7 @@ class TestDiscovery:
         # max_req_input_len = min(ctx - 1, kv - 1) - 5, so ctx comes back as
         # max_req_input_len + 6 (folding in a tighter KV-pool bound).
         assert _context_limit_from_server_info({"context_length": None, "max_req_input_len": 122}) == 128
-        assert _context_limit_from_server_info({"context_length": 256, "max_req_input_len": 122}) == 256
+        assert _context_limit_from_server_info({"context_length": 256, "max_req_input_len": 122}) == 128
         assert _context_limit_from_server_info({"context_length": True, "max_req_input_len": True}) is None
         assert _context_limit_from_server_info({"status": "ready"}) is None
         assert _context_limit_from_server_info(["not", "a", "dict"]) is None
