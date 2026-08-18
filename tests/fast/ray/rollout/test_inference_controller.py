@@ -995,6 +995,53 @@ class TestInitLifecycle:
         assert cell.tick_count == ticks_at_dispose
 
 
+class TestInitRunsExactlyOnce:
+    @staticmethod
+    def _controller() -> InferenceController:
+        return InferenceController(
+            make_args(debug_train_only=True),
+            engine_provider=_FakeWorkerProvider([]),
+            router_providers=[_FakeWorkerProvider([])],
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_controller_that_never_ran_init_reports_itself_uninitialized(self):
+        """A restarted script asks the controller it found running whether to initialize it or to take it over."""
+        assert await self._controller().is_initialized() is False
+
+    @pytest.mark.asyncio
+    async def test_a_controller_that_ran_init_reports_itself_initialized(self):
+        """The take-over path has to see the controller the previous script built as built."""
+        controller = self._controller()
+
+        await controller.init()
+
+        assert await controller.is_initialized() is True
+
+    @pytest.mark.asyncio
+    async def test_a_second_init_is_refused(self):
+        """Re-initializing a live controller would rebuild a fleet the previous script is still driving."""
+        controller = self._controller()
+        await controller.init()
+
+        with pytest.raises(AssertionError):
+            await controller.init()
+
+    @pytest.mark.asyncio
+    async def test_a_second_init_is_refused_after_a_full_init(self, monkeypatch: pytest.MonkeyPatch):
+        """The train-only shortcut returns early, so the refusal has to hold for a controller that built a fleet."""
+        _patch_init(monkeypatch, servers={"default": _RecordingServer()})
+        controller = InferenceController(
+            make_args(), engine_provider=_FakeWorkerProvider([]), router_providers=[_FakeWorkerProvider([])]
+        )
+        await controller.init()
+
+        with pytest.raises(AssertionError):
+            await controller.init()
+
+        await controller.dispose()
+
+
 class TestEvalFleetSurface:
     def test_the_eval_fleet_is_an_rpc_method_rather_than_an_attribute(self):
         """A handle resolves rpc methods only, so reading the fleet off it reaches nothing."""

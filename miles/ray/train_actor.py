@@ -49,9 +49,9 @@ class TrainRayActor(NodeProbeMixin):
         role: Literal["actor", "critic"],
         cell_index: int,
     ):
-        self.args = args
-
         self._init_called = False
+
+        self.args = args
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
@@ -98,9 +98,7 @@ class TrainRayActor(NodeProbeMixin):
         raise NotImplementedError
 
     def _init_common(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> None:
-        assert (
-            not self._init_called
-        ), "init already ran in this worker process, so this is a stale worker being reused as a fresh one"
+        assert not self._init_called
         self._init_called = True
 
         self.args = args
@@ -157,6 +155,9 @@ class TrainRayActor(NodeProbeMixin):
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
 
         self._heartbeat.bump()
+
+    def is_initialized(self) -> bool:
+        return self._init_called
 
     @rpc(concurrency_group="heartbeat_status")
     def get_heartbeat_status(self) -> HeartbeatStatus:

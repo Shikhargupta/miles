@@ -49,6 +49,7 @@ class InferenceController(NodeProbeMixin):
         engine_provider: BaseWorkerProvider,
         router_providers: Sequence[BaseWorkerProvider],
     ) -> None:
+        self._init_called = False
         self.args = args
         self._engine_provider = engine_provider
         self._router_providers = router_providers
@@ -60,6 +61,9 @@ class InferenceController(NodeProbeMixin):
 
     @lock_exempt
     async def init(self) -> None:
+        assert not self._init_called
+        self._init_called = True
+
         configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
 
         if self.args.debug_train_only:
@@ -82,6 +86,10 @@ class InferenceController(NodeProbeMixin):
         dashboard_hooks.register_router(self.args)
 
         await asyncio.gather(*[srv.wait_init_expected_num_cells() for srv in self.servers.values()])
+
+    @lock_exempt
+    async def is_initialized(self) -> bool:
+        return self._init_called
 
     # -------------------------- registration -----------------------------
 

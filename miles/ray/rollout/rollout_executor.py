@@ -60,6 +60,8 @@ class RolloutExecutor(NodeProbeMixin):
         session_server_provider: BaseWorkerProvider | None,
         inference_controller_provider: BaseWorkerProvider,
     ):
+        self._init_called = False
+
         event_logger_checkpoint.restore(args)
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
@@ -73,6 +75,9 @@ class RolloutExecutor(NodeProbeMixin):
         self._inference_controller_provider = inference_controller_provider
 
     async def init(self) -> None:
+        assert not self._init_called
+        self._init_called = True
+
         args = self.args
         if not args.debug_train_only:
             await resolve_router_addrs(args, router_providers=self._router_providers)
@@ -115,6 +120,9 @@ class RolloutExecutor(NodeProbeMixin):
         self._eval_fleet: RolloutExecutorEvalFleet | None = None
 
         self._metric_checker = MetricChecker.maybe_create(args)
+
+    def is_initialized(self) -> bool:
+        return self._init_called
 
     # -------------------------- lifecycle -----------------------------
 

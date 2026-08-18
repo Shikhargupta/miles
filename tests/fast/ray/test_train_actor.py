@@ -6,6 +6,7 @@ import pytest
 from miles.ray import train_actor
 from miles.ray.train_actor import TrainRayActor
 
+
 class TestConstructorSignature:
     def test_positional_constructor_arguments_are_rejected(self):
         """Workers are built from a spec's kwargs, so silently shifted positional args must not construct one."""
@@ -74,5 +75,19 @@ class TestInitRunsExactlyOnce:
         actor = TrainRayActor.__new__(TrainRayActor)
         actor._init_called = True
 
-        with pytest.raises(AssertionError, match="stale worker"):
+        with pytest.raises(AssertionError):
             actor._init_common(None, "actor")
+
+    def test_a_worker_that_never_ran_init_reports_itself_uninitialized(self):
+        """A restarted script asks a worker it found running whether to initialize it or to resume it."""
+        actor = TrainRayActor.__new__(TrainRayActor)
+        actor._init_called = False
+
+        assert actor.is_initialized() is False
+
+    def test_a_worker_that_ran_init_reports_itself_initialized(self):
+        """The take-over path has to see the worker the previous script built as built."""
+        actor = TrainRayActor.__new__(TrainRayActor)
+        actor._init_called = True
+
+        assert actor.is_initialized() is True

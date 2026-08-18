@@ -61,6 +61,7 @@ class TrainerController(NodeProbeMixin):
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
+        self._init_called = False
         self._deployment_identity = deployment_identity
         self._trainer_id = trainer_id
         self._role = role
@@ -303,6 +304,9 @@ class TrainerController(NodeProbeMixin):
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
+        assert not self._init_called
+        self._init_called = True
+
         self.args = args
         configure_logger(
             args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
@@ -343,6 +347,9 @@ class TrainerController(NodeProbeMixin):
             ]
         )
         return [item for sublist in cell_results for item in sublist]
+
+    async def is_initialized(self) -> bool:
+        return self._init_called
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
