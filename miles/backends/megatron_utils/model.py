@@ -34,7 +34,7 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
-from miles.utils.tinker_backend import uses_multi_lora_tinker_executor, uses_tinker_operation_semantics
+from miles.utils.tinker_backend import uses_explicit_training_operations, uses_multi_lora_operation_executor
 from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
@@ -191,10 +191,10 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.enable_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
-    elif uses_multi_lora_tinker_executor(args):
-        from miles.backends.megatron_utils.tinker_backend.optimizer import build_tinker_slot_optimizer
+    elif uses_multi_lora_operation_executor(args):
+        from miles.backends.megatron_utils.tinker_backend.optimizer import build_multi_lora_operation_optimizer
 
-        optimizer = build_tinker_slot_optimizer(args, config, model)
+        optimizer = build_multi_lora_operation_optimizer(args, config, model)
     else:
         optimizer = get_megatron_optimizer(
             config=config,
@@ -445,13 +445,13 @@ def train_one_step(
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
-    # Tinker operation semantics, not a LoRA property: the client owns the
+    # Explicit training-operation semantics, not a LoRA property: the client owns the
     # optimizer boundary, so a train call accumulates gradients and never
     # steps inline (the optimizer runs when a client optim_step executes).
-    explicit_optim_step = uses_tinker_operation_semantics(args)
+    explicit_optim_step = uses_explicit_training_operations(args)
 
     if explicit_optim_step:
-        from miles.backends.training_utils.tinker_execution import reset_grad_metadata_keep_grads
+        from miles.backends.training_utils.operation_execution import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.

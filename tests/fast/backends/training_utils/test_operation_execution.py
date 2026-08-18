@@ -1,4 +1,4 @@
-"""Generic tinker control coordinator (codex-rollout-fullparameter-design-0810
+"""Generic explicit-operation coordinator (codex-rollout-fullparameter-design-0810
 §3.5): poison partition, Adam default resolution, operation-ID-keyed outcome
 normalization — exercised with a FAKE executor and an opaque binding type, no
 Multi-LoRA imports (the module's dependency rule)."""
@@ -11,13 +11,16 @@ import dataclasses
 
 import pytest
 
-from miles.backends.training_utils.tinker_execution import (
+from miles.backends.training_utils.operation_execution import (
     ADAM_PARAM_DEFAULTS,
     StepRequest,
     resolve_adam_params,
     run_optim_controls,
 )
-from miles.utils.tinker_backend import BatchExecutionLease
+from miles.backends.training_utils.tinker_execution import BatchExecutionLease as LegacyBatchExecutionLease
+from miles.backends.training_utils.tinker_execution import BindingT as LegacyBindingT
+from miles.backends.training_utils.tinker_execution import run_optim_controls as legacy_run_optim_controls
+from miles.utils.tinker_backend import BatchExecutionLease, BindingT
 
 
 class FakeExecutor:
@@ -44,6 +47,12 @@ class FakeExecutor:
 
 
 LEASE = BatchExecutionLease(dispatch_id="d", bindings_by_operation=(("opt1", "opaque-1"), ("opt2", "opaque-2")))
+
+
+def test_legacy_module_reexports_operation_execution():
+    assert legacy_run_optim_controls is run_optim_controls
+    assert LegacyBatchExecutionLease is BatchExecutionLease
+    assert LegacyBindingT is BindingT
 
 
 def optim(op_id, adam=None, poison=None):

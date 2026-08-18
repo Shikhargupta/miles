@@ -40,7 +40,7 @@ from miles.backends.training_utils.loss_hub.logit_processors import get_log_prob
 from miles.backends.training_utils.loss_hub.losses import tinker_loss_function
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
-from miles.ray.tinker_backend.backend import TinkerBackend
+from miles.ray.tinker_backend.backend import MultiLoraOperationBackend
 from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.rollout.tinker_backend.rollout_fn import batch_plan_to_metadata
@@ -267,7 +267,7 @@ class TestResultPlanePipeline:
         assert [len(rows) for rows in (logprobs_by_op["op-A"], logprobs_by_op["op-B"])] == [2, 1]
 
     @staticmethod
-    def make_backend_with_claimed_ops(logprobs_by_op) -> TinkerBackend:
+    def make_backend_with_claimed_ops(logprobs_by_op) -> MultiLoraOperationBackend:
         backend_args = SimpleNamespace(
             multi_lora_n_adapters=4,
             save="/tmp/tinker-test-save",
@@ -275,7 +275,7 @@ class TestResultPlanePipeline:
             lora_alpha=64,
             hf_checkpoint="Qwen/Qwen3-0.6B",
         )
-        backend = TinkerBackend(backend_args, "http://unused")
+        backend = MultiLoraOperationBackend(backend_args, "http://unused")
         payloads = {
             "op-A": {
                 "samples": [

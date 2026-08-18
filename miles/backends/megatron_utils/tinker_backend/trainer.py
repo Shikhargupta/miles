@@ -22,7 +22,7 @@ from miles.backends.megatron_utils.tinker_backend.optimizer import (
     reload_adapter_slot_model_params,
     zero_adapter_slot_grads,
 )
-from miles.backends.training_utils.tinker_execution import run_optim_controls
+from miles.backends.training_utils.operation_execution import run_optim_controls
 from miles.ray.tinker_backend.controller import get_tinker_controller
 from miles.ray.tinker_backend.residency import lease_from_metadata
 from miles.utils.distributed_utils import get_gloo_group

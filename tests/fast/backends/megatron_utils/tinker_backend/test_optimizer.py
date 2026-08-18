@@ -18,10 +18,11 @@ import miles.backends.megatron_utils.tinker_backend.optimizer as tinker_optimize
 from miles.backends.megatron_utils.tinker_backend.optimizer import (
     _found_inf_anywhere,
     apply_adam_params_to_slot,
+    build_multi_lora_operation_optimizer,
     build_tinker_slot_optimizer,
     step_adapter_slots,
 )
-from miles.backends.training_utils.tinker_execution import ADAM_PARAM_DEFAULTS
+from miles.backends.training_utils.operation_execution import ADAM_PARAM_DEFAULTS
 
 
 class FakeChild:
@@ -192,6 +193,10 @@ def test_found_inf_passthrough_without_dist():
     assert _found_inf_anywhere(False) is False
 
 
+def test_legacy_optimizer_builder_name_is_a_compatibility_alias():
+    assert build_tinker_slot_optimizer is build_multi_lora_operation_optimizer
+
+
 class TestBuildGuards:
     def make(self, **overrides):
         config = SimpleNamespace(use_distributed_optimizer=False, fp16=False, bf16=True, optimizer="adam")
@@ -207,4 +212,4 @@ class TestBuildGuards:
         ]:
             args, config = self.make(**overrides)
             with pytest.raises(AssertionError, match=message):
-                build_tinker_slot_optimizer(args, config, model_chunks=[])
+                build_multi_lora_operation_optimizer(args, config, model_chunks=[])

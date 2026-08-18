@@ -1,4 +1,4 @@
-"""Test stack for the tinker frontend: a REAL TinkerBackend (registry +
+"""Test stack for the tinker frontend: a real MultiLoraOperationBackend (registry +
 ledger + validation) driven by a fake trainer loop. Only the Ray/trainer/GPU
 boundary is faked — the fake driver speaks exactly the documented controller
 verbs the Megatron driver uses (claim/commit/complete/retire/bootstrap/
@@ -8,7 +8,7 @@ publish barrier behave like production."""
 import asyncio
 from types import SimpleNamespace
 
-from miles.ray.tinker_backend.backend import TinkerBackend
+from miles.ray.tinker_backend.backend import MultiLoraOperationBackend
 from miles.ray.tinker_backend.registry import AdapterState
 
 
@@ -23,7 +23,7 @@ def make_backend(router_url: str = "http://127.0.0.1:9", save_root: str = "/tmp/
     )
     for key, value in overrides.items():
         setattr(args, key, value)
-    return TinkerBackend(args, router_url)
+    return MultiLoraOperationBackend(args, router_url)
 
 
 class FakeDriver:
@@ -31,7 +31,7 @@ class FakeDriver:
     logprob rows are ``base - 0.01 * step`` so weights visibly "move" after
     an optim_step; named states are immutable; loads restore the step."""
 
-    def __init__(self, backend: TinkerBackend, base_logprob: float = -0.5) -> None:
+    def __init__(self, backend: MultiLoraOperationBackend, base_logprob: float = -0.5) -> None:
         self.backend = backend
         self.base_logprob = base_logprob
         self.saved_states: dict[str, int] = {}

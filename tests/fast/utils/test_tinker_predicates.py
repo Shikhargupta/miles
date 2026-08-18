@@ -3,7 +3,7 @@ predicate split (codex-rollout-fullparameter-design-0810 §3.2).
 
 ``train_one_step`` now keys its execution policy (retain accumulated grads,
 no inline optimizer/scheduler step, no trailing grad clear) on
-``uses_tinker_operation_semantics`` instead of ``is_multi_lora_enabled``.
+``uses_explicit_training_operations`` instead of ``is_multi_lora_enabled``.
 That swap is behavior-preserving iff the two predicates agree on every
 config that survives launch validation — which these tests prove by
 exhausting the flag combinations: every combination where the predicates
@@ -22,6 +22,8 @@ import pytest
 from miles.utils.multi_lora import is_multi_lora_enabled, validate_multi_lora_args
 from miles.utils.tinker_backend import (
     is_tinker_enabled,
+    uses_explicit_training_operations,
+    uses_multi_lora_operation_executor,
     uses_multi_lora_tinker_executor,
     uses_tinker_operation_semantics,
     validate_tinker_args,
@@ -37,16 +39,20 @@ def _args(tinker_backend: bool, n_adapters: int) -> SimpleNamespace:
 
 
 class TestPredicateRoles:
+    def test_legacy_predicate_names_are_compatibility_aliases(self):
+        assert uses_tinker_operation_semantics is uses_explicit_training_operations
+        assert uses_multi_lora_tinker_executor is uses_multi_lora_operation_executor
+
     def test_operation_semantics_is_the_protocol_flag_alone(self):
-        assert uses_tinker_operation_semantics(_args(True, 0))
-        assert uses_tinker_operation_semantics(_args(True, 4))
-        assert not uses_tinker_operation_semantics(_args(False, 4))
-        assert not uses_tinker_operation_semantics(_args(False, 0))
+        assert uses_explicit_training_operations(_args(True, 0))
+        assert uses_explicit_training_operations(_args(True, 4))
+        assert not uses_explicit_training_operations(_args(False, 4))
+        assert not uses_explicit_training_operations(_args(False, 0))
 
     def test_executor_requires_protocol_and_slots(self):
-        assert uses_multi_lora_tinker_executor(_args(True, 4))
-        assert not uses_multi_lora_tinker_executor(_args(True, 0))
-        assert not uses_multi_lora_tinker_executor(_args(False, 4))
+        assert uses_multi_lora_operation_executor(_args(True, 4))
+        assert not uses_multi_lora_operation_executor(_args(True, 0))
+        assert not uses_multi_lora_operation_executor(_args(False, 4))
 
     def test_is_tinker_enabled_is_unchanged(self):
         """Characterization: the legacy predicate keeps its exact truth table."""
@@ -79,8 +85,8 @@ class TestValidationClosesTheGap:
                 validate_tinker_args(args)
             except AssertionError:
                 continue  # rejected at launch: the trainer never sees this combo
-            assert uses_tinker_operation_semantics(args) == is_multi_lora_enabled(args)
-            assert uses_multi_lora_tinker_executor(args) == is_multi_lora_enabled(args)
+            assert uses_explicit_training_operations(args) == is_multi_lora_enabled(args)
+            assert uses_multi_lora_operation_executor(args) == is_multi_lora_enabled(args)
 
 
 def _full_args(tinker_backend: bool, n_adapters: int) -> SimpleNamespace:

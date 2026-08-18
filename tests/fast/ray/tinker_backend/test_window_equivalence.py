@@ -1,6 +1,6 @@
 """Refactor-equivalence capture for the gradient-window state machine
 (codex-rollout-fullparameter-design-0810 §3.4): scripted operation sequences
-through the CURRENT TinkerBackend, asserting a field-by-field fingerprint of
+through the CURRENT MultiLoraOperationBackend, asserting a field-by-field fingerprint of
 the ledger views and the registry's step/dirty/lifecycle state after every
 mutating call.
 
@@ -21,11 +21,11 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import asyncio
 
-from miles.ray.tinker_backend.backend import TinkerBackend
+from miles.ray.tinker_backend.backend import MultiLoraOperationBackend
 from miles.ray.tinker_backend.config import AdapterRunConfig
 
 
-def make_backend(max_adapters: int = 4) -> TinkerBackend:
+def make_backend(max_adapters: int = 4) -> MultiLoraOperationBackend:
     args = SimpleNamespace(
         multi_lora_n_adapters=max_adapters,
         save="/tmp/tinker-test-save",
@@ -33,10 +33,10 @@ def make_backend(max_adapters: int = 4) -> TinkerBackend:
         lora_alpha=64,
         hf_checkpoint="Qwen/Qwen3-0.6B",
     )
-    return TinkerBackend(args, "http://unused")
+    return MultiLoraOperationBackend(args, "http://unused")
 
 
-def ready(backend: TinkerBackend, name: str, **config) -> str:
+def ready(backend: MultiLoraOperationBackend, name: str, **config) -> str:
     asyncio.run(backend.register(name, AdapterRunConfig(**config)))
     backend.registry.mark_ready([name])
     return backend.registry.find(name).registration_id
@@ -52,7 +52,7 @@ def fb_payload(n=1):
     }
 
 
-def window_state(backend: TinkerBackend, name: str) -> dict:
+def window_state(backend: MultiLoraOperationBackend, name: str) -> dict:
     """The per-registration training-stream state: step clocks, dirty flag,
     and lifecycle. Field-by-field — a refactor must reproduce ALL of it."""
     record = backend.registry.records.get(name)
@@ -68,7 +68,7 @@ def window_state(backend: TinkerBackend, name: str) -> dict:
     )
 
 
-def op_state(backend: TinkerBackend, op_id: str) -> dict:
+def op_state(backend: MultiLoraOperationBackend, op_id: str) -> dict:
     """Ledger view minus the identity constants asserted once at enqueue."""
     view = backend.operations.get(op_id)
     return dict(

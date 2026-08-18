@@ -1,4 +1,4 @@
-"""Per-slot decoupled Adam optimizers for the tinker-compatible backend,
+"""Per-slot decoupled Adam optimizers for the Multi-LoRA operation backend,
 chained under Megatron's LayerWiseDistributedOptimizer; requires plain DDP
 all-reduce (use_distributed_optimizer OFF) so cross-call gradient retention
 stays idempotent.
@@ -20,7 +20,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.tinker_backend.checkpoint import _slot_children, named_adapter_slot_parameters
-from miles.backends.training_utils.tinker_execution import resolve_adam_params
+from miles.backends.training_utils.operation_execution import resolve_adam_params
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
             param.requires_grad = True
 
 
-def build_tinker_slot_optimizer(args: Namespace, config, model_chunks: Sequence):
+def build_multi_lora_operation_optimizer(args: Namespace, config, model_chunks: Sequence):
     """Build one Float16-wrapped Adam per adapter slot under a
     LayerWiseDistributedOptimizer (ChainedOptimizer); each child's param groups
     are tagged with ``miles_multi_lora_slot`` and narrowed to this rank's shard."""
@@ -264,3 +264,7 @@ def step_adapter_slots(
         optimizer.allgather_params()
 
     return grad_norms, vetoed, norm_blind
+
+
+# Compatibility for integrations importing the pre-rename construction hook.
+build_tinker_slot_optimizer = build_multi_lora_operation_optimizer

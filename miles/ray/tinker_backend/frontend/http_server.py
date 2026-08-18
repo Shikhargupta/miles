@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 
 from miles.ray.tinker_backend.frontend import wire
 from miles.ray.tinker_backend.frontend.service import ApiError, TinkerFrontend
-from miles.ray.tinker_backend.http_server import TinkerHTTPServer
+from miles.ray.tinker_backend.http_server import AdapterRunControlServer
 from miles.ray.tinker_backend.operations import OperationBackpressure
 
 AUTH_EXEMPT_PATHS = ("/health", "/api/v1/healthz")
@@ -62,7 +62,7 @@ def resolve_sampling_max_context(args: Any) -> int | None:
     return getattr(args, "tinker_sampling_max_context", None) or getattr(args, "sglang_context_length", None) or None
 
 
-class TinkerFrontendHTTPServer(TinkerHTTPServer):
+class TinkerFrontendHTTPServer(AdapterRunControlServer):
     """The registration server + the official tinker SDK protocol."""
 
     def __init__(self, backend, host="127.0.0.1", api_port=0):

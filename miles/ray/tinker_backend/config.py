@@ -1,6 +1,6 @@
-"""Registration config and read-only run views for the tinker backend.
+"""Registration config and read-only run views for the Multi-LoRA operation backend.
 
-A tinker training run is client-driven: no dataset, no reward, no server-side
+A Tinker-compatible training run is client-driven: no dataset, no reward, no server-side
 batch shape. The public registration surface takes only ``rank`` (and
 optional ``save``/``num_step``/``metadata``); ``alpha`` is server-resolved
 from ``--lora-alpha`` and never client-settable."""

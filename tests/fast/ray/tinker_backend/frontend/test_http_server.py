@@ -14,9 +14,15 @@ import pytest
 from tests.fast.ray.tinker_backend.frontend.fake_stack import FakeDriver, make_backend
 
 from miles.ray.tinker_backend.frontend.http_server import TinkerFrontendHTTPServer
+from miles.ray.tinker_backend.http_server import AdapterRunControlServer, TinkerHTTPServer
 from miles.utils.tinker_backend import validate_tinker_args
 
 API_KEY = "tml-test-key"
+
+
+def test_frontend_extends_the_canonical_operation_control_server():
+    assert issubclass(TinkerFrontendHTTPServer, AdapterRunControlServer)
+    assert TinkerHTTPServer is AdapterRunControlServer
 
 
 def make_app(api_key=API_KEY, ready=True):

@@ -1,4 +1,4 @@
-"""Registration-keyed gradient-window state for the tinker backend.
+"""Registration-keyed gradient-window state for explicit training operations.
 
 Parameterization-neutral (codex-rollout-fullparameter-design-0810 §3.4): a
 training stream is identified by its ``RegistrationKey`` (adapter name,
