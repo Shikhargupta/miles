@@ -3,6 +3,8 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
+TAKE_OVER_GATE_EVENTS = ["rollout_components", "training_models", "inference_take_over"]
+
 
 class FakeRemoteMethod:
     def __init__(self, fn: Callable[..., Any]) -> None:
