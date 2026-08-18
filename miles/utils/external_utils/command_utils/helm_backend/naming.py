@@ -40,7 +40,7 @@ class ReleaseName(FrozenStrictBaseModel):
         ), f"run_id {self.run_id!r} is {len(self.run_id)} characters, at most {RUN_ID_MAX_LENGTH}"
         if self.deploy_instance_id is not None:
             assert self.deploy_instance_id, "deploy_instance_id is empty; a component deployed once carries None"
-            budget = deploy_instance_id_budget(run_id=self.run_id)
+            budget = _deploy_instance_id_budget(run_id=self.run_id)
             assert len(self.deploy_instance_id) <= budget, (
                 f"deploy_instance_id {self.deploy_instance_id!r} is {len(self.deploy_instance_id)} characters, and "
                 f"run_id {self.run_id!r} leaves {budget} for it in the release name"
@@ -78,7 +78,7 @@ class ReleaseName(FrozenStrictBaseModel):
         )
 
 
-def deploy_instance_id_budget(*, run_id: str) -> int:
+def _deploy_instance_id_budget(*, run_id: str) -> int:
     return _HELM_RELEASE_NAME_MAX - len(f"{CHART_NAME}-{run_id}-{_LONGEST_COMPONENT_VALUE}-")
 
 
