@@ -105,7 +105,7 @@ class TestTheRunIdLeavesRoomForTheComponentSuffix:
 
     def test_a_longer_run_id_is_refused_where_the_release_is_named(self):
         """helm would refuse the install itself, long after the launch computed every object name from it."""
-        with pytest.raises(AssertionError, match=str(_HELM_RELEASE_NAME_MAX)):
+        with pytest.raises(ValidationError, match=f"at most {RUN_ID_MAX_LENGTH}"):
             ReleaseName(
                 run_id="a" * (RUN_ID_MAX_LENGTH + 1), deploy_component=DeployComponent.ALL, deploy_instance_id=None
             )
@@ -158,12 +158,12 @@ class TestReleaseNameRoundTrip:
 class TestReleaseNameRefuses:
     def test_an_instance_id_carrying_a_component_name_is_refused(self):
         """It would give the release two component tokens, and parsing back would split it at the wrong one."""
-        with pytest.raises(AssertionError, match="component name"):
+        with pytest.raises(ValidationError, match="carries the component name"):
             ReleaseName(run_id=RUN_ID, deploy_component=DeployComponent.TRAINER, deploy_instance_id="all")
 
     def test_a_run_id_too_long_for_a_release_is_refused(self):
         """helm would refuse the install itself, long after the launch computed every object name from it."""
-        with pytest.raises(AssertionError, match=str(RUN_ID_MAX_LENGTH)):
+        with pytest.raises(ValidationError, match=f"at most {RUN_ID_MAX_LENGTH}"):
             ReleaseName(
                 run_id="a" * (RUN_ID_MAX_LENGTH + 1), deploy_component=DeployComponent.ALL, deploy_instance_id=None
             )
@@ -175,7 +175,7 @@ class TestReleaseNameRefuses:
 
     def test_an_instance_id_that_overruns_the_release_name_is_refused(self):
         """The run id fits every component, but an instance id on top of it can still overrun helm's bound."""
-        with pytest.raises(AssertionError, match=str(_HELM_RELEASE_NAME_MAX)):
+        with pytest.raises(ValidationError, match=f"at most {_HELM_RELEASE_NAME_MAX}"):
             ReleaseName(
                 run_id="a" * RUN_ID_MAX_LENGTH,
                 deploy_component=DeployComponent.INFERENCE,
@@ -191,7 +191,7 @@ class TestTheRunIdAndTheInstanceIdShareOneReleaseName:
         budget = deploy_instance_id_budget(run_id=run_id)
 
         ReleaseName(run_id=run_id, deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * budget)
-        with pytest.raises(ValidationError, match=str(_HELM_RELEASE_NAME_MAX)):
+        with pytest.raises(ValidationError, match=f"at most {_HELM_RELEASE_NAME_MAX}"):
             ReleaseName(
                 run_id=run_id, deploy_component=DeployComponent.INFERENCE, deploy_instance_id="b" * (budget + 1)
             )
