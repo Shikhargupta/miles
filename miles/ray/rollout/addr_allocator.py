@@ -44,7 +44,6 @@ def allocate_rollout_engine_addr_and_ports_normal(
     # Track per-node port cursors so that different server groups (called
     # sequentially) never race for the same ports on a given node.
     node_port_cursor: dict[int, int] = {}
-    bootstrap_port_cursor: dict[int, int] = {}
 
     visited_nodes = set()
     for rank, engine in rollout_engines:
@@ -88,17 +87,8 @@ def allocate_rollout_engine_addr_and_ports_normal(
             addr_and_ports[current_rank]["host"] = get_addr()
             addr_and_ports[current_rank]["port"] = get_port()
             addr_and_ports[current_rank]["nccl_port"] = get_port()
-            # Always allocate a unique engine_info_bootstrap_port per engine.
-            # Allocated outside the base_port range: mooncake TransferEngine rpc
-            # ports land in 15000-17000 and reset foreign HTTP connections.
-            # A per-node cursor from a fixed base keeps the value identical on
-            # every node of a multi-node engine (whose ranks derive the
-            # bootstrap url from their own server_args) while staying unique
-            # across engines sharing a node.
-            bootstrap_start = bootstrap_port_cursor.get(node_index, 21000)
-            _, bootstrap_port = ray.get(engine._get_current_node_ip_and_free_port.remote(start_port=bootstrap_start))
-            bootstrap_port_cursor[node_index] = bootstrap_port + 1
-            addr_and_ports[current_rank]["engine_info_bootstrap_port"] = bootstrap_port
+            # Always allocate a unique engine_info_bootstrap_port per engine
+            addr_and_ports[current_rank]["engine_info_bootstrap_port"] = get_port()
 
             if worker_type == "prefill":
                 addr_and_ports[current_rank]["disaggregation_bootstrap_port"] = get_port()
