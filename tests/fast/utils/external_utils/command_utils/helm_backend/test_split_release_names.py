@@ -150,9 +150,10 @@ class TestReleaseNameRoundTrip:
         """A release this launcher wrote always names its component, so one without is not from here."""
         assert ReleaseName.parse(f"miles-run-{RUN_ID}") is None
 
-    def test_a_legal_helm_name_this_launcher_could_never_have_written_is_not_ours(self):
-        """Listing a namespace turns up other tools' releases, and parse answers None rather than stopping the run."""
-        assert ReleaseName.parse(f"miles-run-{'a' * (RUN_ID_MAX_LENGTH + 1)}-all") is None
+    def test_a_legal_helm_name_this_launcher_could_never_have_written_is_refused(self):
+        """parse builds the name it read, so a run id segment longer than ours is refused rather than answered."""
+        with pytest.raises(ValidationError, match=f"at most {RUN_ID_MAX_LENGTH}"):
+            ReleaseName.parse(f"miles-run-{'a' * (RUN_ID_MAX_LENGTH + 1)}-all")
 
 
 class TestReleaseNameRefuses:

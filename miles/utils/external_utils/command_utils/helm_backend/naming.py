@@ -4,7 +4,7 @@ import random
 import time
 from pathlib import Path
 
-from pydantic import ValidationError, model_validator
+from pydantic import model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.types import DeployComponent
@@ -66,14 +66,11 @@ class ReleaseName(FrozenStrictBaseModel):
         if index == 0:
             return None
 
-        try:
-            return cls(
-                run_id="-".join(tokens[:index]),
-                deploy_component=DeployComponent(tokens[index]),
-                deploy_instance_id="-".join(tokens[index + 1 :]) or None,
-            )
-        except ValidationError:
-            return None
+        return cls(
+            run_id="-".join(tokens[:index]),
+            deploy_component=DeployComponent(tokens[index]),
+            deploy_instance_id="-".join(tokens[index + 1 :]) or None,
+        )
 
 
 def assert_deploy_instance_id_fits(*, run_id: str, deploy_instance_id: str | None) -> None:
