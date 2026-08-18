@@ -328,7 +328,5 @@ class SamplingSessionStore:
         """Retire child sampler namespaces for multiple parents in one pass."""
         if not session_ids:
             return
-        for sampling_session_id in [
-            key for key, record in self.records.items() if record.session_id in session_ids
-        ]:
+        for sampling_session_id in [key for key, record in self.records.items() if record.session_id in session_ids]:
             del self.records[sampling_session_id]
