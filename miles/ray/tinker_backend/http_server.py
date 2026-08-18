@@ -1,6 +1,6 @@
-"""Registration/status HTTP surface over a TinkerBackend (head node).
-Operations flow through the controller's Ray methods; this API is the
-run-lifecycle control plane a future tinker frontend colocates with.
+"""Registration/status HTTP surface over a Multi-LoRA operation backend.
+Operations flow through the controller's Ray methods; this is the adapter-run
+control surface that a protocol frontend can colocate with.
 Binds loopback by default — the backend executes client-referenced work and
 must never face an untrusted network directly."""
 
@@ -41,7 +41,7 @@ class RegisterAdapterRequest(BaseModel):
     yaml_path: str | None = None
 
 
-class TinkerHTTPServer:
+class AdapterRunControlServer:
     """Subclass via --multi-lora-http-server-path (add_routes / create_app)."""
 
     def __init__(self, backend, host="127.0.0.1", api_port=0):
@@ -150,3 +150,8 @@ class TinkerHTTPServer:
             raise HTTPException(status_code=404, detail=f"Adapter '{name}' not registered")
         await self.backend.deregister(name)
         return {"status": "ok", "name": name}
+
+
+# Compatibility for frontend subclasses and external dotted paths created
+# before the control surface received its parameterization-specific name.
+TinkerHTTPServer = AdapterRunControlServer

@@ -1,4 +1,4 @@
-"""Controller-owned run lifecycle for the tinker backend: one record per
+"""Controller-owned run lifecycle for the Multi-LoRA operation backend: one record per
 name, walking PENDING -> READY -> RETIRING -> CLEANUP -> COMPLETED under
 fixed slot residency. READY means the trainer loaded the slot and client
 operations may execute; serving existence is a separate axis (a run serves

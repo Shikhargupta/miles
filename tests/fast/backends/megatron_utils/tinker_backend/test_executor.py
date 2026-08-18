@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import miles.backends.megatron_utils.tinker_backend.executor as executor_module
 from miles.backends.megatron_utils.tinker_backend.executor import MultiLoraParameterExecutor
-from miles.backends.training_utils.tinker_execution import StepRequest
+from miles.backends.training_utils.operation_execution import StepRequest
 from miles.ray.tinker_backend.residency import ResidentBinding
 from miles.utils.tinker_backend import BatchExecutionLease
 

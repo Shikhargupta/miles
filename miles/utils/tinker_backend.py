@@ -138,28 +138,35 @@ def cache_extra_key(adapter_name: str, registration_id: str, serving_version: in
     return f"{adapter_name}:{registration_id}:v{serving_version}"
 
 
-def uses_tinker_operation_semantics(args) -> bool:
-    """Protocol mode: the run is driven by explicit client operations, so the
-    trainer keeps accumulated gradients across train calls and steps the
+def uses_explicit_training_operations(args) -> bool:
+    """Whether training is driven by explicit client operations.
+
+    In this mode the trainer keeps accumulated gradients across train calls and steps the
     optimizer only when a client optim_step executes. This is a property of
-    the tinker operation protocol, not of the parameterization; validation
-    currently rejects it without multi-LoRA slots, so for every launched
-    config it coincides with ``uses_multi_lora_tinker_executor``
+    the execution contract, not of the Tinker protocol or parameterization.
+    Validation currently rejects it without multi-LoRA slots, so for every launched
+    config it coincides with ``uses_multi_lora_operation_executor``
     (tests/fast/utils/test_tinker_predicates.py witnesses that equivalence)."""
     return bool(getattr(args, "tinker_backend", False))
 
 
-def uses_multi_lora_tinker_executor(args) -> bool:
-    """Parameter executor: tinker operations execute on multi-LoRA trainer
-    slots (per-slot optimizer children, adapter routing, slot publish). The
+def uses_multi_lora_operation_executor(args) -> bool:
+    """Whether explicit operations execute on Multi-LoRA trainer slots.
+
+    The slots provide per-slot optimizer children, adapter routing, and slot publish. The
     only executor implemented; a future full-parameter executor would satisfy
-    ``uses_tinker_operation_semantics`` without this predicate."""
-    return uses_tinker_operation_semantics(args) and getattr(args, "multi_lora_n_adapters", 0) > 0
+    ``uses_explicit_training_operations`` without this predicate."""
+    return uses_explicit_training_operations(args) and getattr(args, "multi_lora_n_adapters", 0) > 0
+
+
+# Compatibility aliases for plugins and stacked PRs using the original names.
+uses_tinker_operation_semantics = uses_explicit_training_operations
+uses_multi_lora_tinker_executor = uses_multi_lora_operation_executor
 
 
 def is_tinker_enabled(args) -> bool:
-    """Tinker mode: multi-LoRA slots driven by the tinker operation backend."""
-    return uses_multi_lora_tinker_executor(args)
+    """Tinker adapter mode backed by the Multi-LoRA operation executor."""
+    return uses_multi_lora_operation_executor(args)
 
 
 def validate_tinker_args(args) -> None:
@@ -175,7 +182,7 @@ def validate_tinker_args(args) -> None:
         "--tinker-backend needs the class-based rollout API (the default); " "unset MILES_USE_LEGACY_ROLLOUT_V1"
     )
     if args.rollout_function_path is None:
-        args.rollout_function_path = "miles.rollout.tinker_backend.rollout_fn.TinkerRolloutFn"
+        args.rollout_function_path = "miles.rollout.tinker_backend.rollout_fn.MultiLoraOperationBatchFn"
     if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
         args.data_source_path = "miles.rollout.tinker_backend.rollout_fn.TinkerNullDataSource"
     # One selection = one whole train step: the multi-LoRA dynamic-GBS branch

@@ -1,7 +1,10 @@
-"""Tinker backend control plane: registry + operation ledger + engine-facing
-aborts, shared by the controller Ray actor and the HTTP server. Every client
-input is validated here, at the boundary — an unsupported loss, shape, or
-payload must never reach the shared GPU driver."""
+"""Multi-LoRA operation backend: registry, ledger, and engine-facing aborts.
+
+The Tinker protocol adapter is one client of this backend. Adapter-slot
+residency makes the current implementation Multi-LoRA-specific; a future
+full-parameter target can reuse the operation semantics without pretending
+that this concrete owns arbitrary training targets.
+"""
 
 import logging
 import math
@@ -39,8 +42,8 @@ _LOSS_REQUIRED_CHANNELS = {
 }
 
 
-class TinkerBackend:
-    """Subclass via --multi-lora-backend-path."""
+class MultiLoraOperationBackend:
+    """Multi-LoRA implementation selected by ``--multi-lora-backend-path``."""
 
     def __init__(self, args: Any, router_url: str) -> None:
         self.args = args
@@ -502,6 +505,11 @@ class TinkerBackend:
             operation_gap_timeout=self.operations.gap_timeout,
             gap_stalls=self.operations.gap_stalls(),
         )
+
+
+# Compatibility for custom integrations stacked on the original #2273 name.
+# New code should use the concrete, parameterization-truthful name above.
+TinkerBackend = MultiLoraOperationBackend
 
 
 def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict[str, float]:

@@ -124,7 +124,7 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
         use_dynamic_global_batch_size=False,
     )
     validate_tinker_args(args)
-    assert args.rollout_function_path == "miles.rollout.tinker_backend.rollout_fn.TinkerRolloutFn"
+    assert args.rollout_function_path == "miles.rollout.tinker_backend.rollout_fn.MultiLoraOperationBatchFn"
     assert args.data_source_path == "miles.rollout.tinker_backend.rollout_fn.TinkerNullDataSource"
     assert args.use_dynamic_global_batch_size is True
 

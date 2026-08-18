@@ -1,17 +1,19 @@
-# Tinker-compatible backend
+# Multi-LoRA operation backend with Tinker compatibility
 
-Serve many LoRA training runs on one shared base model through a
-[tinker](https://tinker-docs.thinkingmachines.ai/)-style operation API: clients
-drive training with explicit `forward_backward` / `optim_step` operations and
-sample through the shared engines — no dataset, no reward function, and no
-batch schedule on the server.
+Serve many LoRA training runs on one shared base model through the
+`MultiLoraOperationBackend`. Clients drive training with explicit
+`forward_backward` / `optim_step` operations — no dataset, reward function,
+or batch schedule on the server. This PR exposes training operations through
+the controller's Ray API; stacked PR #2346 supplies the
+[tinker](https://tinker-docs.thinkingmachines.ai/)-compatible REST adapter.
 
 ```
-client ──HTTP──> TinkerController (head node)
-                   ├─ registration plane   /adapter_runs (the only HTTP routes in v1)
-                   ├─ operation ledger     enqueue → claim → complete → ack (Ray actor API;
-                   │                       a tinker /api/v1 HTTP frontend is a later PR)
-                   └─ serving plane        sglang router (direct)
+internal caller ──Ray operations──> MultiLoraOperationBackend (head node)
+                                      ├─ registration + operation ledger
+                                      ├─ adapter-slot execution
+                                      └─ serving plane ─────────> SGLang router
+
+Tinker client ──HTTP──> stacked protocol adapter (#2346) ────────┘
 trainer ranks <──Ray── driver loop (train_tinker_backend.py)
 ```
 
@@ -31,7 +33,7 @@ Key flags:
 
 | flag | meaning |
 |------|---------|
-| `--tinker-backend` | enable the operation backend (requires `--multi-lora-n-adapters > 0`) |
+| `--tinker-backend` | enable the Tinker protocol adapter for the Multi-LoRA operation backend (requires `--multi-lora-n-adapters > 0`) |
 | `--multi-lora-n-adapters N` | fixed slot count; a registration binds a slot for life (queue when full) |
 | `--lora-rank` / `--lora-alpha` | deployment-wide ceiling / fixed alpha — clients may lower `rank`, never set `alpha` |
 | `--multi-lora-disable-service-mode` | exit once all adapters retire (by default the service keeps serving with zero adapters) |
@@ -55,6 +57,15 @@ steps forever at `grad_norm=0.0` without learning (4xH200 GPT-OSS 20B repro,
 bridge, same config).
 
 ## Operation contract
+
+`Tinker` names the compatibility boundary, not the trainer implementation.
+The current concrete is `MultiLoraOperationBackend`; its queue-backed
+`MultiLoraOperationBatchFn` batches already-tokenized operations, and the
+Megatron `MultiLoraParameterExecutor` applies them to adapter slots. A future
+full-parameter implementation can reuse the explicit operation contract by
+providing a different executor; full-parameter training is not implemented by
+this stack today. The former `TinkerBackend`, `TinkerRolloutFn`,
+`TinkerHTTPServer`, and `tinker_execution` imports remain compatibility aliases.
 
 `enqueue_operation(name, operation_id, ordinal, kind, payload)` — ordinals are
 consecutive per registration starting at 1; arrival may be out of order

@@ -1,7 +1,8 @@
 """Small multi-LoRA helpers shared across the rollout, trainer, and controller.
 
-The controller-side machinery (AdapterRegistry, TinkerBackend,
-TinkerHTTPServer) lives in ``miles/ray/tinker_backend/``.
+The controller-side machinery (AdapterRegistry, MultiLoraOperationBackend,
+AdapterRunControlServer) currently lives in ``miles/ray/tinker_backend/``;
+that package path remains a compatibility boundary for the stacked frontend.
 """
 
 import logging

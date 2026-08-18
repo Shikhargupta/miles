@@ -1851,8 +1851,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
-                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                    "Dotted path to an AdapterRunControlServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: AdapterRunControlServer)"
                 ),
             )
             parser.add_argument(
@@ -1860,8 +1860,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
+                    "Dotted path to a MultiLoraOperationBackend subclass for the multi-LoRA controller, "
+                    "e.g. to add custom adapter validation via validate_adapter "
+                    "(default: MultiLoraOperationBackend)"
                 ),
             )
             parser.add_argument(

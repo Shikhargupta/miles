@@ -1,4 +1,4 @@
-"""Per-registration operation ledger for the tinker backend.
+"""Per-registration ledger for the Multi-LoRA operation backend.
 
 Clients push protocol-neutral operations; data-bearing kinds ride the rollout
 selection path through the queue child rollout fn, data-less kinds execute in
