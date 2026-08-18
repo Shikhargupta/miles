@@ -822,7 +822,7 @@ class TestDeployComponent:
 
     def test_rejects_a_trainer_deployment_that_grows_itself_a_critic(self):
         """--use-critic appends a second trainer, and this release carries exactly the one its config declares."""
-        with pytest.raises(AssertionError, match="--use-critic"):
+        with pytest.raises(AssertionError, match="describe 2"):
             _validate_deploy_component(
                 _parse_deploy_args(["--deploy-component", "trainer", *_SHARED_STORE_ARGS], use_critic=True)
             )
