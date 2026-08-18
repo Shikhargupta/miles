@@ -422,6 +422,9 @@ def _repack_fp8_scales(model: torch.nn.Module, moe_ue8m0: bool) -> None:
     """
     from miles.backends.megatron_utils.sglang import should_deepgemm_weight_requant_ue8m0, transform_scale_ue8m0
 
+    if not should_deepgemm_weight_requant_ue8m0(weight_block_size=[128, 128]):
+        return
+
     params = dict(model.named_parameters())
     for name, param in params.items():
         if not name.endswith("weight_scale_inv"):
@@ -431,8 +434,6 @@ def _repack_fp8_scales(model: torch.nn.Module, moe_ue8m0: bool) -> None:
         weight = params.get(name.replace("weight_scale_inv", "weight"))
         assert weight is not None, f"[P2P-Shared] scale without weight: {name}"
         assert param.data.dtype == torch.float32, f"[P2P-Shared] unexpected scale dtype for {name}: {param.data.dtype}"
-        if not should_deepgemm_weight_requant_ue8m0(weight_block_size=[128, 128]):
-            continue
         packed = transform_scale_ue8m0(torch.ones_like(param.data, device="cuda"), mn=weight.shape[-2])
         param.data = packed.cpu()
         param.format_ue8m0 = True
