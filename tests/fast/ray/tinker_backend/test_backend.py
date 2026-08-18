@@ -473,3 +473,52 @@ def test_advertised_host_is_the_bind_host():
     from miles.ray.tinker_backend.http_server import TinkerHTTPServer
 
     assert TinkerHTTPServer(None, host="127.0.0.1").advertised_host == "127.0.0.1"
+
+
+class TestGapTimeoutSurface:
+    """Backend wiring of the ledger gap timeout: the flag reaches the ledger,
+    the driver's control-claim heartbeat enforces it, and the stall is a
+    typed, observable surface (operation_view + service_info)."""
+
+    def stalled_backend(self, timeout=30.0):
+        backend = ready_backend()
+        backend.operations.gap_timeout = timeout
+        clock = {"now": 1000.0}
+        backend.operations._time = lambda: clock["now"]
+        backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
+        backend.claim_data_operation(*reg_key(backend))
+        backend.operations.complete("fb1", {})
+        # Ordinal 2 was consumed client-side and never posted; 3 arrives.
+        backend.enqueue_operation("X", "opt3", 3, "optim_step", {"adam_params": {"learning_rate": 1e-4}})
+        assert backend.claim_ready_control_operations()["operations"] == []  # blocked, and arms the clock
+        return backend, clock
+
+    def test_flag_reaches_the_ledger_with_a_default(self):
+        assert make_backend().operations.gap_timeout == 600.0
+        args = SimpleNamespace(multi_lora_n_adapters=4, tinker_operation_gap_timeout=5.0)
+        assert TinkerBackend(args, "http://unused").operations.gap_timeout == 5.0
+
+    def test_stall_is_typed_and_observable_before_expiry(self):
+        backend, clock = self.stalled_backend()
+        clock["now"] += 10
+        info = backend.service_info()
+        assert info["operation_gap_timeout"] == 30.0
+        [stall] = info["gap_stalls"]
+        assert stall["missing_ordinal"] == 2 and stall["blocked_operations"] == 1
+        view = backend.operation_view("opt3")
+        assert view["state"] == "QUEUED"
+        assert view["waiting_on_ordinal"] == 2 and view["gap_stalled_for"] == pytest.approx(10.0)
+
+    def test_control_claim_heartbeat_expires_the_stall(self):
+        backend, clock = self.stalled_backend()
+        clock["now"] += 31
+        assert backend.claim_ready_control_operations()["operations"] == []  # the sweep fires here
+        view = backend.operation_view("opt3")
+        assert view["state"] == "FAILED" and view["error_category"] == "user"
+        assert "missing ordinal 2" in view["error"]
+        assert backend.service_info()["gap_stalls"] == []
+        # Clean resubmit: the sealed hole is poison-neutral, so the new
+        # optim_step STEPS fb1's intact window instead of discarding it.
+        backend.enqueue_operation("X", "opt4", 4, "optim_step", {"adam_params": {"learning_rate": 1e-4}})
+        [operation] = backend.claim_ready_control_operations()["operations"]
+        assert operation["operation_id"] == "opt4" and "poison" not in operation

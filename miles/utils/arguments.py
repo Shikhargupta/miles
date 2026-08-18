@@ -1820,6 +1820,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "never wait behind an idle data queue (default: 5.0)",
             )
             parser.add_argument(
+                "--tinker-operation-gap-timeout",
+                type=float,
+                default=600.0,
+                help="Seconds a registration's operation stream may stall on a never-arriving "
+                "ordinal before the backend terminal-fails the blocked operations with a typed "
+                "user error naming the missing ordinal and seals the hole (the tinker SDK can "
+                "consume a seq_id and then fail client-side before HTTP: non-finite JSON "
+                "serialization, a cancelled future — no retry ever fills that ordinal). Sealed "
+                "ordinals never execute (a late arrival is a conflict) and nothing overtakes "
+                "them, so strict per-registration ordering is preserved; the client resubmits "
+                "as new operations. <= 0 disables (default: 600)",
+            )
+            parser.add_argument(
                 "--multi-lora-adapter",
                 nargs=2,
                 action="append",

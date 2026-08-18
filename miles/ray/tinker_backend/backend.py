@@ -45,7 +45,10 @@ class TinkerBackend:
     def __init__(self, args: Any, router_url: str) -> None:
         self.args = args
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
-        self.operations = OperationLedger()
+        # The gap timeout is liveness, not ordering: a stalled queue's blocked
+        # operations eventually terminal-fail typed; nothing ever skips or
+        # overtakes a missing ordinal (--tinker-operation-gap-timeout).
+        self.operations = OperationLedger(gap_timeout=getattr(args, "tinker_operation_gap_timeout", 600.0))
         # Registration-keyed step/dirty authority (parameterization-neutral);
         # the registry only mirrors its transitions into lifecycle pins.
         self.gradient_windows = GradientWindowTracker()
@@ -310,6 +313,9 @@ class TinkerBackend:
         ``BatchExecutionLease`` for the whole control batch is the single
         binding truth, returned alongside as
         ``{"operations": [...], "lease": <encoded> | None}``."""
+        # The driver polls this every control phase: the heartbeat that
+        # enforces the gap timeout even when no client is polling results.
+        self.operations.sweep_gap_timeouts()
         ready: list[dict] = []
         bindings: list[tuple[str, ResidentBinding]] = []
         for name, registration_id in self.operations.claimable_control_tenants():
@@ -465,10 +471,26 @@ class TinkerBackend:
 
     # ---------------- info ----------------
 
+    def operation_view(self, operation_id: str) -> dict | None:
+        """One operation's client-facing view. Result polls route here, so the
+        sweep runs on the exact path a caller stuck behind a hole is watching;
+        a still-QUEUED operation blocked by an arrival gap says so (typed
+        stall surface: which ordinal it waits on and for how long)."""
+        self.operations.sweep_gap_timeouts()
+        view = self.operations.get(operation_id)
+        if view is not None and view["state"] == "QUEUED":
+            for stall in self.operations.gap_stalls():
+                if (stall["name"], stall["registration_id"]) == (view["name"], view["registration_id"]):
+                    view["waiting_on_ordinal"] = stall["missing_ordinal"]
+                    view["gap_stalled_for"] = stall["stalled_for"]
+        return view
+
     def service_info(self) -> dict:
         """Deployment facts a tinker frontend needs for get_server_capabilities
         and weights_info: one base model per deployment, the rank ceiling,
-        slot occupancy, and the v1 loss allowlist."""
+        slot occupancy, and the v1 loss allowlist — plus the gap-stall
+        observability surface (current stalls and the configured timeout)."""
+        self.operations.sweep_gap_timeouts()
         args = self.args
         return dict(
             base_model=getattr(args, "hf_checkpoint", None),
@@ -477,6 +499,8 @@ class TinkerBackend:
             occupied_slots=self.registry.slot_pool.occupied_slot_ids(),
             ready_adapters=sorted(self.registry.in_state(AdapterState.READY)),
             supported_loss_fns=list(SUPPORTED_LOSS_FNS),
+            operation_gap_timeout=self.operations.gap_timeout,
+            gap_stalls=self.operations.gap_stalls(),
         )
 
 
