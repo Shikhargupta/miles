@@ -347,7 +347,7 @@ class TestSpecsInferenceEngine:
 
         specs = specs_inference_engine(args)
 
-        assert [spec.name for spec in specs] == ["inference-engine-0-0", "inference-engine-0-2"]
+        assert [spec.name for spec in specs] == ["inference-engine-all-0-0", "inference-engine-all-0-2"]
         assert [spec.scheduling.pg_slot_offset for spec in specs] == [0, 8]
         assert [spec.scheduling.num_gpu_slots_per_worker for spec in specs] == [2, 4]
         assert all(spec.scheduling.pg_name == "rollout" for spec in specs)
@@ -402,7 +402,7 @@ class TestComputeEnginePools:
         )
         args = make_args(sglang_config=str(config_path), rollout_num_gpus=16)
 
-        assert compute_engine_pool_ids(args) == ["inference-engine-0-0", "inference-engine-0-2"]
+        assert compute_engine_pool_ids(args) == ["inference-engine-all-0-0", "inference-engine-all-0-2"]
 
 
 class TestInferenceSpecPinToHead:
