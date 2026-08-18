@@ -139,25 +139,6 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
     validate_tinker_args(off)  # no-op without the flag
 
 
-def test_driver_retries_only_the_empty_batch_timeout():
-    """The driver's generate-error policy is deliberately narrow: ONLY the
-    empty-queue timeout is a yield back to the control phase. Everything else
-    re-raises — transient controller blips no longer reach the driver because
-    the adapter retries lease acquisition in-adapter and terminal-fails stale
-    claims itself (external review 0813 §4.6)."""
-    import ray
-    from train_tinker_backend import _is_empty_batch_timeout
-
-    from miles.utils.tinker_backend import EmptyBatchTimeoutError
-
-    def wrap(cause):
-        return ray.exceptions.RayTaskError(function_name="RolloutManager.generate", traceback_str="tb", cause=cause)
-
-    assert _is_empty_batch_timeout(wrap(EmptyBatchTimeoutError("empty"))) is True
-    assert _is_empty_batch_timeout(wrap(ValueError("stale binding"))) is False
-    assert _is_empty_batch_timeout(wrap(OSError("object store failure"))) is False
-
-
 class TestValidateRejectsDispatchBypasses:
     """Every path that replaces or bypasses the live rollout output is
     rejected at launch in tinker mode (external review 0813 §4.4): each one

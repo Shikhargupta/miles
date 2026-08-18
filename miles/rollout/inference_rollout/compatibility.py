@@ -1,4 +1,3 @@
-import asyncio
 import inspect
 from collections.abc import Callable
 
@@ -41,35 +40,11 @@ def load_rollout_function(input: RolloutFnConstructorInput, path: str):
 
 
 def call_rollout_function(fn, input: RolloutFnInput) -> RolloutFnOutput:
-    """Synchronous-caller invocation (tests/tools). Async callers must use
-    ``call_rollout_function_async``: the ``run()`` bridge below executes the
-    coroutine on a detached background loop, where the caller's cancellation
-    can never reach it."""
     output = fn(input)
 
     if inspect.iscoroutine(output):
         output = run(output)
 
-    return output
-
-
-async def call_rollout_function_async(fn, input: RolloutFnInput) -> RolloutFnOutput:
-    """Async-caller invocation: class-based async rollout fns are awaited
-    DIRECTLY on the caller's loop, so cancelling the caller cancels the
-    rollout coroutine (external review 0813 §4.2: routing an async fn through
-    a worker thread onto the global background loop detached it — it kept
-    claiming and leasing after its caller was gone). Legacy synchronous fns
-    keep the worker thread so they cannot block the caller's event loop."""
-    is_async_fn = inspect.iscoroutinefunction(fn) or (
-        not inspect.isroutine(fn) and callable(fn) and inspect.iscoroutinefunction(type(fn).__call__)
-    )
-    if is_async_fn:
-        return await fn(input)
-    output = await asyncio.to_thread(fn, input)
-    if inspect.iscoroutine(output):
-        # A sync callable handed back a coroutine: await it here, never on
-        # the background loop (same cancellation argument as above).
-        output = await output
     return output
 
 

@@ -30,7 +30,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
-from miles.rollout.inference_rollout.compatibility import call_rollout_function_async, load_rollout_function
+from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -135,13 +135,7 @@ class RolloutManager:
     def get_router_address(self) -> tuple[str, int]:
         return self.args.sglang_router_ip, self.args.sglang_router_port
 
-    async def dispose(self):
-        if (aclose := getattr(self.generate_rollout, "aclose", None)) is not None:
-            # Async rollout-fn lifecycle hook: a claim-holding fn (e.g. the
-            # tinker operation adapter) terminal-fails the claims it still
-            # holds before its runtimes are dropped — without this, disposal
-            # orphaned them (external review 0813 §4.7).
-            await aclose()
+    def dispose(self):
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
@@ -214,8 +208,8 @@ class RolloutManager:
 
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
-                result = await call_rollout_function_async(
-                    self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
+                result = await asyncio.to_thread(
+                    call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
                 )
             else:
                 result = await asyncio.to_thread(
@@ -251,7 +245,7 @@ class RolloutManager:
                 eval_input = RolloutFnEvalInput(
                     rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
                 )
-                result = await call_rollout_function_async(self.eval_generate_rollout, eval_input)
+                result = await asyncio.to_thread(call_rollout_function, self.eval_generate_rollout, eval_input)
             except EvalSkip as e:
                 return self.report_eval_skip(rollout_id, e.reason)
 
@@ -275,10 +269,8 @@ class RolloutManager:
             return TrainRolloutResult(data=data, metadata=metadata, metrics=None)
 
         if not self.use_legacy_rollout_v1:
-            # Direct await (never to_thread + the background loop): the
-            # rollout coroutine runs on THIS actor loop, so cancelling this
-            # task cancels the rollout instead of detaching it.
-            output = await call_rollout_function_async(
+            output = await asyncio.to_thread(
+                call_rollout_function,
                 self.generate_rollout,
                 RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
             )
