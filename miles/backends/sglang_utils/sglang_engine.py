@@ -642,15 +642,13 @@ class SGLangEngine(RayActor):
         return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
-        payload: dict = {"new_version": weight_version}
-        # Multi-LoRA engines serve several tenants at once: one tenant's weight
-        # publish must never abort another tenant's in-flight sampling, so the
-        # version bump is metadata-only (the endpoint aborts by default).
-        # Single-model runs keep that default — aborting on a weight update is
-        # the intended staleness control there.
-        if is_multi_lora_enabled(self.args):
-            payload["abort_all_requests"] = False
-        return self._make_request("update_weight_version", payload)
+        # Never abort in-flight requests on a version bump (#2589 made the
+        # multi-LoRA tenant-isolation behavior unconditional): the bump is
+        # metadata-only for every deployment shape.
+        return self._make_request(
+            "update_weight_version",
+            {"new_version": weight_version, "abort_all_requests": False},
+        )
 
     def start_profile(
         self,

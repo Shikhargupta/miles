@@ -36,12 +36,12 @@ def test_flush_cache_sleeps_between_pending_request_retries(monkeypatch):
 @pytest.mark.parametrize(
     "multi_lora, expected_payload",
     [
-        # Multi-LoRA: one tenant's publish must not abort another tenant's
-        # in-flight sampling, so the bump explicitly opts out of the abort.
+        # A version bump never aborts in-flight requests (#2589 made the
+        # multi-LoRA tenant-isolation behavior unconditional): a multi-LoRA
+        # tenant's publish must not abort another tenant's sampling, and
+        # single-model runs now share the metadata-only bump.
         (True, {"new_version": "3", "abort_all_requests": False}),
-        # Single-model: keep the endpoint's default (abort on weight update is
-        # the intended staleness control), i.e. don't send the knob at all.
-        (False, {"new_version": "3"}),
+        (False, {"new_version": "3", "abort_all_requests": False}),
     ],
 )
 def test_update_weight_version_abort_policy(monkeypatch, multi_lora, expected_payload):

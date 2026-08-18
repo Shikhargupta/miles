@@ -38,12 +38,44 @@
  "navigation": {
   "tabs": [
    {
-    "tab": "Welcome",
+    "tab": "User Guide",
     "pages": [
-     "index",
-     "getting-started/index",
-     "getting-started/installation",
-     "getting-started/quick-start"
+     {
+      "group": "Welcome",
+      "pages": [
+       "index",
+       "getting-started/index",
+       "getting-started/installation",
+       "getting-started/quick-start"
+      ]
+     },
+     {
+      "group": "User Guide",
+      "pages": [
+       "user-guide/index",
+       "user-guide/concepts",
+       "user-guide/launch-script",
+       "user-guide/argument-groups",
+       "user-guide/fully-async",
+       "user-guide/training-backend",
+       "user-guide/monitoring",
+       "user-guide/dashboard",
+       "user-guide/customization",
+       "user-guide/generate-endpoint",
+       "user-guide/agentic-rollout",
+       {
+        "group": "Agentic Environments",
+        "pages": [
+         "user-guide/environments",
+         "user-guide/harbor",
+         "user-guide/openenv",
+         "user-guide/nemo-gym",
+         "user-guide/verifiers"
+        ]
+       }
+      ]
+     },
+     "user-guide/cli-reference"
     ]
    },
    {
@@ -83,6 +115,13 @@
         "group": "Qwen",
         "pages": [
          "models/qwen/index",
+         {
+          "group": "Qwen3.8",
+          "pages": [
+           "models/qwen/qwen3-8"
+          ],
+          "expanded": false
+         },
          {
           "group": "Qwen3.6",
           "pages": [
@@ -160,33 +199,6 @@
        "models/gpt-oss/gpt-oss"
       ]
      }
-    ]
-   },
-   {
-    "tab": "User Guide",
-    "pages": [
-     "user-guide/index",
-     "user-guide/concepts",
-     "user-guide/launch-script",
-     "user-guide/argument-groups",
-     "user-guide/fully-async",
-     "user-guide/training-backend",
-     "user-guide/monitoring",
-     "user-guide/dashboard",
-     "user-guide/customization",
-     "user-guide/generate-endpoint",
-     "user-guide/agentic-rollout",
-     {
-      "group": "Agentic Environments",
-      "pages": [
-       "user-guide/environments",
-       "user-guide/harbor",
-       "user-guide/openenv",
-       "user-guide/nemo-gym",
-       "user-guide/verifiers"
-      ]
-     },
-     "user-guide/cli-reference"
     ]
    },
    {
