@@ -181,27 +181,6 @@ def validate_tinker_args(args) -> None:
     assert not use_legacy_rollout_v1(), (
         "--tinker-backend needs the class-based rollout API (the default); " "unset MILES_USE_LEGACY_ROLLOUT_V1"
     )
-    # Paths that replace or bypass the live rollout output are structurally
-    # incompatible with tinker's dispatch contract: every dispatched batch
-    # must carry the CURRENT claim's lane maps and execution lease, or the
-    # trainer cannot correlate results and the driver cannot finalize the
-    # claimed operations (they would stay CLAIMED forever, blocking their
-    # streams). Reject at launch instead of orphaning at runtime.
-    assert getattr(args, "custom_convert_samples_to_train_data_path", None) is None, (
-        "--custom-convert-samples-to-train-data-path is incompatible with --tinker-backend: a custom "
-        "converter bypasses the tinker lane/lease conversion, so dispatched operations could never be "
-        "correlated or finalized"
-    )
-    assert getattr(args, "load_debug_rollout_data", None) is None, (
-        "--load-debug-rollout-data is incompatible with --tinker-backend: it skips the rollout fn, so "
-        "there is no live operation claim or execution lease — a receipt loaded from disk would be "
-        "stale authority over the ledger"
-    )
-    assert getattr(args, "ci_inject_rollout_data_path", None) is None, (
-        "--ci-inject-rollout-data-path is incompatible with --tinker-backend: injection replaces the "
-        "generated data/metadata after a live claim, which would dispatch replayed rows under the "
-        "current batch's lease"
-    )
     if getattr(args, "tinker_frontend", False) and not getattr(args, "multi_lora_http_server_path", None):
         args.multi_lora_http_server_path = "miles.ray.tinker_backend.frontend.http_server.TinkerFrontendHTTPServer"
     if args.rollout_function_path is None:

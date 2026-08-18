@@ -136,11 +136,7 @@ async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, mon
             return "fleet-state"
 
     fleet = FakeFleet()
-
-    async def _invoke_inline(fn, input):
-        return fn(input)
-
-    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function_async", _invoke_inline)
+    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
     mgr = make_manager(args, eval_fn=eval_generate_rollout, fleet=fleet)
 
@@ -191,10 +187,7 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
         seen_inputs.append(input)
         return RolloutFnEvalOutput(data={})
 
-    async def _invoke_inline(fn, input):
-        return fn(input)
-
-    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function_async", _invoke_inline)
+    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_num_gpus=0)
     mgr = make_manager(args, eval_fn=eval_generate_rollout)
 

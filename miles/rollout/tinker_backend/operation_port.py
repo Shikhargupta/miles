@@ -16,24 +16,6 @@ import ray
 from miles.utils.tinker_backend import BindingT, RegistrationKey
 
 
-class TransientOperationPortError(RuntimeError):
-    """A port call failed in a way KNOWN not to have mutated the operation
-    ledger (e.g. the controller lookup failed before any RPC was sent, or the
-    remote method is read-only/non-mutating by contract). Safe to retry after
-    a backoff. A failure that MAY have mutated the ledger (a claim RPC whose
-    response was lost) must NOT be wrapped in this type: retrying such a
-    stream would find an already-CLAIMED head and poll forever while hiding
-    the orphan (external review 0813 §4.3)."""
-
-
-class StaleBindingError(RuntimeError):
-    """The controller executed the batch-lease acquisition and REFUSED it: at
-    least one claimed operation's registration no longer owns its execution
-    binding (deregistered/re-registered after the claim). Authoritative and
-    terminal for the refused receipt — never retried; the exact stale claims
-    are terminal-failed instead (external review 0813 §4.6)."""
-
-
 class OperationQueuePort(Protocol[BindingT]):
     """Claims against the backend's operation ledger.
 
@@ -62,19 +44,6 @@ class BatchResidencyPort(Protocol[BindingT]):
     async def acquire_batch(self, bindings_by_operation: list) -> object: ...
 
 
-class BatchAbortPort(Protocol):
-    """Abnormal-outcome finalizer for claimed operations that will never reach
-    the trainer: terminal-fail the still-CLAIMED operations typed server and
-    release the batch lease (``lease_metadata=None`` when no lease was
-    acquired yet). One idempotent controller boundary — the same
-    ``fail_tinker_batch`` the driver's train finalizer uses: it fails only
-    still-CLAIMED operations and releases the lease in ``finally``, so
-    repeating it (or racing it against a commit) can never overwrite a landed
-    terminal result."""
-
-    async def abort_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None) -> None: ...
-
-
 class RayTinkerOperationQueue:
     """Only this class (and its residency sibling) knows get_tinker_controller(),
     .remote(), and ray.get."""
@@ -89,18 +58,9 @@ class RayTinkerOperationQueue:
         from miles.ray.tinker_backend.controller import get_tinker_controller
 
         name, registration_id = key
-        try:
-            controller = get_tinker_controller()
-        except Exception as e:
-            # The actor lookup never reached the controller: provably no
-            # ledger mutation, so the child may retry after a backoff.
-            raise TransientOperationPortError(f"tinker controller unavailable: {e}") from e
-        # A failure of the claim RPC itself is left UNCLASSIFIED on purpose:
-        # claim-and-bind mutates the ledger, and a lost response cannot be
-        # disambiguated locally (the head may already be CLAIMED). The
-        # runtime quarantines (FAILED) until reconciliation/deregistration;
-        # a controller-side idempotent-claim query is the future fix.
-        return await asyncio.to_thread(ray.get, controller.claim_data_operation.remote(name, registration_id))
+        return await asyncio.to_thread(
+            ray.get, get_tinker_controller().claim_data_operation.remote(name, registration_id)
+        )
 
     async def fail(self, operation_id: str, error: str, category: str) -> None:
         from miles.ray.tinker_backend.controller import get_tinker_controller
@@ -114,27 +74,6 @@ class RayTrainerResidencyPort:
     async def acquire_batch(self, bindings_by_operation: list) -> object:
         from miles.ray.tinker_backend.controller import get_tinker_controller
 
-        try:
-            return await asyncio.to_thread(
-                ray.get, get_tinker_controller().acquire_batch_lease.remote(list(bindings_by_operation))
-            )
-        except ray.exceptions.RayTaskError as e:
-            # The controller EXECUTED and raised: acquire_batch_lease is a
-            # pure validate+mint (it never mutates), so an application error
-            # is an authoritative refusal of these bindings, not a transport
-            # blip. Anything else (actor lookup/transport) propagates raw and
-            # is retryable for the same non-mutating reason.
-            raise StaleBindingError(str(e.as_instanceof_cause())) from e
-
-
-class RayTinkerBatchAbort:
-    """BatchAbortPort concrete over the controller's idempotent
-    ``fail_tinker_batch`` boundary."""
-
-    async def abort_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None) -> None:
-        from miles.ray.tinker_backend.controller import get_tinker_controller
-
-        await asyncio.to_thread(
-            ray.get,
-            get_tinker_controller().fail_tinker_batch.remote(list(operation_ids), error, lease_metadata),
+        return await asyncio.to_thread(
+            ray.get, get_tinker_controller().acquire_batch_lease.remote(list(bindings_by_operation))
         )
