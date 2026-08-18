@@ -1,4 +1,4 @@
-import dataclasses
+import copy
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -259,7 +259,8 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
-        server_args = dataclasses.replace(server_args, nnodes=1)
+        server_args = copy.copy(server_args)
+        server_args.nnodes = 1
         server_args_module.set_global_server_args_for_scheduler(server_args)
         initialize_moe_config(server_args)
         initialize_fp8_gemm_config(server_args)
@@ -400,6 +401,11 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             f"source: {len(source_ptrs)}, target: {len(target_ptrs)}, "
             f"missing_on_remote[:8]: {missing[:8]}"
         )
+        for name, slen in zip(valid_names, source_lens):
+            _, r_numel, r_ele = remote_session.weights_info[name]
+            assert (
+                r_numel * r_ele == slen
+            ), f"[P2P-Shared] Length mismatch for {name}: local {slen}, remote {r_numel * r_ele}"
 
         ret = self._transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
         if ret < 0:
@@ -423,9 +429,10 @@ def _repack_fp8_scales(model: torch.nn.Module, moe_ue8m0: bool) -> None:
         if ".experts." in name and not moe_ue8m0:
             continue
         weight = params.get(name.replace("weight_scale_inv", "weight"))
-        if weight is None or param.data.dtype != torch.float32:
-            continue
+        assert weight is not None, f"[P2P-Shared] scale without weight: {name}"
+        assert param.data.dtype == torch.float32, f"[P2P-Shared] unexpected scale dtype for {name}: {param.data.dtype}"
         if not should_deepgemm_weight_requant_ue8m0(weight_block_size=[128, 128]):
             continue
         packed = transform_scale_ue8m0(torch.ones_like(param.data, device="cuda"), mn=weight.shape[-2])
         param.data = packed.cpu()
+        param.format_ue8m0 = True
