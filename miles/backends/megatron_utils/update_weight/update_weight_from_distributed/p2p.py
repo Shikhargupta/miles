@@ -1,4 +1,5 @@
 import copy
+import fcntl
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -300,29 +301,35 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         # Run the real quant finalize the loader skipped, module by module on the
         # trainer GPU (the transforms are CUDA-only), mirroring the loader loop.
         # This leaves the replica in the exact post-finalize layout the engine
-        # registers, for any quantization method.
-        for _, module in model.named_modules():
-            quant_method = getattr(module, "quant_method", None)
-            if quant_method is None:
-                continue
-            if "process_weights_after_loading" in quant_method.__dict__:
-                del quant_method.process_weights_after_loading
-            if hasattr(module, "is_weights_quantized") and module.is_weights_quantized():
-                continue
-            module.to("cuda")
-            quant_method.process_weights_after_loading(module)
-            module.to("cpu")
-            torch.cuda.empty_cache()
+        # registers, for any quantization method. The node-local lock serializes
+        # this phase and the pinning below across co-located actors: their
+        # combined transient host-memory churn on top of the resident replicas
+        # OOM-kills the node when run concurrently.
+        with open("/dev/shm/miles_p2p_replica_finalize.lock", "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            for _, module in model.named_modules():
+                quant_method = getattr(module, "quant_method", None)
+                if quant_method is None:
+                    continue
+                if "process_weights_after_loading" in quant_method.__dict__:
+                    del quant_method.process_weights_after_loading
+                if hasattr(module, "is_weights_quantized") and module.is_weights_quantized():
+                    continue
+                module.to("cuda")
+                quant_method.process_weights_after_loading(module)
+                module.to("cpu")
+                torch.cuda.empty_cache()
+
+            if first_engine_rank:
+                for param in model.parameters():
+                    param.data = param.data.pin_memory()
 
         # Also patch the instance method for subsequent load_weights() calls
         # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
         if hasattr(model, "post_load_weights"):
             model.post_load_weights = lambda *args, **kwargs: None
 
-        if first_engine_rank:
-            for param in model.parameters():
-                param.data = param.data.pin_memory()
-        else:
+        if not first_engine_rank:
             for name, param in model.named_parameters():
                 assert name in self._shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
                 param.data = self._shared_params_dict[name]
