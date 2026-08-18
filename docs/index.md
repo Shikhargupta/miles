@@ -45,9 +45,6 @@ the largest models all live on Megatron-LM. See
 - **Fault tolerance.** When an SGLang engine dies, Miles
   [recovers it and resumes the run in place](/advanced/fault-tolerance): no restart, no
   pause.
-- **Miles dashboard.** A self-hosted web UI for inspecting a single run, covered under
-  [Monitoring & Logging](/user-guide/monitoring#miles-dashboard). Still under active
-  development.
 
 ### What Miles runs
 

@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
-| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Models**](https://miles.radixark.com/docs/models) | [**Blog**](https://www.lmsys.org/blog) | [**Slack**](https://slack.sglang.ai) |
+| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Supported Models**](https://miles.radixark.com/docs/models) | [**Blog**](https://www.lmsys.org/blog) | [**Slack**](https://slack.sglang.ai) |
 
 </div>
 
@@ -96,6 +96,7 @@ the largest models all live on Megatron-LM. See
 
 - [Install Miles](https://miles.radixark.com/docs/getting-started/installation)
 - [Quick Start](https://miles.radixark.com/docs/getting-started/quick-start)
+- [Supported Models](https://miles.radixark.com/docs/models)
 - [Core Concepts](https://miles.radixark.com/docs/user-guide/concepts)
 - [Launch Script Walkthrough](https://miles.radixark.com/docs/user-guide/launch-script)
 - [Training Backends](https://miles.radixark.com/docs/user-guide/training-backend)
