@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4-adapter RL training-quality client for the tinker-compatible backend.
+"""4-adapter RL training-quality client for the Multi-LoRA operation backend.
 
 Client-driven GRPO on GSM8K against a live service: four adapters run
 concurrent, fully independent RL loops (disjoint data shards, different
@@ -23,7 +23,7 @@ a final JSON summary with first/last-10 reward means, least-squares slopes,
 step clocks, and serving versions — the training-quality acceptance evidence.
 
 Registration goes over the controller HTTP API; operations go through the
-controller Ray actor (as in tinker_e2e_client.py). Run on the head node with
+controller Ray actor (as in multi_lora_e2e_client.py). Run on the head node with
 PYTHONPATH including the miles tree.
 """
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GPU E2E client for the tinker-compatible backend.
+"""GPU E2E client for the Multi-LoRA operation backend.
 
 Phase A (the original 7 phases) drives one adapter ("e2e_a") through the full
 operation lifecycle against a live service: register -> forward_backward x3
