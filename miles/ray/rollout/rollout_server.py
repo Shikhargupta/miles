@@ -57,7 +57,7 @@ def _compute_init_expected_num_cells(args, engine_provider: BaseWorkerProvider, 
         return declared
     if (answered := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
         return answered
-    if DeployComponent(args.deploy_component).selects(DeployComponent.INFERENCE):
+    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
         return model_cfg.num_server_cells
     return _DEFAULT_INIT_EXPECTED_NUM_CELLS
 

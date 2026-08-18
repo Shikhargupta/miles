@@ -89,7 +89,7 @@ def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
 
 
 def _compute_controller_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
-    if DeployComponent(args.deploy_component).selects(DeployComponent.INFERENCE):
+    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
         return compute_engine_provider(args, capability=capability)
     return RegistrationHub(run_uuid=args.run_uuid)
 

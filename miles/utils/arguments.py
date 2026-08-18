@@ -3068,8 +3068,8 @@ def _validate_static_addrs_name_another_launch(args: argparse.Namespace, *, comp
 
 def _validate_registration(args: argparse.Namespace, *, component: DeployComponent) -> None:
     if (init_expected := args.init_expected_num_cells) is not None:
-        assert not component.selects(
-            DeployComponent.INFERENCE
+        assert (
+            not component.deploys_own_inference_engines()
         ), f"--deploy-component {component.value} deploys its own engines, so drop --init-expected-num-cells"
         assert (
             init_expected >= 1
