@@ -137,7 +137,7 @@ into a hard failure. If KL is non-zero:
 * **KL below `1e-4`.** Kernel-level jitter, acceptable.
 * **KL above 1.** A configuration error; re-check parallelism and precision.
 * **About 0.8 per token on an instruct model.** Almost always a chat-template mismatch. Run
-  the [chat template verifier](/user-guide/agentic-chat-template).
+  the [chat template verifier](/user-guide/agentic-rollout).
 
 ### Is `grad_norm` reasonable?
 
@@ -185,8 +185,7 @@ The per-step metrics are the real signal, and they are the same numbers the chec
 assert on: `train/ppo_kl`, `train/pg_clipfrac`, `train/kl_loss`, `rollout/log_probs`,
 `rollout/ref_log_probs`, `rollout/rollout_log_probs`, `rollout/entropy`. Trainer steps log
 as `step <n>: {...}`, and the rollout side logs one reduced dict per rollout. See
-[Monitoring and Logging](/user-guide/monitoring) for the full metric surface and the
-dashboard.
+[Monitoring and Logging](/user-guide/monitoring) for the full metric surface.
 
 ## When all else fails
 
