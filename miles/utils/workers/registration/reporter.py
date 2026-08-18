@@ -100,7 +100,7 @@ class _DebouncedIntervalTrigger:
     async def wait(self) -> None:
         try:
             await asyncio.wait_for(self._changed.wait(), timeout=self._compute_next_interval_seconds())
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return
         self._changed.clear()
         await asyncio.sleep(self.debounce_seconds)
