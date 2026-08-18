@@ -1,7 +1,13 @@
+import datetime
+from typing import Any
+
 import pytest
 import yaml
 
-from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
+    RESTART_AT_ANNOTATION,
+    Manifest,
+)
 
 ORCHESTRATOR = "myrun-miles-run-orchestrator"
 NAMESPACE = "rl"
@@ -15,15 +21,20 @@ def _rendered(*documents: dict) -> str:
     return "---\n" + "---\n".join(yaml.safe_dump(document, sort_keys=True) for document in documents)
 
 
-def _stateful_set(*, name: str = ORCHESTRATOR, command: list[str] | None = None) -> dict:
+def _stateful_set(
+    *, name: str = ORCHESTRATOR, command: list[str] | None = None, annotations: dict[str, str] | None = None
+) -> dict:
     container = {"name": "orchestrator", "image": "miles:dev"}
     if command is not None:
         container["command"] = command
+    template: dict[str, Any] = {"spec": {"containers": [container]}}
+    if annotations is not None:
+        template["metadata"] = {"annotations": annotations}
     return {
         "apiVersion": "apps/v1",
         "kind": "StatefulSet",
         "metadata": {"name": name},
-        "spec": {"replicas": 1, "template": {"spec": {"containers": [container]}}},
+        "spec": {"replicas": 1, "template": template},
     }
 
 
@@ -196,3 +207,45 @@ class TestKindsItDoesNotModel:
         )
 
         assert manifest.state_file(stateful_set="engine", container="orchestrator") is None
+
+
+_STAMP = "2026-08-12T09:00:00+00:00"
+_STAMP_AT = datetime.datetime(2026, 8, 12, 9, 0, tzinfo=datetime.timezone.utc)
+
+
+class TestTheRestartStamp:
+    def test_a_manifest_that_was_never_hot_restarted_carries_none(self):
+        """Inventing a stamp would roll the pods of every run on its first ordinary relaunch."""
+        manifest = _parse(_rendered(_stateful_set(name="orchestrator")))
+
+        assert manifest.restart_at(object_name="orchestrator") is None
+
+    def test_each_object_is_asked_for_its_own_stamp(self):
+        """A pool that never got the stamp must not be rendered with it and turned into a refused diff."""
+        manifest = _parse(
+            _rendered(
+                _stateful_set(name="orchestrator", annotations={RESTART_AT_ANNOTATION: _STAMP}),
+                _stateful_set(name="rollout-executor"),
+            )
+        )
+
+        assert manifest.restart_at(object_name="orchestrator") == _STAMP_AT
+        assert manifest.restart_at(object_name="rollout-executor") is None
+
+    def test_the_stamp_is_read_off_the_stateful_set_and_not_off_a_service_of_the_same_name(self):
+        """The chart renders the headless Service first, and reading that one always answers None."""
+        manifest = _parse(
+            _rendered(
+                {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "orchestrator"}},
+                _stateful_set(name="orchestrator", annotations={RESTART_AT_ANNOTATION: _STAMP}),
+            )
+        )
+
+        assert manifest.restart_at(object_name="orchestrator") == _STAMP_AT
+
+    def test_an_annotation_that_is_no_timestamp_stops_the_launch(self):
+        """A stamp this launch cannot read is a stamp it cannot tell apart from the one it would render."""
+        manifest = _parse(_rendered(_stateful_set(name="orchestrator", annotations={RESTART_AT_ANNOTATION: "soon"})))
+
+        with pytest.raises(AssertionError, match="which is no timestamp"):
+            manifest.restart_at(object_name="orchestrator")
