@@ -7,7 +7,9 @@ from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChe
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
 
-def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> None:
+def compare_inference_engine_checksums(
+    baseline_dir: str, target_dir: str, *, rollout_ids_allowed_missing_in_target: frozenset[int] = frozenset()
+) -> None:
     baseline = _read_inference_engine_checksum_events(Path(baseline_dir))
     target = _read_inference_engine_checksum_events(Path(target_dir))
     assert baseline, f"No InferenceEngineWeightChecksumEvents found in baseline dir: {baseline_dir}"
@@ -22,14 +24,21 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
 
     baseline_by_model_and_rollout = _checksums_by_model_and_rollout_id(baseline)
     target_by_model_and_rollout = _checksums_by_model_and_rollout_id(target)
-    assert baseline_by_model_and_rollout.keys() == target_by_model_and_rollout.keys(), (
-        f"Engine checksum (model_id, rollout_id) sets differ: "
-        f"baseline={sorted(baseline_by_model_and_rollout)} "
-        f"vs target={sorted(target_by_model_and_rollout)}"
+
+    extra = sorted(target_by_model_and_rollout.keys() - baseline_by_model_and_rollout.keys())
+    assert not extra, (
+        f"Engine checksum (model_id, rollout_id) sets differ: target pushed weights for {extra}, "
+        f"which the baseline never pushed"
+    )
+    missing = baseline_by_model_and_rollout.keys() - target_by_model_and_rollout.keys()
+    assert {rollout_id for _model_id, rollout_id in missing} == set(rollout_ids_allowed_missing_in_target), (
+        f"Engine checksum (model_id, rollout_id) sets differ: the target may only be missing the rollout(s) "
+        f"{sorted(rollout_ids_allowed_missing_in_target)}, which a run resuming from a checkpoint loses because its "
+        f"event log is rolled back to a point their checksum was written after; it is missing {sorted(missing)}"
     )
 
     mismatches: list[ChecksumMismatchIssue] = []
-    for key in sorted(baseline_by_model_and_rollout):
+    for key in sorted(baseline_by_model_and_rollout.keys() & target_by_model_and_rollout.keys()):
         model_id, rollout_id = key
         mismatches += list(
             compare_flat_dicts(
@@ -42,7 +51,8 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
     assert not mismatches, "Engine weight checksum baseline-vs-target mismatch:\n" + "\n".join(
         f"  - {m.label_a} vs {m.label_b} key {m.key}: {m.value_a} != {m.value_b}" for m in mismatches
     )
-    print(f"Engine weight checksum comparison passed: {len(baseline_by_model_and_rollout)} rollout(s) compared")
+    compared = len(baseline_by_model_and_rollout.keys() & target_by_model_and_rollout.keys())
+    print(f"Engine weight checksum comparison passed: {compared} rollout(s) compared")
 
 
 def assert_engine_count(*, side: str, dump_dir: str, expected: int) -> None:

@@ -156,6 +156,69 @@ class TestCompareInferenceEngineChecksums:
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
 
+class TestRolloutsAllowedMissingInTarget:
+    def _write_sides(self, tmp_path: Path, *, target_rollout_ids: list[int]) -> None:
+        _write_inference_engine_events(
+            tmp_path / "baseline",
+            [_partial(rollout_id=one, engine_checksums=[{"rank0/w": f"w{one}"}]) for one in (1, 2, 3)],
+        )
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [_partial(rollout_id=one, engine_checksums=[{"rank0/w": f"w{one}"}]) for one in target_rollout_ids],
+        )
+
+    def test_the_rollout_a_take_over_resumed_from_may_be_missing(self, tmp_path: Path) -> None:
+        """The event log is rolled back to a point that rollout's checksum was written after, so it is lost."""
+        self._write_sides(tmp_path, target_rollout_ids=[1, 3])
+
+        compare_inference_engine_checksums(
+            str(tmp_path / "baseline"), str(tmp_path / "target"), rollout_ids_allowed_missing_in_target=frozenset({2})
+        )
+
+    def test_another_rollout_going_missing_is_still_a_failure(self, tmp_path: Path) -> None:
+        """Only the resume point is explained by a rollback; anything else is weights that were never pushed."""
+        self._write_sides(tmp_path, target_rollout_ids=[1, 2])
+
+        with pytest.raises(AssertionError, match="rollout_id sets differ"):
+            compare_inference_engine_checksums(
+                str(tmp_path / "baseline"),
+                str(tmp_path / "target"),
+                rollout_ids_allowed_missing_in_target=frozenset({2}),
+            )
+
+    def test_losing_more_than_the_resume_point_is_a_failure(self, tmp_path: Path) -> None:
+        """One take-over costs one checksum, so a second missing one is a run that lost more than it resumed."""
+        self._write_sides(tmp_path, target_rollout_ids=[1])
+
+        with pytest.raises(AssertionError, match="rollout_id sets differ"):
+            compare_inference_engine_checksums(
+                str(tmp_path / "baseline"),
+                str(tmp_path / "target"),
+                rollout_ids_allowed_missing_in_target=frozenset({2}),
+            )
+
+    def test_the_rollouts_that_survived_are_still_compared_bitwise(self, tmp_path: Path) -> None:
+        """Exempting the resume point must not exempt every other rollout from the comparison."""
+        _write_inference_engine_events(
+            tmp_path / "baseline",
+            [_partial(rollout_id=one, engine_checksums=[{"rank0/w": f"w{one}"}]) for one in (1, 2, 3)],
+        )
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "w1"}]),
+                _partial(rollout_id=3, engine_checksums=[{"rank0/w": "drifted"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match=r"key rank0/w"):
+            compare_inference_engine_checksums(
+                str(tmp_path / "baseline"),
+                str(tmp_path / "target"),
+                rollout_ids_allowed_missing_in_target=frozenset({2}),
+            )
+
+
 class TestSeveralPolicies:
     def test_the_same_rollout_id_of_two_policies_is_not_a_duplicate(self, tmp_path: Path) -> None:
         """Every policy counts its own rollouts, so keying by rollout id alone rejects a legal multi policy run."""

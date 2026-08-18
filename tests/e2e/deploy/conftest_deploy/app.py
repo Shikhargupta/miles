@@ -8,7 +8,7 @@ from tests.e2e.deploy.conftest_deploy.split_deployment import (
     BuildSideArgsFn,
     create_split_run_side,
 )
-from tests.e2e.ft.conftest_ft.app import BuildArgsFn, create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.app import BuildArgsFn, TargetSideContextFn, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.external_utils import command_utils
@@ -29,6 +29,26 @@ def create_split_comparison_app_and_run_ci(
         build_target_args=build_target_args,
         compare_fn=compare_fn,
         run_side=create_split_run_side(build_baseline_args=build_baseline_args, build_deployments=build_deployments),
+        resolve_mode_fn=lambda _name: mode,
+    )
+    return app, _gate_on_the_cluster(run_ci)
+
+
+def create_deploy_comparison_app_and_run_ci(
+    *,
+    test_name: str,
+    mode: FTTestMode,
+    build_baseline_args: BuildArgsFn,
+    build_target_args: BuildArgsFn,
+    compare_fn: Callable[[str, FTTestMode], None],
+    target_side_context: TargetSideContextFn,
+) -> tuple[typer.Typer, Callable[[], None]]:
+    app, run_ci = create_comparison_app_and_run_ci(
+        test_name=test_name,
+        build_baseline_args=build_baseline_args,
+        build_target_args=build_target_args,
+        compare_fn=compare_fn,
+        target_side_context=target_side_context,
         resolve_mode_fn=lambda _name: mode,
     )
     return app, _gate_on_the_cluster(run_ci)

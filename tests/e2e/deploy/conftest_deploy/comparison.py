@@ -25,7 +25,12 @@ EVENTS_DIRNAME: str = "events"
 
 
 def compare_deterministic_sides(
-    *, baseline_dir: str, target_dir: str, expected_engine_count: int, min_trained_rollouts: int
+    *,
+    baseline_dir: str,
+    target_dir: str,
+    expected_engine_count: int,
+    min_trained_rollouts: int,
+    checksum_rollout_ids_allowed_missing: frozenset[int] = frozenset(),
 ) -> None:
     for side_dir in (baseline_dir, target_dir):
         assert_reconfigure_events(Path(side_dir) / EVENTS_DIRNAME, expected=[])
@@ -50,7 +55,11 @@ def compare_deterministic_sides(
         allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     )
 
-    compare_inference_engine_checksums(baseline_dir=baseline_dir, target_dir=target_dir)
+    compare_inference_engine_checksums(
+        baseline_dir=baseline_dir,
+        target_dir=target_dir,
+        rollout_ids_allowed_missing_in_target=checksum_rollout_ids_allowed_missing,
+    )
 
     for side, side_dir in ((BASELINE_SIDE, baseline_dir), (TARGET_SIDE, target_dir)):
         assert_engine_count(side=side, dump_dir=side_dir, expected=expected_engine_count)
