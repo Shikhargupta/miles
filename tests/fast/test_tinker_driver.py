@@ -114,6 +114,8 @@ def test_control_phase_still_pushes_with_no_operations():
 
 
 def test_validate_tinker_args_defaults_the_rollout_plane():
+    from miles.rollout.tinker_backend.rollout_fn import MultiLoraOperationBatchFn, TinkerNullDataSource
+    from miles.utils.misc import load_function
     from miles.utils.tinker_backend import validate_tinker_args
 
     args = SimpleNamespace(
@@ -127,6 +129,9 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
     assert args.rollout_function_path == "miles.rollout.tinker_backend.rollout_fn.MultiLoraOperationBatchFn"
     assert args.data_source_path == "miles.rollout.tinker_backend.rollout_fn.TinkerNullDataSource"
     assert args.use_dynamic_global_batch_size is True
+    assert load_function(args.rollout_function_path) is MultiLoraOperationBatchFn
+    assert load_function("miles.rollout.tinker_backend.rollout_fn.TinkerRolloutFn") is MultiLoraOperationBatchFn
+    assert load_function(args.data_source_path) is TinkerNullDataSource
 
     # Explicit user choices are honored.
     args.rollout_function_path = "my.custom.Fn"
