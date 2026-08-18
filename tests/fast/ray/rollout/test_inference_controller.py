@@ -94,6 +94,7 @@ class _RecordingServer:
         self.onload_tags: list = []
         self.check_weights_kwargs: list[dict] = []
         self.waited_init_expected_num_cells = 0
+        self.cells_timeouts: list[float] = []
         self.dispose_count = 0
         self._cells_gate = cells_gate
 
@@ -122,10 +123,11 @@ class _RecordingServer:
         self.calls.append(("remove", cell_id))
         del self.server_cells[cell_id]
 
-    async def wait_init_expected_num_cells(self) -> None:
+    async def wait_init_expected_num_cells(self, timeout: float = 3600.0) -> None:
         if self._cells_gate is not None:
             await self._cells_gate.wait()
         self.waited_init_expected_num_cells += 1
+        self.cells_timeouts.append(timeout)
 
 
 class _FakeUpdatableCell:
@@ -201,11 +203,13 @@ def _make_controller(
     *,
     engine_provider: BaseWorkerProvider | None = None,
     registration_hub: RegistrationHub | None = None,
+    initialized: bool = True,
 ) -> InferenceController:
     engines = registration_hub if registration_hub is not None else engine_provider
     engines = engines if engines is not None else _FakeWorkerProvider([])
 
     controller = InferenceController.__new__(InferenceController)
+    controller._init_called = initialized
     controller.args = SimpleNamespace(
         debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False, run_uuid=_RUN_UUID
     )
@@ -1042,6 +1046,17 @@ class TestInitRunsExactlyOnce:
         await controller.dispose()
 
 
+class TestWaitingForTheWholeFleet:
+    @pytest.mark.asyncio
+    async def test_the_budget_the_caller_gives_reaches_every_server(self):
+        """A take-over waits inside its own bounded gate, and a server ignoring that budget hangs the whole gate."""
+        controller = _make_controller({"a": _RecordingServer(model_name="a"), "b": _RecordingServer(model_name="b")})
+
+        await controller.wait_expected_num_cells(timeout=12.0)
+
+        assert [srv.cells_timeouts for srv in controller.servers.values()] == [[12.0], [12.0]]
+
+
 class TestEvalFleetSurface:
     def test_the_eval_fleet_is_an_rpc_method_rather_than_an_attribute(self):
         """A handle resolves rpc methods only, so reading the fleet off it reaches nothing."""
@@ -1180,6 +1195,17 @@ class TestRegistrationSnapshotEndpoint:
         await controller.registration_ingest(snapshot=_registration_snapshot())
 
         assert sorted(registry._cell_of_id) == ["west-inference-engine-0-0-0"]
+
+    @pytest.mark.asyncio
+    async def test_a_controller_the_script_has_not_initialized_yet_says_it_is_not_ready(self):
+        """Until init this controller knows no model of the run, and blaming the reporter for that misleads."""
+        registry = RegistrationHub(run_uuid=_RUN_UUID)
+        controller = _make_controller({}, registration_hub=registry, initialized=False)
+
+        with pytest.raises(AssertionError, match="not ready"):
+            await controller.registration_ingest(snapshot=_registration_snapshot())
+
+        assert registry._cell_of_id == {}
 
     @pytest.mark.asyncio
     async def test_a_run_serving_engines_of_its_own_refuses_a_snapshot(self):
