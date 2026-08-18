@@ -1,9 +1,4 @@
-"""Small multi-LoRA helpers shared across the rollout, trainer, and controller.
-
-The controller-side machinery (AdapterRegistry, MultiLoraOperationBackend,
-AdapterRunControlServer) currently lives in ``miles/ray/tinker_backend/``;
-that package path remains a compatibility boundary for the stacked frontend.
-"""
+"""Small Multi-LoRA helpers shared across rollout, trainer, and controller."""
 
 import logging
 import uuid
@@ -17,6 +12,7 @@ __all__ = [
     "make_rid",
     "slot_lora_name",
     "targets_expert_leaves",
+    "uses_multi_lora_operation_executor",
     "validate_multi_lora_args",
 ]
 
@@ -27,6 +23,13 @@ RID_SEPARATOR = "::"
 
 def is_multi_lora_enabled(args: Any) -> bool:
     return getattr(args, "multi_lora", False)
+
+
+def uses_multi_lora_operation_executor(args: Any) -> bool:
+    """Whether explicit operations execute on fixed Multi-LoRA slots."""
+    from miles.utils.tinker import uses_explicit_training_operations
+
+    return uses_explicit_training_operations(args) and getattr(args, "multi_lora_n_adapters", 0) > 0
 
 
 # Leaf module names that can live inside MoE experts (they also name the dense MLP
