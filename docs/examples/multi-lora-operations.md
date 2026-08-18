@@ -31,10 +31,10 @@ official SDK can use the controller's `/api/v1` endpoint:
 
 ```bash
 # Once per node: download the example checkpoint.
-python examples/tinker_backend/run_tinker_backend.py prepare
+python examples/multi_lora_operations/run_multi_lora_operations.py prepare
 
 # Start Miles in service mode, with both the backend and frontend enabled.
-python examples/tinker_backend/run_tinker_backend.py serve \
+python examples/multi_lora_operations/run_multi_lora_operations.py serve \
   --extra-args "--tinker-frontend"
 ```
 
@@ -264,7 +264,7 @@ returned `logprobs`, and per-token `advantages`; an SFT datum needs
 `target_tokens` plus 0/1 `weights`. The frontend translates the resulting
 SDK requests to operations; the backend executes them in order and only
 changes the sampler's policy on the explicit publish. The complete runnable
-version of this loop is `tests/e2e/tinker_backend/tinker_sdk_rl_quality.py`
+version of this loop is `tests/e2e/tinker_frontend/tinker_sdk_rl_quality.py`
 (GRPO on GSM8K, four concurrent adapters through one deployment).
 
 Mapping: one training client = one registration (`create_model` registers,
