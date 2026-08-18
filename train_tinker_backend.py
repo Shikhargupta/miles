@@ -66,15 +66,10 @@ async def train_data_batch(actor_model, controller, rollout_id: int, rollout_dat
     the FAILED forward_backwards stay in the ledger as poison evidence, so
     the window's possibly-partial gradients are discarded by the next
     optim_step. Retry ownership is explicit: the client resubmits as NEW
-    operations.
-
-    ``rollout_fn_metadata`` is the rollout fn's opaque handoff sidecar
-    (``RolloutFnHandoff.driver_metadata``), forwarded verbatim by the generic
-    manager; THIS driver is the layer that interprets it as tinker dispatch
-    identity (operation ids + encoded batch execution lease)."""
+    operations."""
     from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 
-    dispatch = rollout_data.get("rollout_fn_metadata") or {}
+    dispatch = rollout_data.get("tinker_dispatch") or {}
     operation_ids = list(dispatch.get("operation_ids") or [])
     lease = dispatch.get("lease")
 
