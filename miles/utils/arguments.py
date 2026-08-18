@@ -172,8 +172,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Id of this deployment, telling it apart from the other deployments of the same component "
                     "in the same run: a trainer id such as `trainer-a` under `--deploy-component trainer`, or an "
                     "engine group id such as `inf-east` under `--deploy-component inference`. A deployment's "
-                    "arguments describe only what it carries, so this id selects nothing; leave it unset when the "
-                    "run deploys a single one of that component, and give none for `all` or `primary`."
+                    "arguments describe only what it carries, so this id selects nothing; it is required under "
+                    "`--deploy-component inference`, which names its engine pools by it, optional under "
+                    "`--deploy-component trainer`, whose config already declares the one trainer id it carries, and "
+                    "refused for `all` and `primary`, which a run has exactly one of."
                 ),
             )
             parser.add_argument(
