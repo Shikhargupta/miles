@@ -105,6 +105,9 @@ class BootUuidPin:
     def needs_handshake(self) -> bool:
         return self._required and self._value is None
 
+    def unpin(self) -> None:
+        self._value = None
+
     def verify(self, response: httpx.Response) -> None:
         if not self._required:
             return
