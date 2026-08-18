@@ -119,7 +119,12 @@ def convert_samples_to_train_data(
         train_data["round_number"] = [sample.metadata["round_number"] for sample in samples]
 
     # Add rollout log probabilities for off-policy correction
-    if samples[0].rollout_log_probs is not None:
+    if tinker and any(sample.rollout_log_probs is not None for sample in samples):
+        train_data["rollout_log_probs"] = [
+            sample.rollout_log_probs if sample.rollout_log_probs is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+    elif samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 
     if samples[0].rollout_routed_experts is not None:
