@@ -28,6 +28,7 @@ methods are synchronous and atomic by construction.
 import hashlib
 import json
 import logging
+import time
 from bisect import insort
 from dataclasses import dataclass, field
 from enum import Enum
@@ -73,6 +74,21 @@ def payload_fingerprint(kind: str, payload: dict | None) -> str:
     """Canonical digest of an operation's identity-relevant content."""
     canonical = json.dumps({"kind": kind, "payload": payload or {}}, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+@dataclass
+class SealedGap:
+    """Contiguity filler for an ordinal whose submission never arrived within
+    the gap timeout. The tinker SDK can consume a seq_id and then fail BEFORE
+    HTTP (non-finite JSON serialization, a cancelled future): no retry will
+    ever fill that ordinal, so the seal restores liveness without relaxing
+    the fence — the missing ordinal's identity is never executed (a late
+    genuine arrival hits the ordinal-taken conflict), its kind is never
+    guessed, and the poison scan treats the seal as neutral (it contributed
+    no gradients and delimits no window)."""
+
+    operation_id: str
+    ordinal: int
 
 
 @dataclass
@@ -132,10 +148,14 @@ class _RegistrationQueue:
     """Ordinal-sorted operations of one registration, pending and terminal."""
 
     operations: list[Operation] = field(default_factory=list)
-    by_ordinal: dict[int, Operation] = field(default_factory=dict)
+    by_ordinal: dict[int, "Operation | SealedGap"] = field(default_factory=dict)
     fenced: bool = False
     # Cached contiguity frontier; ordinals are never removed, so it only advances.
     _contiguous: int = 0
+    # Gap-stall clock: the missing ordinal the queue is blocked on and when
+    # that block was first observed. A different hole restarts the clock.
+    _stall_missing: int | None = None
+    _stall_since: float | None = None
 
     def insert(self, op: Operation) -> None:
         insort(self.operations, op, key=lambda o: o.ordinal)
@@ -174,13 +194,39 @@ class _RegistrationQueue:
     def unacked_terminal_count(self) -> int:
         return sum(1 for op in self.operations if op.terminal)
 
+    def gap_stall(self, now: float) -> tuple[int, float] | None:
+        """``(missing_ordinal, stalled_for)`` when open operations are buffered
+        above an arrival hole and nothing is runnable; None otherwise. The
+        clock starts at the first observation of a given hole — transient gaps
+        (the SDK legitimately posts the first chunk of a large forward_backward
+        LAST) clear it long before any sane timeout."""
+        if self.fenced or self.first_open() is not None or self.open_count() == 0:
+            self._stall_missing = self._stall_since = None
+            return None
+        missing = self.contiguous_arrived() + 1
+        if self._stall_missing != missing:
+            self._stall_missing, self._stall_since = missing, now
+        return missing, now - self._stall_since
+
 
 class OperationLedger:
     """All registrations' queues plus the operation_id index."""
 
-    def __init__(self, max_pending: int = 256, max_unacked_results: int = 4096) -> None:
+    def __init__(
+        self,
+        max_pending: int = 256,
+        max_unacked_results: int = 4096,
+        gap_timeout: float | None = 600.0,
+        time_fn=time.monotonic,
+    ) -> None:
         self.max_pending = max_pending
         self.max_unacked_results = max_unacked_results
+        # Seconds a queue may stall on a never-arriving ordinal before the
+        # blocked operations terminal-fail typed and the hole is sealed
+        # (sweep_gap_timeouts); <= 0 or None disables enforcement, the stall
+        # stays observable either way (gap_stalls).
+        self.gap_timeout = gap_timeout
+        self._time = time_fn
         self.queues: dict[Tenant, _RegistrationQueue] = {}
         self.by_id: dict[str, Operation] = {}
 
@@ -366,13 +412,100 @@ class OperationLedger:
             return None
         for o in range(ordinal - 1, 0, -1):
             op = queue.by_ordinal.get(o)
-            if op is None:
+            if op is None or isinstance(op, SealedGap):
+                # A sealed hole is poison-NEUTRAL: the submission never
+                # arrived, so it contributed no gradients and its (unknown,
+                # never guessed) kind can neither poison nor delimit the
+                # window. Arrived siblings that gap-failed carry the poison
+                # evidence themselves (terminal, not SUCCEEDED, known kind).
                 continue
             if op.kind is OperationKind.OPTIM_STEP and op.was_claimed and op.terminal and op.window_consumed:
                 return None
             if op.kind is OperationKind.FORWARD_BACKWARD and op.terminal and op.state is not OperationState.SUCCEEDED:
                 return f"forward_backward ordinal {o} {op.state.value}: {op.error or 'failed'}"
         return None
+
+    # ------------------------------ gap stalls ------------------------------
+    # A client can consume an ordinal and then fail BEFORE HTTP (the 0.24.1
+    # SDK serializes AFTER taking its seq counter: non-finite floats raise a
+    # local ValueError, an immediately-cancelled future never posts). No retry
+    # fills such a hole, so the buffered tail would wait forever. Enforcement
+    # never relaxes the fence: nothing is skipped, no kind is guessed, no
+    # operation runs out of order — the blocked (never-claimed) operations
+    # terminal-fail typed and the hole is sealed against late execution.
+
+    def gap_stalls(self, now: float | None = None) -> list[dict]:
+        """Current stalls (observability): registrations whose open operations
+        are all buffered above an arrival hole, with the hole's ordinal, its
+        age, and the number of operations blocked behind it."""
+        now = self._time() if now is None else now
+        stalls = []
+        for (name, registration_id), queue in self.queues.items():
+            stall = queue.gap_stall(now)
+            if stall is not None:
+                missing, stalled_for = stall
+                stalls.append(
+                    dict(
+                        name=name,
+                        registration_id=registration_id,
+                        missing_ordinal=missing,
+                        stalled_for=stalled_for,
+                        blocked_operations=queue.open_count(),
+                    )
+                )
+        return stalls
+
+    def sweep_gap_timeouts(self, now: float | None = None) -> list[dict]:
+        """Expire stalls older than ``gap_timeout``: terminal-fail the blocked
+        operations FAILED(user) naming the missing ordinal, and seal every
+        hole below the arrived tail so the sequence is contiguous again — the
+        client's NEXT (resubmitted) ordinal becomes runnable immediately.
+        Returns one event per expired registration."""
+        now = self._time() if now is None else now
+        if self.gap_timeout is None or self.gap_timeout <= 0:
+            for queue in self.queues.values():  # keep stall clocks observable
+                queue.gap_stall(now)
+            return []
+        events = []
+        for stall in self.gap_stalls(now):
+            if stall["stalled_for"] >= self.gap_timeout:
+                events.append(self._expire_stall(stall))
+        return events
+
+    def _expire_stall(self, stall: dict) -> dict:
+        queue = self.queues[(stall["name"], stall["registration_id"])]
+        missing, stalled_for = stall["missing_ordinal"], stall["stalled_for"]
+        # by_ordinal (not the ackable operations list) is the arrival truth:
+        # every hole below the highest ordinal ever arrived gets sealed, so
+        # one expiry restores contiguity — no second stall on a deeper hole.
+        last_arrived = max(queue.by_ordinal)
+        sealed = []
+        for ordinal in range(missing, last_arrived):
+            if ordinal not in queue.by_ordinal:
+                queue.by_ordinal[ordinal] = SealedGap(
+                    operation_id=f"{stall['name']}:gap-sealed:{ordinal}", ordinal=ordinal
+                )
+                sealed.append(ordinal)
+        failed = []
+        for op in queue.operations:
+            if not op.terminal:  # all QUEUED: nothing is claimable while the queue stalls
+                op.state = OperationState.FAILED
+                op.error = (
+                    f"operation gap timeout: ordinal {op.ordinal} waited {stalled_for:.0f}s behind missing "
+                    f"ordinal {missing}, whose submission never reached the server (it failed client-side "
+                    "before HTTP — e.g. non-finite values failing JSON serialization, or a cancelled SDK "
+                    "future); the never-arrived ordinals are sealed and will never execute — resubmit this "
+                    "work as new operations"
+                )
+                op.error_category = "user"
+                failed.append(op.operation_id)
+        queue._stall_missing = queue._stall_since = None
+        event = {**stall, "sealed_ordinals": sealed, "failed_operations": failed}
+        logger.warning(
+            f"[tinker] gap timeout on '{stall['name']}' ({stall['registration_id'][:8]}): ordinal {missing} "
+            f"never arrived in {stalled_for:.0f}s; sealed {sealed}, failed {failed}"
+        )
+        return event
 
     # ------------------------------ terminals ------------------------------
 

@@ -393,3 +393,146 @@ class TestRecordRejected:
         assert ledger.get("op1") is None
         enqueue(ledger, "op2", 2)
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op2"
+
+
+class Clock:
+    """Injectable monotonic clock: gap-timeout tests never sleep."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TestGapTimeout:
+    """A never-arriving ordinal (the 0.24.1 SDK consumes a seq_id, then fails
+    BEFORE HTTP: non-finite JSON serialization, an immediately-cancelled
+    future) must not stall the registration forever — but liveness must never
+    relax the fence: nothing skips the hole, no kind is guessed, and the
+    missing ordinal's identity can never execute."""
+
+    def gapped(self, timeout=10.0):
+        clock = Clock()
+        ledger = OperationLedger(gap_timeout=timeout, time_fn=clock)
+        enqueue(ledger, "fb1", 1)
+        ledger.claim_data_operation("A", "ra")
+        ledger.complete("fb1", {})
+        enqueue(ledger, "opt3", 3, "optim_step")  # ordinal 2 never arrives
+        ledger.sweep_gap_timeouts()  # first observation arms the stall clock
+        return ledger, clock
+
+    def test_stall_is_observable_before_expiry(self):
+        ledger, clock = self.gapped()
+        clock.now += 4
+        [stall] = ledger.gap_stalls()
+        assert stall["missing_ordinal"] == 2 and stall["blocked_operations"] == 1
+        assert stall["stalled_for"] == pytest.approx(4.0)
+        assert ledger.sweep_gap_timeouts() == []  # below the timeout
+        assert ledger.get("opt3")["state"] == "QUEUED"
+
+    def test_legit_out_of_order_fill_beats_the_timeout(self):
+        # The SDK posts the first chunk of a large fb LAST: an armed timeout
+        # must not change gap-buffered reordering when the hole fills in time.
+        ledger, clock = self.gapped()
+        clock.now += 9
+        enqueue(ledger, "fb2", 2)
+        assert ledger.sweep_gap_timeouts() == []
+        assert ledger.gap_stalls() == []  # the fill cleared the stall clock
+        assert ledger.claim_data_operation("A", "ra")["operation_id"] == "fb2"
+
+    def test_expiry_fails_blocked_ops_typed_and_seals_the_hole(self):
+        ledger, clock = self.gapped()
+        clock.now += 11
+        [event] = ledger.sweep_gap_timeouts()
+        assert event["missing_ordinal"] == 2
+        assert event["sealed_ordinals"] == [2] and event["failed_operations"] == ["opt3"]
+        view = ledger.get("opt3")
+        assert view["state"] == "FAILED" and view["error_category"] == "user"
+        assert "missing ordinal 2" in view["error"] and "resubmit" in view["error"]
+        # The sealed identity can never execute: a late genuine arrival at the
+        # ordinal is a conflict, exactly like any taken ordinal (anti-replay).
+        with pytest.raises(ValueError, match="already taken"):
+            enqueue(ledger, "late2", 2, "optim_step")
+        # Clean resubmit: the client's next ordinal is immediately runnable.
+        enqueue(ledger, "opt4", 4, "optim_step")
+        assert ledger.claimable_control_tenants() == [("A", "ra")]
+        assert ledger.claim_control_operation("A", "ra")["operation_id"] == "opt4"
+
+    def test_expiry_seals_every_hole_below_the_arrived_tail(self):
+        clock = Clock()
+        ledger = OperationLedger(gap_timeout=10.0, time_fn=clock)
+        enqueue(ledger, "fb1", 1)
+        ledger.claim_data_operation("A", "ra")
+        ledger.complete("fb1", {})
+        enqueue(ledger, "fb3", 3)
+        enqueue(ledger, "fb5", 5)  # holes at 2 AND 4
+        ledger.sweep_gap_timeouts()
+        clock.now += 11
+        [event] = ledger.sweep_gap_timeouts()
+        assert event["sealed_ordinals"] == [2, 4]
+        assert sorted(event["failed_operations"]) == ["fb3", "fb5"]
+        # One expiry restores contiguity for the whole tail: no second stall.
+        enqueue(ledger, "fb6", 6)
+        assert ledger.claim_data_operation("A", "ra")["operation_id"] == "fb6"
+
+    def test_sealed_hole_is_poison_neutral_and_no_delimiter(self):
+        # fb1 SUCCEEDED before the stall: its gradients are complete and
+        # legitimate. The seal must neither poison them (its kind is unknown,
+        # never guessed) nor delimit the window — the resubmitted optim_step
+        # steps fb1's window.
+        ledger, clock = self.gapped()
+        clock.now += 11
+        ledger.sweep_gap_timeouts()
+        enqueue(ledger, "opt4", 4, "optim_step")
+        assert ledger.poisoned_window_blocker("A", "ra", 4) is None
+
+    def test_gap_failed_forward_backward_still_poisons_its_window(self):
+        # When the blocked operation itself was a forward_backward (an arrived
+        # sibling chunk of the missing one), its typed failure IS the poison
+        # evidence — gap expiry keeps #2258 §5 window safety intact.
+        clock = Clock()
+        ledger = OperationLedger(gap_timeout=10.0, time_fn=clock)
+        enqueue(ledger, "fb1", 1)
+        ledger.claim_data_operation("A", "ra")
+        ledger.complete("fb1", {})
+        enqueue(ledger, "fb3", 3)  # sibling chunk; chunk at ordinal 2 never arrives
+        ledger.sweep_gap_timeouts()
+        clock.now += 11
+        [event] = ledger.sweep_gap_timeouts()
+        assert event["failed_operations"] == ["fb3"]
+        enqueue(ledger, "opt4", 4, "optim_step")
+        blocker = ledger.poisoned_window_blocker("A", "ra", 4)
+        assert blocker is not None and "ordinal 3" in blocker
+
+    def test_disabled_timeout_reports_but_never_expires(self):
+        ledger, clock = self.gapped(timeout=0)
+        clock.now += 10_000
+        assert ledger.sweep_gap_timeouts() == []
+        [stall] = ledger.gap_stalls()
+        assert stall["missing_ordinal"] == 2 and stall["stalled_for"] == pytest.approx(10_000.0)
+        assert ledger.get("opt3")["state"] == "QUEUED"
+
+    def test_a_new_hole_restarts_the_stall_clock(self):
+        ledger, clock = self.gapped()
+        clock.now += 9
+        enqueue(ledger, "fb2", 2)  # fill in time; run the tail
+        for op_id in ("fb2", "opt3"):
+            if op_id == "fb2":
+                ledger.claim_data_operation("A", "ra")
+            else:
+                ledger.claim_control_operation("A", "ra")
+            ledger.complete(op_id, {})
+        enqueue(ledger, "fb5", 5)  # NEW hole at 4
+        assert ledger.sweep_gap_timeouts() == []  # its clock starts now, not at the old stall
+        clock.now += 9
+        assert ledger.sweep_gap_timeouts() == []
+        clock.now += 2
+        [event] = ledger.sweep_gap_timeouts()
+        assert event["missing_ordinal"] == 4
+
+    def test_fenced_queue_never_stalls(self):
+        ledger, clock = self.gapped()
+        ledger.fence("A", "ra")
+        clock.now += 100
+        assert ledger.gap_stalls() == [] and ledger.sweep_gap_timeouts() == []

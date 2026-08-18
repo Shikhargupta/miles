@@ -5,7 +5,8 @@ drives the miles tinker frontend end to end, cookbook style.
     ServiceClient(base_url, api_key)
       -> get_server_capabilities (the deployment's one base model)
       -> create_lora_training_client(rank=16)
-      -> ~10x [forward_backward(cross_entropy on a tiny fixed corpus)
+      -> ~10x [forward_backward(cross_entropy, teacher-forced prompt-masked
+               SFT datums: prompt weight 0, completion weight 1)
                + optim_step(AdamParams(lr=1e-4))]      loss:sum must decrease
       -> save_weights_and_get_sampling_client -> sample  coherent continuation
       -> save_state -> load_state_with_optimizer -> one more fb/optim
@@ -14,6 +15,12 @@ drives the miles tinker frontend end to end, cookbook style.
       -> a deliberate channel-mismatch datum surfacing as a typed SDK error;
          it poisons its gradient window (#2258 §5) so the window's optim_step
          fails as a discard, and the next round steps normally
+
+The SFT per-token loss divides by ``loss_weight:sum`` (Σ weight·mask), NOT by
+``unmasked_tokens:sum`` — the latter counts the weight-0 prompt positions too
+(codex-0817-sft-fix §7). The prompt masking here keeps the two metrics
+distinct, so this loop regression-tests the denominator on real GPUs: with
+the old all-ones weights they were equal and the bug was invisible.
 
 Run on the head node from a venv with ``tinker==0.24.1`` installed:
   python tests/e2e/tinker_backend/tinker_sdk_mini_loop.py --out-dir <dir>
@@ -50,6 +57,27 @@ def ce_datum(tokens: list[int]) -> types.Datum:
     )
 
 
+def sft_datum(prompt_tokens: list[int], completion_tokens: list[int]) -> tuple[types.Datum, float, int]:
+    """Teacher-forced SFT datum (the correct shape, codex-0817-sft-fix §2):
+    position i predicts tokens[i+1], so the prompt-internal next-token
+    positions get weight 0 and the completion positions weight 1. Returns the
+    datum plus its CE weight sum and its total target-position count."""
+    tokens = prompt_tokens + completion_tokens
+    weights = [0.0] * (len(prompt_tokens) - 1) + [1.0] * len(completion_tokens)
+    datum = types.Datum(
+        model_input=types.ModelInput.from_ints(tokens[:-1]),
+        loss_fn_inputs={"target_tokens": tokens[1:], "weights": weights},
+    )
+    return datum, sum(weights), len(weights)
+
+
+def split_prompt_completion(text: str) -> tuple[str, str]:
+    """First half of the words is the prompt (weight 0), the rest completion."""
+    words = text.split()
+    split = max(1, len(words) // 2)
+    return " ".join(words[:split]), " " + " ".join(words[split:])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8068")
@@ -81,9 +109,17 @@ def main() -> None:
     log(f"training client ready: model_id={client.model_id} rank={info.lora_rank}")
 
     tokenizer = client.get_tokenizer()
-    data = [ce_datum(tokenizer.encode(text)) for text in CORPUS]
+    pairs = [split_prompt_completion(text) for text in CORPUS]
+    built = [sft_datum(tokenizer.encode(prompt), tokenizer.encode(completion)) for prompt, completion in pairs]
+    data = [datum for datum, _, _ in built]
+    expected_weight_sum = sum(weight_sum for _, weight_sum, _ in built)
+    expected_positions = sum(positions for _, _, positions in built)
+    assert expected_positions > expected_weight_sum > 0, (expected_positions, expected_weight_sum)
     n_tokens = sum(len(d.model_input.to_ints()) for d in data)
-    log(f"corpus: {len(data)} datums, {n_tokens} input tokens")
+    log(
+        f"corpus: {len(data)} prompt-masked SFT datums, {n_tokens} input tokens, "
+        f"{expected_weight_sum:.0f} completion positions of {expected_positions} targets"
+    )
 
     # ---- supervised mini-loop: loss must decrease ----
     losses: list[float] = []
@@ -94,7 +130,15 @@ def main() -> None:
         fb = fb_future.result()
         optim = optim_future.result()
         loss_sum = fb.metrics["loss:sum"]
-        per_token = loss_sum / fb.metrics["unmasked_tokens:sum"]
+        # The SFT denominator is the CE weight sum (completion positions),
+        # not unmasked_tokens:sum, which also counts the weight-0 prompt
+        # (codex-0817-sft-fix §7). Guarded: weights are arbitrary floats.
+        weight_sum = fb.metrics["loss_weight:sum"]
+        unmasked = fb.metrics["unmasked_tokens:sum"]
+        assert abs(weight_sum - expected_weight_sum) < 1e-6, (weight_sum, expected_weight_sum)
+        assert abs(unmasked - expected_positions) < 1e-6, (unmasked, expected_positions)
+        assert unmasked > weight_sum, "prompt masking must keep the two denominators distinct"
+        per_token = loss_sum / weight_sum if weight_sum > 0 else None
         losses.append(loss_sum)
         log(
             f"iter {iteration:2d}/{args.iterations}: loss:sum={loss_sum:.3f} "
@@ -102,6 +146,8 @@ def main() -> None:
         )
     train_dt = time.time() - t0
     summary["losses"] = losses
+    summary["loss_weight_sum"] = expected_weight_sum
+    summary["unmasked_tokens"] = expected_positions
     summary["train_seconds"] = round(train_dt, 1)
     assert losses[-1] < losses[0], f"loss did not decrease: {losses}"
     assert all(b <= a * 1.02 for a, b in zip(losses, losses[1:], strict=False)), f"loss not (near-)monotone: {losses}"

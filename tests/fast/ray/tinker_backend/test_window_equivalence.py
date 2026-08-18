@@ -98,7 +98,7 @@ class TestForwardBackwardWindow:
             state="SUCCEEDED",
             result={
                 "logprobs": [[-0.1, -0.2]],
-                "metrics": {"loss:sum": 0.30000000000000004, "unmasked_tokens:sum": 2.0},
+                "metrics": {"loss:sum": 0.30000000000000004, "unmasked_tokens:sum": 2.0, "loss_weight:sum": 2.0},
             },
             error=None,
             error_category=None,
