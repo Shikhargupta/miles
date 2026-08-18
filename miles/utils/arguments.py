@@ -1799,7 +1799,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--tinker-backend",
                 action="store_true",
                 default=False,
-                help="Serve the multi-LoRA slots through the tinker-compatible operation backend "
+                help="Enable the Tinker protocol adapter for the Multi-LoRA operation backend "
                 "(client-driven forward_backward/optim_step; no dataset or reward on the server). "
                 "Requires --multi-lora-n-adapters > 0.",
             )
