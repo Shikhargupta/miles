@@ -226,7 +226,7 @@ def sidecar_manifest(name: str) -> str:
 
 
 def phase_a(ops: Ops) -> None:
-    from miles.utils.tinker_backend import serving_lora_name  # noqa: PLC0415
+    from miles.ray.multi_lora.identity import serving_lora_name  # noqa: PLC0415
 
     # ---------------- phase 1: register ----------------
     reg = http("POST", "/adapter_runs", {"name": NAME, "config": {"rank": 8}})

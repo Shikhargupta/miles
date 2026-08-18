@@ -203,7 +203,7 @@ def adapter_loop(run: AdapterRun, ops: Ops, router: str, dataset: list[dict], gr
         raise TimeoutError(f"adapter '{name}' never became READY")
     info = http("GET", f"/adapter_runs/{name}")
     run.registration_id = info["registration_id"]
-    from miles.utils.tinker_backend import serving_lora_name  # noqa: PLC0415
+    from miles.ray.multi_lora.identity import serving_lora_name  # noqa: PLC0415
 
     run.serving_name = serving_lora_name(name, run.registration_id)
     log(

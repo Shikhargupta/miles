@@ -143,7 +143,7 @@ def test_tinker_driver_never_escapes_through_a_legacy_manager():
 
     import miles
 
-    driver_source = (Path(miles.__file__).resolve().parent.parent / "train_tinker_backend.py").read_text()
+    driver_source = (Path(miles.__file__).resolve().parent.parent / "train_multi_lora_operations.py").read_text()
     assert "inference_controller.manager" not in driver_source
     assert "weight_update_owner" in driver_source
     # The per-rollout prepare boundary is exercised before every generate.

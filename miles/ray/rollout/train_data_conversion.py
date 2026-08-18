@@ -204,7 +204,7 @@ def convert_samples_to_train_data(
 def tinker_dispatch_summary(train_data: dict[str, Any]) -> dict[str, Any] | None:
     """Driver-visible dispatch identity of one converted tinker batch: the
     claimed operation ids plus the encoded batch execution lease. The driver's
-    abnormal-outcome finalizer (``train_tinker_backend.train_data_batch``)
+    abnormal-outcome finalizer (``train_multi_lora_operations.train_data_batch``)
     must fail exactly these operations and release exactly this lease without
     fetching the batch back from the object store. ``None`` for non-tinker
     batches."""

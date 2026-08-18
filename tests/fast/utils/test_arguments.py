@@ -591,8 +591,8 @@ class TestMultiLoRAValidation:
 
         miles_validate_args(args)
 
-        assert args.rollout_function_path == "miles.rollout.tinker_backend.rollout_fn.MultiLoraOperationBatchFn"
-        assert args.data_source_path == "miles.rollout.tinker_backend.rollout_fn.TinkerNullDataSource"
+        assert args.rollout_function_path == "miles.rollout.multi_lora.rollout_fn.MultiLoraOperationBatchFn"
+        assert args.data_source_path == "miles.rollout.multi_lora.rollout_fn.TinkerNullDataSource"
         assert args.rollout_global_dataset is True
 
     def test_keeps_user_supplied_rollout_fn_and_data_source(self):
