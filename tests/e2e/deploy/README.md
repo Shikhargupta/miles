@@ -33,7 +33,7 @@ Steps: 3 rollouts
 
 ```
 Type: comparison (baseline=untouched, target=same command, script replaced twice mid-run)
-Steps: 6 rollouts, --save-interval 2 (saves after steps 1, 3, 5), ONE release
+Steps: 6 rollouts, --save-interval 2 (saves after steps 1, 3, 5)
 Trigger schedule, asserted on the records: restart 1 at (save=1, finished=2), step 3 in flight;
                                            restart 2 at (save=3, finished=4), step 5 in flight
 
@@ -68,7 +68,7 @@ tracker, re-seeds, resets the optimizer and returns start rollout 0.
 
 ```
 Type: single run, ft's scenario_realistic_gsm8k with hot restarts instead of kills
-Steps: as scenario_realistic_gsm8k, ONE release
+Steps: as scenario_realistic_gsm8k
 Injection: HotRestartFaultForm at random intervals via the ft fault-injection plan, seed logged
 Eligibility: a save exists and a step finished after it; an ineligible draw waits, never fires
 
