@@ -22,7 +22,7 @@ class NodeWidthChecker:
         self._num_gpus_per_node = num_gpus_per_node
         self._nodes_of_the_configured_width: set[str] = set()
 
-    async def assert_node_is_as_wide_as_configured(self, node_name: str) -> None:
+    async def assert_node_width_vs_configured(self, node_name: str) -> None:
         if node_name in self._nodes_of_the_configured_width:
             return
 

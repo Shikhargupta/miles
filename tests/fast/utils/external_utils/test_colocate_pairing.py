@@ -992,7 +992,7 @@ class TestNodeWidthChecker:
         """The whole placement rests on the trainer holding the node, which only the node itself can confirm."""
         core_v1 = FakeCoreV1(node_gpus=GPUS_PER_NODE)
 
-        asyncio.run(self._check(core_v1).assert_node_is_as_wide_as_configured("gpu-3"))
+        asyncio.run(self._check(core_v1).assert_node_width_vs_configured("gpu-3"))
 
         assert core_v1.nodes_read == ["gpu-3"]
 
@@ -1001,8 +1001,8 @@ class TestNodeWidthChecker:
         core_v1 = FakeCoreV1(node_gpus=GPUS_PER_NODE)
         check = self._check(core_v1)
 
-        asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
-        asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
+        asyncio.run(check.assert_node_width_vs_configured("gpu-3"))
+        asyncio.run(check.assert_node_width_vs_configured("gpu-3"))
 
         assert core_v1.nodes_read == ["gpu-3"]
 
@@ -1010,13 +1010,13 @@ class TestNodeWidthChecker:
         """--num-gpus-per-node 4 on an 8-gpu node passes every config check and still seats engines wrongly."""
         with pytest.raises(AssertionError, match="allocates 8"):
             asyncio.run(
-                self._check(FakeCoreV1(node_gpus=8), num_gpus_per_node=4).assert_node_is_as_wide_as_configured("gpu-3")
+                self._check(FakeCoreV1(node_gpus=8), num_gpus_per_node=4).assert_node_width_vs_configured("gpu-3")
             )
 
     def test_refuses_a_node_that_allocates_no_gpus_at_all(self):
         """A node whose device plugin has not registered yet reports nothing, and zero is not the node's width."""
         with pytest.raises(AssertionError, match="allocates 0"):
-            asyncio.run(self._check(FakeCoreV1(node_gpus=None)).assert_node_is_as_wide_as_configured("gpu-3"))
+            asyncio.run(self._check(FakeCoreV1(node_gpus=None)).assert_node_width_vs_configured("gpu-3"))
 
     def test_reads_a_refused_node_again_on_the_next_pass(self):
         """Caching the refusal would turn a device plugin that registers late into a permanent failure."""
@@ -1025,7 +1025,7 @@ class TestNodeWidthChecker:
 
         for _ in range(2):
             with pytest.raises(AssertionError):
-                asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
+                asyncio.run(check.assert_node_width_vs_configured("gpu-3"))
 
         assert core_v1.nodes_read == ["gpu-3", "gpu-3"]
 
@@ -1035,7 +1035,7 @@ class TestNodeWidthChecker:
             config=_config([_inference_pool(_sub_node_layout())]), core_v1=FakeCoreV1()
         )
 
-        asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
+        asyncio.run(check.assert_node_width_vs_configured("gpu-3"))
 
     def test_refuses_a_config_whose_pools_disagree_about_the_node_width(self):
         """No single number would then describe the nodes, and half the engines would be checked against a lie."""

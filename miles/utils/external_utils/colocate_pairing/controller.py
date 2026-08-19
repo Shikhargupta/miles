@@ -86,7 +86,7 @@ class PairingController:
             )
             return
 
-        await self._node_width_checker.assert_node_is_as_wide_as_configured(trainer_node_name)
+        await self._node_width_checker.assert_node_width_vs_configured(trainer_node_name)
 
         for inference_pod, base_gpu_id in gated:
             await self._release(
