@@ -51,7 +51,7 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
   Own scenario because load_state without a tracker re-seeds, resets the optimizer, returns 0.
 ```
 
-## `scenario_hot_restart_random`
+## `scenario_hot_restart_realistic_gsm8k`
 
 ```
 ft's scenario_realistic_gsm8k with hot restarts instead of kills, ONE release
