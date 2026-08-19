@@ -56,7 +56,7 @@ Modes: checkpointed  - --save-interval 2 (saves after 1, 3, 5), 2 restarts on an
        no_checkpoint - --save-interval 4 (saves after 3 and 5), 1 restart in window 0..2; the
                        gate opens on the first finished step while no checkpoint exists, and a
                        save seen first fails
-Entries: test_hot_restart_deterministic.py (checkpointed), test_hot_restart_no_checkpoint.py
+Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
 
 1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the mode
 2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps)
