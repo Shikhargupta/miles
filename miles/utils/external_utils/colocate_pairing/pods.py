@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
@@ -30,7 +32,12 @@ def coordinate_of(pod: Pod) -> PodCoordinate | None:
 
 
 def release_patch(
-    *, node_name: str, base_gpu_id: int, gates: list[str], has_node_selector: bool, has_annotations: bool
+    *,
+    node_name: str,
+    base_gpu_id: int,
+    gates: list[str],
+    has_node_selector: bool,
+    annotations: Mapping[str, str] | None,
 ) -> list[dict[str, object]]:
     index = gates.index(_GATE_NAME)
     pin = (
@@ -41,9 +48,12 @@ def release_patch(
     # the card is only known once the pairing has seated the pod, and it travels in the very patch that
     # releases it, so the pod the kubelet finally reads can never be placed without knowing where it starts
     key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
+    # adding the whole map replaces it, which would drop the chart's meta and the platform's own
+    # bookkeeping, so a pod that has the map at all is only ever added to one key at a time; the map
+    # is built only for a pod that carries none, where there is nothing to lose
     tell = (
         {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)}
-        if has_annotations
+        if annotations is not None
         else {"op": "add", "path": "/metadata/annotations", "value": {key: str(base_gpu_id)}}
     )
     return [

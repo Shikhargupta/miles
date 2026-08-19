@@ -111,7 +111,7 @@ class PairingController:
                     base_gpu_id=base_gpu_id,
                     gates=gate_names(inference_pod),
                     has_node_selector=bool(inference_pod.spec.node_selector),
-                    has_annotations=bool(inference_pod.metadata.annotations),
+                    annotations=inference_pod.metadata.annotations,
                 ),
             )
         except client.ApiException as exception:

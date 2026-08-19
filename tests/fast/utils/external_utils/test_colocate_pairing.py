@@ -529,6 +529,9 @@ class TestPoolsClaimDistinctGpus:
 
 BASE_GPU_ID_ANNOTATION = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
 _ESCAPED_BASE_GPU_ID_ANNOTATION = "miles.radixark.io~1base-gpu-id"
+_CHART_META_ANNOTATION = f"{DEFAULT_LABEL_KEYS.meta_annotation_prefix}{DEFAULT_LABEL_KEYS.gpu_ids_meta}"
+_POD_ANNOTATIONS = {_CHART_META_ANNOTATION: "0", "leaderworkerset.sigs.k8s.io/size": "2"}
+_UNGIVEN: Any = object()
 
 
 def _release_patch(
@@ -537,14 +540,14 @@ def _release_patch(
     base_gpu_id: int = 0,
     gates: list[str] | None = None,
     has_node_selector: bool = False,
-    has_annotations: bool = True,
+    annotations: Any = _UNGIVEN,
 ) -> list[dict[str, Any]]:
     return pairing_pods.release_patch(
         node_name=node_name,
         base_gpu_id=base_gpu_id,
         gates=[pairing_pods._GATE_NAME] if gates is None else gates,
         has_node_selector=has_node_selector,
-        has_annotations=has_annotations,
+        annotations=_POD_ANNOTATIONS if annotations is _UNGIVEN else annotations,
     )
 
 
@@ -575,17 +578,24 @@ class TestReleasePatch:
 
         assert operation["value"] == "7"
 
-    def test_creates_the_annotation_map_when_the_pod_carries_none(self):
+    def test_creates_the_annotation_map_only_for_a_pod_that_has_none(self):
         """Adding under a map that does not exist is a failed patch, and the pod would stay gated forever."""
-        patch = _release_patch(base_gpu_id=3, has_annotations=False)
+        patch = _release_patch(base_gpu_id=3, annotations=None)
 
         assert patch[1] == {"op": "add", "path": "/metadata/annotations", "value": {BASE_GPU_ID_ANNOTATION: "3"}}
 
-    def test_leaves_the_annotations_a_pod_already_carries_alone(self):
-        """Replacing the map would drop the meta the chart wrote, which the worker provider reads back."""
-        patch = _release_patch(base_gpu_id=3)
+    def test_never_replaces_the_map_of_a_pod_that_carries_annotations(self):
+        """A whole-map add replaces it, dropping the chart's gpu meta and the platform's own bookkeeping."""
+        patch = _release_patch(base_gpu_id=3, annotations=_POD_ANNOTATIONS)
 
-        assert patch[1]["path"].startswith("/metadata/annotations/")
+        assert patch[1]["path"] == f"/metadata/annotations/{_ESCAPED_BASE_GPU_ID_ANNOTATION}"
+        assert not any(operation["path"] == "/metadata/annotations" for operation in patch)
+
+    def test_leaves_an_empty_map_in_place_rather_than_replacing_it(self):
+        """An empty map still exists, so a key may be added under it and a replacement risks a stale read."""
+        patch = _release_patch(base_gpu_id=3, annotations={})
+
+        assert patch[1]["path"] == f"/metadata/annotations/{_ESCAPED_BASE_GPU_ID_ANNOTATION}"
 
     def test_adds_one_key_when_the_pod_already_has_a_selector(self):
         """Replacing the map would drop the run's own nodeSelector, and a gated pod may only gain keys."""
