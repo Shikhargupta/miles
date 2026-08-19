@@ -216,6 +216,7 @@ def create_transfer_engine():
 def query_remote_weight_infos(
     rollout_engines: Sequence[ActorHandle],
     targets,
+    worker: str = "target",
 ) -> tuple[dict, dict, dict]:
     """Query remote rollout engines for weight info, session IDs, and server args."""
     remote_weight_infos_by_session_id = {}
@@ -225,14 +226,20 @@ def query_remote_weight_infos(
 
     for engine_ind, engine_rank in targets_to_query:
         session_id, weights_info = ray.get(
-            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(rank=engine_rank)
+            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(
+                rank=engine_rank, worker=worker
+            )
         )
-        parallelism_info = ray.get(rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank))
+        parallelism_info = ray.get(
+            rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank, worker=worker)
+        )
 
         session_id_to_server_args[session_id] = create_server_args_from_dict(
             ray.get(rollout_engines[engine_ind].get_server_info.remote())
         )
-        assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
+        assert (
+            session_id is not None
+        ), f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank} worker {worker}"
         remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
         targets_to_session_id[(engine_ind, engine_rank)] = session_id
 
