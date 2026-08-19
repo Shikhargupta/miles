@@ -23,6 +23,17 @@ class TestTheWorkerIndex:
 
         assert str(placeholders.WORKER_INDEX_SENTINEL) not in " ".join(command)
 
+    def test_refuses_a_spec_that_builds_the_rank_into_a_larger_argument(self):
+        """Kubelet substitutes whole arguments, so --node-rank=N would reach the engine unexpanded."""
+        spec = engine().model_copy(
+            update={
+                "launch_command": lambda ctx: f"python -m sglang.launch_server --node-rank={ctx.worker_in_cell_index}"
+            }
+        )
+
+        with pytest.raises(AssertionError, match="pod index"):
+            build_values([spec], LAYOUT).as_values()
+
 
 COLOCATE_LAYOUT = LAYOUT.model_copy(update={"colocate": True})
 
@@ -89,3 +100,14 @@ class TestBaseGpuIdOfASubNodeEngine:
 
         with pytest.raises(AssertionError, match="base gpu id"):
             build_values([spec, trainer(num_cells=1, gpus_per_cell=8)], COLOCATE_LAYOUT).as_values()
+
+
+class TestEveryPairTheTableKnows:
+    def test_substitutes_the_rank_and_the_card_in_one_pass(self):
+        """One command carries both sentinels, and a pass that stopped at the first would ship the other raw."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        assert command[command.index("--node-rank") + 1] == placeholders._WORKER_INDEX_PLACEHOLDER
+        assert _base_gpu_id_argument(command) == placeholders._BASE_GPU_ID_PLACEHOLDER

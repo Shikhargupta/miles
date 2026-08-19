@@ -19,9 +19,8 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.place
     LEADER_ADDRESS_PLACEHOLDER,
     RENDERED_CELL_INDEX,
     WORKER_INDEX_SENTINEL,
-    rendered_gpu_ids,
-    with_base_gpu_id,
-    with_worker_index,
+    real_or_sentinel_gpu_ids,
+    sentinels_to_placeholders,
 )
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_spec import (
@@ -50,13 +49,13 @@ def build_entry(
         f"Spec '{spec.name}' asks for {spec.scheduling.num_cells} cells; a spec a run has turned off is dropped "
         f"before conversion, because a values entry always renders at least one pod"
     )
-    shares_its_node = _shares_its_node(pairing_layout)
+    is_sub_node = _is_sub_node(pairing_layout)
     context = _launch_context(
         spec,
         addresses=addresses,
         cell_index=RENDERED_CELL_INDEX,
         worker_in_cell_index=WORKER_INDEX_SENTINEL,
-        shares_its_node=shares_its_node,
+        is_sub_node=is_sub_node,
     )
     pods_per_cell = spec.scheduling.pods_per_cell()
     gpus_per_pod = spec.scheduling.gpus_per_pod()
@@ -67,7 +66,7 @@ def build_entry(
         pool_id=spec.name,
         command=_with_prepare_cmd(_command_of_spec(spec, context, plan=plan), spec, plan=plan),
         ports=[PortEntry(name=_port_name(port.name), port=port.static_port) for port in spec.port_infos],
-        env=_command_env_of_spec(spec, context, addresses=addresses, shares_its_node=shares_its_node) or None,
+        env=_command_env_of_spec(spec, context, addresses=addresses, is_sub_node=is_sub_node) or None,
         meta=_meta_of_spec(spec) or None,
         service_account_name=(
             naming.component_name(plan.release, naming.ORCHESTRATOR_COMPONENT)
@@ -86,7 +85,7 @@ def _command_env_of_spec(
     context: LaunchCommandContext,
     *,
     addresses: dict[str, dict[str, NamedHostAndPorts]],
-    shares_its_node: bool,
+    is_sub_node: bool,
 ) -> dict[str, str]:
     if isinstance(spec, ServeWorkerSpec):
         return {}
@@ -99,7 +98,7 @@ def _command_env_of_spec(
                 addresses=addresses,
                 cell_index=1,
                 worker_in_cell_index=1,
-                shares_its_node=shares_its_node,
+                is_sub_node=is_sub_node,
             )
         )
     )
@@ -140,7 +139,7 @@ def _launch_context(
     *,
     cell_index: int,
     worker_in_cell_index: int,
-    shares_its_node: bool = False,
+    is_sub_node: bool = False,
 ) -> LaunchCommandContext:
     self_addrs = {
         port.name: HostAndPort(
@@ -152,7 +151,7 @@ def _launch_context(
     return LaunchCommandContext(
         cell_index=cell_index,
         worker_in_cell_index=worker_in_cell_index,
-        gpu_ids=rendered_gpu_ids(spec, shares_its_node=shares_its_node),
+        gpu_ids=real_or_sentinel_gpu_ids(spec, is_sub_node=is_sub_node),
         self_addrs=self_addrs,
         spec_addrs={pool_id: list(cells.values()) for pool_id, cells in addresses.items()},
     )
@@ -161,7 +160,7 @@ def _launch_context(
 def _command_of_spec(spec: BaseWorkerSpec, context: LaunchCommandContext, plan: LaunchPlan) -> list[str]:
     match spec:
         case CommandWorkerSpec():
-            return with_base_gpu_id(with_worker_index(shlex.split(spec.launch_command(context)), spec), spec)
+            return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
         case ServeWorkerSpec():
             return _serve_command(spec, plan)
         case _:
@@ -185,7 +184,7 @@ def _serve_command(spec: ServeWorkerSpec, plan: LaunchPlan) -> list[str]:
     return [sys.executable, "-m", _SUPERVISOR_MODULE, "--num-subprocesses", str(workers_per_pod), "--"] + serve
 
 
-def _shares_its_node(pairing_layout: PairingLayout | None) -> bool:
+def _is_sub_node(pairing_layout: PairingLayout | None) -> bool:
     if pairing_layout is None:
         return False
     return pairing_layout.num_gpus_per_inference_pod < pairing_layout.num_gpus_per_node

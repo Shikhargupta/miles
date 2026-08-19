@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from miles.utils.workers import env_vars as worker_env_vars
 from miles.utils.workers.worker_spec import BaseWorkerSpec
 
@@ -14,23 +16,31 @@ _BASE_GPU_ID_SENTINEL = 987654322
 _BASE_GPU_ID_PLACEHOLDER = f"$({worker_env_vars.BASE_GPU_ID_ENV_VAR})"
 
 
-def rendered_gpu_ids(spec: BaseWorkerSpec, *, shares_its_node: bool) -> list[int]:
+class _Substitution(NamedTuple):
+    sentinel: int
+    placeholder: str
+    built_out_of: str
+
+
+_SUBSTITUTIONS = (
+    _Substitution(sentinel=WORKER_INDEX_SENTINEL, placeholder=_WORKER_INDEX_PLACEHOLDER, built_out_of="pod index"),
+    _Substitution(sentinel=_BASE_GPU_ID_SENTINEL, placeholder=_BASE_GPU_ID_PLACEHOLDER, built_out_of="base gpu id"),
+)
+
+
+def real_or_sentinel_gpu_ids(spec: BaseWorkerSpec, *, is_sub_node: bool) -> list[int]:
     gpus_per_pod = max(1, spec.scheduling.gpus_per_pod())
-    if shares_its_node:
+    if is_sub_node:
         return [_BASE_GPU_ID_SENTINEL] * gpus_per_pod
     return list(range(gpus_per_pod))
 
 
-def with_base_gpu_id(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
-    sentinel = str(_BASE_GPU_ID_SENTINEL)
-    _assert_sentinel_is_a_whole_token(argv, sentinel=sentinel, spec=spec, built_out_of="base gpu id")
-    return [_BASE_GPU_ID_PLACEHOLDER if argument == sentinel else argument for argument in argv]
-
-
-def with_worker_index(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
-    sentinel = str(WORKER_INDEX_SENTINEL)
-    _assert_sentinel_is_a_whole_token(argv, sentinel=sentinel, spec=spec, built_out_of="pod index")
-    return [_WORKER_INDEX_PLACEHOLDER if argument == sentinel else argument for argument in argv]
+def sentinels_to_placeholders(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
+    for substitution in _SUBSTITUTIONS:
+        sentinel = str(substitution.sentinel)
+        _assert_sentinel_is_a_whole_token(argv, sentinel=sentinel, spec=spec, built_out_of=substitution.built_out_of)
+        argv = [substitution.placeholder if argument == sentinel else argument for argument in argv]
+    return argv
 
 
 def _assert_sentinel_is_a_whole_token(
