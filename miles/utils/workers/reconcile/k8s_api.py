@@ -3,16 +3,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.k8s_types import Pod, WatchFrame
 
 logger = logging.getLogger(__name__)
-
-ModelT = TypeVar("ModelT", bound=BaseModel)
 
 _CURSOR_REJECTED_CODES = (410, 504)
 _CURSOR_REJECTED_REASONS = ("Expired", "Gone")
@@ -45,7 +43,7 @@ class PodWatchEvent(FrozenStrictBaseModel):
         # one exception: an unreadable one may be the expiry only a relist can clear, and a cursor the
         # apiserver has already rejected replays forever, so it is read at its worst. a pod frame is
         # deliberately not tolerated, because a watch that cannot read its pods has nothing to report
-        frame = _validated_or_none(WatchFrame, obj)
+        frame = _validated_frame_or_none(obj)
         is_error = event_type == EVENT_TYPE_ERROR
         return cls(
             type=event_type,
@@ -102,11 +100,11 @@ def exception_rejects_cursor(exception: BaseException) -> bool:
     return getattr(exception, "status", None) in _CURSOR_REJECTED_CODES
 
 
-def _validated_or_none(model: type[ModelT], obj: Any) -> ModelT | None:
+def _validated_frame_or_none(obj: Any) -> WatchFrame | None:
     try:
-        return model.model_validate(obj)
+        return WatchFrame.model_validate(obj)
     except ValidationError:
-        logger.warning(f"a watch frame carries no readable {model.__name__} envelope ({obj=})")
+        logger.warning(f"a watch frame carries no readable envelope ({obj=})")
         return None
 
 

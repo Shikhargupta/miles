@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 
 PARK_TIMEOUT_SECONDS = 3600.0
-_POLL_SECONDS = 0.01
+_POLL_SECONDS = 1.0
 
 
 class Parker:
