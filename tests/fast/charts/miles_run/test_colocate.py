@@ -1,17 +1,20 @@
 import json
 from typing import Any
 
+import pytest
 from tests.fast.charts.utils import (
     NAMESPACE,
     RUN_RELEASE_NAME,
     named_object,
     objects_of_kind,
     render_run,
+    render_run_error,
     requires_helm,
     with_object_names,
 )
 
 from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME
+from miles.utils.workers.env_vars import BASE_GPU_ID_ENV_VAR, CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 ENGINES = [
@@ -240,3 +243,14 @@ class TestAPoolTheConfigDoesNotName:
         assert "schedulingGates" not in pod
         assert "hostIPC" not in pod
         assert "MILES_BASE_GPU_ID" not in _env_names(pod["containers"][0])
+
+
+@requires_helm
+class TestTheVariablesAPodLearnsFromItself:
+    @pytest.mark.parametrize("name", [CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, BASE_GPU_ID_ENV_VAR])
+    @pytest.mark.parametrize("section", ["infra", "run"])
+    def test_the_schema_refuses_one_in_a_values_environment(self, section: str, name: str):
+        """Kubernetes keeps the last entry of a name, and these render first, so a values entry wins silently."""
+        error = render_run_error("--set", f"{section}.env.{name}=anything")
+
+        assert name in error
