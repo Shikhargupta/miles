@@ -15,6 +15,7 @@ from miles.utils.test_utils.ft_test_actions import (
     FTTestActionControllerExecutor,
     FTTestActionOrchestrationExecutor,
     _load_actions,
+    write_ft_test_actions,
 )
 
 _POOL_ID = "trainer-engine-actor"
@@ -473,3 +474,45 @@ class TestSleepForeverAtEnd:
         await executor.run_after_step(rollout_id=5)
 
         assert wakes == []
+
+
+# ============ adhoc file delivery (revert after the args refactor) ============
+
+
+def _args_of_path(path: object) -> SimpleNamespace:
+    return SimpleNamespace(ci_ft_test_actions_path=path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+class TestActionsDeliveredThroughAFile:
+    def test_a_plan_written_to_the_file_is_the_plan_the_run_performs(self, tmp_path) -> None:
+        """Every worker pod's command carries the arguments, so a changing plan cannot live in one."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+
+        assert _load_actions(_args_of_path(str(path)), _ORCHESTRATION_ACTIONS) == [_SLEEP_ACTION]
+
+    def test_a_file_rewritten_between_two_reads_is_read_again_rather_than_remembered(self, tmp_path) -> None:
+        """A take-over relaunches the same command, so only a fresh read can arm the next freeze."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        args = _args_of_path(str(path))
+        assert _load_actions(args, _ORCHESTRATION_ACTIONS) == [_SLEEP_ACTION]
+
+        write_ft_test_actions(path, [])
+
+        assert _load_actions(args, _ORCHESTRATION_ACTIONS) == []
+
+    def test_a_file_that_does_not_exist_yet_names_no_action(self, tmp_path) -> None:
+        """The run reads the plan every step and starts before whatever writes it has run."""
+        assert _load_actions(_args_of_path(str(tmp_path / "absent.json")), _ORCHESTRATION_ACTIONS) == []
+
+    def test_a_run_told_both_the_plan_and_a_file_holding_one_is_refused(self, tmp_path) -> None:
+        """Two plans mean the run silently follows one of them, and nobody can tell which."""
+        args = SimpleNamespace(
+            ci_ft_test_actions=json.dumps([{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}]),
+            ci_ft_test_actions_path=str(tmp_path / "plan.json"),
+        )
+
+        with pytest.raises(AssertionError, match="both name the actions"):
+            _load_actions(args, _ORCHESTRATION_ACTIONS)
