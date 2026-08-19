@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import TypeAdapter, model_validator
@@ -56,8 +57,7 @@ _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestA
 
 
 def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
-    raw: str | None = getattr(args, "ci_ft_test_actions", None)
-    if not raw:
+    if not (raw := _read_declared_actions(args)):
         return []
     all_actions = _ACTION_LIST_ADAPTER.validate_json(raw)
 
@@ -189,3 +189,38 @@ class FTTestActionOrchestrationExecutor:
     async def _sleep_forever(self) -> None:
         while True:
             await self._sleep(self._interval_seconds)
+
+
+# ============ adhoc file delivery (revert after the args refactor) ============
+
+
+CI_FT_TEST_ACTIONS_PATH_FLAG: str = "--ci-ft-test-actions-path"
+
+
+# TODO ad hoc hack: revert after the args refactor
+def _read_declared_actions(args: object) -> str:
+    inline: str | None = getattr(args, "ci_ft_test_actions", None)
+    path: str | None = getattr(args, "ci_ft_test_actions_path", None)
+
+    assert inline is None or path is None, (
+        f"{CI_FT_TEST_ACTIONS_FLAG} and {CI_FT_TEST_ACTIONS_PATH_FLAG} both name the actions a run performs, and a "
+        f"run given both silently follows one of them"
+    )
+    return read_ft_test_actions(Path(path)) if path is not None else (inline or "")
+
+
+# TODO ad hoc hack: revert after the args refactor
+def write_ft_test_actions(path: Path, actions: Sequence[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    scratch.write_text(render_ft_test_actions(actions))
+    scratch.replace(path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+def read_ft_test_actions(path: Path) -> str:
+    if not path.is_file():
+        logger.info("No FT test actions at %s yet; this run performs none until there are", path)
+        return ""
+    return path.read_text()
