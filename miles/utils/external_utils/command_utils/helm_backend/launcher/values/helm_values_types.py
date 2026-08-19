@@ -17,9 +17,6 @@ _DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])
 _OPTIONAL_DNS_SUBDOMAIN = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
 
 _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
-# kubernetes keeps the last of several env entries with one name, and a run's own env is rendered
-# after the downward-api ones, so a name a pod learns from its labels or annotations is a name the
-# values must not be able to set: it would be overridden with no error anywhere
 _PLATFORM_OWNED_ENV_VARS = [CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, BASE_GPU_ID_ENV_VAR]
 _ENV_KEYS = {
     "propertyNames": {

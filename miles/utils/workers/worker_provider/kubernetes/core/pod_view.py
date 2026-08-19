@@ -14,8 +14,6 @@ class CellLabelKeys(FrozenStrictBaseModel):
     cell_size_annotation: str
     meta_annotation_prefix: str
     gpu_ids_meta: str
-    # deliberately outside the meta prefix: those annotations are merged across a cell's pods and
-    # asserted consistent, while the card a pod was seated on differs from pod to pod by definition
     base_gpu_id_annotation: str
 
 

@@ -65,9 +65,6 @@ class PairingConfig(FrozenStrictBaseModel):
 
     @model_validator(mode="after")
     def _assert_the_pools_claim_distinct_gpus(self) -> PairingConfig:
-        # sharing a trainer pod is what sub-node pairing is for, so two pools wanting one trainer is no
-        # longer an error; two of them wanting the same card of its node still is. the launcher renders this
-        # config and the controller parses it back, so validating here covers both without a second copy
         owner_of_gpu: dict[int, str] = {}
         for pool in self.inference_pools:
             span = range(pool.layout.gpu_offset, pool.layout.gpu_offset + pool.layout.total_inference_gpus)

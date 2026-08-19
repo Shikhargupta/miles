@@ -42,8 +42,6 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
             _assert_worker_ports_fit(spec)
     addresses = _compute_addresses(specs, plan.release)
 
-    # a pool's own gpus are numbered from zero, but one sharing a trainer's node is numbered from wherever
-    # the pairing seated it, so the entries have to be rendered against the pairing rather than before it
     colocate = pairing_config(specs, plan) if plan.colocate else None
     layout_of_pool = {pool.pool_id: pool.layout for pool in colocate.inference_pools} if colocate else {}
 

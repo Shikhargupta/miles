@@ -70,8 +70,6 @@ def build_entry(
         ports=[PortEntry(name=_port_name(port.name), port=port.static_port) for port in spec.port_infos],
         env=_command_env_of_spec(spec, context, addresses=addresses, shares_its_node=shares_its_node) or None,
         meta=_meta_of_spec(spec) or None,
-        # only the pools that reconcile against the platform get the account that may read it; the
-        # rest stay on the namespace default, which can do nothing
         service_account_name=(
             naming.component_name(plan.release, naming.ORCHESTRATOR_COMPONENT) if spec.observes_platform else None
         ),
@@ -161,9 +159,6 @@ def _launch_context(
 
 def _rendered_gpu_ids(spec: BaseWorkerSpec, *, shares_its_node: bool) -> list[int]:
     gpus_per_pod = max(1, spec.scheduling.gpus_per_pod())
-    # a pod given its own cards is handed them as devices 0..n-1 whatever the node called them, but a
-    # pod sharing a node sees every card the node has, so which of them are its own is a question only
-    # its own position can answer, and that position is a label the pod is not wearing until it runs
     if shares_its_node:
         return [_BASE_GPU_ID_SENTINEL] * gpus_per_pod
     return list(range(gpus_per_pod))
@@ -197,8 +192,6 @@ def _serve_command(spec: ServeWorkerSpec, plan: LaunchPlan) -> list[str]:
 
 
 def _shares_its_node(pairing_layout: PairingLayout | None) -> bool:
-    # a pool the pairing does not name keeps its own nodes even in a colocate run, and its cards are its
-    # own however narrow it is; only one seated on a trainer's node has to be told where it starts
     if pairing_layout is None:
         return False
     return pairing_layout.num_gpus_per_inference_pod < pairing_layout.num_gpus_per_node

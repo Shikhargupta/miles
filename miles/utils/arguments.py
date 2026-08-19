@@ -2954,10 +2954,6 @@ def _compute_rollout_external(args: argparse.Namespace) -> bool:
 
 
 def _compute_update_weights_over_cuda_ipc(args: argparse.Namespace) -> bool:
-    # handing an engine a cuda ipc handle makes it open the sender's pid, so the two have to be in
-    # one pid namespace; colocation is what puts them there, but only because ray colocates inside a
-    # node's process space, while this backend colocates by pinning two pods to a node and a pod
-    # cannot open pids belonging to another
     return args.colocate and ClusterBackend(args.cluster_backend) != ClusterBackend.KUBERNETES
 
 

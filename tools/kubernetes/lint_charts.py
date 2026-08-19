@@ -63,9 +63,6 @@ VARIANTS: dict[str, list[list[str]]] = {
         ],
         [
             "--set-json",
-            # the pool ids have to be the pools' own names, or nothing here is colocated and the
-            # gated branch of the pool template renders in no variant at all; 'e' is sub-node so
-            # that branch's base gpu id env is covered too
             'run.colocate={"namespace":"lint","release":"lint","trainer_pool_id":"t",'
             '"inference_pools":[{"pool_id":"e","layout":{"num_inference_cells":2,"num_trainer_cells":2,'
             '"num_pods_per_inference_cell":1,"num_pods_per_trainer_cell":2,"num_gpus_per_node":8,'

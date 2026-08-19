@@ -18,6 +18,7 @@ from miles.utils.external_utils.colocate_pairing.controller import (
     PairingController,
     _place_inference_pod,
 )
+from miles.utils.external_utils.colocate_pairing.node_width import NodeWidthCheck
 from miles.utils.external_utils.colocate_pairing.pods import PodCoordinate
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import _assert_colocate_supported
 from miles.utils.test_utils.clock import FakeClock
@@ -891,6 +892,21 @@ class TestReconcile:
 
         assert core_v1.patched == []
 
+    def test_reports_a_read_that_fails_for_a_reason_of_its_own(self):
+        """An apiserver that cannot be read says nothing about the gate, and guessing would strand the pod."""
+        core_v1 = FakeCoreV1(
+            rejects={_pod_name(INFERENCE_POOL_ID, 0): 422}, read_rejects={_pod_name(INFERENCE_POOL_ID, 0): 500}
+        )
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        with pytest.raises(client.ApiException):
+            asyncio.run(
+                _attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
+            )
+
     def test_still_reports_an_apiserver_failure_that_is_not_a_lost_race(self):
         """A rejected patch that the gate test cannot explain is a real fault and must reach the loop."""
         core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 500})
@@ -967,9 +983,75 @@ class TestReconcile:
         assert len(core_v1.patched) == 1
 
 
+class TestNodeWidthCheck:
+    @staticmethod
+    def _check(core_v1: Any, num_gpus_per_node: int = GPUS_PER_NODE) -> NodeWidthCheck:
+        return NodeWidthCheck(core_v1=core_v1, num_gpus_per_node=num_gpus_per_node)
+
+    def test_accepts_a_node_that_allocates_the_configured_number_of_gpus(self):
+        """The whole placement rests on the trainer holding the node, which only the node itself can confirm."""
+        core_v1 = FakeCoreV1(node_gpus=GPUS_PER_NODE)
+
+        asyncio.run(self._check(core_v1).assert_node_is_as_wide_as_configured("gpu-3"))
+
+        assert core_v1.nodes_read == ["gpu-3"]
+
+    def test_reads_a_node_it_has_already_accepted_only_once(self):
+        """Every resync reconciles every key, and a node's gpu count is not going to change under the run."""
+        core_v1 = FakeCoreV1(node_gpus=GPUS_PER_NODE)
+        check = self._check(core_v1)
+
+        asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
+        asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
+
+        assert core_v1.nodes_read == ["gpu-3"]
+
+    def test_refuses_a_node_holding_more_gpus_than_the_run_was_configured_for(self):
+        """--num-gpus-per-node 4 on an 8-gpu node passes every config check and still seats engines wrongly."""
+        with pytest.raises(AssertionError, match="allocates 8"):
+            asyncio.run(
+                self._check(FakeCoreV1(node_gpus=8), num_gpus_per_node=4).assert_node_is_as_wide_as_configured("gpu-3")
+            )
+
+    def test_refuses_a_node_that_allocates_no_gpus_at_all(self):
+        """A node whose device plugin has not registered yet reports nothing, and zero is not the node's width."""
+        with pytest.raises(AssertionError, match="allocates 0"):
+            asyncio.run(self._check(FakeCoreV1(node_gpus=None)).assert_node_is_as_wide_as_configured("gpu-3"))
+
+    def test_reads_a_refused_node_again_on_the_next_pass(self):
+        """Caching the refusal would turn a device plugin that registers late into a permanent failure."""
+        core_v1 = FakeCoreV1(node_gpus=4)
+        check = self._check(core_v1)
+
+        for _ in range(2):
+            with pytest.raises(AssertionError):
+                asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
+
+        assert core_v1.nodes_read == ["gpu-3", "gpu-3"]
+
+    def test_takes_the_one_node_width_every_inference_pool_was_rendered_against(self):
+        """The layouts all copy the trainer's node width, so the run has exactly one number to check."""
+        check = NodeWidthCheck.from_config(config=_config([_inference_pool(_sub_node_layout())]), core_v1=FakeCoreV1())
+
+        asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
+
+    def test_refuses_a_config_whose_pools_disagree_about_the_node_width(self):
+        """No single number would then describe the nodes, and half the engines would be checked against a lie."""
+        pools = [
+            _inference_pool(_layout(num_inference_cells=1, num_trainer_cells=1)),
+            _inference_pool(
+                _layout(num_inference_cells=1, num_trainer_cells=1, num_gpus_per_node=4, gpu_offset=8),
+                pool_id=DECODE_POOL_ID,
+            ),
+        ]
+
+        with pytest.raises(AssertionError, match="different node widths"):
+            NodeWidthCheck.from_config(config=_config(pools), core_v1=FakeCoreV1())
+
+
 class TestTheNodeIsCheckedBeforeAnythingIsReleased:
     def test_releases_onto_a_node_that_is_as_wide_as_the_run_was_configured_for(self):
-        """The whole placement rests on the trainer holding the node, which only the node itself can confirm."""
+        """The check runs in the release path, so a good node has to still let every gated pod through."""
         core_v1 = FakeCoreV1(node_gpus=GPUS_PER_NODE)
         pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
 
@@ -977,25 +1059,6 @@ class TestTheNodeIsCheckedBeforeAnythingIsReleased:
 
         assert core_v1.nodes_read == ["gpu-3"]
         assert [name for name, _ in core_v1.patched] == [_pod_name(INFERENCE_POOL_ID, 0)]
-
-    def test_reads_a_node_it_has_already_accepted_only_once(self):
-        """Every resync reconciles every key, and a node's gpu count is not going to change under the run."""
-        core_v1 = FakeCoreV1(node_gpus=GPUS_PER_NODE)
-        pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
-        controller = _attached(_controller(core_v1), pods)
-
-        asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0)))
-        asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0)))
-
-        assert core_v1.nodes_read == ["gpu-3"]
-
-    def test_refuses_a_node_holding_more_gpus_than_the_run_was_configured_for(self):
-        """--num-gpus-per-node 4 on an 8-gpu node passes every config check and still seats engines wrongly."""
-        core_v1 = FakeCoreV1(node_gpus=4)
-        pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
-
-        with pytest.raises(AssertionError, match="allocates 4"):
-            asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
     def test_leaves_every_pod_of_a_refused_node_gated(self):
         """A pod released onto a node the trainer does not own would load weights over the trainer's own cards."""
@@ -1012,26 +1075,6 @@ class TestTheNodeIsCheckedBeforeAnythingIsReleased:
             )
 
         assert core_v1.patched == []
-
-    def test_refuses_a_node_that_allocates_no_gpus_at_all(self):
-        """A node whose device plugin has not registered yet reports nothing, and zero is not the node's width."""
-        core_v1 = FakeCoreV1(node_gpus=None)
-        pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
-
-        with pytest.raises(AssertionError, match="allocates 0"):
-            asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
-
-    def test_reads_a_refused_node_again_on_the_next_pass(self):
-        """Caching the refusal would turn a device plugin that registers late into a permanent failure."""
-        core_v1 = FakeCoreV1(node_gpus=4)
-        pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
-        controller = _attached(_controller(core_v1), pods)
-
-        for _ in range(2):
-            with pytest.raises(AssertionError):
-                asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0)))
-
-        assert core_v1.nodes_read == ["gpu-3", "gpu-3"]
 
     def test_does_not_read_a_node_when_there_is_nothing_left_to_release(self):
         """A resync over an already-placed pair must not put a node read on the apiserver for no reason."""
@@ -1227,6 +1270,7 @@ class FakeCoreV1:
         *,
         rejects: dict[str, int] | None = None,
         observed: dict[str, Any] | None = None,
+        read_rejects: dict[str, int] | None = None,
         node_gpus: int | None = GPUS_PER_NODE,
     ) -> None:
         self.patched: list[tuple[str, list[dict[str, Any]]]] = []
@@ -1234,6 +1278,7 @@ class FakeCoreV1:
         self.nodes_read: list[str] = []
         self._rejects = rejects or {}
         self._observed = observed or {}
+        self._read_rejects = read_rejects or {}
         self._node_gpus = node_gpus
 
     async def patch_namespaced_pod(self, *, name: str, namespace: str, body: list[dict[str, Any]]) -> None:
@@ -1243,6 +1288,8 @@ class FakeCoreV1:
 
     async def read_namespaced_pod(self, *, name: str, namespace: str) -> Any:
         self.read.append(name)
+        if (status := self._read_rejects.get(name)) is not None:
+            raise client.ApiException(status=status, reason="rejected by the fake apiserver")
         if (pod := self._observed.get(name)) is None:
             raise client.ApiException(status=404, reason="not found by the fake apiserver")
         return pod

@@ -342,8 +342,6 @@ def _compute_spec_inference_engine(
                 else []
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
-            # an sglang without the gate serves nothing on this port, and a cell that got one anyway
-            # would wait out its whole activation deadline on an engine that is already serving
             *(
                 [PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True)]
                 if sglang_supports_gated_launch()

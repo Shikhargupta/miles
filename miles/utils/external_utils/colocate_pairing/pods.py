@@ -46,9 +46,6 @@ def release_patch(
         else {"op": "add", "path": "/spec/nodeSelector", "value": {_HOSTNAME_LABEL: node_name}}
     )
     key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
-    # adding the whole map replaces it, which would drop the chart's meta and the platform's own
-    # bookkeeping, so a pod that has the map at all is only ever added to one key at a time; the map
-    # is built only for a pod that carries none, where there is nothing to lose
     tell = (
         {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)}
         if annotations is not None

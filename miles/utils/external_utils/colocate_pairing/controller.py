@@ -6,6 +6,7 @@ from typing import NamedTuple
 from kubernetes_asyncio import client
 
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig, PairingLayout
+from miles.utils.external_utils.colocate_pairing.node_width import NodeWidthCheck
 from miles.utils.external_utils.colocate_pairing.pods import (
     PodCoordinate,
     coordinate_of,
@@ -21,7 +22,6 @@ logger = logging.getLogger(__name__)
 _UNRELATED_KEY_PREFIX = "__unrelated__/"
 _UNPROCESSABLE_ENTITY = 422
 _NOT_FOUND = 404
-_GPU_RESOURCE = "nvidia.com/gpu"
 
 
 class InferencePlacement(NamedTuple):
@@ -48,9 +48,6 @@ class PairingController:
             for cell_index in range(pool.layout.num_inference_cells)
             for pod_index in range(pool.layout.num_pods_per_inference_cell)
         }
-        # sub-node inference pods share one trainer pod's node, so a trainer wakes several of them and the
-        # pair is keyed by the trainer: keying by the inference pod would give that trainer many keys and the
-        # loop hands a pod exactly one
         self._inferences_of_trainer: dict[PodCoordinate, list[tuple[PodCoordinate, int]]] = {}
         for inference, placement in placement_of_inference.items():
             self._inferences_of_trainer.setdefault(placement.trainer, []).append((inference, placement.base_gpu_id))
@@ -59,13 +56,7 @@ class PairingController:
             inference: placement.trainer.key for inference, placement in placement_of_inference.items()
         } | {trainer: trainer.key for trainer in self._inferences_of_trainer}
 
-        node_widths = {pool.layout.num_gpus_per_node for pool in self._config.inference_pools}
-        assert len(node_widths) == 1, (
-            f"the inference pools were rendered against different node widths {sorted(node_widths)}, so no single "
-            f"number describes the nodes this run's trainers hold and none can be checked against them"
-        )
-        self._num_gpus_per_node = node_widths.pop()
-        self._nodes_of_the_configured_width: set[str] = set()
+        self._node_width = NodeWidthCheck.from_config(config=config, core_v1=core_v1)
 
     def set_loop(self, loop: ReconcileLoop) -> None:
         self._loop = loop
@@ -95,7 +86,7 @@ class PairingController:
             )
             return
 
-        await self._assert_the_node_is_as_wide_as_the_run_was_told(trainer_node_name)
+        await self._node_width.assert_node_is_as_wide_as_configured(trainer_node_name)
 
         for inference_pod, base_gpu_id in gated:
             await self._release(
@@ -104,20 +95,6 @@ class PairingController:
                 base_gpu_id=base_gpu_id,
                 trainer_key=trainer_coord.key,
             )
-
-    async def _assert_the_node_is_as_wide_as_the_run_was_told(self, node_name: str) -> None:
-        if node_name in self._nodes_of_the_configured_width:
-            return
-
-        node = await self._core_v1.read_node(name=node_name)
-        allocatable = int((node.status.allocatable or {}).get(_GPU_RESOURCE, 0))
-        assert allocatable == self._num_gpus_per_node, (
-            f"node {node_name} allocates {allocatable} {_GPU_RESOURCE} but this run was configured for "
-            f"{self._num_gpus_per_node} gpus per node, so a colocated engine's card is computed against a node "
-            f"width the node does not have and the trainer pod beside it does not hold every card it is given; "
-            f"device plugin time slicing and mig inflate this count, so a node reporting them cannot host colocate"
-        )
-        self._nodes_of_the_configured_width.add(node_name)
 
     async def _release(self, inference_pod: Pod, *, node_name: str, base_gpu_id: int, trainer_key: str) -> None:
         logger.info(
@@ -140,29 +117,19 @@ class PairingController:
                 ),
             )
         except client.ApiException as exception:
-            # the patch tests for the gate before removing it, so an unprocessable entity is how the
-            # apiserver reports that this pod was already released; the pods this trainer seats are
-            # released together, and one of them losing that race must not strand its neighbours
-            if exception.status != _UNPROCESSABLE_ENTITY:
+            name = inference_pod.metadata.name
+            if exception.status != _UNPROCESSABLE_ENTITY or await self._is_still_gated(name):
                 raise
-            await self._forgive_only_a_lost_race(inference_pod, exception=exception)
+            logger.info("%s was released or deleted before this pass reached it", name)
 
-    async def _forgive_only_a_lost_race(self, inference_pod: Pod, *, exception: client.ApiException) -> None:
-        name = inference_pod.metadata.name
+    async def _is_still_gated(self, name: str) -> bool:
         try:
-            observed = Pod.model_validate(
-                await self._core_v1.read_namespaced_pod(name=name, namespace=self._config.namespace)
-            )
-        except client.ApiException as read_exception:
-            if read_exception.status != _NOT_FOUND:
+            observed = await self._core_v1.read_namespaced_pod(name=name, namespace=self._config.namespace)
+        except client.ApiException as exception:
+            if exception.status != _NOT_FOUND:
                 raise
-            logger.info("%s was deleted before this pass reached it", name)
-            return
-
-        if is_gated(observed):
-            logger.error("%s is still gated after the apiserver refused to release it", name)
-            raise exception
-        logger.info("%s was already released before this pass reached it", name)
+            return False
+        return is_gated(Pod.model_validate(observed))
 
     def key_of(self, pod: Pod) -> str:
         if (coord := coordinate_of(pod)) is not None and (key := self._pair_key_of.get(coord)) is not None:
