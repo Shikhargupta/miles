@@ -810,7 +810,10 @@ class TestReconcile:
 
     def test_places_the_other_pods_when_one_of_them_was_already_released(self):
         """The release patch tests the gate first, so losing that race is how a neighbour reports success."""
-        core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 422})
+        released = _pod(INFERENCE_POOL_ID, 0, node_name="gpu-3", gated=False)
+        core_v1 = FakeCoreV1(
+            rejects={_pod_name(INFERENCE_POOL_ID, 0): 422}, observed={_pod_name(INFERENCE_POOL_ID, 0): released}
+        )
         pods = [
             _pod(INFERENCE_POOL_ID, 0),
             _pod(INFERENCE_POOL_ID, 1),
@@ -820,6 +823,32 @@ class TestReconcile:
         asyncio.run(_attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
 
         assert [name for name, _ in core_v1.patched] == [_pod_name(INFERENCE_POOL_ID, 1)]
+        assert core_v1.read == [_pod_name(INFERENCE_POOL_ID, 0)]
+
+    def test_reports_a_refusal_the_lost_race_does_not_explain(self):
+        """A gate somebody else added moves this one's index, and that never resolves: it has to be loud."""
+        still_gated = _pod(INFERENCE_POOL_ID, 0)
+        core_v1 = FakeCoreV1(
+            rejects={_pod_name(INFERENCE_POOL_ID, 0): 422}, observed={_pod_name(INFERENCE_POOL_ID, 0): still_gated}
+        )
+        pods = [still_gated, _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False)]
+
+        with pytest.raises(client.ApiException):
+            asyncio.run(
+                _attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
+            )
+
+    def test_forgives_a_refusal_for_a_pod_that_has_since_been_deleted(self):
+        """A scale-down between the patch and the read is a lost race too, and nothing is left to place."""
+        core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 422})
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        asyncio.run(_attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+
+        assert core_v1.patched == []
 
     def test_still_reports_an_apiserver_failure_that_is_not_a_lost_race(self):
         """A rejected patch that the gate test cannot explain is a real fault and must reach the loop."""
@@ -1073,14 +1102,22 @@ class TestPairingConfig:
 
 
 class FakeCoreV1:
-    def __init__(self, *, rejects: dict[str, int] | None = None) -> None:
+    def __init__(self, *, rejects: dict[str, int] | None = None, observed: dict[str, Any] | None = None) -> None:
         self.patched: list[tuple[str, list[dict[str, Any]]]] = []
+        self.read: list[str] = []
         self._rejects = rejects or {}
+        self._observed = observed or {}
 
     async def patch_namespaced_pod(self, *, name: str, namespace: str, body: list[dict[str, Any]]) -> None:
         if (status := self._rejects.get(name)) is not None:
             raise client.ApiException(status=status, reason="rejected by the fake apiserver")
         self.patched.append((name, body))
+
+    async def read_namespaced_pod(self, *, name: str, namespace: str) -> Any:
+        self.read.append(name)
+        if (pod := self._observed.get(name)) is None:
+            raise client.ApiException(status=404, reason="not found by the fake apiserver")
+        return pod
 
 
 class PairingHarness:

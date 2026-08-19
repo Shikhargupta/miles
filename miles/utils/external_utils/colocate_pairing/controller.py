@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _UNRELATED_KEY_PREFIX = "__unrelated__/"
 _UNPROCESSABLE_ENTITY = 422
+_NOT_FOUND = 404
 
 
 class InferencePlacement(NamedTuple):
@@ -119,7 +120,27 @@ class PairingController:
             # released together, and one of them losing that race must not strand its neighbours
             if exception.status != _UNPROCESSABLE_ENTITY:
                 raise
-            logger.info("%s was already released before this pass reached it", inference_pod.metadata.name)
+            await self._forgive_only_a_lost_race(inference_pod, exception=exception)
+
+    async def _forgive_only_a_lost_race(self, inference_pod: Pod, *, exception: client.ApiException) -> None:
+        # a test op can fail for reasons that will never resolve, such as another controller adding a gate
+        # of its own and moving this one's index; swallowing those would spin at info level forever instead
+        # of reaching the loop's error path, so the pod is read back and only a released one is forgiven
+        name = inference_pod.metadata.name
+        try:
+            observed = Pod.model_validate(
+                await self._core_v1.read_namespaced_pod(name=name, namespace=self._config.namespace)
+            )
+        except client.ApiException as read_exception:
+            if read_exception.status != _NOT_FOUND:
+                raise
+            logger.info("%s was deleted before this pass reached it", name)
+            return
+
+        if is_gated(observed):
+            logger.error("%s is still gated after the apiserver refused to release it", name)
+            raise exception
+        logger.info("%s was already released before this pass reached it", name)
 
     def key_of(self, pod: Pod) -> str:
         if (coord := coordinate_of(pod)) is not None and (key := self._pair_key_of.get(coord)) is not None:
