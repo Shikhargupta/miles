@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
@@ -29,15 +31,29 @@ def coordinate_of(pod: Pod) -> PodCoordinate | None:
     )
 
 
-def release_patch(*, node_name: str, gates: list[str], has_node_selector: bool) -> list[dict[str, object]]:
+def release_patch(
+    *,
+    node_name: str,
+    base_gpu_id: int,
+    gates: list[str],
+    has_node_selector: bool,
+    annotations: Mapping[str, str] | None,
+) -> list[dict[str, object]]:
     index = gates.index(_GATE_NAME)
     pin = (
         {"op": "add", "path": f"/spec/nodeSelector/{_escape_pointer(_HOSTNAME_LABEL)}", "value": node_name}
         if has_node_selector
         else {"op": "add", "path": "/spec/nodeSelector", "value": {_HOSTNAME_LABEL: node_name}}
     )
+    key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
+    annotation_ops = (
+        {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)}
+        if annotations is not None
+        else {"op": "add", "path": "/metadata/annotations", "value": {key: str(base_gpu_id)}}
+    )
     return [
         pin,
+        annotation_ops,
         {"op": "test", "path": f"/spec/schedulingGates/{index}/name", "value": _GATE_NAME},
         {"op": "remove", "path": f"/spec/schedulingGates/{index}"},
     ]
