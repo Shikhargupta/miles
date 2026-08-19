@@ -14,7 +14,9 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
 - **Dump dirs**: `/node_public/dumps/<TEST_NAME>/` (only `run` deletes it; `--dump-dir` overrides);
   multi policy: `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
 
-## `scenario_split_deterministic`
+## Test Specifications
+
+### `scenario_split_deterministic`
 
 ```
 Type: comparison (baseline=one release, target=one release per deployment)
@@ -29,7 +31,21 @@ Steps: 3 rollouts
    count; weights moved; nonzero gradients >= 2 rollouts
 ```
 
-## `scenario_hot_restart_deterministic`
+### `scenario_split_multi_policy`
+
+```
+Type: single run (multi trainer is not bitwise-reproducible)
+Steps: 3 rollouts
+Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PRIMARY last
+
+1. Install the five releases via the example, one command per part
+2. Assert: every rank trained with its own policy's args; every policy learned
+   (TRAIN_REWARD_BOUNDS); the leader reported every rollout; finite nonzero grad_norm/loss
+3. Assert per policy: train_rollout_logprob_abs_diff <= 0.5
+
+The cheapest wiring bug - a trainer scoring another engine's tokens - shows up in assertion 3.
+```
+### `scenario_hot_restart_deterministic`
 
 ```
 Type: comparison (baseline=untouched, target=same command, script replaced twice mid-run)
@@ -47,7 +63,7 @@ Trigger schedule, asserted on the records: restart 1 at (save=1, finished=2), st
 Every take-over lands on a non-save step, so at least one unsaved step is rolled back and redone.
 ```
 
-## `scenario_hot_restart_no_checkpoint`
+### `scenario_hot_restart_no_checkpoint`
 
 ```
 Type: comparison (baseline=untouched, target=same command, script replaced ONCE before any save)
@@ -64,7 +80,7 @@ Production saves every ~20 steps, so a restart at step 10 is this case: load_sta
 tracker, re-seeds, resets the optimizer and returns start rollout 0.
 ```
 
-## `scenario_hot_restart_realistic_gsm8k`
+### `scenario_hot_restart_realistic_gsm8k`
 
 ```
 Type: single run, ft's scenario_realistic_gsm8k with hot restarts instead of kills
@@ -80,17 +96,3 @@ Eligibility: a save exists and a step finished after it; an ineligible draw wait
 Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```
 
-## `scenario_split_multi_policy`
-
-```
-Type: single run (multi trainer is not bitwise-reproducible)
-Steps: 3 rollouts
-Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PRIMARY last
-
-1. Install the five releases via the example, one command per part
-2. Assert: every rank trained with its own policy's args; every policy learned
-   (TRAIN_REWARD_BOUNDS); the leader reported every rollout; finite nonzero grad_norm/loss
-3. Assert per policy: train_rollout_logprob_abs_diff <= 0.5
-
-The cheapest wiring bug - a trainer scoring another engine's tokens - shows up in assertion 3.
-```
