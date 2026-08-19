@@ -97,6 +97,9 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     scheduling: SchedulingSpec
     meta: SpecMetaFn | None = None
     deploy_component: DeployComponent = DeployComponent.PRIMARY
+    # a worker that reconciles against what the platform reports has to be able to ask it, which on
+    # kubernetes means an account with rights over pods rather than the namespace's default one
+    observes_platform: bool = False
 
     @model_validator(mode="after")
     def _reject_the_selector_as_a_component(self) -> "BaseWorkerSpec":

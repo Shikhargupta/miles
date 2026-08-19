@@ -220,3 +220,19 @@ class TestBaseGpuIdOfASubNodeEngine:
 
         with pytest.raises(AssertionError, match="base gpu id"):
             build_values([spec, trainer(num_cells=1, gpus_per_cell=8)], COLOCATE_LAYOUT).as_values()
+
+
+class TestTheAccountAPoolRunsUnder:
+    def test_a_pool_that_observes_the_platform_gets_the_account_that_may_read_it(self):
+        """Only these workers reconcile against pods, and the namespace default cannot list one."""
+        spec = session_server(num_cells=1).model_copy(update={"observes_platform": True})
+
+        entry = build_values([spec], LAYOUT).as_values()["run"]["staticWorkers"][0]
+
+        assert entry["serviceAccountName"] == "r-miles-run-orchestrator"
+
+    def test_every_other_pool_stays_on_the_namespace_default(self):
+        """An engine talks to no api server, and an account it never needs is one it could misuse."""
+        entry = build_values([session_server(num_cells=1)], LAYOUT).as_values()["run"]["staticWorkers"][0]
+
+        assert "serviceAccountName" not in entry

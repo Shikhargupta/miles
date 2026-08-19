@@ -45,6 +45,7 @@ INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS = "miles.utils.workers.registration
 def spec_inference_controller(args) -> ServeWorkerSpec:
     return ServeWorkerSpec(
         name=INFERENCE_CONTROLLER_POOL_ID,
+        observes_platform=True,
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
