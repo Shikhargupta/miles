@@ -71,8 +71,7 @@ Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
 5. Compare: bitwise as in scenario_split_deterministic, engine checksums included, no exemption
 
 checkpointed lands every take-over on a non-save step, so unsaved steps are rolled back and
-redone; no_checkpoint is production restarting between saves - load_state finds no tracker,
-re-seeds, resets the optimizer and returns start rollout 0.
+redone; no_checkpoint has nothing to resume from and starts over at rollout 0.
 ```
 
 ### `scenario_hot_restart_realistic_gsm8k`
