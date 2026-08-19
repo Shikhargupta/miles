@@ -52,7 +52,7 @@ class PairingController:
         for inference, placement in placement_of_inference.items():
             self._inferences_of_trainer.setdefault(placement.trainer, []).append((inference, placement.base_gpu_id))
 
-        self._pair_key_of = {
+        self._trainer_key_of = {
             inference: placement.trainer.key for inference, placement in placement_of_inference.items()
         } | {trainer: trainer.key for trainer in self._inferences_of_trainer}
 
@@ -132,7 +132,7 @@ class PairingController:
         return is_gated(Pod.model_validate(observed))
 
     def key_of(self, pod: Pod) -> str:
-        if (coord := coordinate_of(pod)) is not None and (key := self._pair_key_of.get(coord)) is not None:
+        if (coord := coordinate_of(pod)) is not None and (key := self._trainer_key_of.get(coord)) is not None:
             return key
         return f"{_UNRELATED_KEY_PREFIX}{pod.metadata.name}"
 
