@@ -35,15 +35,16 @@ class RunDeployment:
 
 LaunchDeploymentFn = Callable[[str, command_utils.ExecuteTrainConfig], None]
 BuildDeploymentsFn = Callable[[RunSideRequest], list[RunDeployment]]
+BuildSideArgsFn = Callable[[RunSideRequest], str]
 
 
 # ============================== run side wiring ===============================
 
 
-def create_split_run_side(*, build_deployments: BuildDeploymentsFn) -> RunSideFn:
+def create_split_run_side(*, build_baseline_args: BuildSideArgsFn, build_deployments: BuildDeploymentsFn) -> RunSideFn:
     def run_side(request: RunSideRequest) -> None:
         if request.side != TARGET_SIDE:
-            run_one_release(request)
+            run_one_release(dataclasses.replace(request, train_args=build_baseline_args(request)))
             return
 
         split = dataclasses.replace(request, config=dataclasses.replace(request.config, run_uuid=generate_run_uuid()))
