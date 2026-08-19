@@ -48,37 +48,31 @@ Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PR
 ### `scenario_hot_restart_deterministic`
 
 ```
-Type: comparison (baseline=untouched, target=same command, script replaced twice mid-run)
-Steps: 6 rollouts, --save-interval 2 (saves after steps 1, 3, 5)
-Trigger schedule, asserted on the records: restart 1 at (save=1, finished=2), step 3 in flight;
-                                           restart 2 at (save=3, finished=4), step 5 in flight
+Type: comparison (baseline=untouched, target=same command, orchestration script replaced mid-run)
+Steps: 6 rollouts
+Modes: checkpointed  - --save-interval 2 (saves after 1, 3, 5), 2 restarts on an exact schedule,
+                       asserted on the records: restart 1 at (save=1, finished=2), step 3 in
+                       flight; restart 2 at (save=3, finished=4), step 5 in flight
+       no_checkpoint - --save-interval 4 (saves after 3 and 5), 1 restart in window 0..2; the
+                       gate opens on the first finished step while no checkpoint exists, and a
+                       save seen first fails
+Entries: test_hot_restart_deterministic.py (checkpointed), test_hot_restart_no_checkpoint.py
 
-1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the schedule
+1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the mode
 2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps)
 3. Assert process: one trainer rpc boot uuid throughout, answering the take-over's fresh client
-4. Assert redo, measured off the logs: one .trash_* per restart; resume point = the snapshot
-   beside a checkpoint, >= the pinned save - the run resumed there, not at step 0; per-step
-   attempts all 1 or 2; every window non-empty
-5. Compare: bitwise as in scenario_split_deterministic, engine checksums included
+4. Assert redo, measured off the logs, per mode:
+   - checkpointed: one .trash_* per restart; resume point = the snapshot beside a checkpoint,
+     >= the pinned save - the run resumed there, not at step 0; per-step attempts all 1 or 2;
+     every window non-empty
+   - no_checkpoint: record carries no saved iteration; NO .trash_* (the run's --load resolves to
+     --ref-load, which holds no snapshot to restore); steps 0..F appear twice, no hole, nothing
+     thrice; the run still saves after the restart
+5. Compare: bitwise as in scenario_split_deterministic, engine checksums included, no exemption
 
-Every take-over lands on a non-save step, so at least one unsaved step is rolled back and redone.
-```
-
-### `scenario_hot_restart_no_checkpoint`
-
-```
-Type: comparison (baseline=untouched, target=same command, script replaced ONCE before any save)
-Steps: 6 rollouts, --save-interval 4 (saves after steps 3 and 5), take-over window 0..2
-
-1. Gate: opens on the first finished step while no checkpoint exists; a save seen first fails
-2. Assert workloads/process: as scenario_hot_restart_deterministic with one restart
-3. Assert redone-from-scratch: record carries no saved iteration; NO .trash_* (the run's --load
-   resolves to --ref-load, which holds no snapshot to restore); steps 0..F appear twice, no hole,
-   nothing thrice; the run still saves after the restart
-4. Compare: bitwise, no checksum exemption
-
-Production saves every ~20 steps, so a restart at step 10 is this case: load_state finds no
-tracker, re-seeds, resets the optimizer and returns start rollout 0.
+checkpointed lands every take-over on a non-save step, so unsaved steps are rolled back and
+redone; no_checkpoint is production restarting between saves - load_state finds no tracker,
+re-seeds, resets the optimizer and returns start rollout 0.
 ```
 
 ### `scenario_hot_restart_realistic_gsm8k`
