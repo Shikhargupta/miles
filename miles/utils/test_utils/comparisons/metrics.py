@@ -252,10 +252,13 @@ def _check_required_keys_exist(events: list[MetricEvent]) -> list[str]:
     return issues
 
 
-def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
-    """Read all MetricEvents from the events directory."""
-    events_dir: Path = dump_dir / EVENTS_DIRNAME
+def read_metric_events(events_dir: Path) -> list[MetricEvent]:
+    """Read all MetricEvents written into one events directory."""
     if not events_dir.exists():
         return []
     all_events = read_events(events_dir)
     return [e for e in all_events if isinstance(e, MetricEvent)]
+
+
+def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
+    return read_metric_events(dump_dir / EVENTS_DIRNAME)
