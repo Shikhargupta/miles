@@ -50,23 +50,25 @@ Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PR
 ```
 Type: comparison (baseline=untouched, target=same command, orchestration script replaced mid-run)
 Steps: 6 rollouts
-Modes: checkpointed  - --save-interval 2 (saves after 1, 3, 5), 2 restarts on an exact schedule,
-                       asserted on the records: restart 1 at (save=1, finished=2), step 3 in
-                       flight; restart 2 at (save=3, finished=4), step 5 in flight
-       no_checkpoint - --save-interval 4 (saves after 3 and 5), 1 restart in window 0..2; the
-                       gate opens on the first finished step while no checkpoint exists, and a
-                       save seen first fails
+Timing: exact - the run sleeps forever at the scheduled step boundary (the fault-injection
+        machinery's sleep-forever action) and the driver relaunches the frozen run, so where a
+        take-over lands is pinned, not raced
+Modes: checkpointed  - --save-interval 2 (saves after 1, 3, 5), 2 restarts: restart 1 frozen
+                       between steps 2 and 3 (resumes save 1), restart 2 frozen between steps
+                       4 and 5 (resumes save 3)
+       no_checkpoint - --save-interval 4 (saves after 3 and 5), 1 restart frozen between steps
+                       1 and 2, before anything was saved
 Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
 
 1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the mode
 2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps)
 3. Assert process: one trainer rpc boot uuid throughout, answering the take-over's fresh client
 4. Assert redo, measured off the logs, per mode:
-   - checkpointed: one .trash_* per restart; resume point = the snapshot beside a checkpoint,
-     >= the pinned save - the run resumed there, not at step 0; per-step attempts all 1 or 2;
-     every window non-empty
+   - checkpointed: one .trash_* per restart; resume point == the pinned save (the snapshot
+     beside that checkpoint), so the run resumed there, not at step 0; the redone steps are
+     exactly the pinned (save, frozen step] windows; per-step attempts all 1 or 2
    - no_checkpoint: record carries no saved iteration; NO .trash_* (the run's --load resolves to
-     --ref-load, which holds no snapshot to restore); steps 0..F appear twice, no hole, nothing
+     --ref-load, which holds no snapshot to restore); steps 0..1 appear exactly twice, nothing
      thrice; the run still saves after the restart
 5. Compare: bitwise as in scenario_split_deterministic, engine checksums included, no exemption
 
