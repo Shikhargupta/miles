@@ -25,7 +25,7 @@ def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
     state_of_cell_name: dict[str, _CellState] = {}
     for event in events:
         if isinstance(event, InjectionEvent):
-            if event.succeeded:
+            if event.succeeded and event.harmed:
                 state_of_cell_name[event.cell_name] = _CellState.INJECTED
             continue
         for name, state in list(state_of_cell_name.items()):
