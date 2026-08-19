@@ -6,7 +6,7 @@ from typing import NamedTuple
 from kubernetes_asyncio import client
 
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig, PairingLayout
-from miles.utils.external_utils.colocate_pairing.node_width import NodeWidthCheck
+from miles.utils.external_utils.colocate_pairing.node_width import NodeWidthChecker
 from miles.utils.external_utils.colocate_pairing.pods import (
     PodCoordinate,
     coordinate_of,
@@ -56,7 +56,7 @@ class PairingController:
             inference: placement.trainer.key for inference, placement in placement_of_inference.items()
         } | {trainer: trainer.key for trainer in self._inferences_of_trainer}
 
-        self._node_width = NodeWidthCheck.from_config(config=config, core_v1=core_v1)
+        self._node_width = NodeWidthChecker.from_config(config=config, core_v1=core_v1)
 
     def set_loop(self, loop: ReconcileLoop) -> None:
         self._loop = loop

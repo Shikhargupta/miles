@@ -18,7 +18,7 @@ from miles.utils.external_utils.colocate_pairing.controller import (
     PairingController,
     _place_inference_pod,
 )
-from miles.utils.external_utils.colocate_pairing.node_width import NodeWidthCheck
+from miles.utils.external_utils.colocate_pairing.node_width import NodeWidthChecker
 from miles.utils.external_utils.colocate_pairing.pods import PodCoordinate
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import _assert_colocate_supported
 from miles.utils.test_utils.clock import FakeClock
@@ -983,10 +983,10 @@ class TestReconcile:
         assert len(core_v1.patched) == 1
 
 
-class TestNodeWidthCheck:
+class TestNodeWidthChecker:
     @staticmethod
-    def _check(core_v1: Any, num_gpus_per_node: int = GPUS_PER_NODE) -> NodeWidthCheck:
-        return NodeWidthCheck(core_v1=core_v1, num_gpus_per_node=num_gpus_per_node)
+    def _check(core_v1: Any, num_gpus_per_node: int = GPUS_PER_NODE) -> NodeWidthChecker:
+        return NodeWidthChecker(core_v1=core_v1, num_gpus_per_node=num_gpus_per_node)
 
     def test_accepts_a_node_that_allocates_the_configured_number_of_gpus(self):
         """The whole placement rests on the trainer holding the node, which only the node itself can confirm."""
@@ -1031,7 +1031,7 @@ class TestNodeWidthCheck:
 
     def test_takes_the_one_node_width_every_inference_pool_was_rendered_against(self):
         """The layouts all copy the trainer's node width, so the run has exactly one number to check."""
-        check = NodeWidthCheck.from_config(config=_config([_inference_pool(_sub_node_layout())]), core_v1=FakeCoreV1())
+        check = NodeWidthChecker.from_config(config=_config([_inference_pool(_sub_node_layout())]), core_v1=FakeCoreV1())
 
         asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
 
@@ -1046,7 +1046,7 @@ class TestNodeWidthCheck:
         ]
 
         with pytest.raises(AssertionError, match="different node widths"):
-            NodeWidthCheck.from_config(config=_config(pools), core_v1=FakeCoreV1())
+            NodeWidthChecker.from_config(config=_config(pools), core_v1=FakeCoreV1())
 
 
 class TestTheNodeIsCheckedBeforeAnythingIsReleased:

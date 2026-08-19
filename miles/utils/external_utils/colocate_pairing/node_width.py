@@ -7,9 +7,9 @@ from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 _GPU_RESOURCE = "nvidia.com/gpu"
 
 
-class NodeWidthCheck:
+class NodeWidthChecker:
     @classmethod
-    def from_config(cls, *, config: PairingConfig, core_v1: client.CoreV1Api) -> NodeWidthCheck:
+    def from_config(cls, *, config: PairingConfig, core_v1: client.CoreV1Api) -> NodeWidthChecker:
         widths = {pool.layout.num_gpus_per_node for pool in config.inference_pools}
         assert len(widths) == 1, (
             f"the inference pools were rendered against different node widths {sorted(widths)}, so no single "
