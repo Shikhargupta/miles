@@ -1,21 +1,22 @@
 import json
 from typing import Any
 
+import pytest
 from tests.fast.charts.utils import (
     NAMESPACE,
     RUN_RELEASE_NAME,
     named_object,
     objects_of_kind,
     render_run,
+    render_run_error,
     requires_helm,
     with_object_names,
 )
-
 from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values import utils as values_utils
 
 from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME, release_patch
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
-from miles.utils.workers.env_vars import BASE_GPU_ID_ENV_VAR
+from miles.utils.workers.env_vars import BASE_GPU_ID_ENV_VAR, CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 ENGINES = [
@@ -130,7 +131,6 @@ class TestColocatedEnginePool:
         assert pod["schedulingGates"] == [GATE]
         assert pod["hostIPC"] is True
         assert pod["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] == 0
-        assert BASE_GPU_ID_ENV_VAR in _env_names(pod["containers"][0])
 
     def test_is_told_which_card_of_the_node_the_pairing_gave_it(self):
         """The controller writes that annotation in the patch that releases the gate, before the pod runs."""
@@ -148,6 +148,12 @@ class TestColocatedEnginePool:
         entry = _env_entry(colocated_engine_pod()["containers"][0], BASE_GPU_ID_ENV_VAR)
 
         assert "value" not in entry
+
+    def test_gives_a_second_colocated_pool_that_variable_too(self):
+        """Prefill and decode may split one trainer node, and each needs to be told where it starts."""
+        pod = pool_pod(render_run(*ENABLE), "myrun-miles-run-decode")
+
+        assert BASE_GPU_ID_ENV_VAR in _env_names(pod["containers"][0])
 
     def test_carries_no_affinity_at_all_but_keeps_the_node_selector(self):
         """Any affinity would contradict the node the controller picks; the selector it only adds to."""
@@ -261,6 +267,17 @@ class TestAPoolTheConfigDoesNotName:
         assert "schedulingGates" not in pod
         assert "hostIPC" not in pod
         assert BASE_GPU_ID_ENV_VAR not in _env_names(pod["containers"][0])
+
+
+@requires_helm
+class TestTheVariablesAPodLearnsFromItself:
+    @pytest.mark.parametrize("name", [CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, BASE_GPU_ID_ENV_VAR])
+    @pytest.mark.parametrize("section", ["infra", "run"])
+    def test_the_schema_refuses_one_in_a_values_environment(self, section: str, name: str):
+        """Kubernetes keeps the last entry of a name, and these render first, so a values entry wins silently."""
+        error = render_run_error("--set", f"{section}.env.{name}=anything")
+
+        assert name in error
 
 
 def _sub_node_engine_argv() -> list[str]:
