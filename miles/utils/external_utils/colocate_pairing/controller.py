@@ -52,7 +52,7 @@ class PairingController:
         for inference, placement in placement_of_inference.items():
             self._inferences_of_trainer.setdefault(placement.trainer, []).append((inference, placement.base_gpu_id))
 
-        self._trainer_key_of = {
+        self._trainer_key_of_coord = {
             inference: placement.trainer.key for inference, placement in placement_of_inference.items()
         } | {trainer: trainer.key for trainer in self._inferences_of_trainer}
 
@@ -69,12 +69,12 @@ class PairingController:
         trainer_coord = next((coord for coord in pods_by_coord if coord.key == pair_key), None)
         if trainer_coord is None:
             return
-        gated = [
+        gated_pods_and_base_gpu_ids = [
             (pod, base_gpu_id)
             for inference_coord, base_gpu_id in self._inferences_of_trainer.get(trainer_coord, [])
             if (pod := pods_by_coord.get(inference_coord)) is not None and is_gated(pod)
         ]
-        if not gated:
+        if not gated_pods_and_base_gpu_ids:
             return
 
         trainer_node_name = pods_by_coord[trainer_coord].spec.node_name
@@ -82,13 +82,13 @@ class PairingController:
             logger.info(
                 "Waiting for %s to be scheduled before releasing %s",
                 trainer_coord.key,
-                [pod.metadata.name for pod, _ in gated],
+                [pod.metadata.name for pod, _ in gated_pods_and_base_gpu_ids],
             )
             return
 
         await self._node_width_checker.assert_node_width_vs_configured(trainer_node_name)
 
-        for inference_pod, base_gpu_id in gated:
+        for inference_pod, base_gpu_id in gated_pods_and_base_gpu_ids:
             await self._release(
                 inference_pod,
                 node_name=trainer_node_name,
@@ -132,7 +132,7 @@ class PairingController:
         return is_gated(Pod.model_validate(observed))
 
     def key_of(self, pod: Pod) -> str:
-        if (coord := coordinate_of(pod)) is not None and (key := self._trainer_key_of.get(coord)) is not None:
+        if (coord := coordinate_of(pod)) is not None and (key := self._trainer_key_of_coord.get(coord)) is not None:
             return key
         return f"{_UNRELATED_KEY_PREFIX}{pod.metadata.name}"
 
