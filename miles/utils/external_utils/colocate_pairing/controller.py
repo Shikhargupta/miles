@@ -56,7 +56,7 @@ class PairingController:
             inference: placement.trainer.key for inference, placement in placement_of_inference.items()
         } | {trainer: trainer.key for trainer in self._inferences_of_trainer}
 
-        self._node_width = NodeWidthChecker.from_config(config=config, core_v1=core_v1)
+        self._node_width_checker = NodeWidthChecker.from_config(config=config, core_v1=core_v1)
 
     def set_loop(self, loop: ReconcileLoop) -> None:
         self._loop = loop
@@ -86,7 +86,7 @@ class PairingController:
             )
             return
 
-        await self._node_width.assert_node_is_as_wide_as_configured(trainer_node_name)
+        await self._node_width_checker.assert_node_is_as_wide_as_configured(trainer_node_name)
 
         for inference_pod, base_gpu_id in gated:
             await self._release(
