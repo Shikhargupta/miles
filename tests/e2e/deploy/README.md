@@ -35,8 +35,8 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
   recorded trigger pairs are asserted to equal the schedule.
   Asserts: only orchestrator + rollout-executor rolled (pod uid/restartCount/stamps); one trainer
   rpc boot uuid throughout; redo measured off the logs - one .trash_* per restart, resume point =
-  the snapshot beside a checkpoint, per-step attempts all 1 or 2; comparison bitwise, target may
-  miss each resume point's engine checksum (see limitations).
+  the snapshot beside a checkpoint, per-step attempts all 1 or 2, every window non-empty;
+  comparison bitwise, engine checksums included.
   Twice because the second take-over hits trainers already taken over once.
 ```
 
@@ -49,6 +49,19 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
   --ref-load); the one log holds steps 0..F twice, no hole, nothing thrice; the run saves after
   the restart; comparison with no checksum exemption.
   Own scenario because load_state without a tracker re-seeds, resets the optimizer, returns 0.
+```
+
+## `scenario_hot_restart_random`
+
+```
+12 rollouts, --save-interval 2, 3 restarts at random eligible moments, ONE release
+  Hot restart as a fault form: ft's fault-injection machinery schedules a HotRestartFaultForm at
+  random intervals, the way it schedules pod kills - so a future soak can mix the two. A moment is
+  eligible when a save exists, a step finished after it, and the window is disjoint from the
+  previous restart's; an ineligible draw waits rather than fires. The seed is logged.
+  Asserts: workloads/process as the deterministic scenario with 3 restarts; redo measured off the
+  logs only (no pinned schedule), every window non-empty; comparison bitwise against an
+  unrestarted baseline - random timing must not change the training.
 ```
 
 ## `scenario_split_multi_policy`
