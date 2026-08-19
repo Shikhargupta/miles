@@ -14,8 +14,7 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
 - **Dump dirs**: `/node_public/dumps/<TEST_NAME>/` (only `run` deletes it; `--dump-dir` overrides);
   multi policy: `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
 - **Comparison criterion** (`compare_deterministic_sides`): dumps and metrics bitwise, plus engine
-  count/checksums, weights-moved and nonzero-gradient gates. Bitwise comes from the deterministic
-  flags + `--sglang-disable-radix-cache` + `--weight-decay 0`.
+  count/checksums, weights-moved and nonzero-gradient gates.
 
 ## `scenario_split_deterministic`
 
