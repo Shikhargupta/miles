@@ -20,8 +20,6 @@ from miles.utils.workers.reconcile.loop import ReconcileLoop
 logger = logging.getLogger(__name__)
 
 _UNRELATED_KEY_PREFIX = "__unrelated__/"
-_UNPROCESSABLE_ENTITY = 422
-_NOT_FOUND = 404
 
 
 class InferencePlacement(NamedTuple):
@@ -106,32 +104,17 @@ class PairingController:
             node_name,
             trainer_key,
         )
-        try:
-            await self._core_v1.patch_namespaced_pod(
-                name=inference_pod.metadata.name,
-                namespace=self._config.namespace,
-                body=release_patch(
-                    node_name=node_name,
-                    base_gpu_id=base_gpu_id,
-                    gates=gate_names(inference_pod),
-                    has_node_selector=bool(inference_pod.spec.node_selector),
-                    annotations=inference_pod.metadata.annotations,
-                ),
-            )
-        except client.ApiException as exception:
-            name = inference_pod.metadata.name
-            if exception.status != _UNPROCESSABLE_ENTITY or await self._is_still_gated(name):
-                raise
-            logger.info("%s was released or deleted before this pass reached it", name)
-
-    async def _is_still_gated(self, name: str) -> bool:
-        try:
-            observed = await self._core_v1.read_namespaced_pod(name=name, namespace=self._config.namespace)
-        except client.ApiException as exception:
-            if exception.status != _NOT_FOUND:
-                raise
-            return False
-        return is_gated(Pod.model_validate(observed))
+        await self._core_v1.patch_namespaced_pod(
+            name=inference_pod.metadata.name,
+            namespace=self._config.namespace,
+            body=release_patch(
+                node_name=node_name,
+                base_gpu_id=base_gpu_id,
+                gates=gate_names(inference_pod),
+                has_node_selector=bool(inference_pod.spec.node_selector),
+                annotations=inference_pod.metadata.annotations,
+            ),
+        )
 
     def key_of(self, pod: Pod) -> str:
         if (coord := coordinate_of(pod)) is not None and (key := self._trainer_key_of_coord.get(coord)) is not None:
