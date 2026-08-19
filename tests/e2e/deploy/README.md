@@ -28,10 +28,11 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
 ## `scenario_hot_restart_deterministic`
 
 ```
-6 rollouts, --save-interval 2, 2 restarts, ONE release
-  Target only: relaunch the same command + --hot-restart orchestration,rollout_executor once a
-  save and a step after it exist (second gate also demands disjoint redo windows), so every
-  take-over rolls back at least one unsaved step.
+6 rollouts, --save-interval 2 (saves after steps 1, 3, 5), 2 restarts, ONE release
+  Target only: relaunch the same command + --hot-restart orchestration,rollout_executor on an
+  exact schedule - restart 1 at (save=1, finished=2), step 3 in flight; restart 2 at (save=3,
+  finished=4), step 5 in flight. Every take-over rolls back at least one unsaved step; the
+  recorded trigger pairs are asserted to equal the schedule.
   Asserts: only orchestrator + rollout-executor rolled (pod uid/restartCount/stamps); one trainer
   rpc boot uuid throughout; redo measured off the logs - one .trash_* per restart, resume point =
   the snapshot beside a checkpoint, per-step attempts all 1 or 2; comparison bitwise, target may
