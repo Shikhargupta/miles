@@ -45,8 +45,6 @@ def release_patch(
         if has_node_selector
         else {"op": "add", "path": "/spec/nodeSelector", "value": {_HOSTNAME_LABEL: node_name}}
     )
-    # the card is only known once the pairing has seated the pod, and it travels in the very patch that
-    # releases it, so the pod the kubelet finally reads can never be placed without knowing where it starts
     key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
     # adding the whole map replaces it, which would drop the chart's meta and the platform's own
     # bookkeeping, so a pod that has the map at all is only ever added to one key at a time; the map

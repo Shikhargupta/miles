@@ -89,9 +89,6 @@ def _parse_gpu_ids(value: str, *, base: int) -> tuple[int, ...]:
 
 
 def _base_gpu_id(pod: Pod, keys: CellLabelKeys) -> int:
-    # a pod holding its own cards is handed them as 0..n-1 and the rendered meta says exactly that, but a
-    # pod seated on another pod's node was given cards further along, and only the pairing controller that
-    # seated it knows where they start
     return int(pod.metadata.annotations.get(keys.base_gpu_id_annotation) or 0)
 
 

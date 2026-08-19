@@ -148,9 +148,6 @@ class PairingController:
             await self._forgive_only_a_lost_race(inference_pod, exception=exception)
 
     async def _forgive_only_a_lost_race(self, inference_pod: Pod, *, exception: client.ApiException) -> None:
-        # a test op can fail for reasons that will never resolve, such as another controller adding a gate
-        # of its own and moving this one's index; swallowing those would spin at info level forever instead
-        # of reaching the loop's error path, so the pod is read back and only a released one is forgiven
         name = inference_pod.metadata.name
         try:
             observed = Pod.model_validate(
@@ -187,9 +184,6 @@ def _place_inference_pod(
     trainer_cell_index, trainer_pod_index = divmod(
         absolute_gpu // layout.num_gpus_per_node, layout.num_pods_per_trainer_cell
     )
-    # both halves of the same division: which trainer pod's node the inference sits on, and how far into
-    # that node's cards it starts. the pod cannot work the second one out for itself, so this is the only
-    # place either is computed and the release patch is what carries the answer to it
     return InferencePlacement(
         trainer=PodCoordinate(
             pool_id=trainer_pool_id, cell_index=trainer_cell_index, pod_in_cell_index=trainer_pod_index

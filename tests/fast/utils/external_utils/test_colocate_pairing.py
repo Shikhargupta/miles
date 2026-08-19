@@ -693,7 +693,6 @@ def _pod(
         DEFAULT_LABEL_KEYS.cell_index: str(cell_index),
         DEFAULT_LABEL_KEYS.pod_in_cell_index: str(pod_index),
     }
-    # the chart annotates every pool pod with its gpu meta, so a pod of a run always has the map
     pod.metadata.annotations = {f"{DEFAULT_LABEL_KEYS.meta_annotation_prefix}{DEFAULT_LABEL_KEYS.gpu_ids_meta}": "0"}
     return pod
 

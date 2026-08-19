@@ -207,9 +207,6 @@ def _shares_its_node(pairing_layout: PairingLayout | None) -> bool:
 def _with_base_gpu_id(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
     sentinel = str(_BASE_GPU_ID_SENTINEL)
     _assert_sentinel_is_a_whole_token(argv, sentinel=sentinel, spec=spec, built_out_of="base gpu id")
-    # the pairing controller works the card out as it seats the pod and writes it onto the pod as an
-    # annotation, which the chart turns into this variable; the kubelet expands it exactly as it expands
-    # the pod index, so nothing inside the pod has to repeat the pairing's arithmetic
     return [_BASE_GPU_ID_PLACEHOLDER if argument == sentinel else argument for argument in argv]
 
 
