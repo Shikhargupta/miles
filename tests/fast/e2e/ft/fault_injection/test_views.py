@@ -28,6 +28,15 @@ def test_injected_cell_is_excluded_while_its_crash_is_still_undetected() -> None
     assert names(views.compute_genuinely_alive(log.events, cells)) == {"c1"}
 
 
+def test_a_fault_that_left_its_cell_running_keeps_that_cell_in_the_live_set() -> None:
+    """A form that never crashes the cell would otherwise retire it after one draw and never fire again."""
+    log = state.EventLog()
+    cells = [cell("c0", healthy=True), cell("c1", healthy=True)]
+    log.note_injection_attempt(cell_name="c0", form_name="hot_restart", succeeded=True, harmed=False)
+    log.observe(cells)
+    assert names(views.compute_genuinely_alive(log.events, cells)) == {"c0", "c1"}
+
+
 def test_injected_cell_counts_again_only_after_a_full_down_then_up_cycle() -> None:
     """A cell must be seen unhealthy and then healthy again before it rejoins the live set."""
     log = state.EventLog()
