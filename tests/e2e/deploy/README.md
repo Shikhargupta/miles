@@ -1,20 +1,5 @@
 # Deployment E2E Tests
 
-How a run is deployed, not what it trains. Tests import the examples
-(`examples/infra_features/{split_deployment,hot_restart}`, `examples/multi_policy`); train args and
-comparison machinery come from `tests/e2e/ft`. Never run on a cluster: every claim below is what
-the code is written to do.
-
-| Entry | Scenario | Suite | `est_time` | Labels |
-| --- | --- | --- | --- | --- |
-| `test_split_deterministic.py` | `scenario_split_deterministic` | `stage-c-8-gpu-h200` | 2600 | `deploy` |
-| `test_hot_restart_deterministic.py` | `scenario_hot_restart_deterministic` | `stage-c-8-gpu-h200` | 5400 | `deploy` |
-| `test_hot_restart_no_checkpoint.py` | `scenario_hot_restart_no_checkpoint` | `stage-c-8-gpu-h200` | 6000 | `deploy` |
-| `test_split_multi_policy.py` | `scenario_split_multi_policy` | `stage-c-8-gpu-h100` | 1800 | `deploy`, `multi-policy`, `fully-async` |
-
-CI label `run-ci-deploy`; without kubernetes an entry skips in seconds. Comparison scenarios pin a
-private `_MODE`: 1 node, 4+2 GPUs, CP2, dense `Qwen3-0.6B`, 2 engines × 1 GPU. No mode matrix.
-
 ## Running
 
 Needs `PYTHONPATH=.` and a miles-workbench pod (`MILES_SCRIPT_*` env preset). Kubernetes only.
