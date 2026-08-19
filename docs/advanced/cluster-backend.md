@@ -61,52 +61,6 @@ python -m miles.utils.external_utils.miles_workbench uninstall -n "$MILES_NS"
 
 `stop` removes the run and frees its GPUs; `uninstall` removes the workbench.
 
-## Colocated engines
-
-How `--colocate` places pods:
-
-- **Trainer pods take whole nodes**: every card of the node belongs to one trainer pod.
-- **Engine pods request no GPU**: `NVIDIA_VISIBLE_DEVICES: all` is what makes the node's cards
-  visible to them anyway.
-- **A scheduling gate holds each engine pod**: `miles.radixark.io/colocate-pairing`, so the
-  scheduler cannot place it before its trainer has landed.
-- **A pairing controller releases it**: one JSON patch pins `kubernetes.io/hostname` to the
-  trainer's node and removes the gate.
-
-Engines narrower than a node work — eight `--rollout-num-gpus-per-engine 1` engines share one
-8-GPU trainer node:
-
-- **Such an engine sees every card on the node**, so it has to be told which one is its own.
-- **The controller computes that card as it seats the pod**, and writes it in the same patch that
-  removes the gate, as the annotation `miles.radixark.io/base-gpu-id`.
-- **The pod reads it back as `MILES_BASE_GPU_ID`**, a downward-API `fieldRef` on that annotation.
-- **Nothing is computed inside the pod**, and `kubectl describe pod` shows the card it was given.
-
-Shared memory:
-
-- **Every pool pod mounts a memory-backed `/dev/shm`**, the same thing the docker quick start asks
-  for with `--shm-size`.
-- **Kubernetes' own default of 64Mi is not enough**: NCCL wants tens of Mi per peer it cannot reach
-  over p2p, so a pool holding part of a node's cards dies at rendezvous
-  with `No space left on device`.
-- **`run.shmSize` overrides the 32Gi default**: set it in your own helm values file, the launcher
-  never writes this key.
-
-Limits:
-
-- **The trainer still takes whole nodes**: a sub-node trainer pod is refused, for two reasons.
-  - The device plugin picks the trainer's cards at runtime, so a computed card index is known to be
-    the trainer's only when it holds every card of the node.
-  - The engine requests no GPU, so the node's GPU accounting rests entirely on the trainer's
-    request; a sub-node trainer would leave the cards the engine uses free to be given away.
-- **An engine *pod* cannot be wider than a node**: an engine wider than a node is fine — it is split
-  into one whole-node pod per node, each paired with an adjacent trainer pod.
-- **Losing one of several narrow engines ends the run**: the controller does put the replacement pod
-  back on the trainer's node, but the weight update running meanwhile waits on a rank that is not
-  coming, and a single-cell trainer has no second cell to retry from.
-- **A run of one whole-node engine takes a different path**: losing that engine leaves nothing to
-  broadcast to at all.
-
 ## Folder convention
 
 A run is many pods on many machines, and they share nothing but the storage `infra.yaml` mounts.
