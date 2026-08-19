@@ -23,8 +23,6 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
   baseline = one release; target = TRAINER + INFERENCE e0,e1 (one engine each) + PRIMARY last
   (blocks until the run ends). Addresses from the example's address_book; ordering, shared run
   uuid and uninstall from conftest_deploy/split_deployment.py.
-  Risk: request routing differs across the sides - leans on sglang determinism being
-  engine-assignment invariant.
 ```
 
 ## `scenario_hot_restart_deterministic`
@@ -61,23 +59,8 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
   per policy - the cheapest wiring bug (trainer scoring another engine's tokens) shows up there.
 ```
 
-## Known limitations
+## Expected failures today
 
-- **Hot restart targets fail in the outer launcher**: the take-over takes a new state file, the
-  replaced wrapper writes `exited/143` into the old one, the launcher raises `SystemExit(143)`.
-  Product settled only the new launcher's side.
-- **Missing engine checksum is exempted, not explained**: the log snapshot is cut between a save
-  and that rollout's weight update. Fix is to snapshot after the update.
-- **No-checkpoint scenario hits two more gaps**: `rollout_executor.load(-1, require_state=True)`
-  dies before the train loop, and the un-rolled-back log carries duplicate checksum events the
-  comparator refuses. Assertions encode both.
-- **The no-checkpoint window is a race**: a take-over landing after the first save fails loudly on
-  the no-`.trash_*` assertion; the slack is unmeasured.
-- **Install order leans on `SUBMIT_RETRY_WINDOW_SECONDS` (60s)**, driver last; slow image pulls
-  between releases are untested. Registration is not a constraint.
-- **Split engines both report gpu offset 0**; nothing reads offsets for placement.
-- **The boot uuid proves one process** (trainer controller); pod uid/restartCount cover the rest.
-- **Thresholds and durations are unmeasured**: `logprob_abs_diff <= 0.5`, `est_time`, gate/join
-  timeouts - first guesses.
-- **Run uuid**: split scenarios name one themselves (the product refuses to generate one); hot
-  restart relaunches inherit it back off the installed orchestrator's argv.
+- Both hot restart targets: the outer launcher still watches the old state file and raises `SystemExit(143)` when the take-over lands.
+- `scenario_hot_restart_deterministic`: the resume rollout's engine checksum is lost to the pre-update log snapshot (exempted in the comparison).
+- `scenario_hot_restart_no_checkpoint`: `rollout_executor.load(-1, require_state=True)` dies before the train loop, and the un-rolled-back log carries duplicate checksum events the comparator refuses.
