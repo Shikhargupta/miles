@@ -54,14 +54,13 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
 ## `scenario_hot_restart_random`
 
 ```
-12 rollouts, --save-interval 2, 3 restarts at random eligible moments, ONE release
-  Hot restart as a fault form: ft's fault-injection machinery schedules a HotRestartFaultForm at
-  random intervals, the way it schedules pod kills - so a future soak can mix the two. A moment is
-  eligible when a save exists, a step finished after it, and the window is disjoint from the
-  previous restart's; an ineligible draw waits rather than fires. The seed is logged.
-  Asserts: workloads/process as the deterministic scenario with 3 restarts; redo measured off the
-  logs only (no pinned schedule), every window non-empty; comparison bitwise against an
-  unrestarted baseline - random timing must not change the training.
+ft's scenario_realistic_gsm8k with hot restarts instead of kills, ONE release
+  Reuses nearly all of the realistic gsm8k convergence test; the injection plan schedules a
+  HotRestartFaultForm - hot restart as a pseudo fault-injection action - at random intervals the
+  way it schedules pod kills, so a future soak can mix the two. A moment is eligible when a save
+  exists and a step finished after it; an ineligible draw waits rather than fires. Seed logged.
+  Asserts: the gsm8k reward improves as in scenario_realistic_gsm8k; every scheduled restart
+  happened; only orchestrator + rollout-executor ever rolled, one trainer boot uuid throughout.
 ```
 
 ## `scenario_split_multi_policy`
