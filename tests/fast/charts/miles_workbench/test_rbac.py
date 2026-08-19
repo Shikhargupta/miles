@@ -40,6 +40,7 @@ _PAIRING_CONFIG = {
                 "num_pods_per_inference_cell": 1,
                 "num_pods_per_trainer_cell": 1,
                 "num_gpus_per_node": 8,
+                "num_gpus_per_inference_pod": 8,
                 "gpu_offset": 0,
             },
         }
@@ -56,12 +57,31 @@ COLOCATED_RUN = (
 )
 
 
+WORKBENCH_CLUSTER_ROLE = f"{RELEASE_NAME}-{NAMESPACE}"
+UNINSTALLER_CLUSTER_ROLE = f"{UNINSTALLER_SERVICE_ACCOUNT}-{RELEASE_NAME}-{NAMESPACE}"
+
+
 def granted_verbs(role: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
     return {
         (group, resource): set(rule["verbs"])
         for rule in role["rules"]
         for group in rule["apiGroups"]
         for resource in rule["resources"]
+    }
+
+
+def everything_granted_to(
+    objects: list[dict[str, Any]], *, role: str, cluster_role: str
+) -> dict[tuple[str, str], set[str]]:
+    namespaced = granted_verbs(named_object(objects, "Role", role))
+    return namespaced | granted_verbs(named_object(objects, "ClusterRole", cluster_role))
+
+
+def kinds_installed_by(*args: str) -> set[tuple[str, str]]:
+    return {
+        ("" if group in ("", "v1") else group, obj["kind"].lower() + "s")
+        for obj in render_run(*args)
+        for group in [obj["apiVersion"].rpartition("/")[0]]
     }
 
 
@@ -74,8 +94,6 @@ class TestRbacTemplates:
         binding = named_object(objects, "RoleBinding", RELEASE_NAME)
 
         assert named_object(objects, "ServiceAccount", RELEASE_NAME)["metadata"]["name"] == RELEASE_NAME
-        assert objects_of_kind(objects, "ClusterRole") == []
-        assert objects_of_kind(objects, "ClusterRoleBinding") == []
         assert binding["roleRef"] == dict(apiGroup="rbac.authorization.k8s.io", kind="Role", name=RELEASE_NAME)
         assert binding["subjects"] == [dict(kind="ServiceAccount", name=RELEASE_NAME, namespace=NAMESPACE)]
         assert role["metadata"]["name"] == RELEASE_NAME
@@ -104,12 +122,8 @@ class TestRbacTemplates:
 
     def test_the_role_covers_every_object_kind_miles_run_installs(self):
         """A kind miles-run renders but the Role omits turns every colocated install into an apiserver rejection."""
-        granted = granted_verbs(named_object(render(), "Role", RELEASE_NAME))
-        installed = {
-            ("" if group in ("", "v1") else group, obj["kind"].lower() + "s")
-            for obj in render_run(*COLOCATED_RUN)
-            for group in [obj["apiVersion"].rpartition("/")[0]]
-        }
+        granted = everything_granted_to(render(), role=RELEASE_NAME, cluster_role=WORKBENCH_CLUSTER_ROLE)
+        installed = kinds_installed_by(*COLOCATED_RUN)
 
         assert installed <= set(granted), sorted(installed - set(granted))
         assert all("create" in granted[key] for key in installed)
@@ -147,12 +161,10 @@ class TestRbacTemplates:
 
     def test_the_uninstaller_covers_every_kind_a_run_release_owns(self):
         """helm uninstall stops at the first kind it may not delete, and leaves the release half removed."""
-        granted = granted_verbs(named_object(render(), "Role", UNINSTALLER_SERVICE_ACCOUNT))
-        installed = {
-            ("" if group in ("", "v1") else group, obj["kind"].lower() + "s")
-            for obj in render_run(*UNINSTALLABLE_RUN)
-            for group in [obj["apiVersion"].rpartition("/")[0]]
-        }
+        granted = everything_granted_to(
+            render(), role=UNINSTALLER_SERVICE_ACCOUNT, cluster_role=UNINSTALLER_CLUSTER_ROLE
+        )
+        installed = kinds_installed_by(*UNINSTALLABLE_RUN) | kinds_installed_by(*COLOCATED_RUN)
 
         assert installed <= set(granted), sorted(installed - set(granted))
         assert all("delete" in granted[key] for key in installed)
@@ -165,14 +177,18 @@ class TestRbacTemplates:
 
     def test_the_role_is_a_superset_of_the_role_miles_run_asks_it_to_create(self):
         """Kubernetes refuses a Role or RoleBinding carrying rules its creator does not already hold."""
-        granted = granted_verbs(named_object(render(), "Role", RELEASE_NAME))
-        created = [granted_verbs(role) for role in objects_of_kind(render_run(*COLOCATED_RUN), "Role")]
+        granted = everything_granted_to(render(), role=RELEASE_NAME, cluster_role=WORKBENCH_CLUSTER_ROLE)
+        run_objects = render_run(*COLOCATED_RUN)
+        created = [
+            granted_verbs(role)
+            for role in objects_of_kind(run_objects, "Role") + objects_of_kind(run_objects, "ClusterRole")
+        ]
 
         assert created
         for rules in created:
             assert all(verbs <= granted.get(key, set()) for key, verbs in rules.items())
 
-    def test_the_role_can_neither_escalate_nor_reach_cluster_scope(self):
+    def test_the_namespaced_role_neither_escalates_nor_reaches_cluster_scope(self):
         """It may write namespaced RBAC only because it holds those rules; escalate or bind would lift that ceiling."""
         rules = named_object(render(), "Role", RELEASE_NAME)["rules"]
         resources = {resource for rule in rules for resource in rule["resources"]}
@@ -197,6 +213,8 @@ class TestRbacTemplates:
         assert objects_of_kind(objects, "ServiceAccount") == []
         assert objects_of_kind(objects, "Role") == []
         assert objects_of_kind(objects, "RoleBinding") == []
+        assert objects_of_kind(objects, "ClusterRole") == []
+        assert objects_of_kind(objects, "ClusterRoleBinding") == []
         assert pod_spec(objects)["serviceAccountName"] == "preexisting"
 
     def test_an_overridden_service_account_name_is_used_by_every_object(self):
@@ -207,3 +225,58 @@ class TestRbacTemplates:
         assert named_object(objects, "ServiceAccount", "custom-sa")["metadata"]["name"] == "custom-sa"
         assert binding["subjects"][0]["name"] == "custom-sa"
         assert pod_spec(objects)["serviceAccountName"] == "custom-sa"
+
+
+@requires_helm
+class TestTheClusterScopedRights:
+    def test_the_workbench_may_read_nodes_and_write_the_cluster_rbac_a_run_needs(self):
+        """A colocated run installs a ClusterRole for nodes, and its installer must hold both to create it."""
+        assert granted_verbs(named_object(render(), "ClusterRole", WORKBENCH_CLUSTER_ROLE)) == {
+            ("", "nodes"): {"get"},
+            ("rbac.authorization.k8s.io", "clusterroles"): {
+                "create",
+                "delete",
+                "get",
+                "list",
+                "patch",
+                "update",
+                "watch",
+            },
+            ("rbac.authorization.k8s.io", "clusterrolebindings"): {
+                "create",
+                "delete",
+                "get",
+                "list",
+                "patch",
+                "update",
+                "watch",
+            },
+        }
+
+    def test_the_uninstaller_may_only_delete_that_cluster_rbac(self):
+        """helm uninstall stops at the first object it may not delete, and nothing else is cluster-scoped."""
+        assert granted_verbs(named_object(render(), "ClusterRole", UNINSTALLER_CLUSTER_ROLE)) == {
+            ("rbac.authorization.k8s.io", "clusterroles"): {"get", "list", "delete"},
+            ("rbac.authorization.k8s.io", "clusterrolebindings"): {"get", "list", "delete"},
+        }
+
+    def test_each_cluster_scoped_name_carries_the_namespace_it_serves(self):
+        """Cluster-scoped names are global, so two namespaces installing a workbench would collide on one."""
+        objects = render()
+
+        for name in (WORKBENCH_CLUSTER_ROLE, UNINSTALLER_CLUSTER_ROLE):
+            assert name.endswith(f"-{NAMESPACE}")
+            assert named_object(objects, "ClusterRoleBinding", name)["roleRef"]["name"] == name
+
+    def test_each_binding_names_the_account_of_its_own_namespace(self):
+        """A ClusterRoleBinding subject without a namespace binds nothing, and with the wrong one binds a stranger."""
+        objects = render()
+        bindings = {
+            WORKBENCH_CLUSTER_ROLE: RELEASE_NAME,
+            UNINSTALLER_CLUSTER_ROLE: UNINSTALLER_SERVICE_ACCOUNT,
+        }
+
+        for name, account in bindings.items():
+            assert named_object(objects, "ClusterRoleBinding", name)["subjects"] == [
+                dict(kind="ServiceAccount", name=account, namespace=NAMESPACE)
+            ]
