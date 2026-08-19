@@ -29,15 +29,26 @@ def coordinate_of(pod: Pod) -> PodCoordinate | None:
     )
 
 
-def release_patch(*, node_name: str, gates: list[str], has_node_selector: bool) -> list[dict[str, object]]:
+def release_patch(
+    *, node_name: str, base_gpu_id: int, gates: list[str], has_node_selector: bool, has_annotations: bool
+) -> list[dict[str, object]]:
     index = gates.index(_GATE_NAME)
     pin = (
         {"op": "add", "path": f"/spec/nodeSelector/{_escape_pointer(_HOSTNAME_LABEL)}", "value": node_name}
         if has_node_selector
         else {"op": "add", "path": "/spec/nodeSelector", "value": {_HOSTNAME_LABEL: node_name}}
     )
+    # the card is only known once the pairing has seated the pod, and it travels in the very patch that
+    # releases it, so the pod the kubelet finally reads can never be placed without knowing where it starts
+    key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
+    tell = (
+        {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)}
+        if has_annotations
+        else {"op": "add", "path": "/metadata/annotations", "value": {key: str(base_gpu_id)}}
+    )
     return [
         pin,
+        tell,
         {"op": "test", "path": f"/spec/schedulingGates/{index}/name", "value": _GATE_NAME},
         {"op": "remove", "path": f"/spec/schedulingGates/{index}"},
     ]

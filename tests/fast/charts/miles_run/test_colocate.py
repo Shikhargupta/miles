@@ -12,6 +12,7 @@ from tests.fast.charts.utils import (
 )
 
 from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME
+from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 ENGINES = [
     {
@@ -88,6 +89,10 @@ def _env_names(container: dict[str, Any]) -> set[str]:
     return {entry["name"] for entry in container.get("env", [])}
 
 
+def _env_entry(container: dict[str, Any], name: str) -> dict[str, Any] | None:
+    return next((entry for entry in container.get("env", []) if entry["name"] == name), None)
+
+
 def pairing_config() -> dict[str, Any]:
     deployment = named_object(render_run(*ENABLE), "Deployment", PAIRING)
     command = deployment["spec"]["template"]["spec"]["containers"][0]["command"]
@@ -121,6 +126,29 @@ class TestColocatedEnginePool:
         assert pod["hostIPC"] is True
         assert pod["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] == 0
 
+    def test_is_told_which_card_of_the_node_the_pairing_gave_it(self):
+        """The controller writes that annotation in the patch that releases the gate, before the pod runs."""
+        entry = _env_entry(colocated_engine_pod()["containers"][0], "MILES_BASE_GPU_ID")
+
+        assert entry == {
+            "name": "MILES_BASE_GPU_ID",
+            "valueFrom": {
+                "fieldRef": {"fieldPath": f"metadata.annotations['{DEFAULT_LABEL_KEYS.base_gpu_id_annotation}']"}
+            },
+        }
+
+    def test_reads_that_card_off_the_pod_rather_than_a_rendered_value(self):
+        """helm renders one pod template for the whole pool, and the card differs from pod to pod."""
+        entry = _env_entry(colocated_engine_pod()["containers"][0], "MILES_BASE_GPU_ID")
+
+        assert "value" not in entry
+
+    def test_gives_a_second_colocated_pool_that_variable_too(self):
+        """Prefill and decode may split one trainer node, and each needs to be told where it starts."""
+        pod = pool_pod(render_run(*ENABLE), "myrun-miles-run-decode")
+
+        assert "MILES_BASE_GPU_ID" in _env_names(pod["containers"][0])
+
     def test_carries_no_affinity_at_all_but_keeps_the_node_selector(self):
         """Any affinity would contradict the node the controller picks; the selector it only adds to."""
         pod = colocated_engine_pod(
@@ -142,7 +170,7 @@ class TestColocatedTrainerPool:
         pod = pool_pod(render_run(*ENABLE), "myrun-miles-run-trainer")
 
         assert "schedulingGates" not in pod
-        assert not _env_names(pod["containers"][0]) & {"NVIDIA_VISIBLE_DEVICES"}
+        assert not _env_names(pod["containers"][0]) & {"NVIDIA_VISIBLE_DEVICES", "MILES_BASE_GPU_ID"}
 
 
 @requires_helm
@@ -153,7 +181,7 @@ class TestDisaggregatedRun:
 
         assert "schedulingGates" not in pod
         assert "hostIPC" not in pod
-        assert not _env_names(pod["containers"][0]) & {"NVIDIA_VISIBLE_DEVICES"}
+        assert not _env_names(pod["containers"][0]) & {"NVIDIA_VISIBLE_DEVICES", "MILES_BASE_GPU_ID"}
         assert pod["containers"][0]["resources"] == {"limits": {"nvidia.com/gpu": 8}}
 
     def test_installs_no_pairing_controller(self):
@@ -211,3 +239,4 @@ class TestAPoolTheConfigDoesNotName:
 
         assert "schedulingGates" not in pod
         assert "hostIPC" not in pod
+        assert "MILES_BASE_GPU_ID" not in _env_names(pod["containers"][0])

@@ -42,6 +42,11 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
             _assert_worker_ports_fit(spec)
     addresses = _compute_addresses(specs, plan.release)
 
+    # a pool's own gpus are numbered from zero, but one sharing a trainer's node is numbered from wherever
+    # the pairing seated it, so the entries have to be rendered against the pairing rather than before it
+    colocate = pairing_config(specs, plan) if plan.colocate else None
+    layout_of_pool = {pool.pool_id: pool.layout for pool in colocate.inference_pools} if colocate else {}
+
     entries: dict[str, list[PoolEntry]] = {
         STATIC_WORKERS_SECTION: [],
         INFERENCE_ENGINES_SECTION: [],
@@ -49,7 +54,7 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
     }
     for spec in specs:
         section = SECTION_OF_CATEGORY[spec.category]
-        entry = build_entry(spec, plan=plan, addresses=addresses)
+        entry = build_entry(spec, plan=plan, addresses=addresses, pairing_layout=layout_of_pool.get(spec.name))
         assert section == STATIC_WORKERS_SECTION or entry.restart_at is None, (
             f"only the {STATIC_WORKERS_SECTION} template renders a restart stamp, so stamping {spec.name} in "
             f"{section} would roll nothing while this launch believes it rolled a pod"
@@ -71,7 +76,7 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
         trainer_engines=entries[TRAINER_ENGINES_SECTION],
         env=dict(plan.env) or None,
         mooncake=MooncakeInfo.section(plan.mooncake_plan) if plan.mooncake_plan is not None else None,
-        colocate=pairing_config(specs, plan) if plan.colocate else None,
+        colocate=colocate,
     )
 
 
