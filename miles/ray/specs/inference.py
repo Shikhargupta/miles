@@ -5,7 +5,7 @@ import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, sglang_supports_gated_launch
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
@@ -18,7 +18,7 @@ from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.reporter import RegistrationReporter
 from miles.utils.workers.types import DeployComponent
-from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_handle import BaseWorkerHandle, LazyWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
@@ -122,9 +122,12 @@ def compute_router_providers(args, *, capability: BackendCapability) -> list[Bas
 
 
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
-    worker_name = inference_controller_worker_name()
-    provider = capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
-    return provider.get_handle(worker_name)
+    def _resolve() -> BaseWorkerHandle:
+        return capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID).get_handle(
+            inference_controller_worker_name()
+        )
+
+    return LazyWorkerHandle(_resolve)
 
 
 def compute_inference_controller_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
@@ -300,7 +303,7 @@ def _compute_spec_inference_engine(
             port=ctx.self_addrs["primary"].port,
             disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
-            gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
+            gated_launch_port=gate.port if (gate := ctx.self_addrs.get(GATE_PORT_NAME)) else None,
         )
 
     envs = compute_inference_engine_env_vars(args)
@@ -342,7 +345,13 @@ def _compute_spec_inference_engine(
                 else []
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
-            PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
+            # an sglang without the gate serves nothing on this port, and a cell that got one anyway
+            # would wait out its whole activation deadline on an engine that is already serving
+            *(
+                [PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True)]
+                if sglang_supports_gated_launch()
+                else []
+            ),
         ],
         env_var=lambda _ctx: envs,
         scheduling=scheduling,
