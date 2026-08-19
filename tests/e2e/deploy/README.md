@@ -3,7 +3,7 @@
 ## Running
 
 Needs `PYTHONPATH=.` and a miles-workbench pod (`MILES_SCRIPT_*` env preset). Kubernetes only:
-entries register via `register_cuda_ci` and skip with a reason on any other backend.
+entries register via `register_cuda_ci` and fail with a reason on any other backend.
 
 ```bash
 PYTHONPATH=. python tests/e2e/deploy/test_split_deterministic.py                          # as CI
