@@ -26,6 +26,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.views import compute_injection_tim
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_every_rollout_injection_recovered
 
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
@@ -165,7 +166,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     target_dir: str = f"{dump_dir}/target"
 
     for side_dir in (baseline_dir, target_dir):
-        assert_reconfigure_events(Path(f"{side_dir}/events"), expected=[])
+        assert_reconfigure_events(Path(f"{side_dir}/{EVENTS_DIRNAME}"), expected=[])
 
     for side_dir in (baseline_dir, target_dir):
         assert_every_metric_is_classified(

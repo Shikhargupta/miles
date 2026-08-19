@@ -24,6 +24,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
 from tests.fast.cluster_backends import create_backend_for_run
 
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 
@@ -86,7 +87,7 @@ def run_ci(
         fully_async=fully_async,
         test_name=test_name,
     )
-    train_args += f"--save-debug-event-data {dump_dir}/events "
+    train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} "
 
     base_url = f"http://{U.api_server_host()}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
@@ -114,7 +115,7 @@ def run_ci(
     finally:
         injector.stop_and_join()
 
-    assert_healing(_FT_COMPONENTS, injector=injector, event_dir=Path(dump_dir) / "events", context=test_name)
+    assert_healing(_FT_COMPONENTS, injector=injector, event_dir=Path(dump_dir) / EVENTS_DIRNAME, context=test_name)
 
     print(f"Random failure gsm8k accuracy test PASSED ({test_name}, seed={seed}, rollouts={num_rollout})")
 
