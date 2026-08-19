@@ -28,7 +28,7 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
 ## `scenario_hot_restart_deterministic`
 
 ```
-6 rollouts, --save-interval 1, 2 restarts, ONE release
+6 rollouts, --save-interval 2, 2 restarts, ONE release
   Target only: relaunch the same command + --hot-restart orchestration,rollout_executor once a
   save and a step after it exist (second gate also demands disjoint redo windows).
   Asserts: only orchestrator + rollout-executor rolled (pod uid/restartCount/stamps); one trainer
