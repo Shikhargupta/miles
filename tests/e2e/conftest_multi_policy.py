@@ -57,6 +57,17 @@ def assert_every_rank_trained_with_its_own_policy_args(events_dir: Path, *, mega
         f"run trains {expected_model_ids}; a policy whose ranks reported nothing was never actually trained"
     )
 
+    ranks_by_model_id: dict[str, list[tuple[int, int]]] = {
+        model_id: sorted({(event.source.cell_index, event.source.rank_within_cell) for event in reports})
+        for model_id, reports in reports_by_model_id.items()
+    }
+    every_rank = sorted({rank for ranks in ranks_by_model_id.values() for rank in ranks})
+    for model_id, ranks in ranks_by_model_id.items():
+        assert ranks == every_rank, (
+            f"policy {model_id!r} is reported from ranks {ranks}, while this run's trainer ranks are {every_rank}; "
+            f"a rank that reported nothing leaves the arguments it was built with unverified"
+        )
+
     for trainer in megatron_config["trainers"]:
         model_id = trainer["model_id"]
         expected = dict(trainer["overrides"])

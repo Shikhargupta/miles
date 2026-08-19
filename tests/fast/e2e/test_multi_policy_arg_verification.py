@@ -46,7 +46,7 @@ def _make_report(*, model_id: str | None, rank: int = 0, values: dict[str, Any])
 def _reports_of(model_id: str, **overrides: Any) -> list[EnvReportEvent]:
     [trainer] = [entry for entry in MEGATRON_CONFIG["trainers"] if entry["model_id"] == model_id]
     values = {**trainer["overrides"], "trainer_model_id": model_id, **overrides}
-    return [_make_report(model_id=model_id, rank=rank, values=values) for rank in (0, 1)]
+    return [_make_report(model_id=model_id, rank=rank, values=values) for rank in (0, 1) for _ in range(2)]
 
 
 @pytest.fixture(autouse=True)
@@ -78,15 +78,15 @@ class TestAssertEveryRankTrainedWithItsOwnPolicyArgs:
 
     def test_a_policy_missing_one_of_its_ranks_is_caught(self, monkeypatch):
         """A surviving rank must not stand in for the whole policy: the missing one is the unverified one."""
-        events = _reports_of("solver") + _reports_of("verifier")[:1]
+        events = _reports_of("solver") + _reports_of("verifier")[:2]
 
         with pytest.raises(AssertionError, match="reported from ranks"):
             _assert_with(monkeypatch, events)
 
-    def test_a_policy_reporting_one_rank_twice_is_caught(self, monkeypatch):
-        """Two reports of rank 0 look like full coverage while rank 1 was never observed."""
-        [first, _] = _reports_of("verifier")
-        events = _reports_of("solver") + [first, first]
+    def test_a_policy_whose_repeated_reports_stand_in_for_a_missing_rank_is_caught(self, monkeypatch):
+        """A rank reporting as often as the whole policy should must not be counted as the ranks that are missing."""
+        rank_zero = _reports_of("verifier")[:2]
+        events = _reports_of("solver") + rank_zero + rank_zero
 
         with pytest.raises(AssertionError, match="reported from ranks"):
             _assert_with(monkeypatch, events)
