@@ -509,8 +509,7 @@ class TestInferenceEnginePortSchema:
 
 class TestInferenceEngineGatedLaunch:
     def test_the_port_is_allocated_only_when_this_sglang_serves_a_gate(self, tmp_path, monkeypatch):
-        """An sglang without the gate serves nothing there, and a cell handed one would wait out its
-        whole activation deadline on an engine that is already serving."""
+        """A cell given a port no sglang serves waits out its whole activation deadline for nothing."""
         config_path = tmp_path / "sglang.yaml"
         config_path.write_text(make_sglang_config_yaml(server_groups=[{"worker_type": "regular", "num_gpus": 4}]))
         args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)

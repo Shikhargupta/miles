@@ -275,6 +275,31 @@ class TestBaseGpuIdOfAnInferencePod:
 
         assert [_base_gpu(index, layout) for index in range(8)] == list(range(8))
 
+    def test_the_pods_of_a_wide_engine_each_start_at_their_own_node(self):
+        """An engine wider than a node is one whole-node pod per node, and each is handed its cards from zero."""
+        layout = _layout(
+            num_inference_cells=1,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+        )
+
+        assert [_base_gpu(0, layout, inference_pod_index=index) for index in range(2)] == [0, 0]
+
+    def test_the_pods_of_a_wide_engine_pair_with_adjacent_trainer_pods(self):
+        """Its two pods sit on two nodes, so they must wait on the two trainer pods holding those nodes."""
+        layout = _layout(
+            num_inference_cells=1,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+        )
+
+        assert [_target(0, layout, inference_pod_index=index) for index in range(2)] == [
+            _coordinate(0, 0),
+            _coordinate(0, 1),
+        ]
+
     def test_the_pool_offset_moves_the_first_card_along(self):
         """A second pool starts part way into the node its neighbour shares, and its offset says how far."""
         layout = _sub_node_layout(gpu_offset=4, num_inference_cells=3)
