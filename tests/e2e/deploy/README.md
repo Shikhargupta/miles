@@ -19,56 +19,80 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
 ## `scenario_split_deterministic`
 
 ```
-3 rollouts
-  baseline = one release; target = TRAINER + INFERENCE e0,e1 (one engine each) + PRIMARY last
-  (blocks until the run ends). Addresses from the example's address_book; ordering, shared run
-  uuid and uninstall from conftest_deploy/split_deployment.py.
+Type: comparison (baseline=one release, target=one release per deployment)
+Steps: 3 rollouts
+
+1. Baseline: the whole run in one release
+2. Target, installed in order: TRAINER; INFERENCE e0, e1 (one engine each); PRIMARY last
+   - installing PRIMARY blocks until the run ends
+   - addresses from the example's address_book; ordering, shared run uuid and uninstall from
+     conftest_deploy/split_deployment.py
+3. Compare: dumps and metrics bitwise; engine checksums identical per (rollout, engine); engine
+   count; weights moved; nonzero gradients >= 2 rollouts
 ```
 
 ## `scenario_hot_restart_deterministic`
 
 ```
-6 rollouts, --save-interval 2 (saves after steps 1, 3, 5), 2 restarts, ONE release
-  Target only: relaunch the same command + --hot-restart orchestration,rollout_executor on an
-  exact schedule - restart 1 at (save=1, finished=2), step 3 in flight; restart 2 at (save=3,
-  finished=4), step 5 in flight. Every take-over rolls back at least one unsaved step; the
-  recorded trigger pairs are asserted to equal the schedule.
-  Asserts: only orchestrator + rollout-executor rolled (pod uid/restartCount/stamps); one trainer
-  rpc boot uuid throughout; redo measured off the logs - one .trash_* per restart, resume point =
-  the snapshot beside a checkpoint, per-step attempts all 1 or 2, every window non-empty;
-  comparison bitwise, engine checksums included.
-  Twice because the second take-over hits trainers already taken over once.
+Type: comparison (baseline=untouched, target=same command, script replaced twice mid-run)
+Steps: 6 rollouts, --save-interval 2 (saves after steps 1, 3, 5), ONE release
+Trigger schedule, asserted on the records: restart 1 at (save=1, finished=2), step 3 in flight;
+                                           restart 2 at (save=3, finished=4), step 5 in flight
+
+1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the schedule
+2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps)
+3. Assert process: one trainer rpc boot uuid throughout
+4. Assert redo, measured off the logs: one .trash_* per restart; resume point = the snapshot
+   beside a checkpoint, >= the pinned save; per-step attempts all 1 or 2; every window non-empty
+5. Compare: bitwise as in scenario_split_deterministic, engine checksums included
+
+Every take-over lands on a non-save step, so at least one unsaved step is rolled back and redone.
 ```
 
 ## `scenario_hot_restart_no_checkpoint`
 
 ```
-6 rollouts, --save-interval 4, ONE restart in window 0..2
-  Gate opens on the first finished step while no checkpoint exists; a save seen first fails.
-  Asserts: workloads/process as above; NO .trash_* (nothing to restore - --load resolves to
-  --ref-load); the one log holds steps 0..F twice, no hole, nothing thrice; the run saves after
-  the restart; comparison with no checksum exemption.
-  Own scenario because load_state without a tracker re-seeds, resets the optimizer, returns 0.
+Type: comparison (baseline=untouched, target=same command, script replaced ONCE before any save)
+Steps: 6 rollouts, --save-interval 4 (saves after steps 3 and 5), take-over window 0..2
+
+1. Gate: opens on the first finished step while no checkpoint exists; a save seen first fails
+2. Assert workloads/process: as scenario_hot_restart_deterministic with one restart
+3. Assert redone-from-scratch: record carries no saved iteration; NO .trash_* (the run's --load
+   resolves to --ref-load, which holds no snapshot to restore); steps 0..F appear twice, no hole,
+   nothing thrice; the run still saves after the restart
+4. Compare: bitwise, no checksum exemption
+
+Production saves every ~20 steps, so a restart at step 10 is this case: load_state finds no
+tracker, re-seeds, resets the optimizer and returns start rollout 0.
 ```
 
 ## `scenario_hot_restart_realistic_gsm8k`
 
 ```
-ft's scenario_realistic_gsm8k with hot restarts instead of kills, ONE release
-  Reuses nearly all of the realistic gsm8k convergence test; the injection plan schedules a
-  HotRestartFaultForm - hot restart as a pseudo fault-injection action - at random intervals the
-  way it schedules pod kills, so a future soak can mix the two. A moment is eligible when a save
-  exists and a step finished after it; an ineligible draw waits rather than fires. Seed logged.
-  Asserts: the gsm8k reward improves as in scenario_realistic_gsm8k; every scheduled restart
-  happened; only orchestrator + rollout-executor ever rolled, one trainer boot uuid throughout.
+Type: single run, ft's scenario_realistic_gsm8k with hot restarts instead of kills
+Steps: as scenario_realistic_gsm8k, ONE release
+Injection: HotRestartFaultForm at random intervals via the ft fault-injection plan, seed logged
+Eligibility: a save exists and a step finished after it; an ineligible draw waits, never fires
+
+1. Run the realistic gsm8k recipe while the plan injects hot restarts
+2. Assert: gsm8k reward improves as in scenario_realistic_gsm8k
+3. Assert: every scheduled restart happened; only orchestrator + rollout-executor ever rolled;
+   one trainer boot uuid throughout
+
+Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```
 
 ## `scenario_split_multi_policy`
 
 ```
-3 rollouts, single run (multi trainer is not bitwise)
-  Five releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PRIMARY last.
-  Asserts: every rank trained with its own policy's args; every policy learned; the leader
-  reported every rollout; finite nonzero grad_norm/loss; train_rollout_logprob_abs_diff <= 0.5
-  per policy - the cheapest wiring bug (trainer scoring another engine's tokens) shows up there.
+Type: single run (multi trainer is not bitwise-reproducible)
+Steps: 3 rollouts
+Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PRIMARY last
+
+1. Install the five releases via the example, one command per part
+2. Assert: every rank trained with its own policy's args; every policy learned
+   (TRAIN_REWARD_BOUNDS); the leader reported every rollout; finite nonzero grad_norm/loss
+3. Assert per policy: train_rollout_logprob_abs_diff <= 0.5
+
+The cheapest wiring bug - a trainer scoring another engine's tokens - shows up in assertion 3.
 ```
