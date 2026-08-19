@@ -71,7 +71,9 @@ def build_entry(
         env=_command_env_of_spec(spec, context, addresses=addresses, shares_its_node=shares_its_node) or None,
         meta=_meta_of_spec(spec) or None,
         service_account_name=(
-            naming.component_name(plan.release, naming.ORCHESTRATOR_COMPONENT) if spec.needs_platform_read_permission else None
+            naming.component_name(plan.release, naming.ORCHESTRATOR_COMPONENT)
+            if spec.needs_platform_read_permission
+            else None
         ),
         replicas=spec.scheduling.num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
