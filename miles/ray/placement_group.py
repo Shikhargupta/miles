@@ -36,7 +36,8 @@ from miles.utils.hot_restart import (
     wait_until_worker_not_initialized,
 )
 from miles.utils.test_utils.ft_test_actions import FTTestActionOrchestrationExecutor
-from miles.utils.workers.types import DeployComponent, DeploymentIdentity
+from miles.utils.workers.cell_operations.serialized import SerializedCellOperations
+from miles.utils.workers.types import ClusterBackend, DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 
@@ -327,13 +328,19 @@ def maybe_start_api_server(
     if not args.api_server_port:
         return
 
+    operations = get_backend_capability(args).cell_operations()
+    # only the ray backend suspends a cell through code of ours; a kubernetes pod also goes away by
+    # eviction or a node drain, so gating that half would promise what the other half cannot keep
+    if ClusterBackend(args.cluster_backend) == ClusterBackend.RAY:
+        operations = SerializedCellOperations(operations, gate=inference_controller)
+
     start_api_server(
         args=args,
         trainer_models=trainer_models,
         inference_controller=inference_controller,
         port=args.api_server_port,
         ft_components=args.ft_components,
-        cell_operations=get_backend_capability(args).cell_operations(),
+        cell_operations=operations,
     )
 
 

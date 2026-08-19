@@ -15,7 +15,6 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.workers.cell_operations.base import BaseCellOperations
-from miles.utils.workers.types import ClusterBackend
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -59,11 +58,6 @@ def start_api_server(
                 operations=cell_operations,
                 controllers=[inference_controller],
                 pool_ids=compute_engine_pool_ids(args),
-                # the gate is the ray worker manager taking turns with the trainer's broadcast; a
-                # kubernetes pod also goes away for reasons no gate of ours is asked about first
-                suspend_gate=(
-                    inference_controller if ClusterBackend(args.cluster_backend) == ClusterBackend.RAY else None
-                ),
             )
         )
 

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
@@ -17,7 +18,6 @@ from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.ray import RayCellOperations
-from miles.utils.workers.types import ClusterBackend
 
 from .conftest import (
     MockHandler,
@@ -348,13 +348,13 @@ class TestStartApiServerRegistration:
         registry = self._start(
             monkeypatch,
             ft_components=["train", "rollout"],
-            cell_ids=["trainer-engine-actor-0", "inference-engine-0-0-0"],
+            cell_ids=["trainer-actor-0", "inference-engine-0-0-0"],
             actor_cells=[MockTrainerCell(phase="Running")],
         )
 
         cells = await registry.list_cells()
         assert [(cell.metadata.name, cell.metadata.labels["miles.io/cell-type"]) for cell in cells] == [
-            ("trainer-engine-actor-0", "actor"),
+            ("trainer-actor-0", "actor"),
             ("inference-engine-0-0-0", "rollout"),
         ]
 
@@ -364,7 +364,7 @@ class TestStartApiServerRegistration:
         registry = self._start(
             monkeypatch,
             ft_components=["rollout"],
-            cell_ids=["trainer-engine-actor-0"],
+            cell_ids=["trainer-actor-0"],
             actor_cells=[MockTrainerCell(phase="Running")],
         )
 
@@ -374,7 +374,8 @@ class TestStartApiServerRegistration:
     async def test_the_requested_port_reaches_the_server_that_binds_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The FT controller is told this port out of band, so binding any other one makes the api unreachable."""
         ports: list[int] = []
-        manager = MockWorkerManager(make_cell_summaries("trainer-engine-actor-0"))
+        manager = MockWorkerManager(make_cell_summaries("trainer-actor-0"))
+        monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: ports.append(port))
 
         server.start_api_server(
@@ -383,7 +384,6 @@ class TestStartApiServerRegistration:
             inference_controller=MockInferenceController(),
             port=19137,
             ft_components=["train"],
-            cell_operations=RayCellOperations(worker_manager_handle=manager),
         )
 
         assert ports == [19137]
@@ -665,7 +665,7 @@ class TestOperationsSelection:
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
 
         server.start_api_server(
-            args=SimpleNamespace(cluster_backend=ClusterBackend.KUBERNETES.value),
+            args=SimpleNamespace(),
             trainer_models={"actor": make_mock_controller([])},
             inference_controller=MockInferenceController(),
             port=1234,
@@ -676,31 +676,6 @@ class TestOperationsSelection:
         handlers = registries[0]._handlers
         assert len(handlers) == 2
         assert [handler._operations for handler in handlers] == [operations, operations]
-
-    def test_only_ray_gates_a_rollout_suspend_on_the_controller(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A kubernetes pod goes away without asking, so gating there would promise what it cannot keep."""
-        registries: list[_CellRegistry] = []
-        monkeypatch.setattr(server, "compute_trainer_pool_id", lambda role: f"trainer-{role}")
-        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["engine"])
-        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
-
-        gates = {}
-        for backend in (ClusterBackend.RAY, ClusterBackend.KUBERNETES):
-            registries.clear()
-            controller = MockInferenceController()
-            server.start_api_server(
-                args=SimpleNamespace(cluster_backend=backend.value),
-                trainer_models={},
-                inference_controller=controller,
-                port=1234,
-                ft_components=["rollout"],
-                cell_operations=object(),
-            )
-            (handler,) = registries[0]._handlers
-            gates[backend] = handler._suspend_gate
-
-        assert gates[ClusterBackend.RAY] is not None
-        assert gates[ClusterBackend.KUBERNETES] is None
 
     def test_the_api_server_names_no_ray_worker_manager(self) -> None:
         """Naming it would make the Kubernetes assembly pointless for the half that heals cells."""
