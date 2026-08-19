@@ -38,6 +38,7 @@ _AbsolutePath = Annotated[str, Field(pattern="^/", json_schema_extra=_NO_PARENT_
 _OptionalAbsolutePath = Annotated[str, Field(pattern="^(/.*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _RelativePath = Annotated[str, Field(pattern="^([^/].*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _EnvVars = Annotated[dict[str, str], Field(json_schema_extra=_ENV_KEYS)]
+_Quantity = Annotated[str, Field(pattern=r"^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$")]
 
 _Resources = dict[str, Any]
 
@@ -96,6 +97,7 @@ class MooncakeSection(ValuesModel):
 
 class RunValues(ValuesModel):
     id: Annotated[str, Field(max_length=RUN_ID_MAX_LENGTH, pattern=_DNS_LABEL)]
+    shm_size: _Quantity | None = None
     state_file: Annotated[str, Field(min_length=1, pattern="^/")] | None = None
     launch_record: Annotated[str, Field(min_length=1, pattern="^/")] | None = None
     object_names: ObjectNames
