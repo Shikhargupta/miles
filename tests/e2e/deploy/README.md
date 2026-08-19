@@ -2,7 +2,8 @@
 
 ## Running
 
-Needs `PYTHONPATH=.` and a miles-workbench pod (`MILES_SCRIPT_*` env preset). Kubernetes only.
+Needs `PYTHONPATH=.` and a miles-workbench pod (`MILES_SCRIPT_*` env preset). Kubernetes only:
+entries register via `register_cuda_ci` and skip with a reason on any other backend.
 
 ```bash
 PYTHONPATH=. python tests/e2e/deploy/test_split_deterministic.py                          # as CI
@@ -54,9 +55,10 @@ Trigger schedule, asserted on the records: restart 1 at (save=1, finished=2), st
 
 1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the schedule
 2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps)
-3. Assert process: one trainer rpc boot uuid throughout
+3. Assert process: one trainer rpc boot uuid throughout, answering the take-over's fresh client
 4. Assert redo, measured off the logs: one .trash_* per restart; resume point = the snapshot
-   beside a checkpoint, >= the pinned save; per-step attempts all 1 or 2; every window non-empty
+   beside a checkpoint, >= the pinned save - the run resumed there, not at step 0; per-step
+   attempts all 1 or 2; every window non-empty
 5. Compare: bitwise as in scenario_split_deterministic, engine checksums included
 
 Every take-over lands on a non-save step, so at least one unsaved step is rolled back and redone.
