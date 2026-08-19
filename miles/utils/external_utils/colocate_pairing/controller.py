@@ -25,7 +25,7 @@ _NOT_FOUND = 404
 
 
 class InferencePlacement(NamedTuple):
-    trainer: PodCoordinate
+    trainer_coord: PodCoordinate
     base_gpu_id: int
 
 
@@ -50,10 +50,12 @@ class PairingController:
         }
         self._inferences_of_trainer: dict[PodCoordinate, list[tuple[PodCoordinate, int]]] = {}
         for inference, placement in placement_of_inference.items():
-            self._inferences_of_trainer.setdefault(placement.trainer, []).append((inference, placement.base_gpu_id))
+            self._inferences_of_trainer.setdefault(placement.trainer_coord, []).append(
+                (inference, placement.base_gpu_id)
+            )
 
         self._trainer_key_of_coord = {
-            inference: placement.trainer.key for inference, placement in placement_of_inference.items()
+            inference: placement.trainer_coord.key for inference, placement in placement_of_inference.items()
         } | {trainer: trainer.key for trainer in self._inferences_of_trainer}
 
         self._node_width_checker = NodeWidthChecker.from_config(config=config, core_v1=core_v1)
@@ -152,7 +154,7 @@ def _place_inference_pod(
         absolute_gpu // layout.num_gpus_per_node, layout.num_pods_per_trainer_cell
     )
     return InferencePlacement(
-        trainer=PodCoordinate(
+        trainer_coord=PodCoordinate(
             pool_id=trainer_pool_id, cell_index=trainer_cell_index, pod_in_cell_index=trainer_pod_index
         ),
         base_gpu_id=absolute_gpu % layout.num_gpus_per_node,

@@ -15,15 +15,16 @@ class NodeWidthChecker:
             f"the inference pools were rendered against different node widths {sorted(widths)}, so no single "
             f"number describes the nodes this run's trainers hold and none can be checked against them"
         )
-        return cls(core_v1=core_v1, num_gpus_per_node=widths.pop())
+        [num_gpus_per_node] = widths
+        return cls(core_v1=core_v1, num_gpus_per_node=num_gpus_per_node)
 
     def __init__(self, *, core_v1: client.CoreV1Api, num_gpus_per_node: int) -> None:
         self._core_v1 = core_v1
         self._num_gpus_per_node = num_gpus_per_node
-        self._nodes_of_the_configured_width: set[str] = set()
+        self._passed_nodes: set[str] = set()
 
     async def assert_node_width_vs_configured(self, node_name: str) -> None:
-        if node_name in self._nodes_of_the_configured_width:
+        if node_name in self._passed_nodes:
             return
 
         node = await self._core_v1.read_node(name=node_name)
@@ -34,4 +35,4 @@ class NodeWidthChecker:
             f"width the node does not have and the trainer pod beside it does not hold every card it is given; "
             f"device plugin time slicing and mig inflate this count, so a node reporting them cannot host colocate"
         )
-        self._nodes_of_the_configured_width.add(node_name)
+        self._passed_nodes.add(node_name)

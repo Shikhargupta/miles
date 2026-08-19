@@ -77,7 +77,7 @@ def _place(inference_cell_index: int, layout: PairingLayout, inference_pod_index
 
 
 def _target(inference_cell_index: int, layout: PairingLayout, inference_pod_index: int = 0) -> PodCoordinate:
-    return _place(inference_cell_index, layout, inference_pod_index).trainer
+    return _place(inference_cell_index, layout, inference_pod_index).trainer_coord
 
 
 def _base_gpu(inference_cell_index: int, layout: PairingLayout, inference_pod_index: int = 0) -> int:
