@@ -5,7 +5,7 @@ import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, sglang_supports_gated_launch
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
@@ -300,7 +300,7 @@ def _compute_spec_inference_engine(
             port=ctx.self_addrs["primary"].port,
             disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
-            gated_launch_port=gate.port if (gate := ctx.self_addrs.get(GATE_PORT_NAME)) else None,
+            gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
         )
 
     envs = compute_inference_engine_env_vars(args)
@@ -342,11 +342,7 @@ def _compute_spec_inference_engine(
                 else []
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
-            *(
-                [PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True)]
-                if sglang_supports_gated_launch()
-                else []
-            ),
+            PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
         env_var=lambda _ctx: envs,
         scheduling=scheduling,

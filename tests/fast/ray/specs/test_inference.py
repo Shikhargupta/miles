@@ -508,35 +508,6 @@ class TestInferenceEnginePortSchema:
 
 
 class TestInferenceEngineGatedLaunch:
-    def test_the_port_is_allocated_only_when_this_sglang_serves_a_gate(self, tmp_path, monkeypatch):
-        """A cell given a port no sglang serves waits out its whole activation deadline for nothing."""
-        config_path = tmp_path / "sglang.yaml"
-        config_path.write_text(make_sglang_config_yaml(server_groups=[{"worker_type": "regular", "num_gpus": 4}]))
-        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
-
-        monkeypatch.setattr(inference_specs, "sglang_supports_gated_launch", lambda: False)
-        (spec,) = specs_inference_engine(args)
-
-        assert "gate" not in [info.name for info in spec.port_infos]
-
-    def test_the_launch_command_is_told_nothing_when_no_gate_port_was_allocated(self, tmp_path, monkeypatch):
-        """sglang rejects a flag it does not declare, so the engine would die in argparse."""
-        config_path = tmp_path / "sglang.yaml"
-        config_path.write_text(make_sglang_config_yaml(server_groups=[{"worker_type": "regular", "num_gpus": 4}]))
-        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
-        recorded: dict = {}
-
-        def _record(**kwargs) -> str:
-            recorded.update(kwargs)
-            return "launch-cmd"
-
-        monkeypatch.setattr(inference_specs, "sglang_supports_gated_launch", lambda: False)
-        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
-        (spec,) = specs_inference_engine(args)
-        spec.launch_command(_make_engine_ctx(gated=False))
-
-        assert recorded["gated_launch_port"] is None
-
     def test_the_launch_command_is_told_the_cells_own_gate_port(self, tmp_path, monkeypatch):
         """An engine launched without its gate port would start ungated and ignore the release."""
         config_path = tmp_path / "sglang.yaml"
@@ -584,21 +555,17 @@ class TestInferenceEngineGatedLaunch:
         assert recorded == [0, 1, 0, 1]
 
 
-def _make_engine_ctx(
-    *, cell_index: int = 0, worker_in_cell_index: int = 0, gated: bool = True
-) -> LaunchCommandContext:
-    self_addrs = dict(
-        primary=HostAndPort(host="10.0.0.1", port=30000),
-        dist_init=HostAndPort(host="10.0.0.1", port=9000),
-        nccl=HostAndPort(host="10.0.0.1", port=10000),
-        engine_info_bootstrap=HostAndPort(host="10.0.0.1", port=12000),
-    )
-    if gated:
-        self_addrs["gate"] = HostAndPort(host="10.0.0.1", port=13007)
+def _make_engine_ctx(*, cell_index: int = 0, worker_in_cell_index: int = 0) -> LaunchCommandContext:
     return LaunchCommandContext(
         cell_index=cell_index,
         worker_in_cell_index=worker_in_cell_index,
-        self_addrs=self_addrs,
+        self_addrs=dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            dist_init=HostAndPort(host="10.0.0.1", port=9000),
+            nccl=HostAndPort(host="10.0.0.1", port=10000),
+            engine_info_bootstrap=HostAndPort(host="10.0.0.1", port=12000),
+            gate=HostAndPort(host="10.0.0.1", port=13007),
+        ),
         spec_addrs={},
         gpu_ids=[0, 1],
     )

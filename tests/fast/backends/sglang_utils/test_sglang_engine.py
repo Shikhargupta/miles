@@ -9,7 +9,7 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, sglang_supports_gated_launch
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 
 
 def _cmd(
@@ -48,23 +48,6 @@ def _cmd(
         gated_launch_port=addr_and_ports["gated_launch_port"],
         **kwargs,
     )
-
-
-class TestTheGatedLaunchPort:
-    def test_is_passed_to_an_sglang_that_serves_a_gate(self):
-        """The cell waits on that port before it treats the engine as live, so it has to reach sglang."""
-        if not sglang_supports_gated_launch():
-            pytest.skip("this sglang has no gated launch to pass a port to")
-
-        parsed = parse_server_args_argv(shlex.split(_cmd())[3:])
-
-        assert parsed.gated_launch_port == 20034
-
-    def test_is_left_out_when_the_run_allocated_none(self):
-        """An sglang without the gate rejects the flag, and the engine would die in argparse."""
-        command = _cmd(addr_overrides={"gated_launch_port": None})
-
-        assert "--gated-launch-port" not in command
 
 
 class TestComputeEngineLaunchCmd:
