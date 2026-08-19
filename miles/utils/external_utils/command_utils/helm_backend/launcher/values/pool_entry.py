@@ -15,7 +15,14 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     TRAINER_ENGINES_SECTION,
     LaunchPlan,
 )
-from miles.utils.workers import env_vars as worker_env_vars
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.placeholders import (
+    LEADER_ADDRESS_PLACEHOLDER,
+    RENDERED_CELL_INDEX,
+    WORKER_INDEX_SENTINEL,
+    rendered_gpu_ids,
+    with_base_gpu_id,
+    with_worker_index,
+)
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
@@ -26,19 +33,11 @@ from miles.utils.workers.worker_spec import (
     ServeWorkerSpec,
 )
 
-_WORKER_INDEX_PLACEHOLDER = "$(LWS_WORKER_INDEX)"
-_LEADER_ADDRESS_PLACEHOLDER = "$(LWS_LEADER_ADDRESS)"
-_BASE_GPU_ID_PLACEHOLDER = f"$({worker_env_vars.BASE_GPU_ID_ENV_VAR})"
-
 _BIND_HOST = "0.0.0.0"
 
 _SERVE_MODULE = "miles.utils.workers.serving.serve"
 _SUPERVISOR_MODULE = "miles.utils.workers.process_supervisor"
 _SPECS_FN = "miles.ray.specs.entrypoint.compute_specs_from_argv"
-
-_RENDERED_CELL_INDEX = 0
-_WORKER_INDEX_SENTINEL = 987654321
-_BASE_GPU_ID_SENTINEL = 987654322
 
 
 def build_entry(
@@ -55,8 +54,8 @@ def build_entry(
     context = _launch_context(
         spec,
         addresses=addresses,
-        cell_index=_RENDERED_CELL_INDEX,
-        worker_in_cell_index=_WORKER_INDEX_SENTINEL,
+        cell_index=RENDERED_CELL_INDEX,
+        worker_in_cell_index=WORKER_INDEX_SENTINEL,
         shares_its_node=shares_its_node,
     )
     pods_per_cell = spec.scheduling.pods_per_cell()
@@ -145,7 +144,7 @@ def _launch_context(
 ) -> LaunchCommandContext:
     self_addrs = {
         port.name: HostAndPort(
-            host=_LEADER_ADDRESS_PLACEHOLDER if port.mode == "master" else _BIND_HOST,
+            host=LEADER_ADDRESS_PLACEHOLDER if port.mode == "master" else _BIND_HOST,
             port=port.static_port,
         )
         for port in spec.port_infos
@@ -153,23 +152,16 @@ def _launch_context(
     return LaunchCommandContext(
         cell_index=cell_index,
         worker_in_cell_index=worker_in_cell_index,
-        gpu_ids=_rendered_gpu_ids(spec, shares_its_node=shares_its_node),
+        gpu_ids=rendered_gpu_ids(spec, shares_its_node=shares_its_node),
         self_addrs=self_addrs,
         spec_addrs={pool_id: list(cells.values()) for pool_id, cells in addresses.items()},
     )
 
 
-def _rendered_gpu_ids(spec: BaseWorkerSpec, *, shares_its_node: bool) -> list[int]:
-    gpus_per_pod = max(1, spec.scheduling.gpus_per_pod())
-    if shares_its_node:
-        return [_BASE_GPU_ID_SENTINEL] * gpus_per_pod
-    return list(range(gpus_per_pod))
-
-
 def _command_of_spec(spec: BaseWorkerSpec, context: LaunchCommandContext, plan: LaunchPlan) -> list[str]:
     match spec:
         case CommandWorkerSpec():
-            return _with_base_gpu_id(_with_worker_index(shlex.split(spec.launch_command(context)), spec), spec)
+            return with_base_gpu_id(with_worker_index(shlex.split(spec.launch_command(context)), spec), spec)
         case ServeWorkerSpec():
             return _serve_command(spec, plan)
         case _:
@@ -197,28 +189,6 @@ def _shares_its_node(pairing_layout: PairingLayout | None) -> bool:
     if pairing_layout is None:
         return False
     return pairing_layout.num_gpus_per_inference_pod < pairing_layout.num_gpus_per_node
-
-
-def _with_base_gpu_id(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
-    sentinel = str(_BASE_GPU_ID_SENTINEL)
-    _assert_sentinel_is_a_whole_token(argv, sentinel=sentinel, spec=spec, built_out_of="base gpu id")
-    return [_BASE_GPU_ID_PLACEHOLDER if argument == sentinel else argument for argument in argv]
-
-
-def _with_worker_index(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
-    sentinel = str(_WORKER_INDEX_SENTINEL)
-    _assert_sentinel_is_a_whole_token(argv, sentinel=sentinel, spec=spec, built_out_of="pod index")
-    return [_WORKER_INDEX_PLACEHOLDER if argument == sentinel else argument for argument in argv]
-
-
-def _assert_sentinel_is_a_whole_token(
-    argv: list[str], *, sentinel: str, spec: BaseWorkerSpec, built_out_of: str
-) -> None:
-    embedded = [argument for argument in argv if sentinel in argument and argument != sentinel]
-    assert not embedded, (
-        f"Spec '{spec.name}' builds {embedded} out of its {built_out_of}; the value is substituted a whole "
-        f"argument at a time, so it has to reach the command unchanged"
-    )
 
 
 def _port_name(name: str) -> str:
