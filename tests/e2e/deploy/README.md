@@ -58,9 +58,3 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
   reported every rollout; finite nonzero grad_norm/loss; train_rollout_logprob_abs_diff <= 0.5
   per policy - the cheapest wiring bug (trainer scoring another engine's tokens) shows up there.
 ```
-
-## Expected failures today
-
-- Both hot restart targets: the outer launcher still watches the old state file and raises `SystemExit(143)` when the take-over lands.
-- `scenario_hot_restart_deterministic`: the resume rollout's engine checksum is lost to the pre-update log snapshot (exempted in the comparison).
-- `scenario_hot_restart_no_checkpoint`: `rollout_executor.load(-1, require_state=True)` dies before the train loop, and the un-rolled-back log carries duplicate checksum events the comparator refuses.
