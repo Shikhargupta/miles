@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 from tests.fast.charts.utils import objects_of_kind, render_run, requires_helm, with_object_names
 
@@ -11,19 +12,19 @@ TRAINER = [
 ]
 
 
-def _pod_spec_of_the_only_pool(*args: str):
+def _pod_spec_of_the_only_pool(*args: str) -> dict[str, Any]:
     rendered = render_run("--set-json", f"run.trainerEngines={json.dumps(with_object_names(TRAINER))}", *args)
     pool = objects_of_kind(rendered, "LeaderWorkerSet")[0]
     return pool["spec"]["leaderWorkerTemplate"]["workerTemplate"]["spec"]
 
 
-def _shm_volume(pod_spec):
+def _shm_volume(pod_spec: dict[str, Any]) -> dict[str, Any]:
     [mount] = _shm_mounts(pod_spec)
     [volume] = [volume for volume in pod_spec["volumes"] if volume["name"] == mount["name"]]
     return volume
 
 
-def _shm_mounts(pod_spec):
+def _shm_mounts(pod_spec: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         mount
         for container in pod_spec["containers"]
@@ -51,6 +52,12 @@ class TestPoolPodsGetSharedMemoryNcclCanUse:
         pod_spec = _pod_spec_of_the_only_pool("--set", "run.shmSize=8Gi")
 
         assert _shm_volume(pod_spec)["emptyDir"]["sizeLimit"] == "8Gi"
+
+    def test_a_suffixless_size_still_reaches_kubernetes_as_a_quantity(self):
+        """An unquoted 32 is a yaml integer, and a resource quantity that is not a string is rejected."""
+        pod_spec = _pod_spec_of_the_only_pool("--set-string", "run.shmSize=32")
+
+        assert _shm_volume(pod_spec)["emptyDir"]["sizeLimit"] == "32"
 
     def test_every_mounted_volume_is_declared_by_the_pod_that_mounts_it(self):
         """A container naming a volume the pod does not declare makes the whole manifest invalid."""

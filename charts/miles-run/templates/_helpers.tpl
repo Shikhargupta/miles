@@ -99,13 +99,13 @@ affinity:
 {{- end }}
 
 {{- define "miles-run.shmVolume" -}}
-{{/* kubernetes gives a container 64Mi of /dev/shm, and NCCL asks for tens of Mi per peer the moment
-     it cannot reach one over p2p, so a pool holding part of a node's cards dies at rendezvous with
-     "No space left on device". The docker quick start passes --shm-size=32g for the same reason. */}}
+{{- /* kubernetes gives a container 64Mi of /dev/shm, and NCCL asks for tens of Mi per peer the moment
+       it cannot reach one over p2p, so a pool holding part of a node's cards dies at rendezvous with
+       "No space left on device". The docker quick start passes --shm-size=32g for the same reason. */}}
 - name: dev-shm
   emptyDir:
     medium: Memory
-    sizeLimit: {{ include "miles-run.shmSize" . }}
+    sizeLimit: {{ include "miles-run.shmSize" . | quote }}
 {{- end }}
 
 {{- define "miles-run.shmVolumeMount" -}}
