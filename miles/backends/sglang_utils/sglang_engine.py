@@ -20,6 +20,7 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 logger = logging.getLogger(__name__)
 
 
+@functools.cache
 def sglang_supports_gated_launch() -> bool:
     return any(field.name == "gated_launch_port" for field in dataclasses.fields(ServerArgs))
 
