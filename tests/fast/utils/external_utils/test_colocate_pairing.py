@@ -1031,7 +1031,9 @@ class TestNodeWidthChecker:
 
     def test_takes_the_one_node_width_every_inference_pool_was_rendered_against(self):
         """The layouts all copy the trainer's node width, so the run has exactly one number to check."""
-        check = NodeWidthChecker.from_config(config=_config([_inference_pool(_sub_node_layout())]), core_v1=FakeCoreV1())
+        check = NodeWidthChecker.from_config(
+            config=_config([_inference_pool(_sub_node_layout())]), core_v1=FakeCoreV1()
+        )
 
         asyncio.run(check.assert_node_is_as_wide_as_configured("gpu-3"))
 
