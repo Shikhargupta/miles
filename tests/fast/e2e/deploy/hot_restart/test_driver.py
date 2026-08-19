@@ -4,10 +4,20 @@ from typing import Any
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import driver as driver_module
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import HotRestartDriver, ScheduledFreeze, compute_freeze_plan
+from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
+    HOT_RESTART_ARG,
+    HotRestartDriver,
+    ScheduledFreeze,
+    compute_freeze_plan,
+    relaunch_with_hot_restart,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
+from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, RELEASE
 
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, FTTestAction
+from miles.utils.workers.types import HotRestartComponent
 
 
 _CHECKPOINTED: ScheduledFreeze = ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1)
@@ -50,11 +60,36 @@ class TestTheFreezePlan:
         assert compute_freeze_plan(None) == []
 
 
+class TestHotRestartArg:
+    def test_the_flag_names_both_components_a_take_over_replaces(self):
+        """A hot restart replaces the orchestration script and the rollout executor together or not at all."""
+        assert sorted(HOT_RESTART_ARG.split(",")) == sorted(one.value for one in HotRestartComponent)
+
+
+class TestRelaunchWithHotRestart:
+    def test_a_relaunch_that_would_install_another_release_is_refused(self):
+        """A relaunch building its own config gets a run id of its own and leaves the run behind."""
+        mode = FTTestMode(
+            model_name="demo", model_hf_repo="demo/demo", megatron_model_type="demo", num_cells=1, parallel_args=""
+        )
+
+        with pytest.raises(AssertionError, match="already up"):
+            relaunch_with_hot_restart(
+                train_args="",
+                mode=mode,
+                config=ExecuteTrainConfig(run_id="demo"),
+                installed_release="miles-run-someone-else-all",
+            )
+
+
 def _driver(tmp_path: Path, **overrides: Any) -> HotRestartDriver:
     kwargs: dict[str, Any] = dict(
         relaunch=lambda _frozen_rollout_id: None,
         checkpoint_dir=tmp_path / "checkpoints",
         events_dir=tmp_path / "events",
+        release=RELEASE,
+        namespace=NAMESPACE,
+        trainer_id="actor",
         schedule=_SCHEDULE,
         poll_interval_seconds=0.0,
     )
@@ -72,6 +107,7 @@ def _install_progress(monkeypatch, reported: list[RunProgress]) -> None:
     monkeypatch.setattr(
         driver_module, "read_run_progress", lambda **_kwargs: remaining.pop(0) if remaining else reported[-1]
     )
+    monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
 
 
 class TestHotRestartDriverStart:
@@ -260,6 +296,7 @@ class TestTheTakeOverLoop:
 
         driver = _driver(tmp_path, schedule=(ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),))
         monkeypatch.setattr(driver_module, "read_run_progress", read)
+        monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
 
         driver._drive(threading.Event())
         _join_relaunches(driver)
