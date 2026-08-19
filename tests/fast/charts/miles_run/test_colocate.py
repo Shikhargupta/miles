@@ -39,6 +39,7 @@ POOLS = (
 
 PAIRING = "myrun-miles-run-colocate-pairing"
 ORCHESTRATOR_ROLE = "myrun-miles-run-orchestrator"
+CLUSTER_PAIRING = f"{PAIRING}-{NAMESPACE}"
 
 
 def layout(
@@ -189,6 +190,8 @@ class TestDisaggregatedRun:
 
         assert [obj["metadata"]["name"] for obj in objects_of_kind(objects, "Role")] == [ORCHESTRATOR_ROLE]
         assert [obj["metadata"]["name"] for obj in objects_of_kind(objects, "RoleBinding")] == [ORCHESTRATOR_ROLE]
+        assert objects_of_kind(objects, "ClusterRole") == []
+        assert objects_of_kind(objects, "ClusterRoleBinding") == []
         assert objects_of_kind(objects, "Deployment") == []
         assert [obj["metadata"]["name"] for obj in objects_of_kind(objects, "ServiceAccount")] == [ORCHESTRATOR_ROLE]
 
@@ -202,6 +205,25 @@ class TestPairingController:
         assert role["rules"] == [
             {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch", "patch", "update"]}
         ]
+
+    def test_may_read_the_nodes_it_checks_before_releasing_a_pod(self):
+        """Nodes are cluster-scoped, so the one width check that can see a real node needs a ClusterRole."""
+        role = named_object(render_run(*ENABLE), "ClusterRole", CLUSTER_PAIRING)
+
+        assert role["rules"] == [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}]
+
+    def test_binds_that_cluster_role_to_its_own_account_only(self):
+        """A ClusterRoleBinding is global, so a subject without this namespace would grant a stranger the rights."""
+        binding = named_object(render_run(*ENABLE), "ClusterRoleBinding", CLUSTER_PAIRING)
+
+        assert binding["roleRef"] == dict(
+            apiGroup="rbac.authorization.k8s.io", kind="ClusterRole", name=CLUSTER_PAIRING
+        )
+        assert binding["subjects"] == [dict(kind="ServiceAccount", name=PAIRING, namespace=NAMESPACE)]
+
+    def test_names_its_cluster_scoped_objects_after_the_namespace_too(self):
+        """Two namespaces running the same release would otherwise fight over one cluster-scoped name."""
+        assert CLUSTER_PAIRING == f"{PAIRING}-{NAMESPACE}"
 
     def test_never_asks_for_the_binding_subresource(self):
         """That belongs to the scheduler, and asking for it would make this a scheduler replacement."""
