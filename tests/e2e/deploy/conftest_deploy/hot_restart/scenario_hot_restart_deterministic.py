@@ -20,6 +20,9 @@ from tests.e2e.deploy.conftest_deploy.common.utils import compare_deterministic_
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
     assert_only_the_steps_after_a_checkpoint_were_redone,
 )
+from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_scratch import (
+    assert_a_run_that_had_saved_nothing_was_redone_from_scratch,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
     assert_the_take_overs_replaced_only_the_script,
 )
@@ -100,7 +103,13 @@ CHECKPOINTED: HotRestartMode = HotRestartMode(
     ),
     assert_redone=assert_only_the_steps_after_a_checkpoint_were_redone,
 )
-MODES: tuple[HotRestartMode, ...] = (CHECKPOINTED,)
+NO_CHECKPOINT: HotRestartMode = HotRestartMode(
+    name="no_checkpoint",
+    save_interval=4,
+    schedule=(ScheduledFreeze(frozen_rollout_id=1, saved_iteration=None),),
+    assert_redone=assert_a_run_that_had_saved_nothing_was_redone_from_scratch,
+)
+MODES: tuple[HotRestartMode, ...] = (CHECKPOINTED, NO_CHECKPOINT)
 
 
 # ================================ entry points ================================
