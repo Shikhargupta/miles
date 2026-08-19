@@ -32,10 +32,10 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
   count/checksums, weights-moved and nonzero-gradient gates. Bitwise comes from the deterministic
   flags + `--sglang-disable-radix-cache` + `--weight-decay 0`.
 
-## Scenarios
+## `scenario_split_deterministic`
 
 ```
-scenario_split_deterministic: 3 rollouts
+3 rollouts
   baseline = one release; target = TRAINER + INFERENCE e0,e1 (one engine each) + PRIMARY last
   (blocks until the run ends). Addresses from the example's address_book; ordering, shared run
   uuid and uninstall from conftest_deploy/split_deployment.py.
@@ -43,8 +43,10 @@ scenario_split_deterministic: 3 rollouts
   engine-assignment invariant.
 ```
 
+## `scenario_hot_restart_deterministic`
+
 ```
-scenario_hot_restart_deterministic: 6 rollouts, --save-interval 1, 2 restarts, ONE release
+6 rollouts, --save-interval 1, 2 restarts, ONE release
   Target only: relaunch the same command + --hot-restart orchestration,rollout_executor once a
   save and a step after it exist (second gate also demands disjoint redo windows).
   Asserts: only orchestrator + rollout-executor rolled (pod uid/restartCount/stamps); one trainer
@@ -54,8 +56,10 @@ scenario_hot_restart_deterministic: 6 rollouts, --save-interval 1, 2 restarts, O
   Twice because the second take-over hits trainers already taken over once.
 ```
 
+## `scenario_hot_restart_no_checkpoint`
+
 ```
-scenario_hot_restart_no_checkpoint: 6 rollouts, --save-interval 4, ONE restart in window 0..2
+6 rollouts, --save-interval 4, ONE restart in window 0..2
   Gate opens on the first finished step while no checkpoint exists; a save seen first fails.
   Asserts: workloads/process as above; NO .trash_* (nothing to restore - --load resolves to
   --ref-load); the one log holds steps 0..F twice, no hole, nothing thrice; the run saves after
@@ -63,8 +67,10 @@ scenario_hot_restart_no_checkpoint: 6 rollouts, --save-interval 4, ONE restart i
   Own scenario because load_state without a tracker re-seeds, resets the optimizer, returns 0.
 ```
 
+## `scenario_split_multi_policy`
+
 ```
-scenario_split_multi_policy: 3 rollouts, single run (multi trainer is not bitwise)
+3 rollouts, single run (multi trainer is not bitwise)
   Five releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PRIMARY last.
   Asserts: every rank trained with its own policy's args; every policy learned; the leader
   reported every rollout; finite nonzero grad_norm/loss; train_rollout_logprob_abs_diff <= 0.5
