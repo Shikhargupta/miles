@@ -18,6 +18,7 @@ from miles.utils.workers.reconcile.loop import ReconcileLoop
 logger = logging.getLogger(__name__)
 
 _UNRELATED_KEY_PREFIX = "__unrelated__/"
+_UNPROCESSABLE_ENTITY = 422
 
 
 class PairingController:
@@ -26,7 +27,7 @@ class PairingController:
     def __init__(self, *, config: PairingConfig, core_v1: client.CoreV1Api) -> None:
         self._config = config
         self._core_v1 = core_v1
-        self._trainer_of_inference = {
+        trainer_of_inference = {
             PodCoordinate(
                 pool_id=pool.pool_id, cell_index=cell_index, pod_in_cell_index=pod_index
             ): _target_trainer_pod(
@@ -39,11 +40,16 @@ class PairingController:
             for cell_index in range(pool.layout.num_inference_cells)
             for pod_index in range(pool.layout.num_pods_per_inference_cell)
         }
-        self._inference_of_trainer = {trainer: inference for inference, trainer in self._trainer_of_inference.items()}
-        assert len(self._inference_of_trainer) == len(self._trainer_of_inference), (
-            f"Two inference pods target the same trainer pod under {[pool.layout for pool in self._config.inference_pools]}, "
-            f"so one of them would never be woken by the trainer it waits on"
-        )
+        # sub-node inference pods share one trainer pod's node, so a trainer wakes several of them and the
+        # pair is keyed by the trainer: keying by the inference pod would give that trainer many keys and the
+        # loop hands a pod exactly one
+        self._inferences_of_trainer: dict[PodCoordinate, list[PodCoordinate]] = {}
+        for inference, trainer in trainer_of_inference.items():
+            self._inferences_of_trainer.setdefault(trainer, []).append(inference)
+
+        self._pair_key_of = {inference: trainer.key for inference, trainer in trainer_of_inference.items()} | {
+            trainer: trainer.key for trainer in self._inferences_of_trainer
+        }
 
     def set_loop(self, loop: ReconcileLoop) -> None:
         self._loop = loop
@@ -53,43 +59,52 @@ class PairingController:
             coord: pod for pod in self._loop.get_by_parent(pair_key) if (coord := coordinate_of(pod)) is not None
         }
 
-        inference_coord = next((coord for coord in pods_by_coord if coord.key == pair_key), None)
-        if inference_coord is None or not is_gated(inference_pod := pods_by_coord[inference_coord]):
+        trainer_coord = next((coord for coord in pods_by_coord if coord.key == pair_key), None)
+        if trainer_coord is None:
+            return
+        gated = [
+            pod
+            for inference_coord in self._inferences_of_trainer.get(trainer_coord, [])
+            if (pod := pods_by_coord.get(inference_coord)) is not None and is_gated(pod)
+        ]
+        if not gated:
             return
 
-        trainer_coord = self._trainer_of_inference[inference_coord]
-        trainer_pod = pods_by_coord.get(trainer_coord)
-        trainer_node_name = trainer_pod.spec.node_name if trainer_pod is not None else None
+        trainer_node_name = pods_by_coord[trainer_coord].spec.node_name
         if not trainer_node_name:
             logger.info(
                 "Waiting for %s to be scheduled before releasing %s",
                 trainer_coord.key,
-                inference_pod.metadata.name,
+                [pod.metadata.name for pod in gated],
             )
             return
 
-        logger.info(
-            "Releasing %s onto %s, where %s runs",
-            inference_pod.metadata.name,
-            trainer_node_name,
-            trainer_coord.key,
-        )
-        await self._core_v1.patch_namespaced_pod(
-            name=inference_pod.metadata.name,
-            namespace=self._config.namespace,
-            body=release_patch(
-                node_name=trainer_node_name,
-                gates=gate_names(inference_pod),
-                has_node_selector=bool(inference_pod.spec.node_selector),
-            ),
-        )
+        for inference_pod in gated:
+            await self._release(inference_pod, node_name=trainer_node_name, trainer_key=trainer_coord.key)
+
+    async def _release(self, inference_pod: Pod, *, node_name: str, trainer_key: str) -> None:
+        logger.info("Releasing %s onto %s, where %s runs", inference_pod.metadata.name, node_name, trainer_key)
+        try:
+            await self._core_v1.patch_namespaced_pod(
+                name=inference_pod.metadata.name,
+                namespace=self._config.namespace,
+                body=release_patch(
+                    node_name=node_name,
+                    gates=gate_names(inference_pod),
+                    has_node_selector=bool(inference_pod.spec.node_selector),
+                ),
+            )
+        except client.ApiException as exception:
+            # the patch tests for the gate before removing it, so an unprocessable entity is how the
+            # apiserver reports that this pod was already released; the pods this trainer seats are
+            # released together, and one of them losing that race must not strand its neighbours
+            if exception.status != _UNPROCESSABLE_ENTITY:
+                raise
+            logger.info("%s was already released before this pass reached it", inference_pod.metadata.name)
 
     def key_of(self, pod: Pod) -> str:
-        if (coord := coordinate_of(pod)) is not None:
-            if coord in self._trainer_of_inference:
-                return coord.key
-            if (inference_coord := self._inference_of_trainer.get(coord)) is not None:
-                return inference_coord.key
+        if (coord := coordinate_of(pod)) is not None and (key := self._pair_key_of.get(coord)) is not None:
+            return key
         return f"{_UNRELATED_KEY_PREFIX}{pod.metadata.name}"
 
 
@@ -101,7 +116,8 @@ def _target_trainer_pod(
 
     absolute_gpu = (
         layout.gpu_offset
-        + (inference_cell_index * layout.num_pods_per_inference_cell + inference_pod_index) * layout.num_gpus_per_node
+        + (inference_cell_index * layout.num_pods_per_inference_cell + inference_pod_index)
+        * layout.num_gpus_per_inference_pod
     )
     trainer_cell_index, trainer_pod_index = divmod(
         absolute_gpu // layout.num_gpus_per_node, layout.num_pods_per_trainer_cell
