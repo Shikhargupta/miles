@@ -666,9 +666,16 @@ def _pod(
 def _unlabelled_pod(name: str, *, node_name: str | None = None, gated: bool = True, node_selector: Any = None) -> Any:
     gates = [SimpleNamespace(name=pairing_pods._GATE_NAME)] if gated else []
     return SimpleNamespace(
-        metadata=SimpleNamespace(name=name, uid=f"uid-{name}", labels={}, annotations={}, deletion_timestamp=None),
+        metadata=SimpleNamespace(
+            name=name,
+            uid=f"uid-{name}",
+            labels={},
+            annotations={},
+            deletion_timestamp=None,
+            resource_version=None,
+        ),
         spec=SimpleNamespace(node_name=node_name, scheduling_gates=gates, node_selector=node_selector, subdomain=None),
-        status=SimpleNamespace(pod_ip=None, conditions=[], container_statuses=[]),
+        status=SimpleNamespace(phase=None, pod_ip=None, conditions=[], container_statuses=[]),
     )
 
 
