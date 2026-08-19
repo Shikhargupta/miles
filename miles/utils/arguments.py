@@ -1066,6 +1066,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 interval_default=30.0,
                 timeout_default=30.0,
                 first_wait_default=0.0,
+                failure_threshold_default=1,
             )
             parser.add_argument(
                 "--api-server-port",
@@ -2752,6 +2753,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_user_provided_function_arguments(parser):
+            # this reads the argv it has so far only to learn which user modules to ask for arguments,
+            # and a caller building a throwaway parser supplies no argv at all; leaving the run's own
+            # required arguments enforced makes argparse print a full usage screen and exit, which the
+            # except below then turns into a parser silently missing every argument added past here
             try:
                 with with_relax_parser_required_args(parser):
                     args_partial, _ = parser.parse_known_args()
@@ -2975,6 +2980,14 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def _compute_rollout_external(args: argparse.Namespace) -> bool:
     return args.rollout_external_engine_addrs is not None or args.custom_inference_engine_provider_path is not None
+
+
+def _compute_update_weights_over_cuda_ipc(args: argparse.Namespace) -> bool:
+    # handing an engine a cuda ipc handle makes it open the sender's pid, so the two have to be in
+    # one pid namespace; colocation is what puts them there, but only because ray colocates inside a
+    # node's process space, while this backend colocates by pinning two pods to a node and a pod
+    # cannot open pids belonging to another
+    return args.colocate and ClusterBackend(args.cluster_backend) != ClusterBackend.KUBERNETES
 
 
 _BACKEND_ENGINE_PROVIDER_PATH = "miles.ray.specs.inference.backend_inference_engine_provider"
@@ -3849,6 +3862,7 @@ def miles_validate_args(args):
 
     args.rollout_external = _compute_rollout_external(args)
     args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)
+    args.update_weights_over_cuda_ipc = _compute_update_weights_over_cuda_ipc(args)
 
     args.worker_comm_backend = resolve_worker_comm_backend(
         cluster_backend=ClusterBackend(args.cluster_backend), requested=args.worker_comm_backend

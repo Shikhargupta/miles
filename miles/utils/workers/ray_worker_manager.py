@@ -419,6 +419,12 @@ class _BaseActorManager(Generic[SpecT]):
         return list(range(base_gpu_id, base_gpu_id + self.spec.scheduling.num_gpu_slots_per_worker))
 
     @property
+    def described_addrs(self) -> NamedHostAndPorts:
+        # a description is taken of whatever exists at the time, so it has to render a worker whose
+        # ports are still being allocated as holding none rather than as holding some of them
+        return self.self_addrs if self.self_addrs is not None else {}
+
+    @property
     def master_mode_addrs(self) -> NamedHostAndPorts:
         return {info.name: self.self_addrs[info.name] for info in self.spec.port_infos if info.mode == "master"}
 

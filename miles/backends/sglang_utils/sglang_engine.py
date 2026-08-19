@@ -20,6 +20,10 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 logger = logging.getLogger(__name__)
 
 
+def sglang_supports_gated_launch() -> bool:
+    return any(field.name == "gated_launch_port" for field in dataclasses.fields(ServerArgs))
+
+
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
@@ -67,7 +71,7 @@ def compute_engine_launch_cmd(
     port: int,
     disaggregation_bootstrap_port: int | None,
     engine_info_bootstrap_port: int,
-    gated_launch_port: int,
+    gated_launch_port: int | None,
 ) -> str:
     _assert_sglang_serves_a_launch_gate()
 
@@ -105,7 +109,7 @@ def _compute_server_args(
     engine_info_bootstrap_port: int | None,
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
-    gated_launch_port: int,
+    gated_launch_port: int | None,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
@@ -126,7 +130,6 @@ def _compute_server_args(
         "dist_init_addr": dist_init_addr,
         "gpu_id_step": 1,
         "base_gpu_id": base,
-        "gated_launch_port": gated_launch_port,
         # parallel
         "tp_size": _gpus_per_engine,
         "dp_size": args.sglang_dp_size,
@@ -162,6 +165,8 @@ def _compute_server_args(
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
+    if gated_launch_port is not None:
+        kwargs["gated_launch_port"] = gated_launch_port
 
     if is_multi_lora_enabled(args):
         kwargs["enable_lora"] = True

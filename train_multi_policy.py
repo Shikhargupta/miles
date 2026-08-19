@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import itertools
 import logging
 import os
@@ -99,6 +100,29 @@ async def _run_policy(
     num_rollout_per_epoch: int | None,
 ) -> None:
     model_id = trainer.model_id
+    rounds_of_this_policy = contextlib.nullcontext() if is_leader else parker.running_follower()
+
+    with rounds_of_this_policy:
+        for rollout_id in range(trainer.start_rollout_id, args.num_rollout):
+            rollout_ids[model_id] = rollout_id
+            await inference_controller.prepare_rollout(rollout_id, model_id=model_id)
+            rollout_data_pack = await rollout_executor.get(rollout_id, trainer_model_id=model_id)
+            await trainer.handle.train(rollout_id, rollout_data_pack)
+            remove_rollout_data_refs(args, rollout_data_pack)
+
+            if is_leader:
+                await _maybe_save_globally(
+                    args,
+                    model_id=model_id,
+                    trainers=trainers,
+                    rollout_executor=rollout_executor,
+                    parker=parker,
+                    rollout_ids=rollout_ids,
+                    rollout_id=rollout_id,
+                    num_rollout_per_epoch=num_rollout_per_epoch,
+                )
+            else:
+                await parker.maybe_park_follower()
 
     rollout_ids_iter = (
         range(trainer.start_rollout_id, args.num_rollout) if is_leader else itertools.count(trainer.start_rollout_id)
@@ -133,6 +157,10 @@ async def _run_policy(
                 rollout_id=rollout_id,
                 trainer_model_id=model_id,
             )
+            if (rollout_id + 1) % args.update_weights_interval == 0:
+                await update_weights(
+                    trainer.handle, rollout_executor, rollout_id=rollout_id, trainer_model_id=model_id
+                )
 
         if (
             is_leader
