@@ -30,7 +30,8 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministi
 ```
 6 rollouts, --save-interval 2, 2 restarts, ONE release
   Target only: relaunch the same command + --hot-restart orchestration,rollout_executor once a
-  save and a step after it exist (second gate also demands disjoint redo windows).
+  save and a step after it exist (second gate also demands disjoint redo windows), so every
+  take-over rolls back at least one unsaved step.
   Asserts: only orchestrator + rollout-executor rolled (pod uid/restartCount/stamps); one trainer
   rpc boot uuid throughout; redo measured off the logs - one .trash_* per restart, resume point =
   the snapshot beside a checkpoint, per-step attempts all 1 or 2; comparison bitwise, target may
