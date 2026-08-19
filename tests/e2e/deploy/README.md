@@ -7,7 +7,7 @@ entries register via `register_cuda_ci` and skip with a reason on any other back
 
 ```bash
 PYTHONPATH=. python tests/e2e/deploy/test_split_deterministic.py                          # as CI
-PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/scenario_split_deterministic.py run  # via app
+PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/split/scenario_split_deterministic.py run  # via app
 ```
 
 - **Subcommands**: comparison scenarios expose `run` / `baseline` / `target` / `compare` (no GPU) /
@@ -27,7 +27,7 @@ Steps: 3 rollouts
 2. Target, installed in order: TRAINER; INFERENCE e0, e1 (one engine each); PRIMARY last
    - installing PRIMARY blocks until the run ends
    - addresses from the example's address_book; ordering, shared run uuid and uninstall from
-     conftest_deploy/split_deployment.py
+     conftest_deploy/split/split_deployment.py
 3. Compare: dumps and metrics bitwise; engine checksums identical per (rollout, engine); engine
    count; weights moved; nonzero gradients >= 2 rollouts
 ```
@@ -45,6 +45,7 @@ Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PR
 3. Assert per policy: train_rollout_logprob_abs_diff <= 0.1 (the cheapest wiring bug - a
    trainer scoring another engine's tokens - shows up here)
 ```
+
 ### `scenario_hot_restart_deterministic`
 
 ```
