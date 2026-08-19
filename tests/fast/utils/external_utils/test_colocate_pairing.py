@@ -701,9 +701,16 @@ def _pod(
 def _unlabelled_pod(name: str, *, node_name: str | None = None, gated: bool = True, node_selector: Any = None) -> Any:
     gates = [SimpleNamespace(name=pairing_pods._GATE_NAME)] if gated else []
     return SimpleNamespace(
-        metadata=SimpleNamespace(name=name, uid=f"uid-{name}", labels={}, annotations={}, deletion_timestamp=None),
+        metadata=SimpleNamespace(
+            name=name,
+            uid=f"uid-{name}",
+            labels={},
+            annotations={},
+            deletion_timestamp=None,
+            resource_version=None,
+        ),
         spec=SimpleNamespace(node_name=node_name, scheduling_gates=gates, node_selector=node_selector, subdomain=None),
-        status=SimpleNamespace(pod_ip=None, conditions=[], container_statuses=[]),
+        status=SimpleNamespace(phase=None, pod_ip=None, conditions=[], container_statuses=[]),
     )
 
 
@@ -843,21 +850,8 @@ class TestReconcile:
 
         assert [name for name, _ in core_v1.patched] == [_pod_name(INFERENCE_POOL_ID, 1)]
 
-    def test_places_the_other_pods_when_one_of_them_was_already_released(self):
-        """The release patch tests the gate first, so losing that race is how a neighbour reports success."""
-        core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 422})
-        pods = [
-            _pod(INFERENCE_POOL_ID, 0),
-            _pod(INFERENCE_POOL_ID, 1),
-            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
-        ]
-
-        asyncio.run(_attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
-
-        assert [name for name, _ in core_v1.patched] == [_pod_name(INFERENCE_POOL_ID, 1)]
-
-    def test_still_reports_an_apiserver_failure_that_is_not_a_lost_race(self):
-        """A rejected patch that the gate test cannot explain is a real fault and must reach the loop."""
+    def test_reports_a_rejected_patch_instead_of_forgiving_it(self):
+        """Any refusal reaches the loop, which logs it and backs off; the next pass sees a fresher store."""
         core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 500})
         pods = [
             _pod(INFERENCE_POOL_ID, 0),
@@ -868,6 +862,22 @@ class TestReconcile:
             asyncio.run(
                 _attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
             )
+
+    def test_reports_a_patch_the_gate_test_refused_as_well(self):
+        """A pod released by an earlier pass fails the gate test; the refusal is louder than a stale cache."""
+        core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 422})
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(INFERENCE_POOL_ID, 1),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        with pytest.raises(client.ApiException):
+            asyncio.run(
+                _attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
+            )
+
+        assert core_v1.patched == []
 
     def test_keeps_a_selector_the_pod_already_carries(self):
         """The run's global nodeSelector is on the pod, and removing it makes the apiserver refuse."""
@@ -1216,7 +1226,12 @@ class TestPairingConfig:
 
 
 class FakeCoreV1:
-    def __init__(self, *, rejects: dict[str, int] | None = None, node_gpus: int | None = GPUS_PER_NODE) -> None:
+    def __init__(
+        self,
+        *,
+        rejects: dict[str, int] | None = None,
+        node_gpus: int | None = GPUS_PER_NODE,
+    ) -> None:
         self.patched: list[tuple[str, list[dict[str, Any]]]] = []
         self.nodes_read: list[str] = []
         self._rejects = rejects or {}
@@ -1234,8 +1249,8 @@ class FakeCoreV1:
 
 
 class PairingHarness:
-    def __init__(self, *, layout: PairingLayout | None = None) -> None:
-        self.core_v1 = FakeCoreV1()
+    def __init__(self, *, layout: PairingLayout | None = None, rejects: dict[str, int] | None = None) -> None:
+        self.core_v1 = FakeCoreV1(rejects=rejects)
         self.source = FakeSource()
         self.clock = FakeClock()
         pools = [_inference_pool(layout or _layout(num_inference_cells=2, num_trainer_cells=2))]
@@ -1388,3 +1403,18 @@ class TestEventSequences:
             await harness.upsert(_pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False))
 
             assert harness.core_v1.patched == []
+
+    async def test_a_refused_release_is_left_to_the_pass_that_sees_a_fresher_store(self):
+        """The refusal aborts the pass; once the store shows that pod placed, its neighbour goes through."""
+        harness = PairingHarness(layout=_sub_node_layout(), rejects={_pod_name(INFERENCE_POOL_ID, 0): 422})
+
+        async with harness.running(
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(INFERENCE_POOL_ID, 1),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ):
+            assert harness.patched_names() == []
+
+            await harness.upsert(_pod(INFERENCE_POOL_ID, 0, node_name="gpu-3", gated=False))
+
+            assert harness.patched_names() == [_pod_name(INFERENCE_POOL_ID, 1)]
