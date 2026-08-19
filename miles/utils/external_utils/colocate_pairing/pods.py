@@ -46,14 +46,14 @@ def release_patch(
         else {"op": "add", "path": "/spec/nodeSelector", "value": {_HOSTNAME_LABEL: node_name}}
     )
     key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
-    tell = (
+    annotation_ops = (
         {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)}
         if annotations is not None
         else {"op": "add", "path": "/metadata/annotations", "value": {key: str(base_gpu_id)}}
     )
     return [
         pin,
-        tell,
+        annotation_ops,
         {"op": "test", "path": f"/spec/schedulingGates/{index}/name", "value": _GATE_NAME},
         {"op": "remove", "path": f"/spec/schedulingGates/{index}"},
     ]
