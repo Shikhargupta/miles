@@ -2953,10 +2953,6 @@ def _compute_rollout_external(args: argparse.Namespace) -> bool:
     return args.rollout_external_engine_addrs is not None or args.custom_inference_engine_provider_path is not None
 
 
-def _compute_update_weights_over_cuda_ipc(args: argparse.Namespace) -> bool:
-    return args.colocate and ClusterBackend(args.cluster_backend) != ClusterBackend.KUBERNETES
-
-
 _BACKEND_ENGINE_PROVIDER_PATH = "miles.ray.specs.inference.backend_inference_engine_provider"
 _STATIC_EXTERNAL_ENGINE_PROVIDER_PATH = "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
 
@@ -3830,7 +3826,6 @@ def miles_validate_args(args):
 
     args.rollout_external = _compute_rollout_external(args)
     args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)
-    args.update_weights_over_cuda_ipc = _compute_update_weights_over_cuda_ipc(args)
 
     args.worker_comm_backend = resolve_worker_comm_backend(
         cluster_backend=ClusterBackend(args.cluster_backend), requested=args.worker_comm_backend
