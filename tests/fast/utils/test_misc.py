@@ -12,6 +12,7 @@ import pytest
 from miles.utils import misc
 from miles.utils.env_report import ENV_REPORT_PREFIX
 from miles.utils.misc import (
+    MutableBox,
     NodeProbeMixin,
     SimpleTicker,
     filter_keys,
@@ -251,3 +252,31 @@ class TestMergeAssertingConsistency:
         """Silently picking a winner would hand the caller one pod's answer as the whole cell's."""
         with pytest.raises(AssertionError, match="disagree"):
             merge_asserting_consistency({"a": 1}, {"a": 2})
+
+
+class TestMutableBox:
+    def test_a_closure_writes_through_the_box_its_caller_reads(self):
+        """A name rebound inside a nested function rebinds nothing its caller can see, which is the point."""
+        box: MutableBox[int] = MutableBox(value=0)
+
+        def advance() -> None:
+            box.value += 2
+
+        advance()
+        advance()
+
+        assert box.value == 4
+
+    def test_a_box_holds_whatever_it_was_opened_with(self):
+        """Callers open it on an optional handle as readily as on a counter."""
+        assert MutableBox(value=None).value is None
+        assert MutableBox(value="a").value == "a"
+
+    def test_two_boxes_of_the_same_value_do_not_share_it(self):
+        """Each caller's box is its own; a shared default would let one run's cursor drive another's."""
+        first: MutableBox[int] = MutableBox(value=0)
+        second: MutableBox[int] = MutableBox(value=0)
+
+        first.value = 7
+
+        assert second.value == 0

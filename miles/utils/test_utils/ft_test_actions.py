@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import TypeAdapter
@@ -22,7 +24,18 @@ class FTTestAction(FrozenStrictBaseModel):
     attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
 
 
+CI_FT_TEST_ACTIONS_FLAG: str = "--ci-ft-test-actions"
+
 _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
+
+
+def compute_ft_test_actions_arg(actions: Sequence[dict]) -> str:
+    return f"{CI_FT_TEST_ACTIONS_FLAG} '{render_ft_test_actions(actions)}' "
+
+
+def render_ft_test_actions(actions: Sequence[dict]) -> str:
+    return json.dumps(list(actions))
+
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}

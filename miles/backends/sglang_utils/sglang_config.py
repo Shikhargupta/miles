@@ -1,7 +1,6 @@
 """Configuration models for SGLang engine deployment."""
 
 import logging
-from dataclasses import dataclass
 from typing import Literal
 
 import pydantic
@@ -9,6 +8,7 @@ import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.misc import MutableBox
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         args,
         default_gpus_per_engine: int,
         default_model_path: str,
-        gpu_offset_cursor: "_MutableBox",
+        gpu_offset_cursor: MutableBox[int],
     ) -> "ServerGroupConfig":
         assert not ({"host", "port"} & set(raw.overrides)), (
             f"sglang_overrides must not override host/port ({raw.overrides=}): the rollout process derives "
@@ -197,7 +197,7 @@ class ModelConfig(FrozenStrictBaseModel):
     update_weights: bool
 
     @classmethod
-    def resolve(cls, raw: _RawModelConfig, args, gpu_offset_cursor: "_MutableBox") -> "ModelConfig":
+    def resolve(cls, raw: _RawModelConfig, args, gpu_offset_cursor: MutableBox[int]) -> "ModelConfig":
         """Resolve per-group defaults from model-level then args-level values."""
         default_model_path = raw.model_path or args.hf_checkpoint
         server_groups = [
@@ -258,7 +258,7 @@ class SglangConfig(FrozenStrictBaseModel):
 
     @classmethod
     def resolve(cls, raw: _RawSglangConfig, args) -> "SglangConfig":
-        gpu_offset_cursor = _MutableBox(value=0)
+        gpu_offset_cursor = MutableBox(value=0)
         model_configs = [ModelConfig.resolve(m, args, gpu_offset_cursor) for m in raw.models]
 
         assert gpu_offset_cursor.value == raw.total_num_gpus
@@ -267,11 +267,6 @@ class SglangConfig(FrozenStrictBaseModel):
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
-
-
-@dataclass
-class _MutableBox:
-    value: int
 
 
 def resolve_sglang_config(args) -> SglangConfig:
