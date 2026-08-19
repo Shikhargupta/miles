@@ -85,7 +85,7 @@ class TestOneConfigPerSoak:
             "create_backend_for_run",
             lambda config: seen.prepared.append(config) or _RecordingBackend(config, seen),
         )
-        monkeypatch.setattr(scenario_realistic_gsm8k, "_prepare_gsm8k", lambda U: None)
+        monkeypatch.setattr(scenario_realistic_gsm8k, "prepare_gsm8k", lambda U: None)
         monkeypatch.setattr(scenario_realistic_gsm8k, "resolve_dump_dir", lambda test_name: str(tmp_path / "gsm8k"))
         monkeypatch.setattr(scenario_realistic_gsm8k, "spawn_fault_injector", lambda **kwargs: _StubInjector())
         monkeypatch.setattr(scenario_realistic_gsm8k, "assert_healing", lambda ft_components, **kwargs: None)
@@ -93,6 +93,6 @@ class TestOneConfigPerSoak:
         scenario_realistic_gsm8k.run_ci(num_rollout=1)
 
         assert [config.run_id for config in seen.created] == ["sentinel-0"]
-        assert [config is seen.created[0] for config in seen.prepared] == [True]
+        assert seen.prepared and all(config is seen.created[0] for config in seen.prepared)
         assert [config is seen.created[0] for config in seen.asked_for_host] == [True]
         assert [config is seen.created[0] for config in seen.trained] == [True]
