@@ -46,6 +46,25 @@
 {{- end }}
 {{- end }}
 
+{{- define "miles-workbench.clusterRoleRules" -}}
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles", "clusterrolebindings"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+{{- end }}
+
+{{- define "miles-workbench.uninstallerClusterRoleRules" -}}
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles", "clusterrolebindings"]
+  verbs: ["get", "list", "delete"]
+{{- end }}
+
+{{- define "miles-workbench.clusterScopedName" -}}
+{{- printf "%s-%s" (include "miles-workbench.fullname" .) .Release.Namespace }}
+{{- end }}
+
 {{- define "miles-workbench.uninstallerRoleRules" -}}
 - apiGroups: [""]
   resources: ["configmaps", "secrets", "serviceaccounts", "services", "pods"]
