@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _UNRELATED_KEY_PREFIX = "__unrelated__/"
 _UNPROCESSABLE_ENTITY = 422
 _NOT_FOUND = 404
+_GPU_RESOURCE = "nvidia.com/gpu"
 
 
 class InferencePlacement(NamedTuple):
@@ -58,6 +59,14 @@ class PairingController:
             inference: placement.trainer.key for inference, placement in placement_of_inference.items()
         } | {trainer: trainer.key for trainer in self._inferences_of_trainer}
 
+        node_widths = {pool.layout.num_gpus_per_node for pool in self._config.inference_pools}
+        assert len(node_widths) == 1, (
+            f"the inference pools were rendered against different node widths {sorted(node_widths)}, so no single "
+            f"number describes the nodes this run's trainers hold and none can be checked against them"
+        )
+        self._num_gpus_per_node = node_widths.pop()
+        self._nodes_of_the_configured_width: set[str] = set()
+
     def set_loop(self, loop: ReconcileLoop) -> None:
         self._loop = loop
 
@@ -86,6 +95,8 @@ class PairingController:
             )
             return
 
+        await self._assert_the_node_is_as_wide_as_the_run_was_told(trainer_node_name)
+
         for inference_pod, base_gpu_id in gated:
             await self._release(
                 inference_pod,
@@ -93,6 +104,20 @@ class PairingController:
                 base_gpu_id=base_gpu_id,
                 trainer_key=trainer_coord.key,
             )
+
+    async def _assert_the_node_is_as_wide_as_the_run_was_told(self, node_name: str) -> None:
+        if node_name in self._nodes_of_the_configured_width:
+            return
+
+        node = await self._core_v1.read_node(name=node_name)
+        allocatable = int((node.status.allocatable or {}).get(_GPU_RESOURCE, 0))
+        assert allocatable == self._num_gpus_per_node, (
+            f"node {node_name} allocates {allocatable} {_GPU_RESOURCE} but this run was configured for "
+            f"{self._num_gpus_per_node} gpus per node, so a colocated engine's card is computed against a node "
+            f"width the node does not have and the trainer pod beside it does not hold every card it is given; "
+            f"device plugin time slicing and mig inflate this count, so a node reporting them cannot host colocate"
+        )
+        self._nodes_of_the_configured_width.add(node_name)
 
     async def _release(self, inference_pod: Pod, *, node_name: str, base_gpu_id: int, trainer_key: str) -> None:
         logger.info(
