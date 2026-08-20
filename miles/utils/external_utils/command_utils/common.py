@@ -148,6 +148,12 @@ class ArgvManipulator:
         return any(token == flag or token.startswith(f"{flag}=") for token in argv)
 
     @staticmethod
+    def add_or_replace_value(argv: list[str], flag: str, value: str) -> list[str]:
+        if ArgvManipulator.declares(argv, flag):
+            return ArgvManipulator.replacing_value(argv, flag, value)
+        return ArgvManipulator.with_flag(argv, flag, value)
+
+    @staticmethod
     def with_flag(argv: list[str], flag: str, value: str) -> list[str]:
         if ArgvManipulator.declares(argv, flag):
             return list(argv)
