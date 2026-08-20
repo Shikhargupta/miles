@@ -8,12 +8,18 @@ entries register via `register_cuda_ci` and fail with a reason on any other back
 ```bash
 PYTHONPATH=. python tests/e2e/deploy/test_split_deterministic.py                          # as CI
 PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/split/scenario_split_deterministic.py run  # via app
+# hot restart is two levels: the mode is a subcommand of its own
+PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/hot_restart/scenario_hot_restart_deterministic.py \
+    checkpointed run
 ```
 
 - **Subcommands**: comparison scenarios expose `run` / `baseline` / `target` / `compare` (no GPU) /
-  `generate-data`; the multi policy one exposes `run` / `verify`.
-- **Dump dirs**: `/node_public/dumps/<TEST_NAME>/` (only `run` deletes it; `--dump-dir` overrides);
-  multi policy: `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
+  `generate-data`; the multi policy one exposes `run` / `verify`; the realistic soak exposes `run`
+  only. The hot restart deterministic app nests those under one subcommand per mode
+  (`checkpointed`, `no_checkpoint`).
+- **Dump dirs**: `/node_public/dumps/<TEST_NAME>/` (only `run` deletes it). `--dump-dir` overrides
+  it for `baseline` / `target` / `compare` only; `run` and the realistic soak always resolve it
+  from the test name. Multi policy: `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
 
 ## Test Specifications
 
@@ -53,7 +59,12 @@ Type: comparison (baseline=untouched, target=same command, orchestration script 
 Steps: 6 rollouts
 Timing: exact - the run sleeps forever at the scheduled step boundary (the fault-injection
         machinery's sleep-forever action) and the driver relaunches the frozen run, so where a
-        take-over lands is pinned, not raced
+        take-over lands is pinned, not raced. The plan naming that step is delivered through a
+        file under the base dump dir (not under either side's, which each run deletes), so the
+        relaunch repeats the installed argv byte for byte: every worker pod's command carries
+        those arguments, and an in-place relaunch may only rebuild the orchestration side. The
+        frozen run writes a sentinel beside that plan when it parks, which is what the driver
+        gates on
 Modes: checkpointed  - --save-interval 2 (saves after 1, 3, 5), 2 restarts: restart 1 frozen
                        between steps 2 and 3 (resumes save 1), restart 2 frozen between steps
                        4 and 5 (resumes save 3)
@@ -83,12 +94,23 @@ redone; no_checkpoint has nothing to resume from and starts over at rollout 0.
 Type: single run, ft's scenario_realistic_gsm8k with hot restarts instead of kills
 Steps: as scenario_realistic_gsm8k
 Injection: HotRestartFaultForm at random intervals via the ft fault-injection plan, seed logged
-Eligibility: a save exists and a step finished after it; an ineligible draw waits, never fires
+Eligibility: none - every draw fires, wherever the run stands. A draw before the first save takes
+        over a run holding no checkpoint, which legitimately starts again from --ref-load; that
+        is a product path this soak is meant to cover, not skip. A draw lands once the run has
+        redone a step it had already trained (a rolled-back log, or step 0 trained twice).
+Load-bearing: this scenario adds --save/--load of its own plus --save-interval 10 (a take-over
+        resumes from the last checkpoint, so the interval bounds what one costs); mean seconds
+        between draws defaults to 1800 (--hot-restart-interval-seconds)
 
 1. Run the realistic gsm8k recipe while the plan injects hot restarts
 2. Assert: gsm8k reward improves as in scenario_realistic_gsm8k
-3. Assert: every scheduled restart happened; only orchestrator + rollout-executor ever rolled;
-   one trainer boot uuid throughout
+3. Assert: at least MIN_HOT_RESTARTS take-overs landed, no injection attempt failed for any
+   reason, every relaunch thread finished without raising (that last one is where the run's own
+   metric verdict surfaces), every landed take-over stamped the orchestrator and the
+   rollout-executor exactly once, no other workload was rolled or lost a pod, one trainer boot
+   uuid throughout, and no take-over threw away more than one save interval
+4. Artifact: what each take-over cost (index, checkpoint held, step reached) is written to
+   <dump_dir>/hot_restart/evidence.json
 
 Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```
