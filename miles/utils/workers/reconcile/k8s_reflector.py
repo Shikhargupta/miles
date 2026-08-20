@@ -58,8 +58,7 @@ class KubernetesReflector:
                     logger.error("KubernetesReflector could not read a frame, relisting", exc_info=True)
                     cursor.resource_version = None
                 else:
-                    logger.error("KubernetesReflector stream failed, relisting", exc_info=True)
-                cursor.resource_version = None
+                    logger.error("KubernetesReflector stream failed, retrying", exc_info=True)
                 await self._clock.sleep(self._retry_delay)
 
     async def _watch_once(self, cursor: _WatchCursor) -> AsyncGenerator[SourceEvent, None]:

@@ -251,7 +251,10 @@ class TestWatchEvents:
         await collector.close()
 
     async def test_a_stream_that_failed_relists_rather_than_replaying_the_frame_that_failed_it(self):
-        """The cursor never advanced past the poison frame, so resuming from it would redeliver it forever."""
+        """The cursor never advanced past the poison frame, so resuming from it would redeliver it forever.
+
+        A transient stream error is different and keeps its cursor: see
+        test_transient_watch_error_retries_without_relisting."""
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="1"))
         api.list_pages.append(make_pod_list([], resource_version="9"))
