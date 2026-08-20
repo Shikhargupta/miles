@@ -1,7 +1,7 @@
 #!/usr/bin/env fish
 
-set -l run_id 260820-25fff782
-set -l run_name 260820-25fff782-glm47-t2-summary23
+set -l run_id 260820-322cd295
+set -l run_name 260820-322cd295-glm47-t2-summary23
 set -l script_dir (path resolve (dirname (status filename)))
 
 # Ray workers do not necessarily inherit the submitter's HOME, so make the
@@ -32,6 +32,7 @@ python $script_dir/run.py \
     --save-traces-dir /scratch/$run_id/traces \
     --agent-server-url http://agent-server:11000 \
     --agent-model-name model \
+    --session-server-ip 100.117.61.82 \
     --router-external-host devbox-gpu-260820-25fff782-glm47-t2-summary23-64a44c75 \
     --wandb-project glm47-flash-agentic \
     --wandb-team ch271828n-team \
