@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import logging
 from collections.abc import Callable, Coroutine
@@ -15,6 +16,7 @@ from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
@@ -492,10 +494,11 @@ def _build_serve_worker(
     return bootstrapped_worker_class(worker_class_path)(ctor_kwargs=ctor_kwargs, context=context)
 
 
+@functools.cache
 def bootstrapped_worker_class(worker_class_path: str) -> type:
     worker_class = load_function(worker_class_path)
 
-    class BootstrappedWorker(worker_class):
+    class BootstrappedWorker(worker_class, NodeProbeMixin):
         def __init__(
             self, *, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
         ) -> None:
