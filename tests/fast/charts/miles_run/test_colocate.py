@@ -16,12 +16,17 @@ from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values 
 
 from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME, release_patch
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
+    _PLATFORM_OWNED_ENV_VARS,
+)
 from miles.utils.workers.env_vars import (
     BASE_GPU_ID_ENV_VAR,
     CELL_INDEX_ENV_VAR,
     NAMESPACE_ENV_VAR,
+    PLATFORM_IDENTITY_ENV_VARS,
     POD_INDEX_ENV_VAR,
     RELEASE_ENV_VAR,
+    SUBPROCESS_INDEX_ENV_VAR,
 )
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
@@ -272,6 +277,25 @@ class TestTheVariablesThePlatformOwns:
 
         assert env[NAMESPACE_ENV_VAR] == NAMESPACE
         assert env[RELEASE_ENV_VAR] == RUN_RELEASE_NAME
+
+
+class TestTheTwoListsOfPlatformVariables:
+    def test_the_reserved_names_and_the_identity_a_worker_reports_differ_only_where_meant_to(self):
+        """Two hand-kept lists of platform variables drift apart quietly, so the difference is what to state."""
+        reserved = set(_PLATFORM_OWNED_ENV_VARS)
+        identity = set(PLATFORM_IDENTITY_ENV_VARS)
+
+        assert reserved - identity == {BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR}
+        assert identity - reserved == {SUBPROCESS_INDEX_ENV_VAR}
+
+
+@requires_helm
+class TestTheNamesTheChartWritesAreTheNamesTheSchemaReserves:
+    def test_a_gated_pool_pod_is_given_the_reserved_names_and_nothing_else_of_its_own(self):
+        """Reserving a name is only worth something if the list covers every name the chart writes itself."""
+        container = pool_pod(render_run(*ENABLE), "myrun-miles-run-engine")["containers"][0]
+
+        assert _env_names(container) - {"NVIDIA_VISIBLE_DEVICES"} == set(_PLATFORM_OWNED_ENV_VARS)
 
 
 def _sub_node_engine_argv() -> list[str]:
