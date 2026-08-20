@@ -165,6 +165,18 @@ def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str)
     )
 
 
+def read_restart_stamps_of_release(*, release: str, namespace: str) -> set[str] | None:
+    stamps: set[str] = set()
+    for kind in WORKLOAD_KINDS:
+        payload = _read_objects(kind=kind, release=release, namespace=namespace)
+        if payload is None:
+            return None
+        stamps.update(
+            fact.restart_at for fact in parse_workload_facts(payload, kind=kind) if fact.restart_at is not None
+        )
+    return stamps
+
+
 def read_boot_uuid(url: str) -> str | None:
     try:
         response = requests.get(url, timeout=BOOT_UUID_TIMEOUT_SECONDS)

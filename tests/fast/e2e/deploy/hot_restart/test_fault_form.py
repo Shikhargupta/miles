@@ -10,6 +10,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import RunProgress
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
     HOT_RESTART_FORM_NAME,
     HotRestartFaultForm,
+    carries_the_stamps_of,
     describes_a_run_that_redid_a_step,
 )
 
@@ -31,13 +32,25 @@ def _form(launch, **overrides: Any) -> HotRestartFaultForm:
     return HotRestartFaultForm(**kwargs)
 
 
-def _install_run(monkeypatch, *, attempts: list[dict[int, int]], saved: int | None = 1) -> None:
-    """Feed the form the per-rollout attempt counts it reads, one per look."""
+def _install_run(
+    monkeypatch,
+    *,
+    attempts: list[dict[int, int]],
+    saved: int | None = 1,
+    stamps: list[set[str] | None] | None = None,
+) -> None:
+    """Feed the form the per-rollout attempt counts and the workload restart stamps it reads, one per look."""
     remaining = list(attempts)
     monkeypatch.setattr(
         fault_form_module,
         "read_attempts_of_rollout_id",
         lambda _events_dir: remaining.pop(0) if remaining else attempts[-1],
+    )
+    remaining_stamps = list(stamps) if stamps is not None else []
+    monkeypatch.setattr(
+        fault_form_module,
+        "read_restart_stamps_of_release",
+        lambda **_kwargs: remaining_stamps.pop(0) if remaining_stamps else (stamps[-1] if stamps else set()),
     )
     monkeypatch.setattr(
         fault_form_module,
@@ -66,8 +79,20 @@ class TestWhatCountsAsATakeOverThatLanded:
         assert not describes_a_run_that_redid_a_step(before={0: 1}, after=None)
 
     def test_a_run_that_had_trained_nothing_yet_does_not_count(self):
-        """There is no step to redo, so nothing observable would say the take-over landed."""
+        """There is no step to redo, which is why the restart stamps carry this case instead."""
         assert not describes_a_run_that_redid_a_step(before={}, after={0: 1})
+
+    def test_a_workload_carrying_this_take_overs_stamp_counts(self):
+        """Only a take-over stamps the workloads, so the first stamp is the first take-over landing."""
+        assert carries_the_stamps_of({"2026-08-20T00:00:00Z"}, take_overs=1)
+
+    def test_a_workload_carrying_only_an_earlier_take_overs_stamp_does_not_count(self):
+        """The stamp of the take-over before this one was already there when this draw fired."""
+        assert not carries_the_stamps_of({"2026-08-20T00:00:00Z"}, take_overs=2)
+
+    def test_a_stamp_read_that_failed_does_not_count(self):
+        """A kubectl call that did not answer must not become a take-over that never landed."""
+        assert not carries_the_stamps_of(None, take_overs=1)
 
 
 class TestInject:
@@ -90,6 +115,26 @@ class TestInject:
 
         assert len(launched) == 1
 
+    def test_a_draw_before_the_run_trained_a_step_lands_on_the_restart_stamp(self, monkeypatch):
+        """The run has no step to redo, and waiting for one would burn the whole take-over timeout."""
+        _install_run(monkeypatch, attempts=[{}, {}], saved=None, stamps=[set(), {"2026-08-20T00:00:00Z"}])
+
+        form = _form(lambda _config: None)
+        form.inject(CELL, Random(0))
+
+        assert [one.frozen_rollout_id for one in form.records] == [-1]
+
+    def test_a_draw_before_the_run_trained_a_step_still_times_out_without_a_stamp(self, monkeypatch):
+        """Without the stamp there is nothing saying the take-over installed, and that must not pass."""
+        never_returns = threading.Event()
+        _install_run(monkeypatch, attempts=[{}, {}], saved=None, stamps=[set()])
+
+        try:
+            with pytest.raises(AssertionError, match="do not carry"):
+                _form(lambda _config: never_returns.wait(timeout=30.0), timeout_seconds=0.2).inject(CELL, Random(0))
+        finally:
+            never_returns.set()
+
     def test_the_injector_is_not_blocked_by_a_relaunch_that_drives_the_run_to_its_end(self, monkeypatch):
         """The relaunch installs a script that trains to the end, so a call that waits for it never returns."""
         redone = threading.Event()
@@ -103,7 +148,7 @@ class TestInject:
         """An injection counted as landed would let this soak pass on a run nothing ever replaced."""
         _install_run(monkeypatch, attempts=[{0: 1, 1: 1}])
 
-        with pytest.raises(AssertionError, match="without the run ever redoing a step"):
+        with pytest.raises(AssertionError, match="without its workloads ever carrying"):
             _form(lambda _config: None).inject(CELL, Random(0))
 
     def test_a_relaunch_the_cluster_refused_is_reported_rather_than_counted(self, monkeypatch):

@@ -85,6 +85,9 @@ def _read_text_or_empty(path: Path) -> str:
 
 
 class HotRestartRecord(FrozenStrictBaseModel):
+    """The deterministic scenario freezes a run at a step it picks; the realistic one takes over whatever step the
+    run had reached, so there frozen_rollout_id is the last step it had trained, -1 before it trains any."""
+
     index: int
     saved_iteration_at_trigger: int | None
     frozen_rollout_id: int
