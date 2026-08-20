@@ -14,6 +14,12 @@ class _Recording(BaseWorkerHandle):
     async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
         self.calls.append(f"wait_ready:{timeout}:{allow_server_uuid_change}")
 
+    async def wait_idle(self, *, timeout: float) -> None:
+        self.calls.append(f"wait_idle:{timeout}")
+
+    async def wait_dead(self, *, timeout: float) -> None:
+        self.calls.append(f"wait_dead:{timeout}")
+
     async def probe_is_dead(self) -> bool:
         self.calls.append("probe_is_dead")
         return False
@@ -79,3 +85,15 @@ class TestAHandleIsResolvedWhenItIsUsed:
         await handle.wait_ready(timeout=3.0, allow_server_uuid_change=True)
 
         assert target.calls == ["wait_ready:3.0:True"]
+
+    @pytest.mark.asyncio
+    async def test_the_waits_the_base_class_implements_reach_the_real_handle(self):
+        """The base implements these, so python finds them and the fallback never runs: unforwarded, a
+        take-over asks the proxy whether the worker is busy and is told it cannot know."""
+        target = _Recording()
+        handle = LazyWorkerHandle(lambda: target)
+
+        await handle.wait_idle(timeout=4.0)
+        await handle.wait_dead(timeout=5.0)
+
+        assert target.calls == ["wait_idle:4.0", "wait_dead:5.0"]

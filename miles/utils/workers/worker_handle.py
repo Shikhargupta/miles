@@ -48,6 +48,12 @@ class LazyWorkerHandle(BaseWorkerHandle):
     async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
         await self._handle.wait_ready(timeout=timeout, allow_server_uuid_change=allow_server_uuid_change)
 
+    async def wait_idle(self, *, timeout: float) -> None:
+        await self._handle.wait_idle(timeout=timeout)
+
+    async def wait_dead(self, *, timeout: float) -> None:
+        await self._handle.wait_dead(timeout=timeout)
+
     async def probe_is_dead(self) -> bool:
         return await self._handle.probe_is_dead()
 
