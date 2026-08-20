@@ -285,12 +285,14 @@ def _compute_train_argv(
     request: ExecuteTrainRequest, *, run_uuid: str, release: str, namespace: str
 ) -> tuple[list[str], Any]:
     argv = [*shlex.split(shell_safe_model_args(request.megatron_model_type)), *shlex.split(request.train_args)]
-    assert not ArgvManipulator.declares(argv, _ENV_REPORT_FLAG), (
+    assert not ArgvManipulator.is_defined(argv, _ENV_REPORT_FLAG), (
         f"{_ENV_REPORT_FLAG} is what this launcher tells the pods about the launch that installed them, and an "
         f"argument of that name outranks it, so the pods would report a launch that never happened; drop it"
     )
-    argv = ArgvManipulator.with_flag(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
-    argv = ArgvManipulator.with_flag(argv, _RUN_UUID_FLAG, run_uuid)
+    if not ArgvManipulator.is_defined(argv, CLUSTER_BACKEND_FLAG):
+        argv = ArgvManipulator.set(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
+    if not ArgvManipulator.is_defined(argv, _RUN_UUID_FLAG):
+        argv = ArgvManipulator.set(argv, _RUN_UUID_FLAG, run_uuid)
 
     with override_argv(argv):
         args = parse_args()

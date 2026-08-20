@@ -132,7 +132,7 @@ class BaseCommandBackend(ABC):
             train_script = f"{repo_base_dir}/{train_script}"
 
         train_argv = shlex.split(train_args)
-        train_backend_fsdp = "fsdp" in ArgvManipulator.values_of(train_argv, "--train-backend")
+        train_backend_fsdp = "fsdp" in ArgvManipulator.get(train_argv, "--train-backend")
         assert train_backend_fsdp == (megatron_model_type is None)
         _assert_train_args_name_no_other_backend(train_argv, cluster_backend=config.cluster_backend.value)
         _assert_train_args_name_no_other_deploy_component(train_argv, deploy_component=config.deploy_component.value)
@@ -269,7 +269,7 @@ class BaseCommandBackend(ABC):
 
 
 def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, deploy_component: str) -> None:
-    conflicting = sorted(set(ArgvManipulator.values_of(train_argv, _DEPLOY_COMPONENT_FLAG)) - {deploy_component})
+    conflicting = sorted(set(ArgvManipulator.get(train_argv, _DEPLOY_COMPONENT_FLAG)) - {deploy_component})
     assert not conflicting, (
         f"This launch deploys the {deploy_component} part of the run, and everything it installs is named after "
         f"that, so its pods cannot be told {_DEPLOY_COMPONENT_FLAG} {conflicting}; set "
@@ -278,7 +278,7 @@ def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, 
 
 
 def _declared_cluster_backends(train_argv: list[str]) -> list[str]:
-    return ArgvManipulator.values_of(train_argv, CLUSTER_BACKEND_FLAG)
+    return ArgvManipulator.get(train_argv, CLUSTER_BACKEND_FLAG)
 
 
 def _assert_train_args_name_no_other_backend(train_argv: list[str], *, cluster_backend: str) -> None:
