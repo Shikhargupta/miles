@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import ipaddress
 import logging
 import os
@@ -68,6 +69,8 @@ def compute_engine_launch_cmd(
     engine_info_bootstrap_port: int,
     gated_launch_port: int,
 ) -> str:
+    _assert_sglang_serves_a_launch_gate()
+
     server_args_dict = _compute_server_args(
         args,
         node_rank=node_rank,
@@ -212,3 +215,11 @@ def _compute_server_args(
             kwargs.pop(key)
 
     return kwargs
+
+
+@functools.cache
+def _assert_sglang_serves_a_launch_gate() -> None:
+    assert any(field.name == "gated_launch_port" for field in dataclasses.fields(ServerArgs)), (
+        "this sglang has no --gated-launch-port, and miles launches every inference engine through "
+        "that gate; upgrade sglang to one that serves it"
+    )
