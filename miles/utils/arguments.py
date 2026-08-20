@@ -3213,19 +3213,6 @@ def _validate_rematerialize_param_from_master_weight(args):
         args.check_rematerialize_param_from_master_weight = True
 
 
-_CI_FT_TEST_ACTIONS_FLAG: str = "--ci-ft-test-actions"
-# TODO ad hoc hack: revert after the args refactor
-_CI_FT_TEST_ACTIONS_PATH_FLAG: str = "--ci-ft-test-actions-path"
-
-
-def _validate_ft_test_actions(args: argparse.Namespace) -> None:
-    # TODO ad hoc hack: revert after the args refactor
-    assert args.ci_ft_test_actions is None or args.ci_ft_test_actions_path is None, (
-        f"{_CI_FT_TEST_ACTIONS_FLAG} and {_CI_FT_TEST_ACTIONS_PATH_FLAG} both name the actions this run performs, "
-        f"and a run given both would silently follow one of them"
-    )
-
-
 def _resolve_api_server_port(args: argparse.Namespace) -> int:
     if (port := args.api_server_port) is not None:
         return port
@@ -3253,7 +3240,6 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
 
 def miles_validate_args(args):
     validate_dashboard_args(args)
-    _validate_ft_test_actions(args)
 
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
