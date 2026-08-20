@@ -14,11 +14,13 @@ from tests.fast.cluster_backends import create_backend_for_run
 from miles.true_on_policy import build_true_on_policy_launch_plan
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils.common import DATA_DIR, MODEL_DIR
+from miles.utils.external_utils.command_utils.common import data_dir, model_dir
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="ft_test_dumper_"))
 _MEGATRON_SOURCE_PATCHER_CONFIG_PATH: Path = _RUN_DIR / "megatron_source_patcher.yaml"
 _MEGATRON_PATH: str = os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
+MODEL_DIR: str = model_dir()
+DATA_DIR: str = data_dir()
 _DEBUG_ROLLOUT_DATA_DIR: str = f"{DATA_DIR}/{DEBUG_ROLLOUT_DATA_HF_REPO.split('/')[-1]}"
 
 

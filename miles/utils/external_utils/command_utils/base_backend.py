@@ -9,15 +9,10 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
-from miles.utils.external_utils.command_utils.common import (
-    DATA_DIR,
-    MODEL_DIR,
-    ArgvManipulator,
-    _pythonpath_with_sources,
-    create_run_id,
-    repo_base_dir,
-    run_shell_command,
-)
+from miles.utils.external_utils.command_utils.common import ArgvManipulator, _pythonpath_with_sources, create_run_id
+from miles.utils.external_utils.command_utils.common import data_dir as default_data_dir
+from miles.utils.external_utils.command_utils.common import model_dir as default_model_dir
+from miles.utils.external_utils.command_utils.common import repo_base_dir, run_shell_command
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.typer_utils import dataclass_from_env
@@ -179,7 +174,7 @@ class BaseCommandBackend(ABC):
         hf_checkpoint: str | None = None,
         megatron_path: str = "/root/Megatron-LM",
     ):
-        hf_checkpoint = hf_checkpoint or f"{MODEL_DIR}/{model_name}"
+        hf_checkpoint = hf_checkpoint or f"{default_model_dir()}/{model_name}"
 
         # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
         path_dst = f"{dir_dst}/{model_name}_torch_dist"
@@ -239,7 +234,8 @@ class BaseCommandBackend(ABC):
             "done; wait"
         )
 
-    def hf_download_dataset(self, full_name: str, data_dir: str = DATA_DIR):
+    def hf_download_dataset(self, full_name: str, data_dir: str | None = None):
+        data_dir = data_dir if data_dir is not None else default_data_dir()
         _, partial_name = full_name.split("/")
         self.exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 

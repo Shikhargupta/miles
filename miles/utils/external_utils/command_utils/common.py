@@ -25,8 +25,13 @@ logger = logging.getLogger(__name__)
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[4]
 
-MODEL_DIR: str = os.environ.get("MILES_SCRIPT_MODEL_DIR", "/root/models")
-DATA_DIR: str = os.environ.get("MILES_SCRIPT_DATA_DIR", "/root/datasets")
+
+def model_dir() -> str:
+    return os.environ.get("MILES_SCRIPT_MODEL_DIR", "/root/models")
+
+
+def data_dir() -> str:
+    return os.environ.get("MILES_SCRIPT_DATA_DIR", "/root/datasets")
 
 
 def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | None) -> str:

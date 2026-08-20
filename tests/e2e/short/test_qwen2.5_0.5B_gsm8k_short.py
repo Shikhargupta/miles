@@ -3,7 +3,7 @@ import os
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils.common import DATA_DIR, MODEL_DIR
+from miles.utils.external_utils.command_utils.common import data_dir, model_dir
 from miles.utils.workers.types import WorkerCommBackend
 
 register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"])
@@ -11,6 +11,8 @@ register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short", "mo
 
 FEW_GPU = command_utils.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
+MODEL_DIR = model_dir()
+DATA_DIR = data_dir()
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4 if FEW_GPU else 8

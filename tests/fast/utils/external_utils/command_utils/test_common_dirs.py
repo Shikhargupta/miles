@@ -35,7 +35,7 @@ class TestWhereModelsAndDataAreLookedFor:
         """A pod only mounts the shared directory, so a download onto the launcher's disk never reaches it."""
         command_utils.default_config().create_backend().hf_download_dataset("zhuzilin/gsm8k")
 
-        assert f"--local-dir {common.DATA_DIR}/gsm8k" in commands[-1]
+        assert f"--local-dir {common.data_dir()}/gsm8k" in commands[-1]
 
     def test_a_conversion_reads_the_checkpoint_from_the_configured_model_dir(self, commands, tmp_path):
         """The default source of a conversion must move with the model directory, or it converts nothing."""
@@ -43,7 +43,7 @@ class TestWhereModelsAndDataAreLookedFor:
             model_name="Qwen3-4B", megatron_model_type="qwen3-4B", num_gpus_per_node=8, dir_dst=str(tmp_path)
         )
 
-        assert f"--hf-checkpoint {common.MODEL_DIR}/Qwen3-4B " in commands[0]
+        assert f"--hf-checkpoint {common.model_dir()}/Qwen3-4B " in commands[0]
 
     @pytest.mark.parametrize("relative_path", _CELLS_THAT_RUN_ON_A_CLUSTER)
     def test_a_cell_that_runs_on_a_cluster_names_no_launcher_local_path(self, relative_path):

@@ -18,8 +18,7 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     SeedOption,
     TrainerCrashIntervalSecondsOption,
 )
-from tests.e2e.ft.conftest_ft.execution import get_fully_async_args, get_train_script
-from miles.utils.external_utils.command_utils.common import DATA_DIR, MODEL_DIR
+from tests.e2e.ft.conftest_ft.execution import DATA_DIR, MODEL_DIR, get_fully_async_args, get_train_script
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
     FaultInjectorHandle,
