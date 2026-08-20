@@ -35,11 +35,17 @@ def assert_the_example_builds_the_parallelism_of(mode: FTTestMode, *, train_args
     token_after_flag = dict(zip(declared, declared[1:], strict=False))
 
     for flag in [one for one in declared if one.startswith("--")]:
-        value = token_after_flag.get(flag, "")
-        declared_values = [] if value.startswith("--") or not value else [value]
-        built_values = ArgvManipulator.values_of(argv, flag)
+        assert ArgvManipulator.declares(argv, flag), (
+            f"this scenario's mode declares the parallelism {mode.parallel_args!r}, while the example builds no "
+            f"{flag} at all: the mode describes a topology nobody launched"
+        )
 
-        assert ArgvManipulator.declares(argv, flag) and built_values == declared_values, (
+        value = token_after_flag.get(flag, "")
+        if not value or value.startswith("--"):
+            continue
+
+        built_values = ArgvManipulator.values_of(argv, flag)
+        assert built_values == [value], (
             f"this scenario's mode declares the parallelism {mode.parallel_args!r}, while the example builds "
             f"{flag} as {built_values}: the mode describes a topology nobody launched"
         )
