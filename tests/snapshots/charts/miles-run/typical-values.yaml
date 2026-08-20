@@ -49,6 +49,8 @@ run:
     - $(LWS_WORKER_INDEX)
     - --dist-init-addr
     - $(LWS_LEADER_ADDRESS):9000
+    - --gated-launch-port
+    - '13000'
     - --tp-size
     - '16'
     - --skip-server-warmup
@@ -62,8 +64,6 @@ run:
     - '11000'
     - --engine-info-bootstrap-port
     - '12000'
-    - --gated-launch-port
-    - '13000'
     - --mem-fraction-static
     - '0.7'
     - --chunked-prefill-size
@@ -132,6 +132,8 @@ run:
     - $(LWS_WORKER_INDEX)
     - --dist-init-addr
     - $(LWS_LEADER_ADDRESS):9000
+    - --gated-launch-port
+    - '13000'
     - --tp-size
     - '8'
     - --skip-server-warmup
@@ -141,8 +143,6 @@ run:
     - decode
     - --engine-info-bootstrap-port
     - '12000'
-    - --gated-launch-port
-    - '13000'
     - --mem-fraction-static
     - '0.7'
     - --chunked-prefill-size
