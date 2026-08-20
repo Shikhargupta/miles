@@ -265,3 +265,16 @@ class TestTheVerdictEachModeIsMeasuredAgainst:
 
 def _evidence() -> HotRestartEvidence:
     return HotRestartEvidence(records=(), snapshots=(), release="miles-run-demo-all")
+
+
+class TestTheSaveShapeTheTakeOverNeeds:
+    def test_the_run_is_installed_to_save_synchronously(self):
+        """Every take-over is pinned to the checkpoint the frozen run is already holding."""
+        args = scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/target/sync", False)
+
+        assert not ArgvManipulator.declares(shlex.split(args), scenario.ASYNC_SAVE_FLAG)
+
+    def test_a_run_saving_asynchronously_is_refused(self):
+        """Such a checkpoint can land after the step that triggered it, so the pin means nothing."""
+        with pytest.raises(AssertionError, match="lets a checkpoint land after"):
+            scenario._assert_the_run_saves_before_it_reports_the_step("--save /ckpt --async-save ")

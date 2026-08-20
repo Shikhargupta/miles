@@ -33,6 +33,8 @@ POLL_INTERVAL_SECONDS: float = 5.0
 FREEZE_TIMEOUT_SECONDS: float = 3600.0
 RELAUNCH_JOIN_TIMEOUT_SECONDS: float = 1800.0
 CONSECUTIVE_READ_FAILURE_LIMIT: int = 20
+TRACKER_SETTLE_ATTEMPTS: int = 3
+TRACKER_SETTLE_INTERVAL_SECONDS: float = 2.0
 HOT_RESTART_ARG: str = HOT_RESTART_SEPARATOR.join(one.value for one in HotRestartComponent)
 
 
@@ -114,6 +116,8 @@ class HotRestartDriver:
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS
     freeze_timeout_seconds: float = FREEZE_TIMEOUT_SECONDS
     read_failure_limit: int = CONSECUTIVE_READ_FAILURE_LIMIT
+    tracker_settle_attempts: int = TRACKER_SETTLE_ATTEMPTS
+    tracker_settle_interval_seconds: float = TRACKER_SETTLE_INTERVAL_SECONDS
     records: list[HotRestartRecord] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -255,16 +259,39 @@ class HotRestartDriver:
         return read_frozen_rollout_id(self.freeze_plan_path) == scheduled.frozen_rollout_id
 
     def _compute_record(self, *, index: int, scheduled: ScheduledFreeze, progress: RunProgress) -> HotRestartRecord:
-        assert progress.last_saved_iteration == scheduled.saved_iteration, (
-            f"the run frozen after step {scheduled.frozen_rollout_id} holds iteration "
-            f"{progress.last_saved_iteration}, not the pinned {scheduled.saved_iteration}: it saves at another save "
-            f"cadence than it was installed with, so the take-over resumes from a checkpoint nobody pinned"
+        saved = self._read_saved_iteration_until_it_settles(on=scheduled.saved_iteration, progress=progress)
+
+        assert saved == scheduled.saved_iteration, (
+            f"the run frozen after step {scheduled.frozen_rollout_id} holds iteration {saved}, not the pinned "
+            f"{scheduled.saved_iteration}: it saves at another save cadence than it was installed with, so the "
+            f"take-over resumes from a checkpoint nobody pinned"
         )
         return HotRestartRecord(
             index=index,
             saved_iteration_at_trigger=scheduled.saved_iteration,
             frozen_rollout_id=scheduled.frozen_rollout_id,
         )
+
+    def _read_saved_iteration_until_it_settles(self, *, on: int | None, progress: RunProgress) -> int | None:
+        # The tracker is written by the save itself, so a frozen run can be observed a moment
+        # before the checkpoint it is holding shows up. Re-read a bounded number of times rather
+        # than deciding on the first look.
+        saved = progress.last_saved_iteration
+        for _ in range(self.tracker_settle_attempts):
+            if saved == on:
+                return saved
+            time.sleep(self.tracker_settle_interval_seconds)
+            saved = self._reread_saved_iteration()
+        return saved
+
+    def _reread_saved_iteration(self) -> int | None:
+        try:
+            return read_run_progress(
+                checkpoint_dir=self.checkpoint_dir, events_dir=self.events_dir
+            ).last_saved_iteration
+        except Exception:
+            logger.warning("Failed to re-read the checkpoint tracker of a run being hot restarted", exc_info=True)
+            return None
 
     def _assert_the_run_never_lost_a_step_outside_a_take_over(self, progress: RunProgress) -> None:
         finished = progress.last_finished_rollout_id

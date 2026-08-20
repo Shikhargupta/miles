@@ -92,6 +92,7 @@ def _driver(tmp_path: Path, **overrides: Any) -> HotRestartDriver:
         trainer_id="actor",
         freeze_plan_path=tmp_path / "hot_restart" / "target_freeze_plan.json",
         schedule=_SCHEDULE,
+        tracker_settle_interval_seconds=0.0,
         poll_interval_seconds=0.0,
     )
     kwargs.update(overrides)
@@ -419,3 +420,30 @@ class TestWhenTheDriverCannotReadTheRun:
 
 def _refuse_to_read(**_kwargs):
     raise OSError("the dump directory did not answer")
+
+
+class TestWhenTheCheckpointTrackerLagsTheFreeze:
+    def test_a_tracker_that_catches_up_within_a_few_reads_is_accepted(self, tmp_path, monkeypatch):
+        """The tracker is written by the save itself, a moment after the step it belongs to ends."""
+        driver = _driver(tmp_path)
+        monkeypatch.setattr(driver_module.HotRestartDriver, "_reread_saved_iteration", lambda _self: 1)
+
+        record = driver._compute_record(
+            index=0,
+            scheduled=_CHECKPOINTED,
+            progress=RunProgress(last_saved_iteration=None, last_finished_rollout_id=2),
+        )
+
+        assert record.saved_iteration_at_trigger == 1
+
+    def test_a_tracker_that_never_catches_up_still_fails(self, tmp_path, monkeypatch):
+        """Re-reading is for a save in flight, not for a run saving at another pace altogether."""
+        driver = _driver(tmp_path)
+        monkeypatch.setattr(driver_module.HotRestartDriver, "_reread_saved_iteration", lambda _self: 5)
+
+        with pytest.raises(AssertionError, match="save cadence"):
+            driver._compute_record(
+                index=0,
+                scheduled=_CHECKPOINTED,
+                progress=RunProgress(last_saved_iteration=5, last_finished_rollout_id=2),
+            )

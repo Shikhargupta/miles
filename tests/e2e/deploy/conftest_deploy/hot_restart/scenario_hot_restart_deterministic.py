@@ -59,6 +59,7 @@ WANDB_GROUP_FLAG: str = "--wandb-group"
 GLOBAL_BATCH_SIZE_FLAG: str = "--global-batch-size"
 ROLLOUT_BATCH_SIZE_FLAG: str = "--rollout-batch-size"
 SAMPLES_PER_PROMPT_FLAG: str = "--n-samples-per-prompt"
+ASYNC_SAVE_FLAG: str = "--async-save"
 
 _MODE: FTTestMode = FTTestMode(
     model_name=DENSE_MODEL_NAME,
@@ -162,6 +163,7 @@ def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, e
 
     assert_the_example_builds_the_parallelism_of(mode, train_args=args)
     _assert_each_step_leaves_exactly_one_train_event(args)
+    _assert_the_run_saves_before_it_reports_the_step(args)
     _TRAIN_ARGS_OF_DUMP_DIR[dump_dir] = args
     return args
 
@@ -177,6 +179,13 @@ def _assert_each_step_leaves_exactly_one_train_event(train_args: str) -> None:
         f"whose global batch {global_batch_size} is not {rollout_batch_size} x {samples_per_prompt} takes several "
         f"optimizer steps per rollout and logs one event for each, so every attempt count would be a multiple of "
         f"what the schedule reasons about"
+    )
+
+
+def _assert_the_run_saves_before_it_reports_the_step(train_args: str) -> None:
+    assert not ArgvManipulator.declares(shlex.split(train_args), ASYNC_SAVE_FLAG), (
+        f"{ASYNC_SAVE_FLAG} lets a checkpoint land after the step that triggered it, and every take-over here is "
+        f"pinned to the checkpoint the frozen run is already holding"
     )
 
 
