@@ -7,6 +7,8 @@ from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
 from miles.utils.test_utils.ft_test_actions import CI_FT_TEST_ACTIONS_PATH_FLAG, write_ft_test_actions
 
+# TODO ad hoc hack: this whole module goes away with the args refactor. Reverting it means
+# deleting the file and dropping the two calls the deterministic scenario makes into it.
 logger = logging.getLogger(__name__)
 
 FREEZE_PLAN_DIRNAME: str = "hot_restart"
@@ -32,3 +34,11 @@ def with_the_freeze_plan_of(train_args: str, *, plan_path: Path) -> str:
 def write_freeze_plan(plan_path: Path, *, frozen_rollout_id: int | None) -> None:
     write_ft_test_actions(plan_path, compute_freeze_plan(frozen_rollout_id))
     logger.info(f"{plan_path} now freezes the run after step {frozen_rollout_id}")
+
+
+# TODO ad hoc hack: revert after the args refactor
+def arm_the_first_freeze(train_args: str, *, side_dump_dir: str, frozen_rollout_id: int) -> str:
+    plan_path = compute_freeze_plan_path(side_dump_dir)
+    write_freeze_plan(plan_path, frozen_rollout_id=frozen_rollout_id)
+
+    return with_the_freeze_plan_of(train_args, plan_path=plan_path)

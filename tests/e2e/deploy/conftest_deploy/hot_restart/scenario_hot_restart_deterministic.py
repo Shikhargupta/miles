@@ -36,8 +36,8 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
+    arm_the_first_freeze,
     compute_freeze_plan_path,
-    with_the_freeze_plan_of,
     write_freeze_plan,
 )
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
@@ -165,10 +165,12 @@ def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, e
 def _build_frozen_args(
     restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, enable_dumper: bool = True
 ) -> str:
-    plan_path = compute_freeze_plan_path(dump_dir)
-    write_freeze_plan(plan_path, frozen_rollout_id=restart_mode.frozen_rollout_ids[0])
-
-    args = with_the_freeze_plan_of(_build_args(restart_mode, mode, dump_dir, enable_dumper), plan_path=plan_path)
+    # TODO ad hoc hack: revert after the args refactor
+    args = arm_the_first_freeze(
+        _build_args(restart_mode, mode, dump_dir, enable_dumper),
+        side_dump_dir=dump_dir,
+        frozen_rollout_id=restart_mode.frozen_rollout_ids[0],
+    )
     _TRAIN_ARGS_OF_DUMP_DIR[dump_dir] = args
     return args
 
@@ -215,6 +217,7 @@ def _driving_the_take_overs_of(
     restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, config: command_utils.ExecuteTrainConfig
 ) -> Iterator[None]:
     release = compute_release_of_config(config)
+    # TODO ad hoc hack: revert after the args refactor
     plan_path = compute_freeze_plan_path(dump_dir)
 
     def relaunch(frozen_rollout_id: int | None) -> None:

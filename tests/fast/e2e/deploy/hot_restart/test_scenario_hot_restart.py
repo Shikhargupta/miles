@@ -160,6 +160,7 @@ class TestBuildArgs:
 
 
 class TestTheFreezeTheRunIsInstalledWith:
+    # TODO ad hoc hack: revert after the args refactor
     def test_the_target_side_is_armed_to_sleep_at_the_first_pinned_step(self, tmp_path):
         """Nothing else makes the run stand still, and a take-over of a moving run lands wherever it likes."""
         dump_dir = f"{tmp_path}/target"
@@ -171,6 +172,7 @@ class TestTheFreezeTheRunIsInstalledWith:
             {"at_rollout": scenario.CHECKPOINTED.frozen_rollout_ids[0], "action": "sleep_forever_at_end"}
         ]
 
+    # TODO ad hoc hack: revert after the args refactor
     def test_the_baseline_side_is_never_frozen(self):
         """The baseline is the run nobody touched, and one asleep at step 2 would never finish."""
         args = scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/baseline/plain", False)

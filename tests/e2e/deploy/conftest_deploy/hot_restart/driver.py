@@ -108,6 +108,7 @@ class HotRestartDriver:
     release: str
     namespace: str
     trainer_id: str
+    # TODO ad hoc hack: revert after the args refactor
     freeze_plan_path: Path
     schedule: tuple[ScheduledFreeze, ...]
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS

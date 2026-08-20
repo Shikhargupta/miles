@@ -22,6 +22,7 @@ from miles.utils.test_utils.ft_test_actions import (
 )
 
 
+# TODO ad hoc hack: revert after the args refactor
 class TestTheFreezePlanFile:
     def test_the_plan_a_relaunch_writes_replaces_the_one_the_run_was_installed_with(self, tmp_path):
         """The run rereads this one path every step, so a second plan beside it would never be seen."""

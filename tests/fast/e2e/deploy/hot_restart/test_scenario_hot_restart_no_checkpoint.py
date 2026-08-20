@@ -130,6 +130,7 @@ class TestBuildArgs:
         with pytest.raises(AssertionError, match="redo nothing"):
             scenario._build_args(eager, scenario._MODE, "/dumps/no-checkpoint/eager", False)
 
+    # TODO ad hoc hack: revert after the args refactor
     def test_the_target_side_is_armed_to_sleep_before_the_run_has_saved_anything(self, tmp_path):
         """Nothing else holds the run in the one window where it has trained but written nothing."""
         dump_dir = f"{tmp_path}/frozen"
