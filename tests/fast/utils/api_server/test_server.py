@@ -22,6 +22,7 @@ from miles.utils.workers.cell_operations.ray import RayCellOperations
 from .conftest import (
     MockHandler,
     MockInferenceController,
+    MockStopCellController,
     MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
@@ -292,7 +293,9 @@ class TestStartApiServerRegistration:
             ),
             port=18080,
             ft_components=ft_components,
-            cell_operations=RayCellOperations(worker_manager_handle=manager),
+            cell_operations=RayCellOperations(
+                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+            ),
         )
 
         (registry,) = registries
@@ -383,7 +386,9 @@ class TestStartApiServerRegistration:
             inference_controller=MockInferenceController(),
             port=19137,
             ft_components=["train"],
-            cell_operations=RayCellOperations(worker_manager_handle=manager),
+            cell_operations=RayCellOperations(
+                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+            ),
         )
 
         assert ports == [19137]
