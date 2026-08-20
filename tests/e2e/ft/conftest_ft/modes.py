@@ -139,6 +139,14 @@ MODES: dict[str, FTTestMode] = {
         num_cells=4,
         parallel_args="--context-parallel-size 2",
     ),
+    "kill_train__dp2_cp2__fake_rollout__moe_5layer": FTTestMode(
+        model_name=MODEL_NAME,
+        model_hf_repo=MODEL_HF_REPO,
+        megatron_model_type=MODEL_TYPE,
+        num_cells=2,
+        train_gpus_per_node=4,
+        parallel_args="--context-parallel-size 2",
+    ),
     "kill_train__dp2_cp2__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,
         model_hf_repo=MODEL_HF_REPO,

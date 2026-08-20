@@ -12,7 +12,7 @@
 | Scenario | Modes with an entry file |
 | --- | --- |
 | `scenario_trainer_no_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
-| `scenario_trainer_deterministic` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
+| `scenario_trainer_deterministic` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
 | `scenario_trainer_with_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2` |
 | `scenario_rollout_deterministic` | `kill_rollout__dp2_cp2__colocate` |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_train_rollout__dp2_cp2`, `kill_rollout__dp2_cp2__colocate` |
@@ -27,7 +27,7 @@
     - The fully-async soaks reject modes without real engines or with colocation.
     - `kill_train__dp2_cp2` supersedes `kill_train__dp2_cp2__moe_5layer` in `scenario_trainer_with_failure`.
     - `scenario_trainer_with_failure` x `kill_train__dp4_cp2__fake_rollout__moe_5layer` is an authorized skip.
-    - `scenario_trainer_deterministic` x `kill_train__dp4_cp2__fake_rollout__moe_5layer` has an entry file but is `disabled=`: crashing one of its four cells leaves three, and 256 samples do not divide across three replicas. Every other crashing entry drops from two cells to one, which does divide. `scenario_trainer_no_failure` keeps its dp4 entry because it injects no fault and stays at four.
+    - `scenario_trainer_deterministic` crashes a cell, so it runs `kill_train__dp2_cp2__fake_rollout__moe_5layer` rather than the dp4 mode: dropping four cells to three leaves 256 samples with no way to divide across three replicas, while two cells drop to one, which does divide. `scenario_trainer_no_failure` keeps the dp4 mode because it injects no fault and stays at four.
 - **Every other absence is an unclaimed cell**, not a decision — adding an entry file is all it takes.
 
 ### Scenarios
@@ -60,6 +60,7 @@
 | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 TP2 EP2 | debug data | 5-layer MoE | `("train",)` | TP + EP coverage |
 | `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 PP2 | debug data | 5-layer MoE | `("train",)` | PP coverage, via `--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2` |
 | `kill_train__dp4_cp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 4 | CP2 | debug data | 5-layer MoE | `("train",)` | multi-replica coverage (>= 4 cells) |
+| `kill_train__dp2_cp2__fake_rollout__moe_5layer` | 1 | 4 + 0 | 2 | CP2 | debug data | 5-layer MoE | `("train",)` | the crashing counterpart of the dp4 mode: two cells drop to one, which the batch divides across |
 | `kill_train__dp2_cp2__moe_5layer` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | 5-layer MoE | `("train",)` | real engines + the weight-update path |
 | `kill_train__dp2_cp2` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | `scenario_trainer_with_failure` under real generation; needs the dense model (see below) |
 | `kill_rollout__dp2_cp2__colocate` | 1 | 4 shared | 2 | CP2 | 4 engines × 1 GPU, colocated | dense Qwen3-0.6B | `("rollout",)` | the only rollout-only mode: crashes engines, not trainer cells |
