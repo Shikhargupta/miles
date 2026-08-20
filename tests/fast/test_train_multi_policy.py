@@ -97,6 +97,10 @@ async def _slow_train(rollout_id: int, rollout_data_ref, **kwargs) -> None:
     await asyncio.sleep(0.05)
 
 
+async def _train_that_never_returns(rollout_id: int, rollout_data_ref: Any, **kwargs: Any) -> None:
+    await asyncio.Event().wait()
+
+
 def _let_a_follower_yield(handle) -> None:
     async def yield_to_the_leader(rollout_id: int, rollout_data_ref, **kwargs) -> None:
         await asyncio.sleep(0)
@@ -123,10 +127,14 @@ class TestInitialWeightPublication:
 class TestPolicyCompletion:
     async def test_a_policy_that_finished_hands_its_engines_back_to_the_health_checker(self):
         """Its last round paused probing for a weight update that no later rollout of its own would resume."""
-        context = await _run(_make_args(num_rollout=1))
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["b"].train = AsyncMock(side_effect=_train_that_never_returns)
+
+        context = await _run(_make_args(num_rollout=1), trainers=trainers)
 
         finished = [call.kwargs["model_id"] for call in context["inference_controller"].prepare_eval.await_args_list]
-        assert sorted(finished) == ["a", "b"]
+        assert finished == ["a"]
+        assert trainers["b"].train.await_count == 1
 
 
 class TestRunPolicies:
@@ -153,7 +161,10 @@ class TestRunPolicies:
 
     async def test_a_policy_only_resumes_the_health_probing_of_its_own_engines(self):
         """Resuming the whole fleet here un-pauses probing of a policy that is mid weight broadcast."""
-        context = await _run(_make_args(num_rollout=1))
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["b"].train = AsyncMock(side_effect=_train_that_never_returns)
+
+        context = await _run(_make_args(num_rollout=1), trainers=trainers)
 
         prepared = context["inference_controller"].prepare_rollout.await_args_list
         assert sorted((call.args[0], call.kwargs["model_id"]) for call in prepared) == [(0, "a"), (0, "b")]
@@ -279,11 +290,18 @@ class TestSaving:
     async def test_a_parked_follower_is_saved_at_the_round_it_reached(self):
         """A record naming a policy at a rollout it never checkpointed cannot be resumed."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        reached_when_saved: list[int] = []
+
+        async def _note_where_the_follower_stood(rollout_id: int, **kwargs: Any) -> None:
+            reached_when_saved.append(trainers["b"].train.await_args_list[-1].args[0])
+
+        trainers["b"].save_model = AsyncMock(side_effect=_note_where_the_follower_stood)
 
         await _run(_make_args(num_rollout=1, save=None, save_interval=1), trainers=trainers)
 
         [saved_at] = [call.args[0] for call in trainers["b"].save_model.await_args_list]
-        assert saved_at == trainers["b"].train.await_args_list[-1].args[0]
+        [reached] = reached_when_saved
+        assert saved_at == reached
 
     async def test_every_policy_is_on_disk_before_the_record_claims_the_checkpoint_exists(self):
         """An asynchronous follower save still running would leave the record pointing at files nobody wrote."""
