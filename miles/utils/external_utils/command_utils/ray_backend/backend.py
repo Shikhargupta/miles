@@ -67,12 +67,12 @@ class RayCommandBackend(BaseCommandBackend):
                 f"{request.train_args}"
             )
 
-    def exec_command_gpu(
+    def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)
 
-    def exec_command_multi_node(
+    def _exec_command_multi_node_inner(
         self,
         cmd: str,
         capture_output: bool = False,

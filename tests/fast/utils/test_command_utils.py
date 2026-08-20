@@ -7,16 +7,24 @@ from tests.fast.utils.command_recorder import patch_helper, record_commands
 
 
 import miles.utils.external_utils.command_utils as command_utils
-from miles.utils.external_utils.command_utils import common
+from miles.utils.external_utils.command_utils import base_backend, common
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.ray_backend import command as ray_command
 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 
 def _backend():
     return command_utils.default_config().create_backend()
+
+
+@pytest.fixture(autouse=True)
+def a_bare_environment(monkeypatch):
+    """Every test here launches onto ray, and a workbench pod exports variables that choose another backend."""
+    for name in [name for name in os.environ if name.startswith(SCRIPT_ENV_VAR_PREFIX)]:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -33,6 +41,88 @@ def commands(monkeypatch):
 def _runtime_env(submit_command):
     arg = next(arg for arg in shlex.split(submit_command) if arg.startswith("--runtime-env-json="))
     return json.loads(arg.split("=", 1)[1])["env_vars"]
+
+
+class TestTheRecorderCoversEveryBackendTheEnvironmentCanChoose:
+    @pytest.fixture
+    def submitted_jobs(self, monkeypatch) -> list[str]:
+        """Stand in for the cluster: record what would have been installed instead of installing it."""
+        from miles.utils.external_utils.command_utils.helm_backend import command_job
+
+        submitted: list[str] = []
+
+        def fake_run_on_nodes(context, cmd: str, **kwargs) -> list[str | None]:
+            submitted.append(cmd)
+            return [None]
+
+        monkeypatch.setattr(command_job, "run_on_nodes", fake_run_on_nodes)
+        return submitted
+
+    @pytest.fixture
+    def kubernetes_environment(self, monkeypatch) -> None:
+        """A workbench pod exports exactly these, and dataclass_from_env reads them like command line options."""
+        monkeypatch.setenv("MILES_SCRIPT_CLUSTER_BACKEND", "kubernetes")
+        monkeypatch.setenv("MILES_SCRIPT_NAMESPACE", "miles-someones-namespace")
+
+    def test_a_kubernetes_environment_records_a_gpu_command_instead_of_installing_a_job(
+        self, monkeypatch, kubernetes_environment, submitted_jobs
+    ):
+        """A stub naming only the ray backend leaves the kubernetes one live, and a fast test then takes real gpus."""
+        recorded = record_commands(monkeypatch)
+
+        _backend().exec_command_gpu("nvidia-smi", num_gpus_per_node=8)
+
+        assert submitted_jobs == []
+        assert recorded == ["nvidia-smi"]
+
+    def test_a_kubernetes_environment_records_a_multi_node_command_instead_of_installing_a_job(
+        self, monkeypatch, kubernetes_environment, submitted_jobs
+    ):
+        """The multi-node form is the one convert_checkpoint reaches, i.e. the one that really installed a Job."""
+        recorded = record_commands(monkeypatch)
+
+        _backend().exec_command_multi_node("torchrun --nnodes={{nnodes}}", num_nodes=2, num_gpus_per_node=8)
+
+        assert submitted_jobs == []
+        assert recorded == ["[multi_node num_nodes=2] torchrun --nnodes={{nnodes}}"]
+
+    def test_a_kubernetes_environment_converts_a_checkpoint_without_reaching_the_cluster(
+        self, monkeypatch, kubernetes_environment, submitted_jobs, tmp_path
+    ):
+        """This is the observed incident: the recorded tmp_path showed up in a Job installed on a real namespace."""
+        recorded = record_commands(monkeypatch)
+
+        _backend().convert_checkpoint(
+            model_name="Qwen3-4B",
+            megatron_model_type="qwen3-4B",
+            num_gpus_per_node=8,
+            multinode=True,
+            num_nodes=2,
+            dir_dst=str(tmp_path),
+        )
+
+        assert submitted_jobs == []
+        assert len(recorded) == 1
+
+    def test_no_shipped_backend_hides_a_recorded_method_behind_an_override(self):
+        """The stub patches the base class alone, so an override anywhere would reach the cluster again."""
+        from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
+        from miles.utils.external_utils.command_utils.helm_backend.backend import KubernetesCommandBackend
+
+        for backend_class in [KubernetesCommandBackend, RayCommandBackend, *BaseCommandBackend.__subclasses__()]:
+            for name in base_backend.COMMAND_EXECUTING_METHODS:
+                assert getattr(backend_class, name) is getattr(
+                    BaseCommandBackend, name
+                ), f"{backend_class.__name__} overrides {name}, which record_commands stubs on the base class"
+
+    def test_a_backend_added_later_is_refused_the_override_that_caused_this(self):
+        """Enumerating backends in the stub is what rotted, so the ban has to be enforced where they are declared."""
+        from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
+
+        with pytest.raises(AssertionError, match="implement _exec_command_gpu_inner instead"):
+
+            class SlurmCommandBackend(BaseCommandBackend):
+                def exec_command_gpu(self, cmd, capture_output=False, num_gpus_per_node=None): ...
 
 
 class TestExecuteTrainConfig:
@@ -54,7 +144,6 @@ class TestConvertCheckpoint:
             monkeypatch,
             "exec_command_gpu",
             lambda self, cmd, capture_output=False, **kwargs: commands.append(cmd),
-            backend_class=RayCommandBackend,
         )
 
         _backend().convert_checkpoint(
@@ -660,7 +749,7 @@ class TestCheckHasNvlink:
                 captured.append(capture_output)
                 return output
 
-            patch_helper(monkeypatch, "exec_command_gpu", fake_exec_command, backend_class=RayCommandBackend)
+            patch_helper(monkeypatch, "exec_command_gpu", fake_exec_command)
             return captured
 
         return install
