@@ -11,6 +11,7 @@ class SuspendGate(Protocol):
     async def stop_cell_between_weight_updates(self, cell_id: str) -> None: ...
 
 
+# TEMPORARY: reverted together with the weight-update fault tolerance work
 class SerializedCellOperations(BaseCellOperations):
     def __init__(self, inner: BaseCellOperations, *, gate: SuspendGate) -> None:
         self._inner = inner
