@@ -60,8 +60,12 @@ class ContainerStateTerminated(FrozenPartialBaseModel):
     container_id: str | None = Field(default=None, validation_alias=AliasChoices("container_id", "containerID"))
 
 
+class ContainerStateRunning(FrozenPartialBaseModel):
+    started_at: datetime | None = Field(default=None, validation_alias=AliasChoices("started_at", "startedAt"))
+
+
 class ContainerState(FrozenPartialBaseModel):
-    running: dict[str, Any] | None = None
+    running: ContainerStateRunning | None = None
     terminated: ContainerStateTerminated | None = None
 
 
