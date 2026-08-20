@@ -134,7 +134,11 @@ async def _run_policy(
                 trainer_model_id=model_id,
             )
 
-        if (x := args.debug_exit_after_rollout) is not None and (rollout_id - trainer.start_rollout_id + 1) >= x:
+        if (
+            is_leader
+            and (x := args.debug_exit_after_rollout) is not None
+            and (rollout_id - trainer.start_rollout_id + 1) >= x
+        ):
             logger.info(f"debug_exit_after_rollout={x} reached at rollout_id={rollout_id}, exiting")
             break
 
