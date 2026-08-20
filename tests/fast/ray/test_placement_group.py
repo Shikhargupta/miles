@@ -521,7 +521,7 @@ class TestTakeOverTrainers:
     @staticmethod
     def _identity(**overrides) -> DeploymentIdentity:
         defaults = dict(
-            run_uuid="run-a", deploy_component=DeployComponent.TRAINER.value, deploy_instance="alpha-actor"
+            run_uuid="run-a", deploy_component=DeployComponent.TRAINER.value, deploy_instance_id="alpha-actor"
         )
         defaults.update(overrides)
         return DeploymentIdentity(**defaults)
@@ -606,7 +606,10 @@ class TestCreateTrainingModel:
         """A trainer that silently starts somewhere other than where it restored gives the operator nothing to read."""
         with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
             await create_training_model(
-                Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+                Namespace(start_rollout_id=9),
+                handle=self._handle(restored=[3]),
+                trainer_id="alpha-actor",
+                resumed=False,
             )
 
         assert "alpha-actor" in caplog.text and "--start-rollout-id 9" in caplog.text
@@ -615,7 +618,10 @@ class TestCreateTrainingModel:
         """Logging every trainer that was told where it already stands is noise on every ordinary launch."""
         with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
             await create_training_model(
-                Namespace(start_rollout_id=3), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+                Namespace(start_rollout_id=3),
+                handle=self._handle(restored=[3]),
+                trainer_id="alpha-actor",
+                resumed=False,
             )
 
         assert "--start-rollout-id" not in caplog.text
@@ -624,7 +630,10 @@ class TestCreateTrainingModel:
         """The ordinary resume names no rollout at all, and it must not be reported as an override."""
         with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
             await create_training_model(
-                Namespace(start_rollout_id=None), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+                Namespace(start_rollout_id=None),
+                handle=self._handle(restored=[3]),
+                trainer_id="alpha-actor",
+                resumed=False,
             )
 
         assert "--start-rollout-id" not in caplog.text

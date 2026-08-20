@@ -108,12 +108,14 @@ class TestDeployComponentFiltering:
         return make_args_with_sglang_config(
             tmp_path,
             server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}],
-            rollout_num_gpus=4,
-            use_session_server=True,
-            use_critic=True,
-            critic_num_nodes=1,
-            critic_num_gpus_per_node=2,
-            **overrides,
+            **{
+                "rollout_num_gpus": 4,
+                "use_session_server": True,
+                "use_critic": True,
+                "critic_num_nodes": 1,
+                "critic_num_gpus_per_node": 2,
+                **overrides,
+            },
         )
 
     def test_a_trainer_deployment_holds_the_trainer_controllers_and_their_ranks_only(self, tmp_path):
