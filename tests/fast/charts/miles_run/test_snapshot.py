@@ -9,7 +9,7 @@ import pytest
 import yaml
 from megatron.training import arguments as megatron_arguments
 from tests.fast.charts.utils import NAMESPACE, RUN_CHART_DIR, RUN_ID, RUN_RELEASE_NAME, requires_helm
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot, sanitize
 
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.arguments import parse_args
@@ -26,7 +26,6 @@ SGLANG_CONFIG = FIXTURE_DIR / "typical-sglang.yaml"
 HF_CHECKPOINT = FIXTURE_DIR / "typical-model"
 
 PYTHON_PLACEHOLDER = "<PYTHON>"
-FIXTURE_PLACEHOLDER = "<FIXTURES>"
 RANDOM_SEED_PLACEHOLDER = "<RANDOM_SEED>"
 RANDOM_SEED_FLAG = "--random-seed"
 
@@ -218,15 +217,9 @@ def render_from(values_file: Path) -> str:
 
 
 def freeze(text: str, sandbox: Path) -> str:
-    # the repo paths a run renders are the ones inside the container, so masking the whole checkout
-    # would rewrite those too on a machine whose checkout sits where the container's does; only this
-    # test's own fixtures are read from the checkout, and no container path can collide with them
-    masked = (
-        text.replace(str(sandbox), SANDBOX_PLACEHOLDER)
-        .replace(str(FIXTURE_DIR), FIXTURE_PLACEHOLDER)
-        .replace(sys.executable, PYTHON_PLACEHOLDER)
-    )
-    return mask_random_seeds(masked)
+    # the repo paths a run renders come from the checkout the launcher itself is imported from, so
+    # they differ on every machine and have to be masked, this test's own fixtures included
+    return mask_random_seeds(sanitize(text, sandbox=sandbox).replace(sys.executable, PYTHON_PLACEHOLDER))
 
 
 def mask_random_seeds(text: str) -> str:

@@ -144,11 +144,14 @@ def launch(monkeypatch, sandbox: Path) -> _Launch:
         return build_values(specs, plan)
 
     monkeypatch.setattr(entrypoint, "build_values", record_plan)
-    monkeypatch.setattr(
-        command_wrapper,
-        "run_process",
-        lambda command, **kwargs: subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr=""),
-    )
+
+    def helm_answered_nothing(command, **kwargs) -> subprocess.CompletedProcess:
+        # the launcher renders the upgrade it is about to install and reads the manifest out of the
+        # json, so a helm that answers with nothing at all has to answer with an empty manifest
+        rendered = '{"manifest": ""}' if "json" in command else ""
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout=rendered, stderr="")
+
+    monkeypatch.setattr(command_wrapper, "run_process", helm_answered_nothing)
     monkeypatch.setattr(Helm, "get_manifest", staticmethod(lambda release, namespace: None))
     monkeypatch.setattr(entrypoint, "repo_base_dir", str(REPO_ROOT))
     monkeypatch.setattr(naming, "_new_launch_token", lambda: LAUNCH_TOKEN)
