@@ -209,7 +209,12 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
 def create_transfer_engine():
     transfer_engine = TransferEngine()
     local_ip = ray._private.services.get_node_ip_address()
-    transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", os.environ.get("MOONCAKE_DEVICE", ""))
+    transfer_engine.initialize(
+        local_ip,
+        "P2PHANDSHAKE",
+        os.environ.get("MOONCAKE_PROTOCOL", "rdma"),
+        os.environ.get("MOONCAKE_DEVICE", ""),
+    )
     return transfer_engine
 
 
