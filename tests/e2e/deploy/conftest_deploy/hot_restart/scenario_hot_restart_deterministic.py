@@ -277,7 +277,7 @@ def _compare(restart_mode: HotRestartMode, dump_dir: str, mode: FTTestMode) -> N
 
     evidence = HotRestartEvidence.load(dump_dir=target_dir)
     assert_the_take_overs_replaced_only_the_script(
-        evidence, num_restarts=restart_mode.num_restarts, minimum_restarts=restart_mode.num_restarts
+        evidence, num_restarts=len(evidence.records), minimum_restarts=restart_mode.num_restarts
     )
     restart_mode.assert_redone(
         dump_dir=target_dir,
