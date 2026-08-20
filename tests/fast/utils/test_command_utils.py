@@ -43,6 +43,12 @@ def _runtime_env(submit_command):
     return json.loads(arg.split("=", 1)[1])["env_vars"]
 
 
+def _submit(commands):
+    submits = [command for command in commands if "ray job submit" in command]
+    assert submits, f"no ray job submit was recorded, only {commands}"
+    return submits[-1]
+
+
 class TestTheRecorderCoversEveryBackendTheEnvironmentCanChoose:
     @pytest.fixture
     def submitted_jobs(self, monkeypatch) -> list[str]:
@@ -425,7 +431,7 @@ class TestExecuteTrain:
 
         _backend().execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="qwen3-4B")
 
-        runtime_env_arg = next(arg for arg in shlex.split(commands[-1]) if arg.startswith("--runtime-env-json="))
+        runtime_env_arg = next(arg for arg in shlex.split(_submit(commands)) if arg.startswith("--runtime-env-json="))
         assert json.loads(runtime_env_arg.split("=", 1)[1])["env_vars"]["PYTHONUNBUFFERED"] == "1"
 
     def test_preserves_source_paths_in_the_ray_runtime(self, monkeypatch):
@@ -445,7 +451,7 @@ class TestExecuteTrain:
             extra_env_vars={"PYTHONPATH": "/custom:/sglang", "QUOTED_VALUE": "it's preserved"},
         )
 
-        submit_command = commands[-1]
+        submit_command = _submit(commands)
         runtime_env_arg = next(arg for arg in shlex.split(submit_command) if arg.startswith("--runtime-env-json="))
         runtime_env = json.loads(runtime_env_arg.split("=", 1)[1])
         expected = os.pathsep.join([str(command_utils.repo_base_dir), "/megatron", "/custom", "/sglang", "/existing"])
@@ -489,9 +495,8 @@ class TestExecuteTrain:
             before_ray_job_submit=lambda: commands.append("CALLBACK"),
         )
 
-        assert commands.index("CALLBACK") < len(commands) - 1
         assert "ray start --head" in commands[commands.index("CALLBACK") - 1]
-        assert "ray job submit" in commands[-1]
+        assert commands.index("CALLBACK") < commands.index(_submit(commands))
 
     def test_can_skip_the_ray_job_submit(self, commands, monkeypatch):
         """Preparation-only runs disable the submit but still clean up and start ray."""
@@ -505,7 +510,7 @@ class TestExecuteTrain:
         """The megatron model type is expanded into the argv its model script declares."""
         _backend().execute_train(train_args="--x 1", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        submit = commands[-1]
+        submit = _submit(commands)
         assert "--num-layers 36 " in submit
         assert "source" not in submit
         assert submit.endswith("--x 1 --deploy-component all")
@@ -514,7 +519,7 @@ class TestExecuteTrain:
         """--moe-layer-freq [1,1,1] is a glob; an unquoted token expands against the launch directory."""
         _backend().execute_train(train_args="--x 1", num_gpus_per_node=8, megatron_model_type="deepseek-v3-5layer")
 
-        submit = commands[-1]
+        submit = _submit(commands)
         assert "--moe-layer-freq '[0,0,0,1,1]'" in submit
         assert shlex.split(submit)[shlex.split(submit).index("--moe-layer-freq") + 1] == "[0,0,0,1,1]"
 
@@ -523,7 +528,7 @@ class TestExecuteTrain:
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="deepseek-v3-5layer")
 
         declared = load_model_args("deepseek-v3-5layer").split()
-        submitted = shlex.split(commands[-1])
+        submitted = shlex.split(_submit(commands))
         model_argv = submitted[: len(submitted) - 2]
 
         assert submitted[len(submitted) - 2 :] == ["--deploy-component", "all"]
@@ -533,19 +538,19 @@ class TestExecuteTrain:
         """FSDP has no megatron model config to expand."""
         _backend().execute_train(train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type=None)
 
-        assert "--num-layers" not in commands[-1]
+        assert "--num-layers" not in _submit(commands)
 
     def test_drops_cuda_device_max_connections_for_fsdp(self, commands):
         """Pinning it to 1 breaks computation/communication overlap on FSDP."""
         _backend().execute_train(train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type=None)
 
-        assert "CUDA_DEVICE_MAX_CONNECTIONS" not in _runtime_env(commands[-1])
+        assert "CUDA_DEVICE_MAX_CONNECTIONS" not in _runtime_env(_submit(commands))
 
     def test_pins_cuda_device_max_connections_for_megatron(self, commands):
         """Megatron requires the serialized copy engine ordering."""
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        assert _runtime_env(commands[-1])["CUDA_DEVICE_MAX_CONNECTIONS"] == "1"
+        assert _runtime_env(_submit(commands))["CUDA_DEVICE_MAX_CONNECTIONS"] == "1"
 
     def test_derives_nvls_from_nvlink_detection(self, commands, monkeypatch):
         """NCCL_NVLS_ENABLE follows the detected topology when it is not preset."""
@@ -553,7 +558,7 @@ class TestExecuteTrain:
 
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        assert _runtime_env(commands[-1])["NCCL_NVLS_ENABLE"] == "1"
+        assert _runtime_env(_submit(commands))["NCCL_NVLS_ENABLE"] == "1"
 
     def test_lets_the_environment_override_nvls(self, commands, monkeypatch):
         """An explicit NCCL_NVLS_ENABLE wins over topology detection."""
@@ -562,7 +567,7 @@ class TestExecuteTrain:
 
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        assert _runtime_env(commands[-1])["NCCL_NVLS_ENABLE"] == "0"
+        assert _runtime_env(_submit(commands))["NCCL_NVLS_ENABLE"] == "0"
 
     def test_forwards_selected_nccl_variables_only_when_present(self, commands, monkeypatch):
         """Optional debug knobs are passed through, and absent ones must not appear as empty strings."""
@@ -571,7 +576,7 @@ class TestExecuteTrain:
 
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        runtime_env = _runtime_env(commands[-1])
+        runtime_env = _runtime_env(_submit(commands))
         assert runtime_env["NCCL_SOCKET_IFNAME"] == "eth0"
         assert "NCCL_DEBUG" not in runtime_env
 
@@ -581,7 +586,7 @@ class TestExecuteTrain:
 
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        runtime_env = _runtime_env(commands[-1])
+        runtime_env = _runtime_env(_submit(commands))
         assert runtime_env["no_proxy"] == "127.0.0.1,10.0.0.1"
         assert runtime_env["MASTER_ADDR"] == "10.0.0.1"
 
@@ -591,7 +596,7 @@ class TestExecuteTrain:
 
         config.create_backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        runtime_env = _runtime_env(commands[-1])
+        runtime_env = _runtime_env(_submit(commands))
         assert runtime_env["CUDA_ENABLE_COREDUMP_ON_EXCEPTION"] == "1"
         assert runtime_env["CUDA_COREDUMP_FILE"] == "/out/cuda_coredump_%h.%p.%t"
 
@@ -599,7 +604,7 @@ class TestExecuteTrain:
         """Core dumps are expensive, so they must stay off unless asked for."""
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        assert "CUDA_ENABLE_COREDUMP_ON_EXCEPTION" not in _runtime_env(commands[-1])
+        assert "CUDA_ENABLE_COREDUMP_ON_EXCEPTION" not in _runtime_env(_submit(commands))
 
     def test_lets_config_extra_env_vars_win_over_the_argument(self, commands):
         """The CLI-supplied overrides are applied last so an operator can always override a script."""
@@ -612,24 +617,24 @@ class TestExecuteTrain:
             extra_env_vars={"MY_VAR": "from_argument", "OTHER": "kept"},
         )
 
-        runtime_env = _runtime_env(commands[-1])
+        runtime_env = _runtime_env(_submit(commands))
         assert runtime_env["MY_VAR"] == "from_config"
         assert runtime_env["OTHER"] == "kept"
 
     def test_addresses_the_local_dashboard_unless_ray_address_is_set(self, commands, monkeypatch):
         """RAY_ADDRESS already tells the ray CLI where to go; passing --address too would conflict."""
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
-        assert '--address="http://127.0.0.1:8265"' in commands[-1]
+        assert '--address="http://127.0.0.1:8265"' in _submit(commands)
 
         monkeypatch.setenv("RAY_ADDRESS", "http://10.0.0.1:8265")
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
-        assert "--address=" not in commands[-1]
+        assert "--address=" not in _submit(commands)
 
     def test_resolves_a_relative_train_script_against_the_repo(self, commands):
         """Launchers pass train.py, which only makes sense relative to the checkout."""
         _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
-        assert f"-- python3 {command_utils.repo_base_dir}/train.py " in commands[-1]
+        assert f"-- python3 {command_utils.repo_base_dir}/train.py " in _submit(commands)
 
     def test_keeps_an_absolute_train_script(self, commands):
         """An absolute path is already unambiguous and must not be rewritten."""
@@ -637,7 +642,7 @@ class TestExecuteTrain:
             train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B", train_script="/opt/train.py"
         )
 
-        assert "-- python3 /opt/train.py " in commands[-1]
+        assert "-- python3 /opt/train.py " in _submit(commands)
 
 
 class TestBuildTrainEnvVars:
