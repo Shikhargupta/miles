@@ -153,7 +153,7 @@ class TestBuildDeployments:
 class TestBuildArgs:
     def test_the_baseline_installs_a_run_that_runs_its_own_object_store(self, mode):
         """The baseline is one release, so nothing outside it names the master it should dial."""
-        baseline = scenario._build_baseline_args(_request(mode, side=BASELINE_SIDE))
+        baseline = scenario._build_baseline_args(mode, DUMP_DIR)
 
         assert value_of(baseline, OBJECT_STORE_BACKEND_FLAG) == "mooncake"
 
@@ -161,7 +161,7 @@ class TestBuildArgs:
         """A bitwise comparison across a second difference would prove nothing about deployment."""
         driver = _deployments_of(deployments, DeployComponent.PRIMARY)[0]
 
-        baseline = scenario._build_baseline_args(_request(mode, side=BASELINE_SIDE))
+        baseline = scenario._build_baseline_args(mode, DUMP_DIR)
 
         assert _shared_argv(driver.train_args) == _shared_argv(baseline)
 
@@ -244,7 +244,7 @@ class _Pipeline:
     launched: list[DeployComponent] = field(default_factory=list)
     instance_ids: list[str | None] = field(default_factory=list)
     split_sides: list[str] = field(default_factory=list)
-    unsplit_sides: list[str] = field(default_factory=list)
+    unsplit_sides: list[tuple[str, str]] = field(default_factory=list)
     compared_after: int | None = None
 
     def run_ci(self) -> None:
@@ -276,7 +276,7 @@ def pipeline(monkeypatch, tmp_path) -> _Pipeline:
     recorded = _Pipeline()
 
     def run_unsplit(request: RunSideRequest) -> None:
-        recorded.unsplit_sides.append(request.side)
+        recorded.unsplit_sides.append((request.side, request.train_args))
         ft_app.run_one_release(request)
 
     monkeypatch.setattr(deploy_utils, "assert_the_cluster_can_deploy_runs", lambda config: None)
@@ -301,8 +301,8 @@ def _fake_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tru
     return "--some-flag some-value "
 
 
-def _fake_baseline_args(request: RunSideRequest) -> str:
-    return "--some-flag some-value "
+def _fake_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+    return "--some-flag some-value --its-own-object-store "
 
 
 def _pipeline_config() -> ExecuteTrainConfig:
@@ -325,7 +325,15 @@ class TestTheScenarioPipeline:
         pipeline.run_ci()
 
         assert pipeline.split_sides == [TARGET_SIDE]
-        assert pipeline.unsplit_sides == [BASELINE_SIDE]
+        assert [side for side, _ in pipeline.unsplit_sides] == [BASELINE_SIDE]
+
+    def test_the_baseline_is_installed_with_the_arguments_its_own_builder_composed(self, pipeline):
+        """A side installed on whatever the harness happened to carry would train something else entirely."""
+        pipeline.run_ci()
+
+        assert [train_args for _, train_args in pipeline.unsplit_sides] == [
+            _fake_baseline_args(scenario._MODE, DUMP_DIR)
+        ]
 
     def test_the_run_reaches_the_cluster_one_deployment_at_a_time_in_this_order(self, pipeline):
         """The baseline is one release; the target's parts install in the order the run needs them installed."""

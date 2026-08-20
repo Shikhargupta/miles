@@ -79,11 +79,8 @@ def _build_args(
     return train_args
 
 
-def _build_baseline_args(request: RunSideRequest) -> str:
-    return (
-        _build_args(request.mode, request.dump_dir, request.enable_dumper, request.config)
-        + get_mooncake_object_store_args()
-    )
+def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+    return _build_args(mode, dump_dir, enable_dumper) + get_mooncake_object_store_args()
 
 
 def _build_deployments(request: RunSideRequest) -> list[RunDeployment]:
@@ -120,17 +117,13 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
 def _create_app_and_run_ci() -> tuple[typer.Typer, Callable[[], None]]:
     app, run_ci = create_comparison_app_and_run_ci(
         test_name=TEST_NAME,
-        build_baseline_args=_the_baseline_is_built_once_its_side_has_a_config,
+        build_baseline_args=_build_baseline_args,
         build_target_args=_build_args,
         compare_fn=_compare,
-        run_side=create_split_run_side(build_baseline_args=_build_baseline_args, build_deployments=_build_deployments),
+        run_side=create_split_run_side(build_deployments=_build_deployments),
         resolve_mode_fn=lambda _name: _MODE,
     )
     return app, run_on_a_cluster(run_ci)
-
-
-def _the_baseline_is_built_once_its_side_has_a_config(mode: FTTestMode, dump_dir: str, enable_dumper: bool) -> str:
-    return ""
 
 
 app, run_ci = _create_app_and_run_ci()
