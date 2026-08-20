@@ -206,7 +206,18 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             return
         last_idx = len(meta_list) - 1
         for i, (model_replica, remote_weight_infos) in enumerate(meta_list):
-            model_replica.load_weights(ready_hf_tensors)
+            # All shards of a stacked param must arrive in one call: the loader's
+            # fusion caches (e.g. cached_a_proj for fused_qkv_a_proj_with_mqa) are
+            # local to do_load_weights, so splitting the call drops the param.
+            try:
+                model_replica.load_weights(ready_hf_tensors)
+            except Exception as e:
+                raise RuntimeError(
+                    f"[P2P-Shared] staging failed for {ready_hf_tensors[0][0]} "
+                    f"(+{len(ready_hf_tensors) - 1} more). p2p needs a quant finalize that keeps "
+                    f"parameters loadable; fp8-block qualifies, an unquantized MoE under the "
+                    f"flashinfer trtllm runner does not (it swizzles experts to a 4D layout)."
+                ) from e
 
             is_last = i == last_idx
             if is_last:
