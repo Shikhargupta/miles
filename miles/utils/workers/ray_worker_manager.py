@@ -119,6 +119,8 @@ class RayWorkerManager:
         return addrs
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
+        # a description is taken of whatever exists at the time, so a worker whose ports are still
+        # being allocated has to render as holding none of them rather than as holding some
         return {
             name: [a.self_addrs or {} for c in g.cells if c.alive for a in c.actors] for name, g in self._pools.items()
         }
@@ -417,12 +419,6 @@ class _BaseActorManager(Generic[SpecT]):
         pg = self.manager.pgs[pg_name]
         base_gpu_id = int(pg.pg_reordered_gpu_ids[self.gpu_slot_index])
         return list(range(base_gpu_id, base_gpu_id + self.spec.scheduling.num_gpu_slots_per_worker))
-
-    @property
-    def described_addrs(self) -> NamedHostAndPorts:
-        # a description is taken of whatever exists at the time, so it has to render a worker whose
-        # ports are still being allocated as holding none rather than as holding some of them
-        return self.self_addrs if self.self_addrs is not None else {}
 
     @property
     def master_mode_addrs(self) -> NamedHostAndPorts:
