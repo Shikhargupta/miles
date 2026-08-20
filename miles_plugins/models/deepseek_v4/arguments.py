@@ -93,10 +93,15 @@ def _validate_impl(args: Namespace) -> None:
         )
 
 
-# Attention weights used to carry the plugin's own names; they now use Megatron's, so that one
-# checkpoint serves both --dsv4-impl values. A checkpoint written before that switch loads into a
-# silently half-initialized model, so refuse it by name.
-_RENAMED_ATTENTION_WEIGHT = "self_attention.wq_a.weight"
+# DeepSeek-V4 weights follow Megatron's names, so one checkpoint serves both --dsv4-impl
+# values. Checkpoints written before that switch used the plugin's own spellings and would
+# load into a silently half-initialized model, so refuse them by name.
+_SUPERSEDED_WEIGHT_NAMES = (
+    "self_attention.wq_a.weight",
+    "self_attention.wo_a.weight",
+    "hc_attn_fn",
+    "hc_head_params.hc_head_fn",
+)
 
 
 def assert_checkpoint_is_current(load_dir: str) -> None:
@@ -112,7 +117,7 @@ def assert_checkpoint_is_current(load_dir: str) -> None:
         return
 
     metadata = FileSystemReader(directory).read_metadata()
-    stale = [key for key in metadata.state_dict_metadata if _RENAMED_ATTENTION_WEIGHT in key]
+    stale = [key for key in metadata.state_dict_metadata if any(name in key for name in _SUPERSEDED_WEIGHT_NAMES)]
     if stale:
         raise ValueError(
             f"{load_dir} is a DeepSeek-V4 checkpoint from before the attention weights were renamed "

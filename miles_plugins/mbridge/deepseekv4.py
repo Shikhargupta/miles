@@ -21,26 +21,33 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
             "self_attention.kv_layernorm.weight": ["model.layers.{layer_number}.self_attn.kv_norm.weight"],
             "self_attention.linear_o_group_proj": ["model.layers.{layer_number}.self_attn.wo_a.weight"],
             "self_attention.linear_proj.weight": ["model.layers.{layer_number}.self_attn.wo_b.weight"],
-            "self_attention.attn_sink": ["model.layers.{layer_number}.self_attn.attn_sink"],
             "self_attention.core_attention.attn_sink": ["model.layers.{layer_number}.self_attn.attn_sink"],
-            "self_attention.compressor.ape": ["model.layers.{layer_number}.self_attn.compressor.ape"],
-            "self_attention.compressor.wkv.weight": ["model.layers.{layer_number}.self_attn.compressor.wkv.weight"],
-            "self_attention.compressor.wgate.weight": [
+            "self_attention.core_attention.compressor.ape": ["model.layers.{layer_number}.self_attn.compressor.ape"],
+            "self_attention.core_attention.compressor.linear_wkv.weight": [
+                "model.layers.{layer_number}.self_attn.compressor.wkv.weight"
+            ],
+            "self_attention.core_attention.compressor.linear_wgate.weight": [
                 "model.layers.{layer_number}.self_attn.compressor.wgate.weight"
             ],
-            "self_attention.compressor.norm.weight": ["model.layers.{layer_number}.self_attn.compressor.norm.weight"],
-            "self_attention.indexer.linear_wq_b.weight": ["model.layers.{layer_number}.self_attn.indexer.wq_b.weight"],
-            "self_attention.indexer.linear_weights_proj.weight": [
+            "self_attention.core_attention.compressor.norm.weight": [
+                "model.layers.{layer_number}.self_attn.compressor.norm.weight"
+            ],
+            "self_attention.core_attention.indexer.linear_wq_b.weight": [
+                "model.layers.{layer_number}.self_attn.indexer.wq_b.weight"
+            ],
+            "self_attention.core_attention.indexer.linear_weights_proj.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"
             ],
-            "self_attention.indexer.compressor.ape": ["model.layers.{layer_number}.self_attn.indexer.compressor.ape"],
-            "self_attention.indexer.compressor.wkv.weight": [
+            "self_attention.core_attention.indexer.compressor.ape": [
+                "model.layers.{layer_number}.self_attn.indexer.compressor.ape"
+            ],
+            "self_attention.core_attention.indexer.compressor.linear_wkv.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.wkv.weight"
             ],
-            "self_attention.indexer.compressor.wgate.weight": [
+            "self_attention.core_attention.indexer.compressor.linear_wgate.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.wgate.weight"
             ],
-            "self_attention.indexer.compressor.norm.weight": [
+            "self_attention.core_attention.indexer.compressor.norm.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.norm.weight"
             ],
         }
