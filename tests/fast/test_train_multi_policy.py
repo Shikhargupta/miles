@@ -34,6 +34,8 @@ def _make_args(**overrides: Any) -> Namespace:
 def _make_trainers(model_ids, handles=None, start_rollout_ids=None) -> dict[str, TrainerInfo]:
     handles = {model_id: AsyncMock() for model_id in model_ids} if handles is None else handles
     start_rollout_ids = start_rollout_ids or {}
+    for handle in handles.values():
+        _let_a_follower_yield(handle)
     return {
         model_id: TrainerInfo(model_id=model_id, start_rollout_id=start_rollout_ids.get(model_id, 0), handle=handle)
         for model_id, handle in handles.items()
@@ -95,11 +97,12 @@ async def _slow_train(rollout_id: int, rollout_data_ref, **kwargs) -> None:
     await asyncio.sleep(0.05)
 
 
-def _unbounded_follower_train() -> AsyncMock:
+def _let_a_follower_yield(handle) -> None:
     async def yield_to_the_leader(rollout_id: int, rollout_data_ref, **kwargs) -> None:
         await asyncio.sleep(0)
 
-    return AsyncMock(side_effect=yield_to_the_leader)
+    if isinstance(handle.train, AsyncMock) and handle.train.side_effect is None:
+        handle.train.side_effect = yield_to_the_leader
 
 
 class TestInitialWeightPublication:
@@ -237,7 +240,6 @@ class TestRunPolicies:
         from the checkpoint every remaining round waits at."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
         trainers["a"].train = _slow_train
-        trainers["b"].train = _unbounded_follower_train()
 
         await _run(_make_args(num_rollout=10, debug_exit_after_rollout=1), trainers=trainers)
 
@@ -255,7 +257,6 @@ class TestRunPolicies:
         """Followers train unbounded rounds, so the run must not stop because one of them reached num_rollout."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
         trainers["a"].train = _slow_train
-        trainers["b"].train = _unbounded_follower_train()
 
         await _run(_make_args(num_rollout=2), trainers=trainers)
 
