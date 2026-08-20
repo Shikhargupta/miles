@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import subprocess
 import threading
-from typing import Any
 
 import pytest
 
-from miles.utils.external_utils.miles_workbench.preflight import checker as checker_module
+from miles.utils.external_utils.miles_workbench.preflight import checkers as checkers_module
+from miles.utils.external_utils.miles_workbench.preflight.checkers import (
+    ResourceVerb,
+    ResourceVerbAvailabilityChecker,
+    Status,
+    expand_resource_verbs,
+    parallel_execute_checkers,
+)
 
 NAMESPACE = "rl"
 
@@ -30,43 +36,59 @@ class _RecordingKubectl:
         return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="yes\n", stderr="")
 
 
-def _checker(monkeypatch: pytest.MonkeyPatch, kubectl: Any) -> checker_module.Checker:
-    checker = checker_module.Checker(NAMESPACE)
-    monkeypatch.setattr(checker, "kubectl", kubectl)
-    return checker
+def _verb_checkers(rules: dict[str, tuple[str, ...]]) -> list[ResourceVerbAvailabilityChecker]:
+    return [ResourceVerbAvailabilityChecker(NAMESPACE, verb) for verb in expand_resource_verbs(rules)]
 
 
-class TestRulesAreAskedConcurrently:
-    def test_a_rule_set_is_asked_in_one_parallel_pass(self, monkeypatch):
+def _record(monkeypatch: pytest.MonkeyPatch, *, meeting: int) -> _RecordingKubectl:
+    kubectl = _RecordingKubectl(meeting=meeting)
+    monkeypatch.setattr(checkers_module.Kubectl, "run_raw", staticmethod(kubectl))
+    return kubectl
+
+
+class TestAPhaseIsAskedConcurrently:
+    def test_a_phase_is_asked_in_one_parallel_pass(self, monkeypatch):
         """A plan runs to several hundred rules, and asking them in turn makes the wait a round trip
         each; the barrier only opens once that many callers are in flight together."""
-        kubectl = _RecordingKubectl(meeting=sum(len(verbs) for verbs in _RULES.values()))
+        checkers = _verb_checkers(_RULES)
+        _record(monkeypatch, meeting=len(checkers))
 
-        assert _checker(monkeypatch, kubectl).denied_rules(_RULES) == []
+        outcomes = parallel_execute_checkers(checkers)
+
+        assert [outcome.result.status for outcome in outcomes] == [Status.PASS] * len(checkers)
+
+    def test_a_phase_of_n_checkers_makes_exactly_one_round_of_calls(self, monkeypatch):
+        """Nothing is remembered between checkers, so a phase must be one round: N checkers, N calls, all in flight."""
+        checkers = _verb_checkers(_RULES)
+        kubectl = _record(monkeypatch, meeting=len(checkers))
+
+        outcomes = parallel_execute_checkers(checkers)
+
+        assert len(kubectl.calls) == len(checkers)
+        assert len(outcomes) == len(checkers)
 
     def test_every_rule_is_still_asked_of_the_cluster(self, monkeypatch):
         """Answering in parallel must not drop or merge a rule: each verb needs its own answer."""
-        kubectl = _RecordingKubectl(meeting=sum(len(verbs) for verbs in _RULES.values()))
+        checkers = _verb_checkers(_RULES)
+        kubectl = _record(monkeypatch, meeting=len(checkers))
 
-        _checker(monkeypatch, kubectl).denied_rules(_RULES)
+        parallel_execute_checkers(checkers)
 
         asked = {(call[2], call[3]) for call in kubectl.calls}
         assert asked == {(verb, resource.partition("/")[0]) for resource, verbs in _RULES.items() for verb in verbs}
 
     def test_a_subresource_is_asked_for_by_name(self, monkeypatch):
         """kubectl reads pods/exec as the pods resource unless the subresource is named separately."""
-        kubectl = _RecordingKubectl(meeting=1)
+        checker = ResourceVerbAvailabilityChecker(NAMESPACE, ResourceVerb(verb="create", resource="pods/exec"))
+        kubectl = _record(monkeypatch, meeting=1)
 
-        _checker(monkeypatch, kubectl).denied_rules({"pods/exec": ("create",)})
+        parallel_execute_checkers([checker])
 
         assert "--subresource=exec" in kubectl.calls[0]
 
-    def test_an_answer_already_held_is_not_asked_again(self, monkeypatch):
-        """The plan repeats rules across its checks, and re-asking them would undo the parallel pass."""
-        kubectl = _RecordingKubectl(meeting=1)
-        checker = _checker(monkeypatch, kubectl)
+    def test_an_empty_phase_asks_nothing(self, monkeypatch):
+        """A plan that grants nothing leaves a phase empty, and an empty pool must not be opened for it."""
+        kubectl = _record(monkeypatch, meeting=1)
 
-        checker.denied_rules({"pods": ("get",)})
-        checker.denied_rules({"pods": ("get",)})
-
-        assert len(kubectl.calls) == 1
+        assert parallel_execute_checkers([]) == []
+        assert kubectl.calls == []

@@ -53,7 +53,9 @@ def _make_fixture() -> _Fixture:
         provider=provider,
         controller=controller,
         worker_manager=worker_manager,
-        operations=RayCellOperations(worker_manager_handle=worker_manager, inference_controller=controller),
+        operations=RayCellOperations(
+            worker_manager_handle=worker_manager, resolve_inference_controller=lambda: controller
+        ),
     )
 
 

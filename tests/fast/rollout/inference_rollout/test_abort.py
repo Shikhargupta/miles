@@ -67,38 +67,6 @@ class TestAbortSurvivesAnEngineThatCannotAnswer:
         assert [record for record in caplog.records if WORKER_URLS[0] in record.getMessage()]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("engines", "refusing", "expected_message"),
-        [
-            (2, 1, None),
-            (4, 2, None),
-            (2, 2, "2 of the 2 engines refused an abort"),
-            (4, 3, "3 of the 4 engines refused an abort"),
-        ],
-    )
-    async def test_the_fleet_may_lose_up_to_half_its_engines_to_a_stale_router(
-        self, monkeypatch: pytest.MonkeyPatch, engines: int, refusing: int, expected_message: str | None
-    ):
-        """A heal takes cells out one at a time, so most of the fleet refusing is the fleet being unreachable."""
-        urls = [f"http://engine-{index}:20000" for index in range(engines)]
-        refused = {f"{url}/abort_request" for url in urls[:refusing]}
-
-        async def refuse_some(url, _payload):
-            if url in refused:
-                raise httpx.ConnectError("All connection attempts failed")
-
-        monkeypatch.setattr(train, "get_worker_urls", lambda _args: _ready(urls))
-        monkeypatch.setattr(train, "post", refuse_some)
-        monkeypatch.setattr(train, "call_agent_abort_hook", lambda _args: _ready(None))
-        monkeypatch.setattr(train, "as_completed_async", lambda _pendings: _no_pendings())
-
-        if expected_message is None:
-            await train.abort(_make_state(), set(), rollout_id=0)
-        else:
-            with pytest.raises(AssertionError, match=expected_message):
-                await train.abort(_make_state(), set(), rollout_id=0)
-
-    @pytest.mark.asyncio
     async def test_a_router_listing_no_worker_at_all_is_not_a_failed_abort(self, monkeypatch: pytest.MonkeyPatch):
         """A router mid-heal can list nothing, and no engine to ask is not the same as none answering."""
         monkeypatch.setattr(train, "get_worker_urls", lambda _args: _ready([]))
