@@ -48,7 +48,6 @@ class TestBuildTrainArgs:
             "--prompt-data": f"{args.data_dir}/gsm8k/train.parquet",
             "--input-key": "messages",
             "--label-key": "label",
-            "--apply-chat-template": None,
             "--rollout-shuffle": None,
             "--num-rollout": str(args.num_rollout),
             "--rollout-batch-size": "8",
