@@ -55,7 +55,7 @@ class ExecuteTrainConfig(CommandUtilConfig):
     hot_restart: str = ""
     run_id: str = field(default_factory=create_run_id)
     run_uuid: str | None = None
-    force: bool = False
+    skip_upgrade_check: bool = False
 
     @property
     def parsed_hot_restart(self) -> list[HotRestartComponent]:

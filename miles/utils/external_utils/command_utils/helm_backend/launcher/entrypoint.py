@@ -178,7 +178,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
                 )
             ),
             release=release,
-            force=config.force,
+            skip_upgrade_check=config.skip_upgrade_check,
             allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
         )
     if rebuilds_orchestrator:
@@ -333,7 +333,7 @@ def _assert_upgrade_is_allowed(
     *,
     diff: manifest_diff.ManifestDiffs,
     release: str,
-    force: bool,
+    skip_upgrade_check: bool,
     allow_diff_object_keys: frozenset[ManifestObjectKey],
 ) -> None:
     if diff.is_allowed:
@@ -347,11 +347,11 @@ def _assert_upgrade_is_allowed(
     message = (
         f"Run {release} already exists and the relaunch would change more than its size{rebuildable}:\n"
         f"{diff.describe()}\n"
-        f"launch under a new run id, or pass force=True to apply this anyway and accept the restarts"
+        f"launch under a new run id, or pass --skip-upgrade-check to apply this anyway and accept the restarts"
     )
-    if not force:
+    if not skip_upgrade_check:
         raise SystemExit(message)
-    logger.warning(f"forced: {message}")
+    logger.warning(f"upgrade check skipped: {message}")
 
 
 def _belongs_to_run(release: str, *, run_id: str) -> bool:
