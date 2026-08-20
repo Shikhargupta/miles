@@ -95,7 +95,8 @@ class TestApiServer:
         await train_async_driver.train(args)
 
         (call,) = components.api_server_calls
-        assert call["actor_model"] is components.actor_model
+        assert list(call["trainer_models"]) == ["actor"]
+        assert call["trainer_models"]["actor"] is components.actor_model
         assert call["inference_controller"] is components.inference_controller
         assert call["port"] == 8123
         assert call["ft_components"] == ["rollout"]
