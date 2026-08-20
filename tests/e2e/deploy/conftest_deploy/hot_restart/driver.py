@@ -143,6 +143,10 @@ class HotRestartDriver:
 
     def stop_collecting(self) -> None:
         self._worker.stop_and_join(timeout_seconds=RELAUNCH_JOIN_TIMEOUT_SECONDS)
+        # Before joining: the relaunch threads follow the run to its end, and the release is
+        # torn down from there, so a snapshot taken after them can only describe a run that is
+        # already gone.
+        self._observer.observe_once_or_warn()
         for thread in self._relaunch_threads:
             thread.join(timeout=RELAUNCH_JOIN_TIMEOUT_SECONDS)
         self._observer.observe_once_or_warn()
@@ -186,6 +190,13 @@ class HotRestartDriver:
             self.records.append(record)
             logger.info(f"Hot restart {record.index} is due against a frozen run: {record}")
             self._relaunch_on_a_thread(index)
+
+        self._observe_until_asked_to_stop(stop_event)
+
+    def _observe_until_asked_to_stop(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            self._observer.observe_once_or_warn()
+            stop_event.wait(timeout=self.poll_interval_seconds)
 
     def _wait_until_the_run_stands_frozen(
         self, stop_event: threading.Event, *, index: int, scheduled: ScheduledFreeze

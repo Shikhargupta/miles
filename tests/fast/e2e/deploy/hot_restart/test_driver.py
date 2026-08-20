@@ -366,3 +366,28 @@ class TestHotRestartDriverVerdict:
 
 def _raise_boom(_frozen_rollout_id: int | None) -> None:
     raise RuntimeError("boom")
+
+
+class TestWatchingPastTheLastTakeOver:
+    def test_the_run_is_still_sampled_after_the_last_take_over_was_triggered(self, tmp_path, monkeypatch):
+        """The last relaunch is when its pods are replaced, and nothing else would ever look at them."""
+        stop_event = threading.Event()
+        driver = _driver(
+            tmp_path, schedule=(ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),), poll_interval_seconds=0.0
+        )
+        _install_progress(monkeypatch, [RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)])
+
+        observed_after: list[int] = []
+
+        def observe(_self) -> None:
+            observed_after.append(len(driver.records))
+            if len(observed_after) >= 6:
+                stop_event.set()
+
+        monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", observe)
+
+        driver._drive(stop_event)
+        _join_relaunches(driver)
+
+        assert len(driver.records) == 1
+        assert observed_after.count(1) >= 2, "the run has to keep being sampled once the schedule is spent"
