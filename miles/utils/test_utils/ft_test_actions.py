@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import TypeAdapter, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.naming import parse_cell_id
 
 if TYPE_CHECKING:
@@ -29,6 +30,8 @@ def compute_ft_test_actions_arg(actions: Sequence[dict]) -> str:
 def render_ft_test_actions(actions: Sequence[dict]) -> str:
     return json.dumps(list(actions))
 
+
+_CELL_RESUME_OBSERVED_TIMEOUT_SECONDS = 300.0
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}
@@ -102,6 +105,21 @@ class FTTestActionControllerExecutor:
                     await operations.suspend(cell_id=action.cell_id)
                 elif action.action == "start_cell_at_end":
                     await operations.resume(cell_id=action.cell_id)
+                    await self._wait_cell_observed(action.cell_id)
+
+    async def _wait_cell_observed(self, cell_id: str) -> None:
+        async def _check(_remaining: float) -> None:
+            if cell_id not in self._controller.cell_ids:
+                raise TimeoutError(f"{cell_id} was resumed but is not observed yet")
+
+        await retry_until_deadline(
+            _check,
+            total_seconds=_CELL_RESUME_OBSERVED_TIMEOUT_SECONDS,
+            retry_on=TimeoutError,
+            initial_delay=1.0,
+            max_delay=5.0,
+            log_fields=dict(tag="ft", op="wait_cell_observed", cell=cell_id),
+        )
 
     def _check_action_target(self, action: FTTestAction) -> None:
         assert (cell_id := action.cell_id) is not None
