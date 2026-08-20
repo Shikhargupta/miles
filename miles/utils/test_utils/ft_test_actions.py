@@ -77,7 +77,7 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
     return actions
 
 
-def _assert_this_loop_can_be_parked(args: object, *, trainer_model_id: str | None) -> None:
+def _assert_loop_parkable(args: object, *, trainer_model_id: str | None) -> None:
     assert (script := Path(sys.argv[0]).name) == PARKABLE_TRAIN_SCRIPT, (
         f"{SLEEP_FOREVER_AT_END_ACTION} parks the orchestration script between two steps, and only "
         f"{PARKABLE_TRAIN_SCRIPT} stands still at that point; {script} has already started the next rollout by the "
@@ -189,7 +189,7 @@ class FTTestActionOrchestrationExecutor:
     def from_args(args: object, *, trainer_model_id: str | None = None) -> "FTTestActionOrchestrationExecutor":
         actions = _load_actions(args, _ORCHESTRATION_ACTIONS)
         if actions:
-            _assert_this_loop_can_be_parked(args, trainer_model_id=trainer_model_id)
+            _assert_loop_parkable(args, trainer_model_id=trainer_model_id)
 
         path: str | None = getattr(args, "ci_ft_test_actions_path", None)
         return FTTestActionOrchestrationExecutor(
