@@ -223,9 +223,8 @@ def get_model_provider_func(
         # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
         # (e.g. the run_megatron debug worker) won't have it, so default to False.
         if getattr(args, "enable_mtp_training", False):
-            # RL MTP training: detach the MTP heads so MTP gradients do not flow into the
-            # shared output layer / embedding (Megatron implements this via mtp_detach_heads;
-            # previously miles patched Megatron directly). See bump_docs/01-cherry-pick.md (#6).
+            # Detach the MTP heads so RL MTP gradients do not flow into the shared
+            # output layer / embedding.
             config.mtp_detach_heads = True
 
         if args.spec is not None:

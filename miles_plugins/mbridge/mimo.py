@@ -76,8 +76,6 @@ class MimoBridge(Qwen2Bridge):
         if name in direct_name_mapping:
             return [direct_name_mapping[name]]
 
-        # Handle transformer components within MTP. New Megatron renamed the MTP submodule
-        # transformer_layer -> mtp_model_layer; accept both.
         _mtp_inner = next((p for p in ("transformer_layer", "mtp_model_layer") if p in name), None)
         if _mtp_inner is not None:
             # Create a proxy name to use with parent class methods

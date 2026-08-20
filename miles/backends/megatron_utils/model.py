@@ -536,10 +536,6 @@ def train_one_step(
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 
-            # MTP labels: Megatron's process_mtp_loss derives them from input_ids
-            # (== batch["tokens"]) when labels is None, so no mtp_kwargs is needed.
-            # MTP head detach is configured via config.mtp_detach_heads (model_provider).
-
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
@@ -806,9 +802,7 @@ def train(
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
             mtp_loss_scale = 1 / num_microbatches[step_id]
-            # New Megatron tracks MTP loss as loss_sums/num_tokens (or loss_values) rather than a
-            # pre-divided "values" tensor. reduce_loss_in_tracker() all-reduces across ranks
-            # (collective: call on all ranks) and computes the per-token loss into tracker["values"].
+            # Collective: must run on all ranks.
             MTPLossLoggingHelper.reduce_loss_in_tracker()
             tracker = MTPLossLoggingHelper.tracker
             # here we assume only one mtp layer

@@ -52,12 +52,9 @@ def convert_mimo_mtp_param(args, name, param):
     if component in direct_mappings:
         return [(direct_mappings[component], param)]
 
-    # Handle the wrapped transformer-layer components. New Megatron renamed the MTP
-    # submodule field `transformer_layer` -> `mtp_model_layer`; accept both.
     transformer_layer_prefixes = ("transformer_layer.", "mtp_model_layer.")
     matched_prefix = next((p for p in transformer_layer_prefixes if component.startswith(p)), None)
     if matched_prefix is not None:
-        # Remove the wrapped-layer prefix
         transformer_component = component[len(matched_prefix) :]
 
         # Create proxy name for reusing existing Qwen2 conversion functions
