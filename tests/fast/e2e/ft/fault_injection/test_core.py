@@ -356,9 +356,9 @@ def test_the_loop_draws_a_form_that_has_never_worked_before_repeating_a_proven_o
 
     def fake_get(url: str, timeout: float) -> MagicMock:
         polls["n"] += 1
-        if polls["n"] >= 5:
+        if polls["n"] >= 6:
             stop_event.set()
-        return mock_response({"items": [typed_cell(f"actor-{i}", "actor") for i in range(3)]})
+        return mock_response({"items": [typed_cell(f"actor-{i}", "actor") for i in range(4)]})
 
     with patched_requests() as mock_requests:
         mock_requests.get.side_effect = fake_get
