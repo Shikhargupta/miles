@@ -12,13 +12,6 @@ class SuspendGate(Protocol):
 
 
 class SerializedCellOperations(BaseCellOperations):
-    """Delegates every operation, except that a suspend waits for the weight update to finish.
-
-    TEMPORARY, to be reverted with the weight-update fault tolerance work: a suspend that lands
-    while the trainer is broadcasting takes a rank out of a collective already sized for it, and
-    the broadcast then waits for a rank nobody will start.
-    """
-
     def __init__(self, inner: BaseCellOperations, *, gate: SuspendGate) -> None:
         self._inner = inner
         self._gate = gate

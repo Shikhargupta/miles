@@ -2752,10 +2752,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_user_provided_function_arguments(parser):
-            # this reads the argv it has so far only to learn which user modules to ask for arguments,
-            # and a caller building a throwaway parser supplies no argv at all; leaving the run's own
-            # required arguments enforced makes argparse print a full usage screen and exit, which the
-            # except below then turns into a parser silently missing every argument added past here
             try:
                 with with_relax_parser_required_args(parser):
                     args_partial, _ = parser.parse_known_args()

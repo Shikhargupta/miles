@@ -118,9 +118,6 @@ class RolloutServer:
             provider=self.engine_provider,
             health_checker_activeness=self.health_checker_activeness.get,
         )
-        # a cell that is registered before it is initialized survives its own failure: the next
-        # observation sees a cell already carrying the hash it observes, so the reconcile that
-        # retries has nothing to add, and the half-built cell waits for weights it is never offered
         if not self.args.colocate:
             try:
                 await cell.init()

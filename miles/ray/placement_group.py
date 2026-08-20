@@ -329,8 +329,6 @@ def maybe_start_api_server(
         return
 
     operations = get_backend_capability(args).cell_operations()
-    # only the ray backend suspends a cell through code of ours; a kubernetes pod also goes away by
-    # eviction or a node drain, so gating that half would promise what the other half cannot keep
     if ClusterBackend(args.cluster_backend) == ClusterBackend.RAY:
         operations = SerializedCellOperations(operations, gate=inference_controller)
 

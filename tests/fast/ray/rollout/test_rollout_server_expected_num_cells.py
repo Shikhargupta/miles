@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
+from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_engine_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider

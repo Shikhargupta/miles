@@ -119,8 +119,6 @@ class RayWorkerManager:
         return addrs
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
-        # a description is taken of whatever exists at the time, so a worker whose ports are still
-        # being allocated has to render as holding none of them rather than as holding some
         return {
             name: [a.self_addrs or {} for c in g.cells if c.alive for a in c.actors] for name, g in self._pools.items()
         }

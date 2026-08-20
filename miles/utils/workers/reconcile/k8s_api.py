@@ -37,12 +37,6 @@ class PodWatchEvent(FrozenStrictBaseModel):
 
     @classmethod
     def from_frame(cls, *, event_type: str, obj: Any) -> PodWatchEvent:
-        # a frame whose envelope will not parse cannot say where it sits, so the cursor stays where it
-        # was and a reconnect replays from the last readable position; the repeated upserts that follow
-        # are idempotent, which is the cheaper of the two ways to be wrong here. an error frame is the
-        # one exception: an unreadable one may be the expiry only a relist can clear, and a cursor the
-        # apiserver has already rejected replays forever, so it is read at its worst. a pod frame is
-        # deliberately not tolerated, because a watch that cannot read its pods has nothing to report
         frame = _validated_frame_or_none(obj)
         is_error = event_type == EVENT_TYPE_ERROR
         return cls(

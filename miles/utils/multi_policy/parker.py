@@ -18,8 +18,6 @@ class Parker:
 
     @contextmanager
     def running_follower(self) -> Iterator[None]:
-        """A follower past its last round can never park again, and a leader that still counts
-        it waits out the whole park timeout at the next checkpoint."""
         try:
             yield
         finally:
@@ -41,9 +39,6 @@ class Parker:
         self._num_ready -= 1
 
     async def _wait_all_parked(self) -> None:
-        # the predicate is re-read every pass on purpose: a follower that leaves while the leader waits
-        # lowers the count being waited for, and a target read once would wait on a follower that is
-        # never coming back
         await self._wait_until(
             lambda: self._num_ready == self._num_running_followers, want=lambda: self._num_running_followers
         )

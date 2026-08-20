@@ -9,12 +9,9 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 
 pytest.importorskip("sglang")
 
-from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils import sglang_engine
-from miles.backends.sglang_utils.sglang_engine import (
-    _assert_sglang_serves_a_launch_gate,
-    compute_engine_launch_cmd,
-)
+from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
+from miles.backends.sglang_utils.sglang_engine import _assert_sglang_serves_a_launch_gate, compute_engine_launch_cmd
 
 
 def _cmd(
