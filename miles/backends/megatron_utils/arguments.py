@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 def set_default_megatron_args(args):
+    if getattr(args, "true_on_policy_mode", False):
+        raise NotImplementedError(
+            "--true-on-policy-mode is not supported on the megatron backend with this Megatron "
+            "version; support lands in a follow-up PR. Use --train-backend fsdp for true-on-policy."
+        )
     # Muon currently owns its sharding path, and Megatron's distributed optimizer
     # only supports Adam-family optimizers.
     args.use_distributed_optimizer = (args.optimizer is None or args.optimizer.lower() == "adam") and not getattr(

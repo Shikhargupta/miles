@@ -259,7 +259,6 @@ def get_model_provider_func(
                         multi_latent_attention=args.multi_latent_attention,
                         normalization=args.normalization,
                         use_kitchen=config.use_kitchen,
-                        use_true_on_policy_backend=config.true_on_policy_contract is not None,
                         use_kitchen_attention=config.use_kitchen_attention,
                         kitchen_attention_backend=config.kitchen_attention_backend,
                     )
