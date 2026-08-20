@@ -225,6 +225,16 @@ class TestRunPolicies:
 
         assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0]
 
+    async def test_a_debug_run_leaves_the_followers_running(self):
+        """A follower's rounds are the leader's to end, so honouring the flag there would retire it
+        from the checkpoint every remaining round waits at."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["a"].train = _slow_train
+
+        await _run(_make_args(num_rollout=10, debug_exit_after_rollout=1), trainers=trainers)
+
+        assert len(trainers["b"].train.await_args_list) >= 2
+
     async def test_the_run_ends_when_the_leader_runs_out_of_rounds(self):
         """The leader owns --num-rollout; a follower resuming further back must not extend the run."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
