@@ -647,13 +647,18 @@ _INFERENCE_ARGS = [
 ]
 
 
-def _parse_deploy_args(extra, *, use_critic: bool = False):
+def _parse_deploy_args(extra, *, use_critic: bool = False, resolve_fault_tolerance: bool = False):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(["--cluster-backend", "kubernetes", *extra, *REQUIRED_ARGS, "--num-rollout", "1"])
-    args.ft_components = []
-    args.mini_ft_controller_enable = False
     args.use_critic = use_critic
+    if resolve_fault_tolerance:
+        args.ft_components = _resolve_ft_components(args)
+        args.api_server_port = _resolve_api_server_port(args)
+        args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
+    else:
+        args.ft_components = []
+        args.mini_ft_controller_enable = False
     return args
 
 
@@ -662,11 +667,7 @@ class TestDeployComponent:
         return _parse_deploy_args(extra)
 
     def _parse_validated(self, extra):
-        args = self._parse(extra)
-        args.ft_components = _resolve_ft_components(args)
-        args.api_server_port = _resolve_api_server_port(args)
-        args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
-        return args
+        return _parse_deploy_args(extra, resolve_fault_tolerance=True)
 
     def test_defaults_to_deploying_the_whole_run(self):
         """A run that does not mention the flag is one deployment, exactly as before the flag existed."""
@@ -1027,11 +1028,12 @@ class TestRunUuidOfASplitRun:
 
         assert len(_resolve_run_uuid(args)) == RUN_UUID_LENGTH
 
-    def test_a_kubernetes_split_launch_still_invents_its_own(self):
-        """Its launcher derives the same uuid from the run id for every component, so both halves agree."""
+    def test_a_kubernetes_split_launch_has_to_be_told_it_too(self):
+        """Its launcher is given the uuid and stamps it on every part, so no backend mints one of its own."""
         args = self._parse(["--cluster-backend", "kubernetes", "--deploy-component", "trainer"])
 
-        assert len(_resolve_run_uuid(args)) == RUN_UUID_LENGTH
+        with pytest.raises(AssertionError, match="--run-uuid"):
+            _resolve_run_uuid(args)
 
 
 class TestEvalSglangOverrides:
