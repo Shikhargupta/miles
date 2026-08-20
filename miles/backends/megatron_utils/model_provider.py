@@ -51,6 +51,7 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
 
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
+    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
     provider.fp32_residual_connection = args.fp32_residual_connection
     provider.deterministic_mode = args.deterministic_mode
 

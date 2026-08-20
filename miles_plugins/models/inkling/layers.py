@@ -398,7 +398,7 @@ class InklingRouter(TopKRouter):
         self._cache_key = None
         self._cache = None
 
-    def forward(self, input, padding_mask=None, input_ids=None):
+    def forward(self, input, padding_mask=None, input_ids=None, packed_seq_params=None):
         key = (input.data_ptr(), tuple(input.shape))
         if self._cache_key == key and self._cache is not None:
             probs, routing_map = self._cache
