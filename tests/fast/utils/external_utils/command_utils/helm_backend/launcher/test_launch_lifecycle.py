@@ -19,6 +19,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.observabilit
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
 from miles.utils.external_utils.command_utils.helm_backend.naming import (
     ORCHESTRATOR_COMPONENT,
+    ReleaseName,
     RunFiles,
     _orchestrator_state_path,
 )
@@ -158,7 +159,7 @@ class TestADeploymentWithoutTheOrchestrationScript:
 
         _launch(monkeypatch, tmp_path, recorded, installed=False, deploy_component="trainer")
 
-        assert recorded.upgraded == [f"{_RELEASE}-trainer"]
+        assert recorded.upgraded == [_TRAINER_RELEASE]
 
     def test_installs_no_orchestrator_and_waits_for_no_verdict(self, monkeypatch, tmp_path):
         """It carries no training to finish, so a launcher waiting for an exit file would hang forever."""
@@ -231,7 +232,10 @@ class TestDefusingAPendingUninstall:
 
 
 _RUN_ID = "260101-000000-000"
-_RELEASE = f"miles-run-{_RUN_ID}"
+_RELEASE = ReleaseName(run_id=_RUN_ID, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
+_TRAINER_RELEASE = ReleaseName(
+    run_id=_RUN_ID, deploy_component=DeployComponent.TRAINER, deploy_instance_id=None
+).serialize()
 _DELETE_UNINSTALL_JOB = [
     "kubectl",
     "delete",
@@ -446,16 +450,21 @@ def _launch(
     monkeypatch.setattr(Helm, "upgrade", staticmethod(lambda **kwargs: recorded.upgraded.append(kwargs["release"])))
     monkeypatch.setattr(Manifest, "state_file", lambda self, stateful_set, container: tmp_path / "attached.state")
     monkeypatch.setattr(entrypoint, "repo_base_dir", str(REPO_ROOT))
+    monkeypatch.setattr(
+        entrypoint, "_compute_trainer_controller_addrs", lambda args, *, release, namespace: _REACHABLE_AT
+    )
 
     followed = _stub_launch_inputs(monkeypatch, specs=[], deploy_component=deploy_component)
 
+    component = DeployComponent(deploy_component)
     entrypoint.execute_train(
         request=_train_request(),
         config=ExecuteTrainConfig(
             namespace="rl",
             run_id=_RUN_ID,
             helm_values=(str(_launchable_infra_file(tmp_path)),),
-            deploy_component=DeployComponent(deploy_component),
+            deploy_component=component,
+            run_uuid=_RUN_UUID if component.is_split() else None,
             force=force,
             hot_restart=hot_restart,
         ),
@@ -566,6 +575,7 @@ spec:
 _RENDERED_WITH_ANOTHER_KEY = _RENDERED + "data:\n  extra: added\n"
 _ORCHESTRATOR_OBJECT = component_name(_RELEASE, ORCHESTRATOR_COMPONENT)
 _RUN_UUID = "0123456789abcdef"
+_REACHABLE_AT = {"actor": f"{_RELEASE}-trainer-controller-actor-0.rl.svc.cluster.local:29500"}
 _INSTALLED_ARGV = ["python", "/repo/train.py", "--cluster-backend", "kubernetes", "--run-uuid", _RUN_UUID]
 _RENDERED_ORCHESTRATOR = f"""---
 apiVersion: apps/v1

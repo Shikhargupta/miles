@@ -108,6 +108,8 @@ def _stub_helm(monkeypatch, *, failing_command: str | None = None) -> list[list[
 
     def fake_run(command: list[str], **kwargs: Any) -> Any:
         issued.append([str(part) for part in command])
+        if "--dry-run" in command:
+            return subprocess.CompletedProcess(args=command, returncode=0, stdout='{"manifest": ""}', stderr="")
         if failing_command is not None and failing_command in " ".join(str(part) for part in command):
             raise subprocess.CalledProcessError(returncode=1, cmd=command)
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")

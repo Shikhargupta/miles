@@ -21,6 +21,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrap
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan, MooncakeInfo
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.run_uuid import RUN_UUID_LENGTH
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec
@@ -39,6 +40,10 @@ RUN_ID = "260101-000000-000"
 
 
 SPLIT_RUN_UUID = "0123456789abcdef"
+
+
+def _release(deploy_component: DeployComponent = DeployComponent.ALL) -> str:
+    return ReleaseName(run_id=RUN_ID, deploy_component=deploy_component, deploy_instance_id=None).serialize()
 
 
 def _config(run_id: str = RUN_ID, deploy_component: DeployComponent = DeployComponent.ALL) -> ExecuteTrainConfig:
@@ -111,11 +116,16 @@ def launch_argv(
         if recorded_releases is not None:
             recorded_releases.append(kwargs["release"])
 
+    def fake_render_upgrade(*, release: str, namespace: str, chart: Any, values_files: list[Any]) -> Manifest:
+        return Manifest.parse("", namespace=namespace)
+
     monkeypatch.setattr(entrypoint, "compute_specs", fake_compute_specs)
     monkeypatch.setattr(entrypoint, "parse_args", fake_parse_args)
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
     monkeypatch.setattr(entrypoint, "_write_helm_values", lambda path, values: None)
+    monkeypatch.setattr(entrypoint, "_compute_trainer_controller_addrs", lambda args, *, release, namespace: {})
     monkeypatch.setattr(Helm, "get_manifest", staticmethod(lambda release, namespace: None))
+    monkeypatch.setattr(Helm, "render_upgrade", staticmethod(fake_render_upgrade))
     monkeypatch.setattr(entrypoint, "_remove_pending_uninstall", lambda release, *, namespace: None)
     monkeypatch.setattr(Helm, "build_dependencies", lambda chart: None)
     monkeypatch.setattr(Helm, "upgrade", staticmethod(fake_upgrade))
@@ -298,7 +308,7 @@ class TestApiServerHost:
         config = _config()
         host = KubernetesCommandBackend(config).api_server_host(config)
 
-        assert host == f"miles-run-{RUN_ID}-orchestrator.{NAMESPACE}.svc.cluster.local"
+        assert host == f"{_release()}-orchestrator.{NAMESPACE}.svc.cluster.local"
 
     @pytest.mark.parametrize("component", [DeployComponent.PRIMARY, DeployComponent.TRAINER])
     def test_no_deployment_of_a_split_run_has_an_api_server_to_name(self, component):
@@ -345,22 +355,28 @@ class TestTheRunUuidALaunchStamps:
         config.run_uuid = None
 
         with pytest.raises(AssertionError, match="--run-uuid"):
-            entrypoint._resolve_run_uuid(config, installed_manifest=None)
+            entrypoint._resolve_run_uuid(config, installed_manifest=None, release=_release(DeployComponent.TRAINER))
 
     def test_a_split_launch_keeps_the_one_it_was_given(self):
         """It is the value the layer deploying every part chose, and changing it would fail the handshake."""
         config = _config(deploy_component=DeployComponent.TRAINER)
 
-        assert entrypoint._resolve_run_uuid(config, installed_manifest=None) == SPLIT_RUN_UUID
+        assert (
+            entrypoint._resolve_run_uuid(config, installed_manifest=None, release=_release(DeployComponent.TRAINER))
+            == SPLIT_RUN_UUID
+        )
 
     def test_a_first_install_mints_one(self):
         """A single deployment is the whole run, so nothing outside it has to agree on the value."""
-        stamped = entrypoint._resolve_run_uuid(_config(), installed_manifest=None)
+        stamped = entrypoint._resolve_run_uuid(_config(), installed_manifest=None, release=_release())
 
         assert len(stamped) == RUN_UUID_LENGTH
 
     def test_an_upgrade_in_place_keeps_the_uuid_the_pods_already_carry(self):
         """Resizing is the same training, and a fresh uuid would change every pod argv and trip the upgrade guard."""
-        installed = Manifest.parse(_INSTALLED_MANIFEST)
+        installed = Manifest.parse(_INSTALLED_MANIFEST, namespace=NAMESPACE)
 
-        assert entrypoint._resolve_run_uuid(_config(), installed_manifest=installed) == "aaaabbbbccccdddd"
+        assert (
+            entrypoint._resolve_run_uuid(_config(), installed_manifest=installed, release=_release())
+            == "aaaabbbbccccdddd"
+        )
