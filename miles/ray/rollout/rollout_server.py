@@ -118,9 +118,13 @@ class RolloutServer:
             provider=self.engine_provider,
             health_checker_activeness=self.health_checker_activeness.get,
         )
-        self.server_cells[cell_id] = cell
         if not self.args.colocate:
-            await cell.init()
+            try:
+                await cell.init()
+            except BaseException:
+                await cell.dispose()
+                raise
+        self.server_cells[cell_id] = cell
 
     @requires_lock
     async def remove_cell(self, cell_id: str):
