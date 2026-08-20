@@ -7,14 +7,15 @@ from dataclasses import dataclass, field
 
 import requests
 
+from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
 from miles.ray.specs.train import compute_trainer_controller_pool_id
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
+from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT, RunNames
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.kubectl_reads import read_objects_of_release
 from miles.utils.test_utils.polling_worker import PollingWorker, poll_until_stopped
 from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, HEALTH_PATH
-from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_worker_host
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name, static_worker_host
 from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT
 
 
@@ -165,15 +166,19 @@ def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str)
     )
 
 
-def read_restart_stamps_of_release(*, release: str, namespace: str) -> set[str] | None:
-    stamps: set[str] = set()
+def compute_hot_restart_workloads(release: str) -> frozenset[str]:
+    return frozenset(
+        component_name(release, component) for component in (ORCHESTRATOR_COMPONENT, ROLLOUT_EXECUTOR_POOL_ID)
+    )
+
+
+def read_restart_stamp_of_workload(*, release: str, namespace: str) -> dict[str, str | None] | None:
+    stamps: dict[str, str | None] = {}
     for kind in WORKLOAD_KINDS:
         payload = _read_objects(kind=kind, release=release, namespace=namespace)
         if payload is None:
             return None
-        stamps.update(
-            fact.restart_at for fact in parse_workload_facts(payload, kind=kind) if fact.restart_at is not None
-        )
+        stamps.update({fact.name: fact.restart_at for fact in parse_workload_facts(payload, kind=kind)})
     return stamps
 
 

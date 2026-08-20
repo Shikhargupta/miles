@@ -5,7 +5,10 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import read_restart_stamps_of_release
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+    compute_hot_restart_workloads,
+    read_restart_stamp_of_workload,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_hot_restart_config, compute_release_of_config
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
     HotRestartRecord,
@@ -22,6 +25,7 @@ HOT_RESTART_FORM_NAME: str = "hot_restart"
 TAKE_OVER_TIMEOUT_SECONDS: float = 1800.0
 TAKE_OVER_POLL_INTERVAL_SECONDS: float = 10.0
 RELAUNCH_JOIN_TIMEOUT_SECONDS: float = 1800.0
+BASELINE_STAMP_READ_ATTEMPTS: int = 10
 
 
 class HotRestartFaultForm(BaseFaultForm):
@@ -34,6 +38,7 @@ class HotRestartFaultForm(BaseFaultForm):
         events_dir: Path,
         poll_interval_seconds: float = TAKE_OVER_POLL_INTERVAL_SECONDS,
         timeout_seconds: float = TAKE_OVER_TIMEOUT_SECONDS,
+        baseline_read_attempts: int = BASELINE_STAMP_READ_ATTEMPTS,
     ) -> None:
         self._launch = launch
         self._config = config
@@ -43,6 +48,8 @@ class HotRestartFaultForm(BaseFaultForm):
         self._events_dir = events_dir
         self._poll_interval_seconds = poll_interval_seconds
         self._timeout_seconds = timeout_seconds
+        self._baseline_read_attempts = baseline_read_attempts
+        self._stamped_workloads = compute_hot_restart_workloads(self._release)
         self._threads: list[threading.Thread] = []
         self._failures: list[tuple[int, BaseException]] = []
         self._records: list[HotRestartRecord] = []
@@ -78,11 +85,12 @@ class HotRestartFaultForm(BaseFaultForm):
     def inject(self, cell: dict, rng: random.Random) -> None:
         progress = read_run_progress(checkpoint_dir=self._checkpoint_dir, events_dir=self._events_dir)
         before = read_attempts_of_rollout_id(self._events_dir)
+        stamps_before = self._read_the_stamps_this_take_over_has_to_replace()
 
         logger.info(f"Hot restarting {self._release} of a run that stands at {progress}")
         index = len(self._threads)
         self._relaunch_on_a_thread()
-        self._wait_until_the_take_over_reached_the_run(index=index, before=before)
+        self._wait_until_the_take_over_reached_the_run(index=index, before=before, stamps_before=stamps_before)
         self._records.append(
             HotRestartRecord(
                 index=index,
@@ -104,16 +112,18 @@ class HotRestartFaultForm(BaseFaultForm):
             logger.warning(f"The hot restart of {self._release} failed to install", exc_info=True)
             self._failures.append((index, e))
 
-    def _wait_until_the_take_over_reached_the_run(self, *, index: int, before: dict[int, int]) -> None:
+    def _wait_until_the_take_over_reached_the_run(
+        self, *, index: int, before: dict[int, int], stamps_before: dict[str, str | None]
+    ) -> None:
         deadline = time.monotonic() + self._timeout_seconds
         relaunch = self._threads[index]
 
         while time.monotonic() < deadline:
             time.sleep(self._poll_interval_seconds)
-            if carries_the_stamps_of(self._read_restart_stamps_or_none(), take_overs=index + 1):
-                logger.info(
-                    f"The take-over of {self._release} landed; its workloads carry {index + 1} restart stamp(s)"
-                )
+            if restamped_every_workload_a_take_over_replaces(
+                before=stamps_before, after=self._read_restart_stamps_or_none(), workloads=self._stamped_workloads
+            ):
+                logger.info(f"The take-over of {self._release} landed; it restamped {sorted(self._stamped_workloads)}")
                 return
             if describes_a_run_that_redid_a_step(before=before, after=self._read_attempts_or_none()):
                 logger.info(f"The take-over of {self._release} landed; the run redid a step it had trained")
@@ -124,14 +134,26 @@ class HotRestartFaultForm(BaseFaultForm):
                 f"under the script this injection meant to replace: {self._failures_of(index)}"
             )
             assert relaunch.is_alive(), (
-                f"the relaunch of {self._release} returned without its workloads ever carrying {index + 1} restart "
-                f"stamp(s), so nothing took its orchestration script over"
+                f"the relaunch of {self._release} returned without restamping {sorted(self._stamped_workloads)}, so "
+                f"nothing took its orchestration script over"
             )
 
         raise AssertionError(
-            f"the relaunch of {self._release} was installed {self._timeout_seconds}s ago and its workloads still do "
-            f"not carry {index + 1} restart stamp(s), nor has the run redone any of the steps it had trained "
-            f"({before}), so a take-over cannot be told from a relaunch that hung"
+            f"the relaunch of {self._release} was installed {self._timeout_seconds}s ago and {sorted(self._stamped_workloads)} "
+            f"still carry the stamps they carried before it ({stamps_before}), nor has the run redone any of the "
+            f"steps it had trained ({before}), so a take-over cannot be told from a relaunch that hung"
+        )
+
+    def _read_the_stamps_this_take_over_has_to_replace(self) -> dict[str, str | None]:
+        for _ in range(self._baseline_read_attempts):
+            if (stamps := self._read_restart_stamps_or_none()) is not None:
+                return stamps
+            time.sleep(self._poll_interval_seconds)
+
+        raise AssertionError(
+            f"the workloads of {self._release} could not be read in {self._baseline_read_attempts} attempt(s), and "
+            f"a take-over is told from a relaunch that hung by the stamps it replaces, so this draw has nothing to "
+            f"compare against"
         )
 
     def _failures_of(self, index: int) -> list[BaseException]:
@@ -144,19 +166,21 @@ class HotRestartFaultForm(BaseFaultForm):
             logger.warning("Failed to read how far the run being hot restarted has come", exc_info=True)
             return None
 
-    def _read_restart_stamps_or_none(self) -> set[str] | None:
+    def _read_restart_stamps_or_none(self) -> dict[str, str | None] | None:
         try:
-            return read_restart_stamps_of_release(release=self._release, namespace=self._namespace)
+            return read_restart_stamp_of_workload(release=self._release, namespace=self._namespace)
         except Exception:
             logger.warning(f"Failed to read the restart stamps of {self._release}", exc_info=True)
             return None
 
 
-def carries_the_stamps_of(stamps: set[str] | None, *, take_overs: int) -> bool:
-    """A take-over writes one restart stamp on every workload it replaces, and only take-overs write them."""
-    if stamps is None:
+def restamped_every_workload_a_take_over_replaces(
+    *, before: dict[str, str | None], after: dict[str, str | None] | None, workloads: frozenset[str]
+) -> bool:
+    """A take-over rewrites one restart stamp per workload it replaces, so a landing is a value that changed."""
+    if after is None:
         return False
-    return len(stamps) >= take_overs
+    return all((stamp := after.get(one)) is not None and stamp != before.get(one) for one in workloads)
 
 
 def describes_a_run_that_redid_a_step(*, before: dict[int, int], after: dict[int, int] | None) -> bool:

@@ -5,24 +5,34 @@ from typing import Any
 
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import fault_form as fault_form_module
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import HOT_RESTART_ARG
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import compute_hot_restart_workloads
+from tests.e2e.deploy.conftest_deploy.hot_restart.driver import HOT_RESTART_ARG, compute_release_of_config
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import RunProgress
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import (
     HOT_RESTART_FORM_NAME,
     HotRestartFaultForm,
-    carries_the_stamps_of,
     describes_a_run_that_redid_a_step,
+    restamped_every_workload_a_take_over_replaces,
 )
 
+from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
 
 CELL: dict = {"metadata": {"name": "actor-0"}}
+CONFIG: ExecuteTrainConfig = ExecuteTrainConfig(run_id="demo", namespace="rl")
+RELEASE: str = compute_release_of_config(CONFIG)
+STAMPED: frozenset[str] = compute_hot_restart_workloads(RELEASE)
+ORCHESTRATOR: str = component_name(RELEASE, ORCHESTRATOR_COMPONENT)
+ROLLOUT_EXECUTOR: str = component_name(RELEASE, ROLLOUT_EXECUTOR_POOL_ID)
+TRAINER: str = "a-workload-a-take-over-leaves-alone"
 
 
 def _form(launch, **overrides: Any) -> HotRestartFaultForm:
     kwargs: dict[str, Any] = dict(
         launch=launch,
-        config=ExecuteTrainConfig(run_id="demo", namespace="rl"),
+        config=CONFIG,
         checkpoint_dir=Path("/dumps/checkpoints"),
         events_dir=Path("/dumps/events"),
         poll_interval_seconds=0.0,
@@ -37,7 +47,7 @@ def _install_run(
     *,
     attempts: list[dict[int, int]],
     saved: int | None = 1,
-    stamps: list[set[str] | None] | None = None,
+    stamps: list[dict[str, str | None] | None] | None = None,
 ) -> None:
     """Feed the form the per-rollout attempt counts and the workload restart stamps it reads, one per look."""
     remaining = list(attempts)
@@ -46,11 +56,11 @@ def _install_run(
         "read_attempts_of_rollout_id",
         lambda _events_dir: remaining.pop(0) if remaining else attempts[-1],
     )
-    remaining_stamps = list(stamps) if stamps is not None else []
+    reads = list(stamps) if stamps is not None else [_stamps()]
     monkeypatch.setattr(
         fault_form_module,
-        "read_restart_stamps_of_release",
-        lambda **_kwargs: remaining_stamps.pop(0) if remaining_stamps else (stamps[-1] if stamps else set()),
+        "read_restart_stamp_of_workload",
+        lambda **_kwargs: reads.pop(0) if len(reads) > 1 else reads[0],
     )
     monkeypatch.setattr(
         fault_form_module,
@@ -82,17 +92,51 @@ class TestWhatCountsAsATakeOverThatLanded:
         """There is no step to redo, which is why the restart stamps carry this case instead."""
         assert not describes_a_run_that_redid_a_step(before={}, after={0: 1})
 
-    def test_a_workload_carrying_this_take_overs_stamp_counts(self):
-        """Only a take-over stamps the workloads, so the first stamp is the first take-over landing."""
-        assert carries_the_stamps_of({"2026-08-20T00:00:00Z"}, take_overs=1)
+    def test_a_take_over_replaces_the_orchestrator_and_the_rollout_executor_of_the_release(self):
+        """These two names are what every stamp assertion below is written against."""
+        assert STAMPED == {ORCHESTRATOR, ROLLOUT_EXECUTOR}
 
-    def test_a_workload_carrying_only_an_earlier_take_overs_stamp_does_not_count(self):
-        """The stamp of the take-over before this one was already there when this draw fired."""
-        assert not carries_the_stamps_of({"2026-08-20T00:00:00Z"}, take_overs=2)
+    def test_a_run_whose_replaced_workloads_were_all_restamped_counts(self):
+        """A take-over rewrites the stamp of each workload it replaces, whatever the run had trained."""
+        assert restamped_every_workload_a_take_over_replaces(
+            before=_stamps(orchestrator=None, rollout_executor=None), after=_stamps(), workloads=STAMPED
+        )
+
+    def test_a_second_take_over_rewriting_the_first_ones_stamps_counts(self):
+        """One object carries one stamp, rewritten each time, so a landing is a value that changed."""
+        assert restamped_every_workload_a_take_over_replaces(
+            before=_stamps(orchestrator="t1", rollout_executor="t1"), after=_stamps(), workloads=STAMPED
+        )
+
+    def test_a_run_whose_workloads_still_carry_the_stamps_they_carried_does_not_count(self):
+        """The relaunch is still installing, and the stamps it will rewrite are the ones drawn against."""
+        assert not restamped_every_workload_a_take_over_replaces(before=_stamps(), after=_stamps(), workloads=STAMPED)
+
+    def test_a_run_only_half_of_whose_workloads_were_restamped_does_not_count(self):
+        """The two workloads are rolled by one upgrade but observed apart, so one of them is a half-landing."""
+        assert not restamped_every_workload_a_take_over_replaces(
+            before=_stamps(orchestrator=None, rollout_executor=None),
+            after=_stamps(rollout_executor=None),
+            workloads=STAMPED,
+        )
+
+    def test_a_workload_the_read_did_not_return_does_not_count(self):
+        """A workload absent from the read has not been seen carrying anything, which is not evidence."""
+        assert not restamped_every_workload_a_take_over_replaces(
+            before={}, after={ORCHESTRATOR: "t2"}, workloads=STAMPED
+        )
+
+    def test_a_stamp_the_run_never_carried_on_another_workload_does_not_count(self):
+        """Only the two workloads a take-over replaces are stamped; anything else says nothing about it."""
+        assert not restamped_every_workload_a_take_over_replaces(
+            before=_stamps(orchestrator=None, rollout_executor=None),
+            after={**_stamps(orchestrator=None, rollout_executor=None), TRAINER: "t2"},
+            workloads=STAMPED,
+        )
 
     def test_a_stamp_read_that_failed_does_not_count(self):
         """A kubectl call that did not answer must not become a take-over that never landed."""
-        assert not carries_the_stamps_of(None, take_overs=1)
+        assert not restamped_every_workload_a_take_over_replaces(before=_stamps(), after=None, workloads=STAMPED)
 
 
 class TestInject:
@@ -115,25 +159,46 @@ class TestInject:
 
         assert len(launched) == 1
 
-    def test_a_draw_before_the_run_trained_a_step_lands_on_the_restart_stamp(self, monkeypatch):
+    def test_a_draw_before_the_run_trained_a_step_lands_on_the_restart_stamps(self, monkeypatch):
         """The run has no step to redo, and waiting for one would burn the whole take-over timeout."""
-        _install_run(monkeypatch, attempts=[{}, {}], saved=None, stamps=[set(), {"2026-08-20T00:00:00Z"}])
+        _install_run(
+            monkeypatch,
+            attempts=[{}, {}],
+            saved=None,
+            stamps=[_stamps(orchestrator=None, rollout_executor=None), _stamps()],
+        )
 
         form = _form(lambda _config: None)
         form.inject(CELL, Random(0))
 
         assert [one.frozen_rollout_id for one in form.records] == [-1]
 
-    def test_a_draw_before_the_run_trained_a_step_still_times_out_without_a_stamp(self, monkeypatch):
-        """Without the stamp there is nothing saying the take-over installed, and that must not pass."""
+    def test_a_second_draw_before_the_run_trained_a_step_lands_on_the_rewritten_stamps(self, monkeypatch):
+        """One object carries one stamp: a second take-over adds none, and only the rewrite says it landed."""
+        _install_run(monkeypatch, attempts=[{}, {}], saved=None, stamps=[_stamps(), _stamps("t3")])
+
+        form = _form(lambda _config: None)
+        form.inject(CELL, Random(0))
+
+        assert len(form.records) == 1
+
+    def test_a_draw_before_the_run_trained_a_step_still_times_out_without_a_restamp(self, monkeypatch):
+        """Without a rewritten stamp there is nothing saying the take-over installed, and that must not pass."""
         never_returns = threading.Event()
-        _install_run(monkeypatch, attempts=[{}, {}], saved=None, stamps=[set()])
+        _install_run(monkeypatch, attempts=[{}, {}], saved=None, stamps=[_stamps()])
 
         try:
-            with pytest.raises(AssertionError, match="do not carry"):
+            with pytest.raises(AssertionError, match="still carry the stamps they carried"):
                 _form(lambda _config: never_returns.wait(timeout=30.0), timeout_seconds=0.2).inject(CELL, Random(0))
         finally:
             never_returns.set()
+
+    def test_a_draw_that_cannot_read_the_workloads_it_would_compare_against_is_reported(self, monkeypatch):
+        """Without a baseline nothing could tell a rewritten stamp from the one that was already there."""
+        _install_run(monkeypatch, attempts=[{}, {}], saved=None, stamps=[None])
+
+        with pytest.raises(AssertionError, match="has nothing to compare against"):
+            _form(lambda _config: None, baseline_read_attempts=2).inject(CELL, Random(0))
 
     def test_the_injector_is_not_blocked_by_a_relaunch_that_drives_the_run_to_its_end(self, monkeypatch):
         """The relaunch installs a script that trains to the end, so a call that waits for it never returns."""
@@ -238,3 +303,12 @@ class TestTheClosingContract:
 
 def _raise_the_run_verdict(_config: ExecuteTrainConfig) -> None:
     raise SystemExit("eval/gsm8k 0.31 is below the required 0.55")
+
+
+def _stamps(
+    at: str = "t2", *, orchestrator: str | None = "", rollout_executor: str | None = ""
+) -> dict[str, str | None]:
+    return {
+        ORCHESTRATOR: at if orchestrator == "" else orchestrator,
+        ROLLOUT_EXECUTOR: at if rollout_executor == "" else rollout_executor,
+    }

@@ -4,12 +4,11 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_process import (
     assert_the_run_was_watched_closely_enough,
     assert_the_trainer_never_rebooted,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterSnapshot
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+    ClusterSnapshot,
+    compute_hot_restart_workloads,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
-
-from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
-from miles.utils.external_utils.command_utils.helm_backend.naming import ORCHESTRATOR_COMPONENT
-from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
 
 
 # ============================ what a take-over rolls ==========================
@@ -29,7 +28,7 @@ def assert_the_take_overs_replaced_only_the_script(
 
 
 def assert_only_the_orchestration_side_restarted(evidence: HotRestartEvidence, *, num_restarts: int) -> None:
-    expected = _compute_hot_restart_workloads(evidence.release)
+    expected = compute_hot_restart_workloads(evidence.release)
 
     unattributed = _compute_unattributed_pod_names(evidence.snapshots)
     assert not unattributed, (
@@ -64,12 +63,6 @@ def assert_only_the_orchestration_side_restarted(evidence: HotRestartEvidence, *
 
 
 # ========================== what the snapshots say ============================
-
-
-def _compute_hot_restart_workloads(release: str) -> frozenset[str]:
-    return frozenset(
-        component_name(release, component) for component in (ORCHESTRATOR_COMPONENT, ROLLOUT_EXECUTOR_POOL_ID)
-    )
 
 
 def _compute_unattributed_pod_names(snapshots: Sequence[ClusterSnapshot]) -> set[str]:

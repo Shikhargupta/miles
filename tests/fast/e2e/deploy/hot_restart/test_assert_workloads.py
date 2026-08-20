@@ -1,6 +1,5 @@
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
-    _compute_hot_restart_workloads,
     _compute_restart_stamps_of_workload,
     _compute_unattributed_pod_names,
     _compute_workload_of_pod,
@@ -8,7 +7,10 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
     _compute_workloads_whose_template_changed,
     assert_only_the_orchestration_side_restarted,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import LEADER_WORKER_SET_KIND
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
+    LEADER_WORKER_SET_KIND,
+    compute_hot_restart_workloads,
+)
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
     ENGINE_POOL,
     ORCHESTRATOR,
@@ -95,7 +97,7 @@ class TestAssertOnlyTheOrchestrationSideRestarted:
 class TestComputeHotRestartWorkloads:
     def test_a_hot_restart_names_the_orchestrator_and_the_rollout_executor(self):
         """Every other object of the release has to come out of the relaunch untouched."""
-        assert _compute_hot_restart_workloads(RELEASE) == frozenset({ORCHESTRATOR, ROLLOUT_EXECUTOR})
+        assert compute_hot_restart_workloads(RELEASE) == frozenset({ORCHESTRATOR, ROLLOUT_EXECUTOR})
 
 
 class TestComputeWorkloadOfPod:
