@@ -13,7 +13,7 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.mlp import MLP
-from megatron.core.transformer.module import MegatronModule
+from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.moe.router import TopKRouter
 
@@ -393,10 +393,8 @@ class InklingRouter(TopKRouter):
         H = self.config.hidden_size
         ns = self.config.inkling.n_shared_experts
         self.shared_gate = nn.Parameter(torch.zeros(ns, H, dtype=self.config.params_dtype))
-        _gs_dtype = torch.float32
-        self.global_scale = nn.Parameter(torch.ones(1, dtype=_gs_dtype))
-        if _gs_dtype == torch.float32:
-            self.global_scale._keep_fp32 = True
+        self.global_scale = nn.Parameter(torch.ones(1, dtype=torch.float32))
+        mark_keep_in_fp32(self.global_scale)
         self._cache_key = None
         self._cache = None
 
