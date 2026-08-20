@@ -3861,7 +3861,10 @@ def miles_validate_args(args):
                 f"{ObjectStoreBackend.MOONCAKE.value} under --cluster-backend {ClusterBackend.KUBERNETES.value}."
             )
             args.object_store_backend = ObjectStoreBackend.MOONCAKE.value
-        if not args.mooncake_store_init_kwargs:
+        if (
+            not args.mooncake_store_init_kwargs
+            and DeployComponent(args.deploy_component).deploys_orchestration_script()
+        ):
             args.mooncake_store_init_kwargs = compute_mooncake_init_kwargs()
 
     args.run_uuid = _resolve_run_uuid(args)
