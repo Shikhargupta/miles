@@ -12,6 +12,7 @@ from miles.ray.specs.multi_lora import (
 )
 from miles.utils.function_registry import load_function
 from miles.utils.misc import NodeProbeMixin
+from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
 
 
 def _args(multi_lora: bool) -> SimpleNamespace:
@@ -38,7 +39,10 @@ class TestMultiLoraControllerSpec:
 
     def test_the_worker_class_answers_the_managers_node_probe(self):
         """alloc_ports() probes the node before it reads port_infos, so a worker without the probe dies at launch."""
-        assert issubclass(load_function(MULTI_LORA_CONTROLLER_WORKER_CLASS), NodeProbeMixin)
+        bootstrapped = bootstrapped_worker_class(MULTI_LORA_CONTROLLER_WORKER_CLASS)
+
+        assert issubclass(bootstrapped, MultiLoRAController)
+        assert issubclass(bootstrapped, NodeProbeMixin)
 
     def test_the_worker_and_cell_names_are_stable(self):
         """Every process reaches the controller by this name, so it is part of the release's contract."""

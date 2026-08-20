@@ -59,6 +59,7 @@ UPPER_LAYER_EXEMPTIONS = {
     "miles/utils/ft_utils/mini_ft_controller.py": "kubernetes is the only backend that resumes a cell without being asked",
     "miles/utils/workers/serving/serve_inner.py": "the composition root of a served worker process",
     "miles/utils/workers/ray_worker_manager.py": "the composition root of a worker process an actor wraps",
+    "miles/utils/workers/deployment_entrypoint.py": "the composition root of a deployment that carries no orchestration script",
     "miles/utils/workers/backend_capability/factory.py": "the fork itself: it is the switch every composition root asks",
     "miles/ray/multi_lora/controller.py": "multi-LoRA is a ray actor and the charts render no form of it",
     "miles/utils/workers/reconcile/k8s_api.py": "the kubernetes client the observing provider is written against",

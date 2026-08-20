@@ -17,6 +17,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.build
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
 from miles.utils.misc import NodeProbeMixin
+from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
@@ -55,7 +56,10 @@ class TestRolloutExecutorSpec:
 
     def test_the_worker_class_answers_the_managers_node_probe(self):
         """alloc_ports() probes the node before it reads port_infos, so a worker without the probe dies at launch."""
-        assert issubclass(load_function(ROLLOUT_EXECUTOR_WORKER_CLASS), NodeProbeMixin)
+        bootstrapped = bootstrapped_worker_class(ROLLOUT_EXECUTOR_WORKER_CLASS)
+
+        assert issubclass(bootstrapped, RolloutExecutor)
+        assert issubclass(bootstrapped, NodeProbeMixin)
 
     def test_the_ctor_kwargs_hand_the_worker_the_providers_it_resolves_with(self):
         """The executor resolves its own addresses in init(), so its spec names exactly what that takes."""
