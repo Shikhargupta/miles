@@ -475,7 +475,7 @@ class TestKubernetesDriverAssembly:
 
         result = asyncio.run(scenario())
 
-        assert isinstance(result.inference_controller._handle, RpcWorkerHandle)
+        assert isinstance(result.inference_controller, RpcWorkerHandle)
         assert isinstance(result.rollout_executor, RpcWorkerHandle)
         assert controller.initialized
         assert executor.initialized
