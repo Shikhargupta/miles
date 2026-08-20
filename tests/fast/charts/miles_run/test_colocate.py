@@ -296,3 +296,68 @@ class TestTheCardReachesTheEngineByOneNameAndOneKey:
         assert [operation["path"] for operation in patch if operation["path"].startswith("/metadata")] == [
             f"/metadata/annotations/{annotation.replace('/', '~1')}"
         ]
+
+
+SUB_NODE_ENGINES = [
+    {
+        "name": "engine",
+        "replicas": 2,
+        "size": 1,
+        "command": _sub_node_engine_argv(),
+        "resources": {"limits": {"nvidia.com/gpu": 4}},
+    }
+]
+
+SUB_NODE_PAIRING_CONFIG = {
+    "namespace": NAMESPACE,
+    "release": RUN_RELEASE_NAME,
+    "trainer_pool_id": "trainer",
+    "inference_pools": [
+        {
+            "pool_id": "engine",
+            "layout": layout(
+                num_inference_cells=2,
+                num_pods_per_inference_cell=1,
+                gpu_offset=0,
+                num_gpus_per_inference_pod=4,
+            ),
+        }
+    ],
+}
+
+SUB_NODE_ENABLE = (
+    "--set-json",
+    f"run.inferenceEngines={json.dumps(with_object_names(SUB_NODE_ENGINES))}",
+    "--set-json",
+    f"run.trainerEngines={json.dumps(with_object_names(TRAINERS))}",
+    "--set-json",
+    f"run.colocate={json.dumps(SUB_NODE_PAIRING_CONFIG)}",
+)
+
+
+def _pools_by_name(objects: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        pool["metadata"]["name"]: pool["spec"]["leaderWorkerTemplate"]["workerTemplate"]["spec"]
+        for pool in objects_of_kind(objects, "LeaderWorkerSet")
+    }
+
+
+@requires_helm
+class TestTheKubeletVariableAndTheGateAlwaysTravelTogether:
+    def test_the_pod_asking_for_the_card_is_the_pod_that_is_told_it(self):
+        """The launcher writes the argument and the chart writes the variable, from two unrelated inputs."""
+        container = _pools_by_name(render_run(*SUB_NODE_ENABLE))["myrun-miles-run-engine"]["containers"][0]
+
+        assert f"$({BASE_GPU_ID_ENV_VAR})" in container["command"]
+        assert BASE_GPU_ID_ENV_VAR in _env_names(container)
+
+    def test_every_pool_asking_for_the_card_is_a_pool_the_chart_gates(self):
+        """An ungated pod runs before the controller annotates it, so the variable expands to nothing."""
+        pools = _pools_by_name(render_run(*SUB_NODE_ENABLE))
+        asking = {
+            name for name, pod in pools.items() if f"$({BASE_GPU_ID_ENV_VAR})" in pod["containers"][0]["command"]
+        }
+        gated = {name for name, pod in pools.items() if pod.get("schedulingGates")}
+
+        assert asking
+        assert asking <= gated
