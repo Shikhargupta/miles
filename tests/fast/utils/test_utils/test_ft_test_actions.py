@@ -16,6 +16,7 @@ from miles.utils.test_utils.ft_test_actions import (
     FTTestActionOrchestrationExecutor,
     _load_actions,
     read_frozen_rollout_id,
+    read_ft_test_actions,
     write_frozen_sentinel,
     write_ft_test_actions,
 )
@@ -571,3 +572,28 @@ class _SleptOnce(Exception):
 
 async def _stop_after_one_sleep(_seconds: float) -> None:
     raise _SleptOnce
+
+
+# TODO ad hoc hack: revert after the args refactor
+class TestHowOftenThePlanIsReadOffDisk:
+    def test_a_plan_whose_stamp_has_not_moved_is_not_read_again(self, tmp_path) -> None:
+        """The run consults this once per step, and the file sits on shared storage."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        first = read_ft_test_actions(path)
+        stamp = path.stat()
+
+        path.write_text(" " * len(first))
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+        assert read_ft_test_actions(path) == first
+
+    def test_a_rewritten_plan_is_read_again(self, tmp_path) -> None:
+        """A relaunch arms the next freeze by rewriting the file, and the run has to see it."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        assert json.loads(read_ft_test_actions(path)) != []
+
+        write_ft_test_actions(path, [])
+
+        assert json.loads(read_ft_test_actions(path)) == []

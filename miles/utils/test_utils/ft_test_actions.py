@@ -228,14 +228,35 @@ def write_ft_test_actions(path: Path, actions: Sequence[dict]) -> None:
 
 # TODO ad hoc hack: revert after the args refactor
 def read_ft_test_actions(path: Path) -> str:
-    assert path.is_file(), (
+    stamp = _stat_or_none(path)
+    assert stamp is not None, (
         f"{CI_FT_TEST_ACTIONS_PATH_FLAG} names {path}, which does not exist; a run told to read its plan from a "
         f"file nothing wrote would quietly perform no action at all"
     )
-    return path.read_text()
+
+    # The orchestration script consults this once per step, and the file lives on shared
+    # storage, so re-read it only once its stamp has moved. The plan is written whole under a
+    # scratch name and renamed, so a moved stamp always means a whole new plan.
+    stamped_at = (stamp.st_mtime_ns, stamp.st_size)
+    if (cached := _ACTIONS_OF_STAMP.get(path)) is not None and cached[0] == stamped_at:
+        return cached[1]
+
+    text = path.read_text()
+    _ACTIONS_OF_STAMP[path] = (stamped_at, text)
+    return text
+
+
+# TODO ad hoc hack: revert after the args refactor
+def _stat_or_none(path: Path) -> os.stat_result | None:
+    try:
+        return path.stat()
+    except OSError:
+        return None
 
 
 FROZEN_SENTINEL_SUFFIX: str = "_frozen_at.json"
+# TODO ad hoc hack: revert after the args refactor
+_ACTIONS_OF_STAMP: dict[Path, tuple[tuple[int, int], str]] = {}
 
 
 # TODO ad hoc hack: revert after the args refactor
