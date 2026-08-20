@@ -5,9 +5,18 @@ _LONGEST_ENGINE_POOL_ID_AROUND_THE_INSTANCE_ID = "inference-engine--99-99"
 DEPLOY_INSTANCE_ID_MAX_LENGTH = POOL_NAME_MAX_LENGTH - len(_LONGEST_ENGINE_POOL_ID_AROUND_THE_INSTANCE_ID)
 
 
+NAME_INDEX_PAD_WIDTH: int = 5
+_NAME_INDEX_LIMIT: int = 10**NAME_INDEX_PAD_WIDTH
+
+
 class ParsedCellId(NamedTuple):
     pool_id: str
     cell_index: int
+
+
+def format_name_index(index: int) -> str:
+    assert 0 <= index < _NAME_INDEX_LIMIT, f"name index must be in [0, {_NAME_INDEX_LIMIT}), got {index}"
+    return f"{index:0{NAME_INDEX_PAD_WIDTH}d}"
 
 
 def parse_cell_id(cell_id: str) -> ParsedCellId:
@@ -16,12 +25,12 @@ def parse_cell_id(cell_id: str) -> ParsedCellId:
 
 
 def compute_cell_id(*, pool_id: str, cell_index: int) -> str:
-    return f"{pool_id}-{cell_index}"
+    return f"{pool_id}-{format_name_index(cell_index)}"
 
 
 # TODO refactor & move later
 def compute_worker_name(*, pool_id: str, cell_index: int = 0, worker_in_cell_index: int = 0) -> str:
-    return f"{pool_id}-{cell_index}-{worker_in_cell_index}"
+    return f"{pool_id}-{format_name_index(cell_index)}-{format_name_index(worker_in_cell_index)}"
 
 
 # TODO refactor & move later
@@ -33,3 +42,10 @@ def parse_worker_name(worker_name: str) -> tuple[str, int, int]:
 def cell_id_of_worker(worker_name: str) -> str:
     pool_id, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
     return compute_cell_id(pool_id=pool_id, cell_index=cell_index)
+
+
+def _worker_name_of_cell(cell_id: str, *, worker_in_cell_index: int = 0) -> str:
+    parsed = parse_cell_id(cell_id)
+    return compute_worker_name(
+        pool_id=parsed.pool_id, cell_index=parsed.cell_index, worker_in_cell_index=worker_in_cell_index
+    )
