@@ -5,7 +5,11 @@ from pathlib import Path
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_freeze_plan
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
-from miles.utils.test_utils.ft_test_actions import CI_FT_TEST_ACTIONS_PATH_FLAG, write_ft_test_actions
+from miles.utils.test_utils.ft_test_actions import (
+    CI_FT_TEST_ACTIONS_PATH_FLAG,
+    compute_frozen_sentinel_path,
+    write_ft_test_actions,
+)
 
 # TODO ad hoc hack: this whole module goes away with the args refactor. Reverting it means
 # deleting the file and dropping the two calls the deterministic scenario makes into it.
@@ -39,6 +43,7 @@ def write_freeze_plan(plan_path: Path, *, frozen_rollout_id: int | None) -> None
 # TODO ad hoc hack: revert after the args refactor
 def arm_the_first_freeze(train_args: str, *, side_dump_dir: str, frozen_rollout_id: int) -> str:
     plan_path = compute_freeze_plan_path(side_dump_dir)
+    compute_frozen_sentinel_path(plan_path).unlink(missing_ok=True)
     write_freeze_plan(plan_path, frozen_rollout_id=frozen_rollout_id)
 
     return with_the_freeze_plan_of(train_args, plan_path=plan_path)

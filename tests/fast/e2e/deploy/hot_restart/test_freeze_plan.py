@@ -4,6 +4,7 @@ import shlex
 import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_freeze_plan
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
+    arm_the_first_freeze,
     compute_freeze_plan_path,
     with_the_freeze_plan_of,
     write_freeze_plan,
@@ -19,6 +20,8 @@ from miles.utils.test_utils.ft_test_actions import (
     CI_FT_TEST_ACTIONS_PATH_FLAG,
     SLEEP_FOREVER_AT_END_ACTION,
     FTTestAction,
+    read_frozen_rollout_id,
+    write_frozen_sentinel,
 )
 
 
@@ -33,6 +36,17 @@ class TestTheFreezePlanFile:
         assert [FTTestAction(**one) for one in json.loads(path.read_text())] == [
             FTTestAction(at_rollout=4, action=SLEEP_FOREVER_AT_END_ACTION)
         ]
+
+    def test_arming_a_run_clears_what_the_previous_run_froze_at(self, tmp_path):
+        """The plan directory outlives the run that clears its dumps, so its sentinel outlives it too, and a
+        driver reading a stale one lets the take-over go before this run has frozen anything."""
+        path = compute_freeze_plan_path(f"{tmp_path}/target")
+        write_freeze_plan(path, frozen_rollout_id=2)
+        write_frozen_sentinel(path, rollout_id=2)
+
+        arm_the_first_freeze("--some-flag some-value ", side_dump_dir=f"{tmp_path}/target", frozen_rollout_id=4)
+
+        assert read_frozen_rollout_id(path) is None
 
     def test_the_plan_of_two_dump_directories_never_lands_in_one_file(self, tmp_path):
         """The two sides of the comparison run at once, and one shared plan would freeze the baseline too."""
