@@ -10,7 +10,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_name: str = "Qwen3-0.6B"
     megatron_model_type: str = "qwen3-0.6B"
     num_rollout: int = 20
-    save_interval: int = 1
+    save_interval: int = 2
     actor_num_gpus: int = 4
     num_engines: int = 2
     gpus_per_engine: int = 1
