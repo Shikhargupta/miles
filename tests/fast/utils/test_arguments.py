@@ -20,6 +20,7 @@ from miles.utils.arguments import (
     _resolve_rollout_functions,
     _resolve_run_uuid,
     _validate_deploy_component,
+    _validate_ft_test_actions,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -2056,3 +2057,20 @@ class TestMilesValidateArgsCheckpointResolution:
         miles_validate_args(args)
 
         assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+
+
+# TODO ad hoc hack: revert after the args refactor
+class TestFtTestActionsAreDeclaredOnce:
+    def test_naming_the_plan_inline_and_in_a_file_is_refused_at_startup(self):
+        """A run given both silently follows one of them, and nothing downstream can say which."""
+        args = argparse.Namespace(ci_ft_test_actions="[]", ci_ft_test_actions_path="/dumps/plan.json")
+
+        with pytest.raises(AssertionError, match="both name the actions"):
+            _validate_ft_test_actions(args)
+
+    def test_either_one_alone_is_accepted(self):
+        """Both forms are supported; only using them together is ambiguous."""
+        _validate_ft_test_actions(argparse.Namespace(ci_ft_test_actions="[]", ci_ft_test_actions_path=None))
+        _validate_ft_test_actions(
+            argparse.Namespace(ci_ft_test_actions=None, ci_ft_test_actions_path="/dumps/plan.json")
+        )
