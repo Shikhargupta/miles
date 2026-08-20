@@ -72,6 +72,7 @@ def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
         ServeWorkerSpec(
             name=INFERENCE_REGISTRATION_REPORTER_POOL_ID,
             deploy_component=DeployComponent.INFERENCE,
+            needs_platform_read_permission=True,
             port_infos=[],
             env_var=lambda _ctx: {},
             scheduling=SchedulingSpec(

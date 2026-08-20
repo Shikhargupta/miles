@@ -1,5 +1,11 @@
-{{- if .Values.run.orchestrator.command }}
 {{- $name := .Values.run.objectNames.orchestrator }}
+{{- $needed := .Values.run.orchestrator.command }}
+{{- range $worker := .Values.run.staticWorkers }}
+{{- if eq (default "" $worker.serviceAccountName) $name }}
+{{- $needed = true }}
+{{- end }}
+{{- end }}
+{{- if $needed }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
