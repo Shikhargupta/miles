@@ -54,19 +54,19 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
 
-def _wait_for_head_port(head_ip: str) -> None:
-    U = head_ip.create_backend()
+def _wait_for_head_port(args: ScriptArgs) -> None:
+    U = args.create_backend()
     for _ in range(60):
         # exec_command_cpu raises on a non-zero exit, so the probe reports through stdout.
-        if U.exec_command_cpu(f"nc -z {head_ip} 6379 2>/dev/null; echo $?", capture_output=True).strip() == "0":
+        if U.exec_command_cpu(f"nc -z {args.head_ip} 6379 2>/dev/null; echo $?", capture_output=True).strip() == "0":
             return
-        print(f"waiting for head {head_ip}:6379 ...")
+        print(f"waiting for head {args.head_ip}:6379 ...")
         U.exec_command_cpu("sleep 5")
 
 
-def _wait_for_ray_gpus(expected_gpus: int) -> None:
+def _wait_for_ray_gpus(args: ScriptArgs, expected_gpus: int) -> None:
     """The head reports only its own 8 GPUs until the worker joins, and a job submitted then gets one node."""
-    U = expected_gpus.create_backend()
+    U = args.create_backend()
     for _ in range(120):
         if f"{expected_gpus}.0 GPU" in U.exec_command_cpu("ray status 2>/dev/null || true", capture_output=True):
             print(f"[ray] cluster ready: {expected_gpus} GPUs")
@@ -183,7 +183,7 @@ def _execute_train(args: ScriptArgs):
         train_args=train_args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        before_ray_job_submit=lambda: _wait_for_ray_gpus(total_gpus),
+        before_ray_job_submit=lambda: _wait_for_ray_gpus(args=args, expected_gpus=total_gpus),
         megatron_path=args.megatron_path,
     )
 
@@ -205,7 +205,7 @@ def worker(args: ScriptArgs):
     # A re-run inherits the previous run's agents, and ray refuses to join with them alive.
     U = args.create_backend()
     U.exec_command_cpu("pkill -9 sglang; sleep 3; ray stop --force; pkill -9 ray; pkill -9 miles; sleep 3; true; ")
-    _wait_for_head_port(args.head_ip)
+    _wait_for_head_port(args)
     U.exec_command_cpu(
         f"ray start --address={args.head_ip}:6379 "
         f"--num-gpus={args.num_gpus_per_node} "
