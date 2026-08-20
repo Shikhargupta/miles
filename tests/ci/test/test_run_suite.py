@@ -303,7 +303,7 @@ class TestWorkflowScopeSeam:
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         assert gpu_jobs == ["run"]
         assert cpu_jobs == ["run-cpu"]
-        assert docker_jobs == ["docker-paths", "docker-build"]
+        assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
         assert "cpu_runner" not in cpu_workflow
 
@@ -326,11 +326,13 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
 
-        assert "  docker-paths:" not in workflow
+        assert "  docker-decide:" not in workflow
         assert "value: ${{ jobs.docker-build.outputs.built }}" in reusable
-        assert "needs: [docker-paths]" in reusable
-        assert "if ! CHANGED_PATHS=$(git diff --name-only HEAD^1 HEAD); then" in reusable
-        assert "::error::Failed to determine docker-relevant changes." in reusable
+        assert "value: ${{ jobs.docker-build.outputs.tag_available }}" in reusable
+        assert "needs: [docker-decide]" in reusable
+        # Rebuilds follow the build inputs, not whether the PR diff touched them.
+        assert "python3 docker/image_inputs.py --rev HEAD^1" in reusable
+        assert "python3 docker/image_inputs.py --read-label" in reusable
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
         assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
 

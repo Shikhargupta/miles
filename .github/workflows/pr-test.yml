@@ -53,8 +53,6 @@ on:
 
 permissions:
   contents: read
-  # The one-shot rebuild-ci-image label is removed once a build has consumed it.
-  pull-requests: write
 
 concurrency:
   # PR updates supersede their previous run; distinct cron schedules and
@@ -126,6 +124,11 @@ jobs:
       needs.resolve-ci-policy.result == 'success' &&
       (needs.stage-a-cpu.result == 'success' ||
          needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+    # Scoped to this call: a build consumes the one-shot rebuild-ci-image label by
+    # removing it. Every other job keeps the workflow-level read-only token.
+    permissions:
+      contents: read
+      pull-requests: write
     uses: ./.github/workflows/_build-pr-ci-image.yml
     secrets: inherit
 
