@@ -294,7 +294,8 @@ class TestStartApiServerRegistration:
             port=18080,
             ft_components=ft_components,
             cell_operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
         )
 
@@ -387,7 +388,8 @@ class TestStartApiServerRegistration:
             port=19137,
             ft_components=["train"],
             cell_operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+                resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
         )
 

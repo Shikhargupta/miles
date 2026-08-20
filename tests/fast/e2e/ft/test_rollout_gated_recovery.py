@@ -198,7 +198,7 @@ class _Harness:
             cell_type="rollout",
             operations=RayCellOperations(
                 worker_manager_handle=self.worker_manager,
-                inference_controller=_FakeStopCellController(worker_manager=self.worker_manager),
+                resolve_inference_controller=lambda: _FakeStopCellController(worker_manager=self.worker_manager),
             ),
             controllers=[self.controller],
             pool_ids=[_POOL_ID],

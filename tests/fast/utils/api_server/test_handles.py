@@ -41,7 +41,8 @@ def _make_actor_handler(
     handler = _CellHandler(
         cell_type="actor",
         operations=RayCellOperations(
-            worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+            worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
         ),
         controllers=[group],
         pool_ids=["trainer-engine-actor"],
@@ -147,7 +148,8 @@ def _make_rollout_handler(
     return _CellHandler(
         cell_type="rollout",
         operations=RayCellOperations(
-            worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+            worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
         ),
         controllers=[controller],
         pool_ids=[cell_id.rsplit("-", 1)[0]],
@@ -231,7 +233,8 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
@@ -248,7 +251,8 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -265,7 +269,8 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -305,7 +310,8 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
@@ -334,7 +340,8 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=["inference-engine-0-0"],
@@ -355,7 +362,8 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
@@ -372,7 +380,8 @@ class TestRolloutCellHandler:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
@@ -393,7 +402,8 @@ class TestRolloutCellHandlerInjectFault:
         handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(
-                worker_manager_handle=manager, inference_controller=MockStopCellController(manager)
+                worker_manager_handle=manager,
+            resolve_inference_controller=lambda: MockStopCellController(manager),
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
