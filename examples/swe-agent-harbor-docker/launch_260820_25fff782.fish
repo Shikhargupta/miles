@@ -8,7 +8,7 @@ set -l script_dir (path resolve (dirname (status filename)))
 # already-provisioned W&B credential explicit in the inherited environment.
 # The value never appears in the Ray submission command or training log.
 if not set -q WANDB_API_KEY
-    set -l wandb_api_key (python3 -c 'import netrc; print(netrc.netrc("/root/.netrc").authenticators("api.wandb.ai")[2])')
+    set -l wandb_api_key (string trim < /root/.wandb_api_key)
     if test -z "$wandb_api_key"
         echo "W&B API key is unavailable" >&2
         exit 1
