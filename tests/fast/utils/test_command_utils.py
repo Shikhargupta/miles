@@ -435,7 +435,7 @@ class TestExecuteTrain:
         submit = commands[-1]
         assert "--num-layers 36 " in submit
         assert "source" not in submit
-        assert submit.endswith("--x 1")
+        assert submit.endswith("--x 1 --deploy-component all")
 
     def test_quotes_the_model_args_the_shell_would_otherwise_reinterpret(self, commands):
         """--moe-layer-freq [1,1,1] is a glob; an unquoted token expands against the launch directory."""
@@ -451,8 +451,10 @@ class TestExecuteTrain:
 
         declared = load_model_args("deepseek-v3-5layer").split()
         submitted = shlex.split(commands[-1])
+        model_argv = submitted[: len(submitted) - 2]
 
-        assert submitted[len(submitted) - len(declared) :] == declared
+        assert submitted[len(submitted) - 2 :] == ["--deploy-component", "all"]
+        assert model_argv[len(model_argv) - len(declared) :] == declared
 
     def test_omits_the_model_args_for_fsdp(self, commands):
         """FSDP has no megatron model config to expand."""

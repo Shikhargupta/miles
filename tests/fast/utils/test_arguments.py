@@ -817,7 +817,7 @@ class TestDeployComponent:
         args = self._parse([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS])
         args.use_critic = True
 
-        with pytest.raises(AssertionError, match="exactly one"):
+        with pytest.raises(AssertionError, match=r"--trainer-controller-addrs must name each of .* exactly once"):
             _validate_deploy_component(args)
 
     def test_refuses_an_address_that_is_not_a_host_and_port(self):

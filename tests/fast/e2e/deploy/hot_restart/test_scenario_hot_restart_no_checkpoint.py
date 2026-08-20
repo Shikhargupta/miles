@@ -107,8 +107,8 @@ class TestBuildArgs:
         """A shared checkpoint directory would hand the target a checkpoint the baseline wrote."""
         args = scenario._build_args(scenario.NO_CHECKPOINT, scenario._MODE, "/dumps/nc/target")
 
-        assert compute_checkpoint_dir("/dumps/nc/target") in args
-        assert compute_checkpoint_dir("/dumps/nc/baseline") not in args
+        assert str(compute_checkpoint_dir("/dumps/nc/target")) in args
+        assert str(compute_checkpoint_dir("/dumps/nc/baseline")) not in args
 
     def test_the_weight_decay_of_the_common_arguments_is_replaced_and_not_repeated(self):
         """A repeated flag leaves it to the parser which value wins, and this run needs the one it asked for."""
