@@ -83,7 +83,7 @@ def _assert_loop_parkable(args: object, *, trainer_model_id: str | None) -> None
         f"{PARKABLE_TRAIN_SCRIPT} stands still at that point; {script} has already started the next rollout by the "
         f"time it reaches here, so the run would not be standing where the action names"
     )
-    assert (interval := getattr(args, "update_weights_interval", 1)) == 1, (
+    assert (interval := args.update_weights_interval) == 1, (
         f"{SLEEP_FOREVER_AT_END_ACTION} parks the run where it updates weights, and --update-weights-interval "
         f"{interval} means the run does not pass through that point after every step"
     )
@@ -191,7 +191,7 @@ class FTTestActionOrchestrationExecutor:
         if actions:
             _assert_loop_parkable(args, trainer_model_id=trainer_model_id)
 
-        path: str | None = getattr(args, "ci_ft_test_actions_path", None)
+        path: str | None = args.ci_ft_test_actions_path
         return FTTestActionOrchestrationExecutor(
             actions=actions,
             actions_path=Path(path) if path is not None else None,
@@ -230,8 +230,8 @@ CI_FT_TEST_ACTIONS_PATH_FLAG: str = "--ci-ft-test-actions-path"
 
 # TODO ad hoc hack: revert after the args refactor
 def _read_declared_actions(args: object) -> str:
-    inline: str | None = getattr(args, "ci_ft_test_actions", None)
-    path: str | None = getattr(args, "ci_ft_test_actions_path", None)
+    inline: str | None = args.ci_ft_test_actions
+    path: str | None = args.ci_ft_test_actions_path
 
     assert inline is None or path is None, (
         f"{CI_FT_TEST_ACTIONS_FLAG} and {CI_FT_TEST_ACTIONS_PATH_FLAG} both name the actions a run performs, and a "

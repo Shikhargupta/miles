@@ -27,8 +27,15 @@ from miles.utils.test_utils.ft_test_actions import (
 _POOL_ID = "trainer-engine-actor"
 
 
-def _args(ci_ft_test_actions: object) -> SimpleNamespace:
-    return SimpleNamespace(ci_ft_test_actions=ci_ft_test_actions)
+def _args(ci_ft_test_actions: object = None, **overrides: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        **{
+            "ci_ft_test_actions": ci_ft_test_actions,
+            "ci_ft_test_actions_path": None,
+            "update_weights_interval": 1,
+            **overrides,
+        }
+    )
 
 
 def test_load_actions_returns_empty_when_attr_is_none() -> None:
@@ -41,9 +48,10 @@ def test_load_actions_returns_empty_when_attr_is_empty_string() -> None:
     assert _load_actions(_args(""), _ACTOR_ACTIONS) == []
 
 
-def test_load_actions_returns_empty_when_attr_missing() -> None:
-    """A missing ci_ft_test_actions attribute defaults to None and yields []."""
-    assert _load_actions(SimpleNamespace(), _CONTROLLER_ACTIONS) == []
+def test_load_actions_refuses_arguments_that_declare_no_plan_at_all() -> None:
+    """Every run registers both flags, so arguments carrying neither are not a run's arguments."""
+    with pytest.raises(AttributeError):
+        _load_actions(SimpleNamespace(), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_parses_single_crash_action_with_defaults() -> None:
@@ -486,7 +494,7 @@ class TestSleepForeverAtEnd:
 
 
 def _args_of_path(path: object) -> SimpleNamespace:
-    return SimpleNamespace(ci_ft_test_actions_path=path)
+    return _args(ci_ft_test_actions_path=path)
 
 
 # TODO ad hoc hack: revert after the args refactor
@@ -516,8 +524,8 @@ class TestActionsDeliveredThroughAFile:
 
     def test_a_run_told_both_the_plan_and_a_file_holding_one_is_refused(self, tmp_path) -> None:
         """Two plans mean the run silently follows one of them, and nobody can tell which."""
-        args = SimpleNamespace(
-            ci_ft_test_actions=json.dumps([{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}]),
+        args = _args(
+            json.dumps([{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}]),
             ci_ft_test_actions_path=str(tmp_path / "plan.json"),
         )
 
@@ -606,7 +614,7 @@ class TestWhichLoopsCanBeParked:
     def test_a_plan_reaching_a_loop_of_another_train_script_is_refused(self, driven_by) -> None:
         """train_async.py has already started the next rollout, so the run would not be where the action names."""
         driven_by("train_async.py")
-        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]))
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
 
         with pytest.raises(AssertionError, match="train_async.py has already started"):
             FTTestActionOrchestrationExecutor.from_args(args)
@@ -614,7 +622,7 @@ class TestWhichLoopsCanBeParked:
     def test_a_loop_is_judged_by_the_script_driving_it_and_not_by_a_flag_it_declares(self, driven_by) -> None:
         """--fully-async is one way to reach an async loop; the train script is what actually chooses one."""
         driven_by("train_async.py")
-        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]), fully_async=False)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]), fully_async=False)
 
         with pytest.raises(AssertionError, match="train_async.py has already started"):
             FTTestActionOrchestrationExecutor.from_args(args)
@@ -622,7 +630,7 @@ class TestWhichLoopsCanBeParked:
     def test_a_plan_reaching_a_run_that_syncs_weights_every_other_step_is_refused(self, driven_by) -> None:
         """The action parks the run where it updates weights; a gated update skips that point."""
         driven_by(PARKABLE_TRAIN_SCRIPT)
-        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]), update_weights_interval=2)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]), update_weights_interval=2)
 
         with pytest.raises(AssertionError, match="update-weights-interval"):
             FTTestActionOrchestrationExecutor.from_args(args)
@@ -630,7 +638,7 @@ class TestWhichLoopsCanBeParked:
     def test_a_plan_reaching_one_policy_of_a_multi_policy_run_is_refused(self, driven_by) -> None:
         """Only that policy's coroutine would park; the others would train past the step."""
         driven_by(PARKABLE_TRAIN_SCRIPT)
-        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]))
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
 
         with pytest.raises(AssertionError, match="several policies"):
             FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id="solver")
@@ -642,7 +650,7 @@ class TestWhichLoopsCanBeParked:
     def test_the_loop_the_action_was_written_for_is_accepted(self, driven_by) -> None:
         """train.py updates weights once per step, for one policy, after the step is done."""
         driven_by(PARKABLE_TRAIN_SCRIPT)
-        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]))
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
 
         assert FTTestActionOrchestrationExecutor.from_args(args)._actions == [_SLEEP_ACTION]
 
@@ -650,7 +658,7 @@ class TestWhichLoopsCanBeParked:
         """Every run passes through here; only the ones carrying the action are constrained."""
         driven_by("train_async.py")
 
-        FTTestActionOrchestrationExecutor.from_args(SimpleNamespace(ci_ft_test_actions=None, fully_async=True))
+        FTTestActionOrchestrationExecutor.from_args(_args(fully_async=True))
 
 
 @pytest.fixture
