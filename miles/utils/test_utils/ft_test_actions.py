@@ -75,6 +75,23 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
     return actions
 
 
+def _assert_this_loop_can_be_parked(args: object, *, trainer_model_id: str | None) -> None:
+    assert not getattr(args, "fully_async", False), (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks the orchestration script between two steps, and the fully async loop "
+        f"has already started the next rollout by the time it reaches this point, so the run would not be standing "
+        f"where the action names"
+    )
+    assert (interval := getattr(args, "update_weights_interval", 1)) == 1, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks the run where it updates weights, and --update-weights-interval "
+        f"{interval} means the run does not pass through that point after every step"
+    )
+    assert trainer_model_id is None, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks one coroutine, and a run training several policies drives one per "
+        f"policy ({trainer_model_id!r} reached it here), so every other policy would keep training past the step "
+        f"the action names"
+    )
+
+
 class FTTestActionControllerExecutor:
     def __init__(
         self, *, actions: list[FTTestAction], controller: "TrainerController", cell_operations: "BaseCellOperations"
@@ -167,10 +184,14 @@ class FTTestActionOrchestrationExecutor:
         self._actions_path = actions_path
 
     @staticmethod
-    def from_args(args: object) -> "FTTestActionOrchestrationExecutor":
+    def from_args(args: object, *, trainer_model_id: str | None = None) -> "FTTestActionOrchestrationExecutor":
+        actions = _load_actions(args, _ORCHESTRATION_ACTIONS)
+        if actions:
+            _assert_this_loop_can_be_parked(args, trainer_model_id=trainer_model_id)
+
         path: str | None = getattr(args, "ci_ft_test_actions_path", None)
         return FTTestActionOrchestrationExecutor(
-            actions=_load_actions(args, _ORCHESTRATION_ACTIONS),
+            actions=actions,
             actions_path=Path(path) if path is not None else None,
         )
 

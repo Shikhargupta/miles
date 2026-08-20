@@ -286,7 +286,9 @@ async def update_weights(
     trainer_model_id: str | None = None,
 ) -> None:
     if rollout_id is not None:
-        await FTTestActionOrchestrationExecutor.from_args(args).run_after_step(rollout_id=rollout_id)
+        await FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id=trainer_model_id).run_after_step(
+            rollout_id=rollout_id
+        )
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
     weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
