@@ -71,6 +71,12 @@ def test_debug_train_only_counts_actor_bundles_once_and_leaves_the_rollout_entry
     assert _get_placement_group_layout(_layout_args(debug_train_only=True)) == (2, 2)
 
 
+def test_debug_train_only_never_reads_the_rollout_size_it_was_not_given():
+    """A train-only run is launched without --rollout-num-gpus, so naming the rollout contribution
+    before returning makes every one of them die on None at startup."""
+    assert _get_placement_group_layout(_layout_args(debug_train_only=True, rollout_num_gpus=None)) == (2, 2)
+
+
 def test_debug_rollout_only_bundles_the_eval_engines_too():
     """--eval-num-gpus buys engines this run launches, and leaving them out of the group strands them."""
     assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, eval_num_gpus=3)) == (7, 0)
