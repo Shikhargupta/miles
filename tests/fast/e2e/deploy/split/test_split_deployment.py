@@ -165,6 +165,17 @@ class TestRunSplitTraining:
         with pytest.raises(AssertionError, match="exactly one deployment"):
             _install(config=config, launches=deployment_launches, deployments=workers_only)
 
+    def test_it_refuses_a_deployment_that_carries_the_whole_run_by_itself(
+        self, config, deployment_launches, fake_helm
+    ):
+        """An `all` deployment drives the run and would pass every check below while splitting nothing."""
+        deployments = [RunDeployment(deploy_component=DeployComponent.ALL, train_args="everything")]
+
+        with pytest.raises(AssertionError, match="carries a whole run in one release"):
+            _install(config=config, launches=deployment_launches, deployments=deployments)
+
+        assert not deployment_launches.records
+
     def test_it_refuses_two_deployments_that_would_install_one_release(self, config, deployment_launches, fake_helm):
         """Unnamed engine deployments overwrite each other, leaving a run with half the engines it counted on."""
         deployments = [

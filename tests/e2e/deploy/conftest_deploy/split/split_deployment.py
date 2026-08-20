@@ -133,6 +133,12 @@ def _uninstall_whatever_can_be_uninstalled(*, release: str, namespace: str) -> N
 
 
 def _assert_deployments_form_one_run(deployments: list[RunDeployment]) -> None:
+    unsplit = [one.deploy_component.value for one in deployments if not one.deploy_component.is_split()]
+    assert not unsplit, (
+        f"these deployments install {unsplit}, which carries a whole run in one release: a run installed that way "
+        f"is the unsplit shape, and nothing here would be deployed apart from anything else"
+    )
+
     drivers = [one for one in deployments if one.deploy_component.deploys_orchestration_script()]
     assert len(drivers) == 1, (
         f"exactly one deployment of a run carries the orchestration script, and these carry it {len(drivers)} "
