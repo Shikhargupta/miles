@@ -93,8 +93,7 @@ Injection: HotRestartFaultForm at random intervals via the ft fault-injection pl
 Eligibility: none - every draw fires; a draw before the first save starts the run over from
         --ref-load, a product path this soak covers rather than skips
 Landing signal: both replaced workloads (orchestrator, rollout-executor) carry a stamp other
-        than the one they carried at the draw - rewritten, not added; a redone step is the
-        faster signal
+        than the one they carried at the draw - rewritten, not added
 Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's cost); mean draw
         interval 600s (--hot-restart-interval-seconds)
 

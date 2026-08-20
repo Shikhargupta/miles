@@ -62,17 +62,6 @@ def read_finished_rollout_ids(events_dir: Path) -> list[int]:
     )
 
 
-def read_attempts_of_rollout_id(events_dir: Path) -> dict[int, int]:
-    attempts: dict[int, int] = {}
-    if not events_dir.is_dir():
-        return attempts
-
-    for event in read_metric_events(events_dir):
-        if event.rollout_id is not None and TRAIN_STEP_METRIC_KEY in event.metrics:
-            attempts[event.rollout_id] = attempts.get(event.rollout_id, 0) + 1
-    return attempts
-
-
 def _read_text_or_empty(path: Path) -> str:
     try:
         return path.read_text().strip()
