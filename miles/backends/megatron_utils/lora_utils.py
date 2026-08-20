@@ -12,10 +12,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
-from miles_plugins.lora.hf_adapter import (  # noqa: F401  (re-exported)
-    MEGATRON_MLA_TO_HF,
-    convert_target_modules_to_hf,
-)
+from miles_plugins.lora.hf_adapter import MEGATRON_MLA_TO_HF, convert_target_modules_to_hf  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 

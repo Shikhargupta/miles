@@ -7,8 +7,6 @@ import logging
 import os
 from dataclasses import dataclass
 
-import torch.nn as nn
-
 from miles_plugins.lora.config import LoRAConfig
 from miles_plugins.lora.spec.attention import (
     GQAAttentionSpec,
