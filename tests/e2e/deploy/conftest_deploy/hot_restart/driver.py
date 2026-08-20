@@ -132,7 +132,11 @@ class HotRestartDriver:
     @property
     def evidence(self) -> HotRestartEvidence:
         return HotRestartEvidence(
-            records=tuple(self.records), snapshots=tuple(self._observer.snapshots), release=self.release
+            records=tuple(self.records),
+            snapshots=tuple(self._observer.snapshots),
+            release=self.release,
+            observation_attempts=self._observer.attempts,
+            observation_failures=self._observer.failures,
         )
 
     def start(self) -> None:

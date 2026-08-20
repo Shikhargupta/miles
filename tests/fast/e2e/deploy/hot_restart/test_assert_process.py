@@ -72,3 +72,16 @@ class TestComputeTrainerBootUuids:
         ]
 
         assert _compute_trainer_boot_uuids(snapshots) == {"boot-a"}
+
+    def test_a_run_read_whole_only_half_as_often_as_it_was_tried_fails(self):
+        """A cluster answering half the time looks exactly like a cluster where nothing was replaced."""
+        with pytest.raises(AssertionError, match="attempt"):
+            assert_the_run_was_watched_closely_enough(
+                evidence_of(snapshots=two_restarts(), records=[], observation_attempts=40, observation_failures=37)
+            )
+
+    def test_evidence_written_before_the_counts_existed_still_faces_the_absolute_floor(self):
+        """Older dumps carry no attempt count, and must not become unverifiable because of it."""
+        assert_the_run_was_watched_closely_enough(
+            evidence_of(snapshots=two_restarts(), records=[], observation_attempts=0)
+        )

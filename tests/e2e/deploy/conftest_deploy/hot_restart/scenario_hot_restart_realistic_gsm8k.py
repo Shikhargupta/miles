@@ -61,7 +61,13 @@ def run_ci(
             extra_train_args=build_checkpoint_args(resolve_dump_dir(TEST_NAME)),
         )
 
-    evidence = HotRestartEvidence(records=(), snapshots=tuple(observer.snapshots), release=observer.release)
+    evidence = HotRestartEvidence(
+        records=(),
+        snapshots=tuple(observer.snapshots),
+        release=observer.release,
+        observation_attempts=observer.attempts,
+        observation_failures=observer.failures,
+    )
     assert_the_take_overs_replaced_only_the_script(
         evidence, num_restarts=outcome.injector.num_successful_injections, minimum_restarts=MIN_HOT_RESTARTS
     )

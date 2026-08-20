@@ -29,8 +29,20 @@ def restart_snapshot(
     )
 
 
-def evidence_of(*, snapshots: list[ClusterSnapshot], records: list[HotRestartRecord]) -> HotRestartEvidence:
-    return HotRestartEvidence(records=tuple(records), snapshots=tuple(snapshots), release=RELEASE)
+def evidence_of(
+    *,
+    snapshots: list[ClusterSnapshot],
+    records: list[HotRestartRecord],
+    observation_attempts: int | None = None,
+    observation_failures: int = 0,
+) -> HotRestartEvidence:
+    return HotRestartEvidence(
+        records=tuple(records),
+        snapshots=tuple(snapshots),
+        release=RELEASE,
+        observation_attempts=len(snapshots) if observation_attempts is None else observation_attempts,
+        observation_failures=observation_failures,
+    )
 
 
 def quiet_run_snapshot(*, uid: str = "uid-o-1") -> ClusterSnapshot:

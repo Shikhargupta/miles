@@ -4,6 +4,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import Cluste
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
 
 MINIMUM_COMPLETE_SNAPSHOTS: int = 2
+MINIMUM_OBSERVATION_SUCCESS_RATIO: float = 0.5
 
 
 def assert_the_run_was_watched_closely_enough(evidence: HotRestartEvidence) -> None:
@@ -14,6 +15,13 @@ def assert_the_run_was_watched_closely_enough(evidence: HotRestartEvidence) -> N
         f"than the {MINIMUM_COMPLETE_SNAPSHOTS} it takes to tell a pod that survived every restart from one that "
         f"was never looked at twice"
     )
+
+    if (attempts := evidence.observation_attempts) > 0:
+        assert len(complete) >= MINIMUM_OBSERVATION_SUCCESS_RATIO * attempts, (
+            f"the whole release was read {len(complete)} time(s) out of {attempts} attempt(s), under "
+            f"{MINIMUM_OBSERVATION_SUCCESS_RATIO:.0%}; a cluster that answers half the time hides the very pod "
+            f"replacement these assertions are here to catch"
+        )
 
 
 def assert_the_trainer_never_rebooted(evidence: HotRestartEvidence) -> None:

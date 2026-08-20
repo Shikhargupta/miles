@@ -76,14 +76,18 @@ class ClusterObserver:
     namespace: str
     trainer_id: str
     snapshots: list[ClusterSnapshot] = field(default_factory=list)
+    attempts: int = 0
+    failures: int = 0
 
     def observe_once_or_warn(self) -> None:
         try:
             self.observe_once()
         except BaseException:
+            self.failures += 1
             logger.warning("Failed to observe the cluster of a run being hot restarted", exc_info=True)
 
     def observe_once(self) -> None:
+        self.attempts += 1
         snapshot = read_cluster_snapshot(
             release=self.release,
             namespace=self.namespace,
@@ -91,7 +95,12 @@ class ClusterObserver:
                 release=self.release, namespace=self.namespace, trainer_id=self.trainer_id
             ),
         )
-        if snapshot is None:
+        if not snapshot.describes_the_whole_release:
+            self.failures += 1
+            logger.warning(
+                f"Observing {self.release} could not read {list(snapshot.reads_missing)}, so this is a read that "
+                f"failed rather than a run whose pods changed"
+            )
             return
         if snapshot.describes_a_release_that_is_gone:
             logger.warning(
@@ -135,16 +144,13 @@ def compute_trainer_rpc_url(*, release: str, namespace: str, trainer_id: str) ->
     return f"http://{host}:{DEFAULT_RPC_PORT}{HEALTH_PATH}"
 
 
-def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str) -> ClusterSnapshot | None:
+def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str) -> ClusterSnapshot:
+    boot_uuid = read_boot_uuid(trainer_rpc_url)
     payload_of_kind = {
         kind: _read_objects(kind=kind, release=release, namespace=namespace) for kind in (POD_KIND, *WORKLOAD_KINDS)
     }
-    boot_uuid = read_boot_uuid(trainer_rpc_url)
 
     pods = payload_of_kind[POD_KIND]
-    if pods is None:
-        return None
-
     workloads = tuple(
         fact
         for kind in WORKLOAD_KINDS
@@ -152,7 +158,7 @@ def read_cluster_snapshot(*, release: str, namespace: str, trainer_rpc_url: str)
         for fact in parse_workload_facts(payload, kind=kind)
     )
     return ClusterSnapshot(
-        pods=parse_pod_facts(pods),
+        pods=parse_pod_facts(pods) if pods is not None else (),
         workloads=tuple(sorted(workloads, key=lambda one: (one.kind, one.name))),
         trainer_boot_uuid=boot_uuid,
         reads_missing=tuple(kind for kind, payload in payload_of_kind.items() if payload is None),

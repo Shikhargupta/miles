@@ -2,6 +2,7 @@ import pytest
 from tests.e2e.deploy.conftest_deploy.hot_restart import cluster_observer as cluster_module
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
     LEADER_WORKER_SET_KIND,
+    POD_KIND,
     STATEFUL_SET_KIND,
     ClusterObserver,
     ClusterSnapshot,
@@ -115,17 +116,17 @@ def _observer() -> ClusterObserver:
 
 
 class TestClusterObserver:
-    def _install_reader(self, monkeypatch, snapshots: list[ClusterSnapshot | None]) -> None:
+    def _install_reader(self, monkeypatch, snapshots: list[ClusterSnapshot]) -> None:
         remaining = list(snapshots)
         monkeypatch.setattr(cluster_module, "read_cluster_snapshot", lambda **_kwargs: remaining.pop(0))
 
-    def test_a_read_that_answered_nothing_is_not_recorded_as_an_observation(self, monkeypatch):
+    def test_a_read_that_could_not_see_the_whole_release_is_counted_not_recorded(self, monkeypatch):
         """A verdict read off two lucky observations of a run nobody could reach proves nothing."""
         observer = _observer()
         self._install_reader(
             monkeypatch,
             [
-                None,
+                cluster_snapshot(pods=[], workloads=[workload_fact(TRAINER)], reads_missing=(POD_KIND,)),
                 cluster_snapshot(pods=[pod_fact(f"{TRAINER}-0", uid="uid-t")], workloads=[workload_fact(TRAINER)]),
             ],
         )
@@ -134,6 +135,22 @@ class TestClusterObserver:
         observer.observe_once()
 
         assert len(observer.snapshots) == 1
+        assert (observer.attempts, observer.failures) == (2, 1)
+
+    def test_a_pods_read_that_failed_is_a_failed_read_and_not_a_vanished_release(self, monkeypatch):
+        """These used to be the same thing, which left the "reads missing" branch unreachable."""
+        monkeypatch.setattr(
+            cluster_module,
+            "_read_objects",
+            lambda **kwargs: None if kwargs["kind"] == POD_KIND else {"items": []},
+        )
+        monkeypatch.setattr(cluster_module, "read_boot_uuid", lambda _url: "boot-a")
+
+        snapshot = cluster_module.read_cluster_snapshot(
+            release=RELEASE, namespace=NAMESPACE, trainer_rpc_url="http://x"
+        )
+
+        assert snapshot.reads_missing == (POD_KIND,) and not snapshot.describes_the_whole_release
 
     def test_a_read_that_raised_leaves_the_run_being_watched_rather_than_ending_it(self, monkeypatch):
         """kubectl answers late now and then, and the observer is the one thread this run cannot lose."""
@@ -143,6 +160,7 @@ class TestClusterObserver:
         observer.observe_once_or_warn()
 
         assert observer.snapshots == []
+        assert observer.failures == 1
 
     def test_a_release_being_uninstalled_is_not_recorded_as_a_run_losing_its_pods(self, monkeypatch):
         """The last observation happens while the run is torn down, and every pod is gone by then."""
