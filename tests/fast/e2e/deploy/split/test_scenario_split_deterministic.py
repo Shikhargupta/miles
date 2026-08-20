@@ -180,7 +180,7 @@ class TestBuildArgs:
 
     def test_a_colocated_mode_is_refused(self, mode):
         """Colocation shares gpus between the very deployments this scenario installs apart."""
-        with pytest.raises(AssertionError, match="colocated"):
+        with pytest.raises(AssertionError, match="colocates them"):
             scenario._build_args(_colocated(mode), DUMP_DIR)
 
     def test_a_mode_without_engines_is_refused(self, mode):
