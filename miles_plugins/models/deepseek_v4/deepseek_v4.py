@@ -101,7 +101,7 @@ class DeepSeekV4Attention(MegatronModule):
         self.attn_sink.partition_dim = 0
         self.attn_sink.partition_stride = 1
 
-        self.wq_a = TELinear(
+        self.linear_q_down_proj = TELinear(
             self.dim,
             self.q_lora_rank,
             config=config,
@@ -111,8 +111,8 @@ class DeepSeekV4Attention(MegatronModule):
             skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
-        self.q_norm = TENorm(config_no_sp, self.q_lora_rank, eps=self.eps)
-        self.wq_b = TEColumnParallelLinear(
+        self.q_layernorm = TENorm(config_no_sp, self.q_lora_rank, eps=self.eps)
+        self.linear_q_up_proj = TEColumnParallelLinear(
             self.q_lora_rank,
             self.n_heads * self.head_dim,
             config=config_no_sp,
@@ -123,7 +123,7 @@ class DeepSeekV4Attention(MegatronModule):
             is_expert=False,
             tp_group=self.tp_group,
         )
-        self.wkv = TELinear(
+        self.linear_kv_proj = TELinear(
             self.dim,
             self.head_dim,
             config=config,
@@ -133,12 +133,12 @@ class DeepSeekV4Attention(MegatronModule):
             skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
-        self.kv_norm = TENorm(config_no_sp, self.head_dim, eps=self.eps)
+        self.kv_layernorm = TENorm(config_no_sp, self.head_dim, eps=self.eps)
 
-        for p in list(self.wq_a.parameters()) + list(self.wkv.parameters()):
+        for p in list(self.linear_q_down_proj.parameters()) + list(self.linear_kv_proj.parameters()):
             p.sequence_parallel = False
 
-        self.wo_a = ColumnParallelLinear(
+        self.linear_o_group_proj = ColumnParallelLinear(
             self.n_heads * self.head_dim // self.n_groups,
             self.n_groups * self.o_lora_rank,
             config=config_no_sp,
@@ -146,8 +146,8 @@ class DeepSeekV4Attention(MegatronModule):
             bias=False,
             gather_output=False,
         )
-        assert self.wo_a.weight.dtype == torch.bfloat16
-        self.wo_b = TERowParallelLinear(
+        assert self.linear_o_group_proj.weight.dtype == torch.bfloat16
+        self.linear_proj = TERowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.dim,
             config=config_no_sp,
@@ -239,17 +239,17 @@ class DeepSeekV4Attention(MegatronModule):
         ratio = self.compress_ratio
         rd = self.rope_head_dim
 
-        q_after_wq_a = self.wq_a(x)[0]
-        qr = q = self.q_norm(q_after_wq_a)
-        q_after_wq_b = self.wq_b(q)[0]
+        q_after_wq_a = self.linear_q_down_proj(x)[0]
+        qr = q = self.q_layernorm(q_after_wq_a)
+        q_after_wq_b = self.linear_q_up_proj(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
         q_fp32 = q.float()
         q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
-        kv_after_wkv = self.wkv(x)[0]
-        kv_vanilla = self.kv_norm(kv_after_wkv)
+        kv_after_wkv = self.linear_kv_proj(x)[0]
+        kv_vanilla = self.kv_layernorm(kv_after_wkv)
         kv_vanilla = kv_vanilla.clone()
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
         if self.use_fp8_qat:
@@ -311,9 +311,9 @@ class DeepSeekV4Attention(MegatronModule):
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
-        wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)
+        wo_a = self.linear_o_group_proj.weight.view(self.n_local_groups, self.o_lora_rank, -1)
         o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
-        x, _ = self.wo_b(o.flatten(2))
+        x, _ = self.linear_proj(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")
 

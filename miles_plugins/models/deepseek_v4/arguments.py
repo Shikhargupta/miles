@@ -91,3 +91,34 @@ def _validate_impl(args: Namespace) -> None:
             "--dsv4-impl miles runs its own tilelang kernels and ignores cuDNN; "
             "drop --dsa-kernel-backend or switch to --dsv4-impl megatron."
         )
+
+
+# Attention weights used to carry the plugin's own names; they now use Megatron's, so that one
+# checkpoint serves both --dsv4-impl values. A checkpoint written before that switch loads into a
+# silently half-initialized model, so refuse it by name.
+_RENAMED_ATTENTION_WEIGHT = "self_attention.wq_a.weight"
+
+
+def assert_checkpoint_is_current(load_dir: str) -> None:
+    """Reject DeepSeek-V4 checkpoints written before the attention weights were renamed."""
+    from pathlib import Path
+
+    from torch.distributed.checkpoint import FileSystemReader
+
+    iteration_file = Path(load_dir) / "latest_checkpointed_iteration.txt"
+    step = iteration_file.read_text().strip() if iteration_file.is_file() else None
+    directory = Path(load_dir) / step if step else Path(load_dir)
+    if not directory.is_dir():
+        return
+
+    metadata = FileSystemReader(directory).read_metadata()
+    stale = [key for key in metadata.state_dict_metadata if _RENAMED_ATTENTION_WEIGHT in key]
+    if stale:
+        raise ValueError(
+            f"{load_dir} is a DeepSeek-V4 checkpoint from before the attention weights were renamed "
+            f"to Megatron's names (found {stale[0]!r}); loading it would leave the attention layers "
+            f"uninitialized. Re-convert from the HuggingFace checkpoint, or ask your coding agent: "
+            f'"remap the DeepSeek-V4 checkpoint at {load_dir} from the old attention weight names '
+            f"to the current ones (see _RENAMED_ATTENTION_WEIGHT in "
+            f'miles_plugins/models/deepseek_v4/arguments.py)."'
+        )

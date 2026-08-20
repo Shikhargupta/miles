@@ -1,8 +1,9 @@
 """DeepSeek V4 Hyper-Connection utility — backed by deepseek-ai/TileKernels.
 
-Public API (`HCHeadParams`, `DeepSeekV4HyperConnectionUtil`) preserved so that
-the Megatron-LM patch (radixark/Megatron-LM PR #28) call sites in
-``transformer_layer.py`` and ``transformer_block.py`` keep working.
+``DeepSeekV4HyperConnectionUtil`` is called from Megatron's ``transformer_layer.py``
+and ``transformer_block.py`` under ``dsv4_mode``. The parameters it consumes live on
+those modules under the same names the native ``HyperConnectionModule`` uses, so one
+checkpoint serves either DeepSeek-V4 implementation.
 
 Internals route ``hc_pre_raw``/``hc_post_raw``/``hc_head_raw`` to
 ``tile_kernels.modeling.mhc.{mhc_pre, mhc_post, mhc_head}`` which provide
@@ -13,7 +14,6 @@ a no-grad forward path — see ``_HYPER_CONNECTION_MIXER_NO_GRAD = True``).
 import einops
 import torch
 import torch.nn.functional as F
-from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 from tile_kernels.modeling.mhc.ops import (
     mhc_head_compute_mix,
@@ -30,22 +30,6 @@ from torch import Tensor
 # (see the legacy ``hc_split_sinkhorn`` kernel). TileKernels lets us pass the
 # same factor through ``post_mult_value``.
 _HC_POST_MULT_VALUE = 2.0
-
-
-class HCHeadParams(MegatronModule):
-    def __init__(self, config: TransformerConfig):
-        super().__init__(config)
-        hc_mult = config.num_residual_streams
-        hc_dim = hc_mult * config.hidden_size
-        self.hc_head_fn = torch.nn.Parameter(torch.empty(hc_mult, hc_dim, dtype=torch.float32))
-        self.hc_head_base = torch.nn.Parameter(torch.empty(hc_mult, dtype=torch.float32))
-        self.hc_head_scale = torch.nn.Parameter(torch.empty(1, dtype=torch.float32))
-
-        for p in [self.hc_head_fn, self.hc_head_base, self.hc_head_scale]:
-            mark_keep_in_fp32(p)
-
-    def forward(self):
-        raise NotImplementedError
 
 
 class DeepSeekV4HyperConnectionUtil:
