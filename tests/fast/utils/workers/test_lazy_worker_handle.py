@@ -11,8 +11,8 @@ class _Recording(BaseWorkerHandle):
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def wait_ready(self, *, timeout: float) -> None:
-        self.calls.append(f"wait_ready:{timeout}")
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
+        self.calls.append(f"wait_ready:{timeout}:{allow_server_uuid_change}")
 
     async def probe_is_dead(self) -> bool:
         self.calls.append("probe_is_dead")
@@ -68,4 +68,14 @@ class TestAHandleIsResolvedWhenItIsUsed:
         await handle.wait_ready(timeout=2.0)
         assert await handle.probe_is_dead() is False
 
-        assert target.calls == ["wait_ready:2.0", "probe_is_dead"]
+        assert target.calls == ["wait_ready:2.0:False", "probe_is_dead"]
+
+    @pytest.mark.asyncio
+    async def test_a_readiness_probe_that_tolerates_a_restart_says_so_to_the_real_handle(self):
+        """The flag decides whether a restarted server is accepted, so dropping it would pin the old process."""
+        target = _Recording()
+        handle = LazyWorkerHandle(lambda: target)
+
+        await handle.wait_ready(timeout=3.0, allow_server_uuid_change=True)
+
+        assert target.calls == ["wait_ready:3.0:True"]
