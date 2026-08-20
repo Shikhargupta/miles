@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+from tests.fast.source_scan import REPO_ROOT
+
 LINT_CHARTS_PATH = REPO_ROOT / "tools" / "kubernetes" / "lint_charts.py"
 
 requires_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm is required to lint charts")

@@ -174,7 +174,7 @@ def format_launch(commands: list[str], values_text: str, sandbox: Path) -> str:
 def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False) -> None:
     monkeypatch.setattr(entrypoint, "compute_specs", lambda args: specs)
     monkeypatch.setattr(
-        entrypoint, "parse_args", lambda: SimpleNamespace(colocate=colocate, deploy_component="all", argv=[])
+        entrypoint, "parse_args", lambda: SimpleNamespace(colocate=colocate, deploy_component="all", deploy_instance_id=None, argv=[])
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)

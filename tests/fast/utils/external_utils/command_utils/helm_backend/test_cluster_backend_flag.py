@@ -101,7 +101,10 @@ def launch_argv(
         argv = list(sys.argv[1:])
         declared = declared_deploy_components(argv)
         return SimpleNamespace(
-            colocate=False, deploy_component=declared[-1] if declared else DeployComponent.ALL.value, argv=argv
+            colocate=False,
+            deploy_component=declared[-1] if declared else DeployComponent.ALL.value,
+            deploy_instance_id=None,
+            argv=argv,
         )
 
     def fake_upgrade(**kwargs: Any) -> None:
