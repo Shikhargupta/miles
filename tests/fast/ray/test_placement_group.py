@@ -528,9 +528,10 @@ class TestTakeOverTrainers:
 
     @staticmethod
     def _patched(monkeypatch, *, events: list[str]) -> None:
-        monkeypatch.setattr(
-            placement_group_module, "wait_static_addrs_ready", lambda addrs: events.append("addrs_ready")
-        )
+        async def wait_static_addrs_ready(addrs) -> None:
+            events.append("addrs_ready")
+
+        monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", wait_static_addrs_ready)
 
     async def test_the_addresses_are_waited_for_before_anything_reads_a_trainer(self, monkeypatch):
         """Reading a trainer at an address nothing answers at yet fails a take-over on a pod that is merely starting."""

@@ -47,8 +47,6 @@ class TestComputeSpecs:
             "session-server",
             "inference-engine-all-0-0",
             "inference-engine-all-0-2",
-            "inference-engine-0-0",
-            "inference-engine-0-2",
             "trainer-controller-actor",
             "trainer-engine-actor",
         ]
@@ -152,8 +150,8 @@ class TestDeployComponentFiltering:
             spec.name: spec.ctor_kwargs(context) for spec in specs if spec.name.startswith("trainer-controller-")
         }
 
-        assert kwargs_by_name["trainer-controller-actor"]["inference_controller"] is None
-        assert kwargs_by_name["trainer-controller-critic"]["inference_controller"] is None
+        assert sorted(kwargs_by_name) == ["trainer-controller-actor", "trainer-controller-critic"]
+        assert all("inference_controller" not in kwargs for kwargs in kwargs_by_name.values())
 
     def test_a_subset_carries_exactly_the_workers_of_its_own_component(self, tmp_path):
         """A worker two subsets carry is installed twice, and one no subset carries is never installed at all."""
