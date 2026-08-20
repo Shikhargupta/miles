@@ -14,7 +14,7 @@ from miles_plugins.lora.spec.attention import (
     InklingAttentionSpec,
     MLAAttentionSpec,
 )
-from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, LoRAArchSpec
+from miles_plugins.lora.spec.base import AttentionFamily, LoRAArchSpec
 from miles_plugins.lora.spec.layout import AttentionSpecBase
 from miles_plugins.lora.spec.lm_head import InklingLMHeadSpec
 from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec, InklingDenseMLPSpec
