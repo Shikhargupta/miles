@@ -42,7 +42,20 @@ def get_deepseek_v4_atomic_update_groups():
     ]
 
 
-def convert_deepseekv4_to_hf(args, name, param):
+def _packed_alphas(name: str, param, bucket):
+    """Pack a hyper-connection site's three alphas the way the checkpoint stores them.
+
+    Megatron keeps alpha_pre / alpha_post / alpha_res as separate scalars, one per bias
+    segment; the checkpoint carries them as one [pre, post, res] tensor. The three arrive
+    in the same bucket because they share an atomic update group.
+    """
+    import torch
+
+    prefix = name.rsplit(".", 1)[0]
+    return torch.cat([bucket[f"{prefix}.alpha_{seg}"].reshape(1) for seg in ("pre", "post", "res")])
+
+
+def convert_deepseekv4_to_hf(args, name, param, bucket=None):
     if name == "module.module.embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
     if name == "module.module.output_layer.weight":
@@ -67,7 +80,7 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "self_attention_hyper_connection.bias":
             return [(f"model.layers.{layer_idx}.hc_attn_base", param)]
         elif rest == "self_attention_hyper_connection.alpha_pre":
-            return [(f"model.layers.{layer_idx}.hc_attn_scale", _packed_alphas(args, name, param))]
+            return [(f"model.layers.{layer_idx}.hc_attn_scale", _packed_alphas(name, param, bucket))]
         elif rest.startswith("self_attention_hyper_connection.alpha_"):
             return []
         elif rest == "mlp_hyper_connection.mapping_proj.weight":
@@ -75,7 +88,7 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "mlp_hyper_connection.bias":
             return [(f"model.layers.{layer_idx}.hc_ffn_base", param)]
         elif rest == "mlp_hyper_connection.alpha_pre":
-            return [(f"model.layers.{layer_idx}.hc_ffn_scale", _packed_alphas(args, name, param))]
+            return [(f"model.layers.{layer_idx}.hc_ffn_scale", _packed_alphas(name, param, bucket))]
         elif rest.startswith("mlp_hyper_connection.alpha_"):
             return []
 
