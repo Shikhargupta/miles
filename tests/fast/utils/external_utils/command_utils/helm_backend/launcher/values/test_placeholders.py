@@ -1,3 +1,5 @@
+import itertools
+
 import pytest
 from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import LAYOUT, engine, trainer
 
@@ -31,11 +33,13 @@ class TestTheWorkerIndex:
             }
         )
 
-        with pytest.raises(AssertionError, match="pod index"):
+        with pytest.raises(AssertionError, match="out of its pod index"):
             build_values([spec], LAYOUT).as_values()
 
 
 COLOCATE_LAYOUT = LAYOUT.model_copy(update={"colocate": True})
+
+_LARGEST_PLAUSIBLE_CARD_OR_RANK = 1_000_000
 
 
 def _engine_command(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> list[str]:
@@ -98,7 +102,7 @@ class TestBaseGpuIdOfASubNodeEngine:
             update={"launch_command": lambda ctx: f"python -m sglang.launch_server --base-gpu-id={ctx.gpu_ids[0]}"}
         )
 
-        with pytest.raises(AssertionError, match="base gpu id"):
+        with pytest.raises(AssertionError, match="out of its base gpu id"):
             build_values([spec, trainer(num_cells=1, gpus_per_cell=8)], COLOCATE_LAYOUT).as_values()
 
 
@@ -111,3 +115,44 @@ class TestEveryPairTheTableKnows:
 
         assert command[command.index("--node-rank") + 1] == placeholders._WORKER_INDEX_PLACEHOLDER
         assert _base_gpu_id_argument(command) == placeholders._BASE_GPU_ID_PLACEHOLDER
+
+    def test_leaves_no_sentinel_of_any_kind_in_a_rendered_command(self):
+        """Every test above names one sentinel; this one refuses a table entry nobody thought to substitute."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        for substitution in placeholders._SUBSTITUTIONS:
+            assert str(substitution.sentinel) not in " ".join(command)
+
+    def test_every_placeholder_of_the_table_reached_the_command(self):
+        """A substitution that quietly stopped happening leaves no sentinel behind either, so absence is not enough."""
+        specs = [engine(num_cells=2, gpus_per_engine=4), trainer(num_cells=1, gpus_per_cell=8)]
+
+        command = _engine_command(specs, COLOCATE_LAYOUT)
+
+        assert {substitution.placeholder for substitution in placeholders._SUBSTITUTIONS} <= set(command)
+
+
+class TestTheSubstitutionTableItself:
+    def test_no_two_entries_share_a_sentinel(self):
+        """Two entries on one sentinel would make which variable a command asks for depend on table order."""
+        sentinels = [substitution.sentinel for substitution in placeholders._SUBSTITUTIONS]
+
+        assert len(set(sentinels)) == len(sentinels)
+
+    def test_no_two_entries_share_a_placeholder(self):
+        """Two sentinels expanding to one variable means one of them is silently reading the other's value."""
+        expansions = [substitution.placeholder for substitution in placeholders._SUBSTITUTIONS]
+
+        assert len(set(expansions)) == len(expansions)
+
+    def test_no_sentinel_is_a_number_a_card_or_a_rank_could_be(self):
+        """A sentinel inside the real domain would make a genuine card number expand into a kubelet variable."""
+        for substitution in placeholders._SUBSTITUTIONS:
+            assert substitution.sentinel > _LARGEST_PLAUSIBLE_CARD_OR_RANK
+
+    def test_no_sentinel_reads_as_part_of_another(self):
+        """The guard tests substring containment, so one sentinel inside another would report the wrong spec."""
+        for first, second in itertools.permutations(placeholders._SUBSTITUTIONS, 2):
+            assert str(first.sentinel) not in str(second.sentinel)
