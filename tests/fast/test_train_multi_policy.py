@@ -162,7 +162,7 @@ class TestRunPolicies:
     async def test_a_policy_only_resumes_the_health_probing_of_its_own_engines(self):
         """Resuming the whole fleet here un-pauses probing of a policy that is mid weight broadcast."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
-        trainers["b"].train = AsyncMock(side_effect=_train_that_never_returns)
+        trainers["b"].train = _train_that_never_returns
 
         context = await _run(_make_args(num_rollout=1), trainers=trainers)
 
@@ -290,17 +290,16 @@ class TestSaving:
     async def test_a_parked_follower_is_saved_at_the_round_it_reached(self):
         """A record naming a policy at a rollout it never checkpointed cannot be resumed."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
-        reached_when_saved: list[int] = []
+        saves: list[tuple[int, int]] = []
 
         async def _note_where_the_follower_stood(rollout_id: int, **kwargs: Any) -> None:
-            reached_when_saved.append(trainers["b"].train.await_args_list[-1].args[0])
+            saves.append((rollout_id, trainers["b"].train.await_args_list[-1].args[0]))
 
         trainers["b"].save_model = AsyncMock(side_effect=_note_where_the_follower_stood)
 
         await _run(_make_args(num_rollout=1, save=None, save_interval=1), trainers=trainers)
 
-        [saved_at] = [call.args[0] for call in trainers["b"].save_model.await_args_list]
-        [reached] = reached_when_saved
+        [(saved_at, reached)] = saves
         assert saved_at == reached
 
     async def test_every_policy_is_on_disk_before_the_record_claims_the_checkpoint_exists(self):

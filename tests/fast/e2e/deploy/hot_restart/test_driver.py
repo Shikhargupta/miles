@@ -104,7 +104,7 @@ def _driver(tmp_path: Path, **overrides: Any) -> HotRestartDriver:
 
 def _join_relaunches(driver: HotRestartDriver) -> None:
     for thread in driver._relaunch_threads:
-        thread.join(timeout=_DRIVE_TIMEOUT_SECONDS)
+        thread.join(timeout=30.0)
 
 
 def _drive_until_the_take_overs_landed(driver: HotRestartDriver, *, take_overs: int) -> None:

@@ -27,9 +27,6 @@ from tests.fast.e2e.deploy.hot_restart.cluster_facts import (
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import RESTART_AT_ANNOTATION
 
-_THREAD_EXIT_TIMEOUT_SECONDS: float = 5.0
-_THREAD_EXIT_POLL_SECONDS: float = 0.01
-
 
 class TestComputeTrainerRpcUrl:
     def test_the_trainer_is_asked_for_its_boot_uuid_at_its_own_pod(self):
@@ -183,9 +180,9 @@ def _raise_boom(**_kwargs) -> None:
 
 
 def _wait_until_only_these_threads_are_left(count: int) -> None:
-    deadline = time.monotonic() + _THREAD_EXIT_TIMEOUT_SECONDS
+    deadline = time.monotonic() + 5.0
     while threading.active_count() > count and time.monotonic() < deadline:
-        time.sleep(_THREAD_EXIT_POLL_SECONDS)
+        time.sleep(0.01)
 
 
 class TestObservingTheClusterInTheBackground:
