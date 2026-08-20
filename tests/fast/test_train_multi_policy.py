@@ -95,6 +95,13 @@ async def _slow_train(rollout_id: int, rollout_data_ref, **kwargs) -> None:
     await asyncio.sleep(0.05)
 
 
+def _unbounded_follower_train() -> AsyncMock:
+    async def yield_to_the_leader(rollout_id: int, rollout_data_ref, **kwargs) -> None:
+        await asyncio.sleep(0)
+
+    return AsyncMock(side_effect=yield_to_the_leader)
+
+
 class TestInitialWeightPublication:
     async def test_every_policy_compares_its_engines_against_its_own_trainer(self):
         """--ci-test asks for this comparison, and running it for one policy would leave the others unchecked."""
@@ -230,6 +237,7 @@ class TestRunPolicies:
         from the checkpoint every remaining round waits at."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
         trainers["a"].train = _slow_train
+        trainers["b"].train = _unbounded_follower_train()
 
         await _run(_make_args(num_rollout=10, debug_exit_after_rollout=1), trainers=trainers)
 
@@ -247,6 +255,7 @@ class TestRunPolicies:
         """Followers train unbounded rounds, so the run must not stop because one of them reached num_rollout."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
         trainers["a"].train = _slow_train
+        trainers["b"].train = _unbounded_follower_train()
 
         await _run(_make_args(num_rollout=2), trainers=trainers)
 
