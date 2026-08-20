@@ -255,7 +255,9 @@ class TestWatchEvents:
         api = FakePodApi()
         api.list_pages.append(make_pod_list([], resource_version="1"))
         api.list_pages.append(make_pod_list([], resource_version="9"))
-        api.stream_scripts.append([PodWatchEvent(type="MODIFIED", pod=None, resource_version="5", rejects_cursor=False)])
+        api.stream_scripts.append(
+            [PodWatchEvent(type="MODIFIED", pod=None, resource_version="5", rejects_cursor=False)]
+        )
         api.stream_scripts.append(None)
         clock = FakeClock()
         collector = EventCollector(make_reflector(api, clock=clock, retry_delay=1.0).watch())
