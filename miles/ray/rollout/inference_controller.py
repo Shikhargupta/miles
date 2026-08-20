@@ -27,7 +27,7 @@ from miles.utils.context_lock import (
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
-from miles.utils.misc import NodeProbeMixin, SimpleTicker
+from miles.utils.misc import SimpleTicker
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
@@ -42,7 +42,7 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
 @enforce_lock_discipline
-class InferenceController(NodeProbeMixin):
+class InferenceController:
     @lock_exempt
     def __init__(
         self,
