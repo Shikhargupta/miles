@@ -196,3 +196,53 @@ class TestOverlappingRecoveries:
 
 def _note_injection(log: state.EventLog, *, cell_name: str = "rollout-engine-0") -> None:
     log.note_injection_attempt(cell_name=cell_name, form_name="inject_fault:sigkill", succeeded=True)
+
+
+class TestWhichInjectionsCount:
+    def test_a_form_that_left_its_cell_running_is_not_a_crash_anything_has_to_heal(self) -> None:
+        """A hot restart replaces the orchestration script and harms no cell, so no cell owes a recovery."""
+        log = _log_of_one_injection(form_name="hot_restart", succeeded=True, harmed=False)
+
+        assert views.compute_num_injections(log.events, cell_type="rollout") == 0
+        assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 0
+        assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {}
+
+    def test_a_form_that_left_its_cell_running_is_still_a_draw_that_fired(self) -> None:
+        """A soak counting what it actually did to the run has to see it, and asks for it by name."""
+        log = _log_of_one_injection(form_name="hot_restart", succeeded=True, harmed=False)
+
+        assert views.compute_num_injections(log.events, cell_type="rollout", harmed_only=False) == 1
+
+    def test_a_form_that_crashed_its_cell_counts_as_both(self) -> None:
+        """The crash forms every floor assertion was written for must go on counting as they did."""
+        log = _log_of_one_injection(form_name="crash_pod", succeeded=True, harmed=True)
+
+        assert views.compute_num_injections(log.events, cell_type="rollout") == 1
+        assert views.compute_num_injections(log.events, cell_type="rollout", harmed_only=False) == 1
+
+    def test_a_draw_that_never_landed_counts_as_neither(self) -> None:
+        """An attempt the cluster refused did nothing to the run, whatever the form would have done."""
+        log = _log_of_one_injection(form_name="hot_restart", succeeded=False, harmed=False)
+
+        assert views.compute_num_injections(log.events, cell_type="rollout", harmed_only=False) == 0
+
+    def test_the_successes_of_one_form_are_counted_apart_from_another(self) -> None:
+        """A mixed soak draws several forms, and each one's own assertions count only its own draws."""
+        log = state.EventLog()
+        log.observe([staged("rollout-engine-0", SERVING)])
+        log.note_injection_attempt(cell_name="rollout-engine-0", form_name="hot_restart", succeeded=True, harmed=False)
+        log.note_injection_attempt(cell_name="rollout-engine-0", form_name="crash_pod", succeeded=True, harmed=True)
+        log.note_injection_attempt(
+            cell_name="rollout-engine-0", form_name="hot_restart", succeeded=False, harmed=False
+        )
+
+        assert views.compute_num_successful_injections_of_form(log.events, form_name="hot_restart") == 1
+        assert views.compute_num_successful_injections_of_form(log.events, form_name="crash_pod") == 1
+
+
+def _log_of_one_injection(*, form_name: str, succeeded: bool, harmed: bool) -> state.EventLog:
+    log = state.EventLog()
+    log.observe([staged("rollout-engine-0", SERVING)])
+    log.note_injection_attempt(cell_name="rollout-engine-0", form_name=form_name, succeeded=succeeded, harmed=harmed)
+    log.observe([staged("rollout-engine-0", SERVING)])
+    return log

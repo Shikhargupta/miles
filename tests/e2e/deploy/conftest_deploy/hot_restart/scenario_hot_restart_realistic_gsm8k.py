@@ -15,6 +15,7 @@ from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ACTOR_CELL_TYPE, CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import Event, InjectionEvent
+from tests.e2e.ft.conftest_ft.fault_injection.views import compute_num_successful_injections_of_form
 from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import (
     DEFAULT_METRIC_THRESHOLD,
     DEFAULT_NUM_ROLLOUT,
@@ -87,7 +88,11 @@ def run_ci(
     )
     evidence.write(dump_dir=outcome.run.dump_dir)
     assert_the_take_overs_replaced_only_the_script(
-        evidence, num_restarts=outcome.injector.num_successful_injections, minimum_restarts=MIN_HOT_RESTARTS
+        evidence,
+        num_restarts=compute_num_successful_injections_of_form(
+            outcome.injector.event_log.events, form_name=HOT_RESTART_FORM_NAME
+        ),
+        minimum_restarts=MIN_HOT_RESTARTS,
     )
     assert_no_take_over_threw_away_more_than_a_save_interval(evidence.records)
 
