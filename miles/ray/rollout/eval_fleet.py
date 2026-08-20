@@ -108,18 +108,17 @@ class InferenceControllerEvalFleet:
         versions: list = []
         for attempt in range(retries):
             try:
-                clients = await self._fleet_api_clients()
                 await asyncio.wait_for(
                     asyncio.gather(
                         *[
                             client.update_weights_from_disk(checkpoint_dir, weight_version=weight_version)
-                            for client in clients
+                            for client in await self._fleet_api_clients()
                         ]
                     ),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
                 versions = await asyncio.wait_for(
-                    asyncio.gather(*[client.get_weight_version() for client in clients]),
+                    asyncio.gather(*[client.get_weight_version() for client in await self._fleet_api_clients()]),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
             except Exception as e:
