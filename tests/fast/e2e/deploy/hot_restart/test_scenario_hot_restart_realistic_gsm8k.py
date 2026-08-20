@@ -86,14 +86,14 @@ class TestCheckpointArgs:
         argv = shlex.split(scenario.build_checkpoint_args("/dumps/gsm8k"))
         checkpoint_dir = str(scenario.compute_checkpoint_dir("/dumps/gsm8k"))
 
-        assert ArgvManipulator.values_of(argv, "--save") == [checkpoint_dir]
-        assert ArgvManipulator.values_of(argv, "--load") == [checkpoint_dir]
+        assert ArgvManipulator.get(argv, "--save") == [checkpoint_dir]
+        assert ArgvManipulator.get(argv, "--load") == [checkpoint_dir]
 
     def test_the_run_saves_often_enough_for_a_take_over_to_find_a_checkpoint(self):
         """A run saving once would leave the whole soak ineligible, and no restart would ever fire."""
         argv = shlex.split(scenario.build_checkpoint_args("/dumps/gsm8k"))
 
-        assert ArgvManipulator.values_of(argv, "--save-interval") == [str(scenario.SAVE_INTERVAL)]
+        assert ArgvManipulator.get(argv, "--save-interval") == [str(scenario.SAVE_INTERVAL)]
         assert scenario.SAVE_INTERVAL < scenario.DEFAULT_NUM_ROLLOUT
 
 

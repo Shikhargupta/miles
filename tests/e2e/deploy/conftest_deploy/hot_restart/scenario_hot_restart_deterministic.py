@@ -153,7 +153,7 @@ def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, e
     args = without_weight_decay(build_train_args(script_args))
     for flag in (SAVE_FLAG, LOAD_FLAG):
         args = with_replaced_value(args, flag=flag, value=checkpoint_dir)
-    if ArgvManipulator.declares(shlex.split(args), WANDB_GROUP_FLAG):
+    if ArgvManipulator.is_defined(shlex.split(args), WANDB_GROUP_FLAG):
         args = with_replaced_value(
             args,
             flag=WANDB_GROUP_FLAG,
@@ -170,9 +170,9 @@ def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, e
 
 def _assert_each_step_leaves_exactly_one_train_event(train_args: str) -> None:
     argv = shlex.split(train_args)
-    [global_batch_size] = ArgvManipulator.values_of(argv, GLOBAL_BATCH_SIZE_FLAG)
-    [rollout_batch_size] = ArgvManipulator.values_of(argv, ROLLOUT_BATCH_SIZE_FLAG)
-    [samples_per_prompt] = ArgvManipulator.values_of(argv, SAMPLES_PER_PROMPT_FLAG)
+    [global_batch_size] = ArgvManipulator.get(argv, GLOBAL_BATCH_SIZE_FLAG)
+    [rollout_batch_size] = ArgvManipulator.get(argv, ROLLOUT_BATCH_SIZE_FLAG)
+    [samples_per_prompt] = ArgvManipulator.get(argv, SAMPLES_PER_PROMPT_FLAG)
 
     assert int(global_batch_size) == int(rollout_batch_size) * int(samples_per_prompt), (
         f"the redo accounting of this scenario counts one {TRAIN_STEP_METRIC_KEY} event per rollout, and a run "
@@ -183,7 +183,7 @@ def _assert_each_step_leaves_exactly_one_train_event(train_args: str) -> None:
 
 
 def _assert_the_run_saves_before_it_reports_the_step(train_args: str) -> None:
-    assert not ArgvManipulator.declares(shlex.split(train_args), ASYNC_SAVE_FLAG), (
+    assert not ArgvManipulator.is_defined(shlex.split(train_args), ASYNC_SAVE_FLAG), (
         f"{ASYNC_SAVE_FLAG} lets a checkpoint land after the step that triggered it, and every take-over here is "
         f"pinned to the checkpoint the frozen run is already holding"
     )

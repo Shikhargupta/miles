@@ -22,7 +22,7 @@ FLAGS_A_SPLIT_RUN_MAY_DIFFER_FROM_AN_UNSPLIT_ONE_ON: tuple[str, ...] = (
 
 
 def value_of(train_args: str, flag: str) -> str:
-    values = ArgvManipulator.values_of(shlex.split(train_args), flag)
+    values = ArgvManipulator.get(shlex.split(train_args), flag)
     assert len(values) == 1, f"{flag} is declared {len(values)} time(s) in these arguments"
     return values[0]
 

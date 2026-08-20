@@ -150,7 +150,7 @@ class TestBuildArgs:
         """A repeated flag leaves it to the parser which value wins, and this run needs the one it asked for."""
         argv = shlex.split(scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/target"))
 
-        assert ArgvManipulator.values_of(argv, "--weight-decay") == ["0"]
+        assert ArgvManipulator.get(argv, "--weight-decay") == ["0"]
 
     def test_each_side_of_the_comparison_checkpoints_into_its_own_directory(self):
         """A shared checkpoint directory would let the target resume from what the baseline wrote."""
@@ -163,7 +163,7 @@ class TestBuildArgs:
         """The pinned triggers are read off this cadence, so a run saving at another pace lands elsewhere."""
         argv = shlex.split(scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/target/interval"))
 
-        assert ArgvManipulator.values_of(argv, "--save-interval") == [str(scenario.CHECKPOINTED.save_interval)]
+        assert ArgvManipulator.get(argv, "--save-interval") == [str(scenario.CHECKPOINTED.save_interval)]
 
     def test_two_modes_installing_one_dump_directory_would_still_be_told_apart(self):
         """The wandb group is derived per test name, so one soak's history cannot swallow another's."""
@@ -181,7 +181,7 @@ class TestTheFreezeTheRunIsInstalledWith:
         args = scenario._build_frozen_args(scenario.CHECKPOINTED, scenario._MODE, dump_dir, False)
 
         plan_path = compute_freeze_plan_path(dump_dir)
-        assert ArgvManipulator.values_of(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(plan_path)]
+        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(plan_path)]
         assert json.loads(plan_path.read_text()) == [
             {"at_rollout": scenario.CHECKPOINTED.frozen_rollout_ids[0], "action": "sleep_forever_at_end"}
         ]
@@ -191,7 +191,7 @@ class TestTheFreezeTheRunIsInstalledWith:
         """The baseline is the run nobody touched, and one asleep at step 2 would never finish."""
         args = scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/baseline/plain", False)
 
-        assert not ArgvManipulator.declares(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)
+        assert not ArgvManipulator.is_defined(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)
 
     def test_the_relaunch_repeats_the_frozen_arguments_the_run_is_up_with(self, tmp_path):
         """A relaunch whose argv differs from the installed one is refused as more than a hot restart."""
@@ -237,11 +237,11 @@ class TestTheOneEventPerRolloutPremise:
     def test_the_run_is_installed_to_take_exactly_one_optimizer_step_per_rollout(self):
         """Every attempt count in the redo verdict is read off one grad_norm event per rollout."""
         argv = shlex.split(scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/target/batch", False))
-        product = int(ArgvManipulator.values_of(argv, scenario.ROLLOUT_BATCH_SIZE_FLAG)[0]) * int(
-            ArgvManipulator.values_of(argv, scenario.SAMPLES_PER_PROMPT_FLAG)[0]
+        product = int(ArgvManipulator.get(argv, scenario.ROLLOUT_BATCH_SIZE_FLAG)[0]) * int(
+            ArgvManipulator.get(argv, scenario.SAMPLES_PER_PROMPT_FLAG)[0]
         )
 
-        assert int(ArgvManipulator.values_of(argv, scenario.GLOBAL_BATCH_SIZE_FLAG)[0]) == product
+        assert int(ArgvManipulator.get(argv, scenario.GLOBAL_BATCH_SIZE_FLAG)[0]) == product
 
     def test_a_run_taking_several_optimizer_steps_per_rollout_is_refused(self):
         """Such a run logs one event per step, so every attempt count would be a multiple of the truth."""
@@ -285,7 +285,7 @@ class TestTheSaveShapeTheTakeOverNeeds:
         """Every take-over is pinned to the checkpoint the frozen run is already holding."""
         args = scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/target/sync", False)
 
-        assert not ArgvManipulator.declares(shlex.split(args), scenario.ASYNC_SAVE_FLAG)
+        assert not ArgvManipulator.is_defined(shlex.split(args), scenario.ASYNC_SAVE_FLAG)
 
     def test_a_run_saving_asynchronously_is_refused(self):
         """Such a checkpoint can land after the step that triggered it, so the pin means nothing."""

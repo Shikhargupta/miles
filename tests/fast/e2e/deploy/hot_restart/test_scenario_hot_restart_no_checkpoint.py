@@ -99,9 +99,7 @@ class TestBuildArgs:
         """The gate reads the checkpoint directory, so a run saving at another pace opens it at another step."""
         args = scenario._build_args(scenario.NO_CHECKPOINT, scenario._MODE, "/dumps/no-checkpoint/interval")
 
-        assert ArgvManipulator.values_of(shlex.split(args), "--save-interval") == [
-            str(scenario.NO_CHECKPOINT.save_interval)
-        ]
+        assert ArgvManipulator.get(shlex.split(args), "--save-interval") == [str(scenario.NO_CHECKPOINT.save_interval)]
 
     def test_each_side_of_the_comparison_checkpoints_into_its_own_directory(self):
         """A shared checkpoint directory would hand the target a checkpoint the baseline wrote."""
@@ -114,7 +112,7 @@ class TestBuildArgs:
         """A repeated flag leaves it to the parser which value wins, and this run needs the one it asked for."""
         argv = shlex.split(scenario._build_args(scenario.NO_CHECKPOINT, scenario._MODE, "/dumps/no-checkpoint/decay"))
 
-        assert ArgvManipulator.values_of(argv, "--weight-decay") == ["0"]
+        assert ArgvManipulator.get(argv, "--weight-decay") == ["0"]
 
     def test_a_run_that_would_only_ever_save_its_last_step_is_refused(self):
         """The mode watches the save that follows the take-over, and such a run performs none."""
@@ -137,7 +135,7 @@ class TestBuildArgs:
         args = scenario._build_frozen_args(scenario.NO_CHECKPOINT, scenario._MODE, dump_dir, False)
 
         plan_path = compute_freeze_plan_path(dump_dir)
-        assert ArgvManipulator.values_of(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(plan_path)]
+        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(plan_path)]
         assert json.loads(plan_path.read_text()) == [
             {"at_rollout": scenario.NO_CHECKPOINT.frozen_rollout_ids[0], "action": "sleep_forever_at_end"}
         ]

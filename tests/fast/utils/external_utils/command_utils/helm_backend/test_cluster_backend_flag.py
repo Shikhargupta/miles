@@ -28,11 +28,11 @@ from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, Schedul
 
 
 def declared_cluster_backends(argv: list[str]) -> list[str]:
-    return ArgvManipulator.values_of(argv, CLUSTER_BACKEND_FLAG)
+    return ArgvManipulator.get(argv, CLUSTER_BACKEND_FLAG)
 
 
 def declared_deploy_components(argv: list[str]) -> list[str]:
-    return ArgvManipulator.values_of(argv, _DEPLOY_COMPONENT_FLAG)
+    return ArgvManipulator.get(argv, _DEPLOY_COMPONENT_FLAG)
 
 
 NAMESPACE = "rl"
@@ -215,7 +215,7 @@ class TestEveryPodOfARunSharesOneRunUuid:
         """Left unset, every pod mints its own uuid at parse time and nothing about the run can be joined up."""
         argv = launch_argv(monkeypatch, train_args="--rollout-num-gpus 8")
 
-        [stamped] = ArgvManipulator.values_of(argv, "--run-uuid")
+        [stamped] = ArgvManipulator.get(argv, "--run-uuid")
         assert len(stamped) == RUN_UUID_LENGTH
 
     def test_two_launches_of_one_run_id_are_two_trainings(self, monkeypatch: pytest.MonkeyPatch):
@@ -223,13 +223,13 @@ class TestEveryPodOfARunSharesOneRunUuid:
         first = launch_argv(monkeypatch, train_args="--rollout-num-gpus 8")
         second = launch_argv(monkeypatch, train_args="--rollout-num-gpus 8")
 
-        assert ArgvManipulator.values_of(first, "--run-uuid") != ArgvManipulator.values_of(second, "--run-uuid")
+        assert ArgvManipulator.get(first, "--run-uuid") != ArgvManipulator.get(second, "--run-uuid")
 
     def test_a_uuid_the_train_args_already_carry_is_left_alone(self, monkeypatch: pytest.MonkeyPatch):
         """Relaunching from a recorded command line must keep the uuid its artefacts were written under."""
         argv = launch_argv(monkeypatch, train_args="--run-uuid 0123456789abcdef --rollout-num-gpus 8")
 
-        assert ArgvManipulator.values_of(argv, "--run-uuid") == ["0123456789abcdef"]
+        assert ArgvManipulator.get(argv, "--run-uuid") == ["0123456789abcdef"]
 
 
 class TestThePodDispatchesOnThatFlag:

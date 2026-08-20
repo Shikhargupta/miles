@@ -35,7 +35,7 @@ def assert_the_example_builds_the_parallelism_of(mode: FTTestMode, *, train_args
     token_after_flag = dict(zip(declared, declared[1:], strict=False))
 
     for flag in [one for one in declared if one.startswith("--")]:
-        assert ArgvManipulator.declares(argv, flag), (
+        assert ArgvManipulator.is_defined(argv, flag), (
             f"this scenario's mode declares the parallelism {mode.parallel_args!r}, while the example builds no "
             f"{flag} at all: the mode describes a topology nobody launched"
         )
@@ -44,7 +44,7 @@ def assert_the_example_builds_the_parallelism_of(mode: FTTestMode, *, train_args
         if not value or value.startswith("--"):
             continue
 
-        built_values = ArgvManipulator.values_of(argv, flag)
+        built_values = ArgvManipulator.get(argv, flag)
         assert built_values == [value], (
             f"this scenario's mode declares the parallelism {mode.parallel_args!r}, while the example builds "
             f"{flag} as {built_values}: the mode describes a topology nobody launched"
@@ -56,4 +56,4 @@ def without_weight_decay(train_args: str) -> str:
 
 
 def with_replaced_value(train_args: str, *, flag: str, value: str) -> str:
-    return shlex.join(ArgvManipulator.replacing_value(shlex.split(train_args), flag, value)) + " "
+    return shlex.join(ArgvManipulator.set(shlex.split(train_args), flag, value)) + " "

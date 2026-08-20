@@ -68,7 +68,7 @@ class TestTheArgumentsThatNameThePlan:
         path = compute_freeze_plan_path(f"{tmp_path}/target")
         args = with_the_freeze_plan_of("--save /ckpt --num-rollout 6 ", plan_path=path)
 
-        assert ArgvManipulator.values_of(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(path)]
+        assert ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG) == [str(path)]
         assert "--save /ckpt" in args
 
     def test_the_arguments_of_a_relaunch_are_the_ones_the_run_is_already_up_with(self, tmp_path):
@@ -84,7 +84,7 @@ class TestTheArgumentsThatNameThePlan:
         """The path reaches the pods as one argument, so an unquoted one would arrive as several."""
         args = with_the_freeze_plan_of("--save /ckpt ", plan_path=compute_freeze_plan_path(f"{tmp_path}/a dir/target"))
 
-        assert len(ArgvManipulator.values_of(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)) == 1
+        assert len(ArgvManipulator.get(shlex.split(args), CI_FT_TEST_ACTIONS_PATH_FLAG)) == 1
 
 
 # TODO ad hoc hack: revert after the args refactor
