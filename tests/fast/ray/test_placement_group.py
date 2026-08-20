@@ -5,6 +5,7 @@ from argparse import Namespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
@@ -24,6 +25,7 @@ pytestmark = pytest.mark.asyncio
 
 def _make_args(**overrides) -> Namespace:
     defaults = dict(
+        rollout_num_gpus=8,
         pin_rollout_manager_to_head=False,
         num_rollout=None,
         num_epoch=2,
@@ -35,7 +37,7 @@ def _make_args(**overrides) -> Namespace:
         use_session_server=False,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**{**parser_defaults(), **defaults})
 
 
 @pytest.fixture

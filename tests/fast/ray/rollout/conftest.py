@@ -10,6 +10,8 @@ import pytest
 import ray
 from sglang_router.launch_router import RouterArgs
 
+from tests.fast.fixtures.args_fixtures import parser_defaults
+
 from miles.utils import object_store
 from miles.utils.types import Sample
 
@@ -162,7 +164,7 @@ def make_args(**overrides: Any) -> Namespace:
     )
     defaults.update(router_defaults)
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**{**parser_defaults(), **defaults})
 
 
 def make_sample(

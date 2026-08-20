@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 from tests.fast.ray.rollout.conftest import make_args_with_sglang_config
@@ -78,6 +79,7 @@ def _make_args(**overrides) -> SimpleNamespace:
         critic_lr=None,
         critic_lr_warmup_iters=None,
     )
+    args = SimpleNamespace(**{**parser_defaults(), **vars(args)})
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
