@@ -83,6 +83,13 @@ class TestVerify:
         with pytest.raises(AssertionError, match="different weights"):
             scenario._assert_the_trainer_scores_what_its_engines_generated(dump_dir, model_id=LEADER_MODEL_ID)
 
+    def test_a_policy_whose_comparison_came_out_undefined_is_caught(self, dump_dir):
+        """max() passes over a nan, so the worst value it reports would be the one healthy rollout."""
+        _write_metrics(dump_dir, _logprob_diffs(LEADER_MODEL_ID, [0.01, float("nan")]))
+
+        with pytest.raises(AssertionError, match="max\\(\\) passes over"):
+            scenario._assert_the_trainer_scores_what_its_engines_generated(dump_dir, model_id=LEADER_MODEL_ID)
+
     def test_a_policy_that_reported_the_comparison_almost_never_is_caught(self, dump_dir):
         """One agreeing rollout would let a run whose engines never generated pass as one that did."""
         _write_metrics(dump_dir, _logprob_diffs(LEADER_MODEL_ID, [0.01]))

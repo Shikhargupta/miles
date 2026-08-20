@@ -109,8 +109,14 @@ def _assert_the_trainer_scores_what_its_engines_generated(dump_dir: str, *, mode
         f"of policy {model_id!r} generated against what its trainer scored"
     )
 
+    unusable = [(rollout_id, value) for rollout_id, value in series if not math.isfinite(value)]
+    assert not unusable, (
+        f"policy {model_id!r} reported {key} as {unusable} ({series}), and max() passes over such a value rather "
+        f"than reporting it, so nothing here says its trainer and its engines serve the same weights"
+    )
+
     worst = max(value for _, value in series)
-    assert math.isfinite(worst) and worst <= MAX_TRAIN_ROLLOUT_LOGPROB_ABS_DIFF, (
+    assert worst <= MAX_TRAIN_ROLLOUT_LOGPROB_ABS_DIFF, (
         f"policy {model_id!r} scores the tokens its engines generated {worst} apart in log probability ({series}), "
         f"above {MAX_TRAIN_ROLLOUT_LOGPROB_ABS_DIFF}: its trainer and its engines serve different weights"
     )
