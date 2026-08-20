@@ -34,7 +34,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
     arm_the_first_freeze,
     compute_freeze_plan_path,
@@ -56,6 +56,9 @@ MIN_TRAINED_ROLLOUTS: int = 4
 SAVE_FLAG: str = "--save"
 LOAD_FLAG: str = "--load"
 WANDB_GROUP_FLAG: str = "--wandb-group"
+GLOBAL_BATCH_SIZE_FLAG: str = "--global-batch-size"
+ROLLOUT_BATCH_SIZE_FLAG: str = "--rollout-batch-size"
+SAMPLES_PER_PROMPT_FLAG: str = "--n-samples-per-prompt"
 
 _MODE: FTTestMode = FTTestMode(
     model_name=DENSE_MODEL_NAME,
@@ -158,8 +161,23 @@ def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, e
     args += get_mooncake_object_store_args()
 
     assert_the_example_builds_the_parallelism_of(mode, train_args=args)
+    _assert_each_step_leaves_exactly_one_train_event(args)
     _TRAIN_ARGS_OF_DUMP_DIR[dump_dir] = args
     return args
+
+
+def _assert_each_step_leaves_exactly_one_train_event(train_args: str) -> None:
+    argv = shlex.split(train_args)
+    [global_batch_size] = ArgvManipulator.values_of(argv, GLOBAL_BATCH_SIZE_FLAG)
+    [rollout_batch_size] = ArgvManipulator.values_of(argv, ROLLOUT_BATCH_SIZE_FLAG)
+    [samples_per_prompt] = ArgvManipulator.values_of(argv, SAMPLES_PER_PROMPT_FLAG)
+
+    assert int(global_batch_size) == int(rollout_batch_size) * int(samples_per_prompt), (
+        f"the redo accounting of this scenario counts one {TRAIN_STEP_METRIC_KEY} event per rollout, and a run "
+        f"whose global batch {global_batch_size} is not {rollout_batch_size} x {samples_per_prompt} takes several "
+        f"optimizer steps per rollout and logs one event for each, so every attempt count would be a multiple of "
+        f"what the schedule reasons about"
+    )
 
 
 def _build_frozen_args(

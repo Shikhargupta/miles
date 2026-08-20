@@ -217,3 +217,21 @@ class TestTheModesThisScenarioRefuses:
             scenario._build_script_args(
                 scenario.CHECKPOINTED, mode=engineless, dump_dir="/dumps/target", enable_dumper=False
             )
+
+
+class TestTheOneEventPerRolloutPremise:
+    def test_the_run_is_installed_to_take_exactly_one_optimizer_step_per_rollout(self):
+        """Every attempt count in the redo verdict is read off one grad_norm event per rollout."""
+        argv = shlex.split(scenario._build_args(scenario.CHECKPOINTED, scenario._MODE, "/dumps/target/batch", False))
+        product = int(ArgvManipulator.values_of(argv, scenario.ROLLOUT_BATCH_SIZE_FLAG)[0]) * int(
+            ArgvManipulator.values_of(argv, scenario.SAMPLES_PER_PROMPT_FLAG)[0]
+        )
+
+        assert int(ArgvManipulator.values_of(argv, scenario.GLOBAL_BATCH_SIZE_FLAG)[0]) == product
+
+    def test_a_run_taking_several_optimizer_steps_per_rollout_is_refused(self):
+        """Such a run logs one event per step, so every attempt count would be a multiple of the truth."""
+        with pytest.raises(AssertionError, match="one train/grad_norm event per rollout"):
+            scenario._assert_each_step_leaves_exactly_one_train_event(
+                "--global-batch-size 128 --rollout-batch-size 32 --n-samples-per-prompt 8 "
+            )
