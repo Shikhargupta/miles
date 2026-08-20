@@ -369,3 +369,33 @@ class TestSaving:
         trainers["a"].save_model.assert_not_awaited()
         trainers["b"].save_model.assert_not_awaited()
         context["rollout_executor"].save.assert_not_awaited()
+
+
+class TestARunThatCancellationCannotEnd:
+    async def test_a_follower_that_absorbs_cancellation_still_stops(self):
+        """A follower loops without bound, so ending the run must not depend on cancellation reaching it."""
+        absorbed = False
+
+        async def _train(rollout_id: int, rollout_data_ref: Any, **kwargs: Any) -> None:
+            nonlocal absorbed
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if absorbed:
+                    raise
+                absorbed = True
+
+        async def _get(rollout_id: int, trainer_model_id: str | None = None) -> dict:
+            await asyncio.sleep(0.01)
+            return dict(data_ref=None)
+
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["b"].train = _train
+        rollout_executor = AsyncMock()
+        rollout_executor.get = _get
+
+        await asyncio.wait_for(
+            _run(_make_args(num_rollout=1), trainers=trainers, rollout_executor=rollout_executor), timeout=10
+        )
+
+        assert absorbed

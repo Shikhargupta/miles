@@ -84,8 +84,13 @@ def wait_futures(futures: Sequence[concurrent.futures.Future]) -> list[Any]:
     return results
 
 
-async def wait_cancelling_pending_on_first_completion(tasks: Sequence[asyncio.Task]) -> None:
+async def wait_cancelling_pending_on_first_completion(
+    tasks: Sequence[asyncio.Task], *, on_first_completion: Callable[[], None] | None = None
+) -> None:
     _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+    if on_first_completion is not None:
+        on_first_completion()
 
     for task in pending:
         task.cancel()
