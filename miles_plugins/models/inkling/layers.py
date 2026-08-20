@@ -433,7 +433,7 @@ class InklingRouter(TopKRouter):
 
 
 class InklingSharedExperts(MegatronModule):
-    def __init__(self, config, submodules=None, gate=False, pg_collection=None):
+    def __init__(self, config, submodules=None, gate=False, pg_collection=None, name=None):
         super().__init__(config=config)
         ns = config.inkling.n_shared_experts
         inter = config.inkling.intermediate_size
@@ -443,7 +443,16 @@ class InklingSharedExperts(MegatronModule):
         shared_cfg = _copy.copy(config)
         shared_cfg.ffn_hidden_size = inter
         self.experts = nn.ModuleList(
-            [MLP(config=shared_cfg, submodules=submodules, ffn_hidden_size=inter, tp_group=tp) for _ in range(ns)]
+            [
+                MLP(
+                    config=shared_cfg,
+                    submodules=submodules,
+                    ffn_hidden_size=inter,
+                    tp_group=tp,
+                    name=f"{name}.experts.{i}" if name is not None else None,
+                )
+                for i in range(ns)
+            ]
         )
 
     def forward(self, hidden_states):
