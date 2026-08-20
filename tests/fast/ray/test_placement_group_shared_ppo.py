@@ -8,6 +8,8 @@ from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _assert_external_trainer_belongs_to_this_run, _get_placement_group_layout
 from miles.utils.workers.types import DeploymentIdentity
 
+_RUN_UUID = "0" * 16
+
 
 def _layout_args(**overrides):
     values = {
@@ -210,6 +212,14 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
             calls.append((self.trainer_id, "get_train_parallel_config"))
             return {"dp_size": 2 if self.trainer_id == "actor" else 99}
 
+        async def is_initialized(self) -> bool:
+            return False
+
+        async def get_deployment_identity(self) -> DeploymentIdentity:
+            return DeploymentIdentity(
+                run_uuid=_RUN_UUID, deploy_component="trainer", deploy_instance_id=self.trainer_id
+            )
+
     monkeypatch.setattr(
         placement_group_module,
         "create_trainer_controller_handle",
@@ -243,6 +253,7 @@ def _training_models_args(**overrides):
         "critic_lr": 2e-6,
         "critic_lr_warmup_iters": 3,
         "trainer_controller_addrs": None,
+        "run_uuid": _RUN_UUID,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -442,7 +453,6 @@ class _IdentifyingHandle:
 def _split_run_args(**overrides):
     return _training_models_args(
         megatron_config=None,
-        run_uuid="0" * 16,
         trainer_controller_addrs=["actor=10.0.0.1:8000", "critic=10.0.0.2:8000"],
         **overrides,
     )
@@ -451,7 +461,11 @@ def _split_run_args(**overrides):
 def _patch_identifying_handles(monkeypatch, *, identities: dict[str, tuple[str, str]]) -> list[tuple[str, str]]:
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: FakeBackendCapability())
-    monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", lambda addrs: None)
+
+    async def _dial(addrs) -> None:
+        return None
+
+    monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", _dial)
     monkeypatch.setattr(
         placement_group_module,
         "create_trainer_controller_handle",

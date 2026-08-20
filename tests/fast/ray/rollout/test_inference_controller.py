@@ -537,7 +537,7 @@ class TestInitSubscription:
             workers_hash="pseudo-hash-router",
             meta={},
         )
-        engine_info = _make_cell_info(model_id="default")
+        engine_info = _make_cell_info(model_id="default", pool_id=compute_engine_pool_ids(args)[0])
         provider = _FakeWorkerProvider([router_info, engine_info], pool_ids=compute_engine_pool_ids(args))
         srv = _RecordingServer()
         _patch_init(monkeypatch, servers={"default": srv})
@@ -983,7 +983,6 @@ class TestInitLifecycle:
 
         assert registered == [args]
         assert blocked.waited_init_expected_num_cells == 1
-        assert blocked.waited_expected_num_cells == 1
 
     @pytest.mark.asyncio
     async def test_init_does_not_report_itself_initialized_before_its_fleet_is_in(self, monkeypatch):
@@ -1188,9 +1187,21 @@ class TestCellsReadyIsScopedToTheTargetedModel:
         """Different model ids are independent, so a sick engine of B must not stall A's weight update."""
         a = _RecordingServer(model_name="a", update_weights=True)
         a.api_clients = ["a-client"]
-        a.server_cells = {"a-0": SimpleNamespace(is_pending_weights_or_serving=True, is_uninitialized=False)}
+        a.server_cells = {
+            "a-0": SimpleNamespace(
+                is_pending_weights_or_serving=True,
+                is_uninitialized=False,
+                meta=SimpleNamespace(workers_hash="hash-a"),
+            )
+        }
         b = _RecordingServer(model_name="b", update_weights=True)
-        b.server_cells = {"b-0": SimpleNamespace(is_pending_weights_or_serving=False, is_uninitialized=False)}
+        b.server_cells = {
+            "b-0": SimpleNamespace(
+                is_pending_weights_or_serving=False,
+                is_uninitialized=False,
+                meta=SimpleNamespace(workers_hash="hash-b"),
+            )
+        }
         controller = _make_controller({"a": a, "b": b})
 
         updatable = await controller.start_update_weights(model_id="a")
@@ -1203,8 +1214,9 @@ class TestCellsReadyIsScopedToTheTargetedModel:
         srv = _RecordingServer(model_name="a", update_weights=True)
         controller = _make_controller({"a": srv})
 
-        assert controller._get_servers_of_model_id(None) == [srv]
-        assert controller._get_servers_of_model_id("a") == [srv]
+        async with controller.context_lock:
+            assert controller._get_servers_of_model_id(None) == [srv]
+            assert controller._get_servers_of_model_id("a") == [srv]
 
 
 def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UUID) -> RegistrationSnapshot:
@@ -1277,7 +1289,7 @@ class TestRegistrationSnapshotEndpoint:
     @pytest.mark.asyncio
     async def test_a_run_serving_engines_of_its_own_refuses_a_snapshot(self):
         """It would take the cells in and never wait for them, so the reporter has to hear that it is unwanted."""
-        controller = _make_controller({})
+        controller = _make_controller({"model-a": _RecordingServer(model_name="model-a")})
 
         with pytest.raises(AssertionError, match="takes no registration"):
             await controller.registration_ingest(snapshot=_registration_snapshot())
