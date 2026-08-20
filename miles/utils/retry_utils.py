@@ -106,4 +106,4 @@ async def _run_attempt(fn: Callable[[float], Awaitable[_T]], *, remaining: float
     except (TimeoutError, asyncio.TimeoutError) as e:
         if not attempt.cancelled():
             raise
-        raise AttemptTimeoutError(f"one attempt did not answer within {budget}s") from e
+        raise AttemptTimeoutError(f"one attempt did not answer within {budget:.2f}s") from e
