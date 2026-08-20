@@ -37,6 +37,7 @@ def declared_deploy_components(argv: list[str]) -> list[str]:
 
 NAMESPACE = "rl"
 RUN_ID = "260101-000000-000"
+RUN_ID_SHORT_ENOUGH_FOR_FULL_OBJECT_NAMES = "260101-0000"
 
 
 SPLIT_RUN_UUID = "0123456789abcdef"
@@ -273,18 +274,20 @@ class TestExecuteTrainTellsThePodsWhichPartOfTheRunTheyAre:
 
     def test_every_object_of_a_split_release_is_named_after_that_release(self, monkeypatch: pytest.MonkeyPatch):
         """The chart computes no names, so an object named after the whole run would collide with the whole run."""
+        run_id = RUN_ID_SHORT_ENOUGH_FOR_FULL_OBJECT_NAMES
         releases: list[str] = []
         argv = launch_argv(
             monkeypatch,
             train_args="--rollout-num-gpus 8",
+            run_id=run_id,
             deploy_component=DeployComponent.TRAINER,
             recorded_releases=releases,
         )
 
-        run = _values_of_release(argv, release=releases[0])["run"]
+        run = _values_of_release(argv, run_id=run_id, release=releases[0])["run"]
 
-        assert run["objectNames"]["orchestrator"] == f"miles-run-{RUN_ID}-trainer-orchestrator"
-        assert run["staticWorkers"][0]["objectName"] == f"miles-run-{RUN_ID}-trainer-inference-router-0"
+        assert run["objectNames"]["orchestrator"] == f"miles-run-{run_id}-trainer-orchestrator"
+        assert run["staticWorkers"][0]["objectName"] == f"miles-run-{run_id}-trainer-inference-router-0"
 
     def test_a_user_supplied_agreeing_flag_is_appended_over_rather_than_detected(self, monkeypatch):
         """A relaunch from a recorded command line repeats the flag, and the last one argparse reads still wins."""
@@ -320,11 +323,11 @@ class TestApiServerHost:
             backend.api_server_host(config)
 
 
-def _values_of_release(train_argv: list[str], *, release: str) -> dict[str, Any]:
+def _values_of_release(train_argv: list[str], *, run_id: str, release: str) -> dict[str, Any]:
     return build_values(
         [_router()],
         LaunchPlan(
-            run_id=RUN_ID,
+            run_id=run_id,
             state_file="",
             release=release,
             namespace=NAMESPACE,
@@ -343,7 +346,7 @@ spec:
   template:
     spec:
       containers:
-        - name: main
+        - name: orchestrator
           command: ["python", "train.py", "--run-uuid", "aaaabbbbccccdddd"]
 """
 
