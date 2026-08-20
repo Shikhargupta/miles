@@ -31,11 +31,9 @@ class _RecordingWorkerProvider(RayWorkerProvider):
         self.watch_calls.append((reconcile, list(self._watched_pool_ids())))
         return await super().watch_cells(reconcile)
 
-    async def _poll_once(
-        self, reconcile: CellReconcileFn, seen_infos: dict[str, CellInfo], *, pool_ids: list[str]
-    ) -> None:
+    async def _list_alive_cells(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         self.poll_count += 1
-        await super()._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
+        return await super()._list_alive_cells(pool_ids=pool_ids)
 
 
 def _make_args(*, num_cells: int) -> SimpleNamespace:
@@ -60,6 +58,7 @@ def _make_args(*, num_cells: int) -> SimpleNamespace:
         actor_num_gpus_per_node=num_cells,
         object_store_backend="ray",
         worker_comm_backend="ray",
+        trainer_model_id=None,
     )
 
 
@@ -71,14 +70,12 @@ def provider() -> _RecordingWorkerProvider:
 async def _create_controller(*, num_cells: int, provider: _RecordingWorkerProvider) -> TrainerController:
     train_conftest.fake_worker_manager.num_cells = num_cells
     controller = TrainerController(
-        _make_args(num_cells=num_cells),
         deployment_identity=make_deployment_identity(),
         trainer_id="actor",
         role="actor",
         with_ref=False,
         cell_provider=provider,
         cell_operations=MagicMock(),
-        inference_controller=None,
     )
     await controller.init(_make_args(num_cells=num_cells))
     return controller
