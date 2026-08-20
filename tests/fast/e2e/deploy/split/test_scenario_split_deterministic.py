@@ -14,6 +14,7 @@ from tests.e2e.ft.conftest_ft import app as ft_app
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequest
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.fast.train_args import (
+    FLAGS_A_COMMAND_OF_ONE_SPLIT_RUN_MAY_DIFFER_ON,
     FLAGS_A_SPLIT_RUN_MAY_DIFFER_FROM_AN_UNSPLIT_ONE_ON,
     shared_argv,
     value_of,
@@ -150,7 +151,10 @@ class TestBuildDeployments:
 
     def test_the_deployments_agree_on_everything_the_run_itself_declares(self, deployments):
         """Only what a deployment carries may differ; a drifted model or batch shape trains something else."""
-        shared = [_shared_argv(one.train_args) for one in deployments]
+        shared = [
+            shared_argv(one.train_args, differing_flags=FLAGS_A_COMMAND_OF_ONE_SPLIT_RUN_MAY_DIFFER_ON)
+            for one in deployments
+        ]
 
         assert all(one == shared[0] for one in shared)
 
