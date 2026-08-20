@@ -53,6 +53,7 @@ class DeepSeekV4Attention(MegatronModule):
         attention_type: str = None,
         cp_comm_type: str = None,
         pg_collection=None,
+        name: str | None = None,
     ):
         _enable_deepseek_v4_tf32()
         super().__init__(config=config)
