@@ -356,7 +356,7 @@ class TestTheLauncherLeavesThePromptAsMessages:
         cannot be used for, and a list prompt is chat templated at generation anyway. Getting this wrong
         costs an 8-GPU run to notice."""
         source = (
-            Path(__file__).resolve().parents[4] / "tests/e2e/short/test_multi_policy_solver_verifier_gsm8k.py"
+            Path(__file__).resolve().parents[4] / "examples/multi_policy/run_solver_verifier_gsm8k.py"
         ).read_text()
         # the comment saying why the flag is absent names the flag, so read only what is handed to the run
         launched = "\n".join(line for line in source.splitlines() if not line.strip().startswith("#"))
