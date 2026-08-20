@@ -16,7 +16,7 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     compute_trainer_id,
 )
 from tests.fast.train_args import (
-    FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON,
+    FLAGS_A_COMMAND_OF_ONE_SPLIT_RUN_MAY_DIFFER_ON,
     ROLLOUT_NUM_GPUS_FLAG,
     shared_argv,
     value_of,
@@ -38,7 +38,7 @@ MEGATRON_CONFIG_FLAG: str = "--megatron-config"
 SGLANG_CONFIG_FLAG: str = "--sglang-config"
 
 _FLAGS_A_COMPONENT_MAY_DIFFER_ON: tuple[str, ...] = (
-    *FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON,
+    *FLAGS_A_COMMAND_OF_ONE_SPLIT_RUN_MAY_DIFFER_ON,
     MEGATRON_CONFIG_FLAG,
     SGLANG_CONFIG_FLAG,
 )

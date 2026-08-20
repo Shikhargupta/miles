@@ -13,7 +13,12 @@ from tests.e2e.deploy.conftest_deploy.split.split_deployment import RunDeploymen
 from tests.e2e.ft.conftest_ft import app as ft_app
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequest
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
-from tests.fast.train_args import FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON, shared_argv, value_of, values_after
+from tests.fast.train_args import (
+    FLAGS_A_SPLIT_RUN_MAY_DIFFER_FROM_AN_UNSPLIT_ONE_ON,
+    shared_argv,
+    value_of,
+    values_after,
+)
 
 from miles.ray.specs.inference import INFERENCE_CONTROLLER_ADDR_FLAG
 from miles.ray.specs.train import TRAINER_CONTROLLER_ADDRS_FLAG
@@ -233,7 +238,7 @@ def _without_engines(mode: FTTestMode) -> FTTestMode:
 
 
 def _shared_argv(train_args: str) -> list[str]:
-    return shared_argv(train_args, differing_flags=FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON)
+    return shared_argv(train_args, differing_flags=FLAGS_A_SPLIT_RUN_MAY_DIFFER_FROM_AN_UNSPLIT_ONE_ON)
 
 
 # =========================== how the pipeline dispatches ==========================

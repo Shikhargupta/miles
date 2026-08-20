@@ -12,7 +12,7 @@ from examples.infra_features.split_deployment.run_qwen3_0_6b_split import (
     compute_deployment_identities,
 )
 from tests.fast.train_args import (
-    FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON,
+    FLAGS_A_COMMAND_OF_ONE_SPLIT_RUN_MAY_DIFFER_ON,
     ROLLOUT_NUM_GPUS_FLAG,
     shared_argv,
     value_of,
@@ -124,7 +124,7 @@ class TestBuildDeploymentTrainArgs:
     def test_the_commands_agree_on_everything_the_run_itself_declares(self, train_args_of_identity):
         """Only what a command carries may differ; a drifted model or batch shape trains something else."""
         shared = [
-            shared_argv(one, differing_flags=FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON)
+            shared_argv(one, differing_flags=FLAGS_A_COMMAND_OF_ONE_SPLIT_RUN_MAY_DIFFER_ON)
             for one in train_args_of_identity.values()
         ]
 
