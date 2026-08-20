@@ -17,6 +17,59 @@ from miles_plugins.lora.distributed import ParallelGather
 from miles_plugins.lora.modules.linear import NativeLoRAAdapter, iter_adapters
 from miles_plugins.lora.spec.base import ShardLayout
 
+# Megatron -> HF module-name mapping, covering merged (LoRA), split
+# (CanonicalLoRA), GDN, and MLA spellings.
+MEGATRON_TO_HF_MODULES = {
+    "linear_qkv": ["q_proj", "k_proj", "v_proj"],
+    "linear_proj": ["o_proj"],
+    "linear_fc1": ["gate_proj", "up_proj"],
+    "linear_fc2": ["down_proj"],
+    "linear_q": ["q_proj"],
+    "linear_k": ["k_proj"],
+    "linear_v": ["v_proj"],
+    "linear_fc1_gate": ["gate_proj"],
+    "linear_fc1_up": ["up_proj"],
+    "in_proj": ["in_proj_qkvz", "in_proj_ba"],
+}
+
+MEGATRON_MLA_TO_HF = {
+    "linear_q_down_proj": "q_a_proj",
+    "linear_kv_down_proj": "kv_a_proj_with_mqa",
+    "linear_q_up_proj": "q_b_proj",
+    "linear_kv_up_proj": "kv_b_proj",
+    "linear_wq_b": "wq_b",
+    "linear_wk": "wk",
+    "linear_weights_proj": "weights_proj",
+}
+
+
+def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
+    """Convert Megatron LoRA target module names to HuggingFace format.
+
+    Wildcards (``*.layers.2.mlp.experts.linear_fc1``) get the last dotted
+    segment mapped to an HF leaf name; SGLang uses the result to choose
+    adapter-buffer types, not to scope by layer.
+    """
+    if isinstance(megatron_modules, tuple):
+        megatron_modules = list(megatron_modules)
+    hf_modules: list[str] = []
+    for module in megatron_modules:
+        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
+        if lookup_key in MEGATRON_MLA_TO_HF:
+            hf_modules.append(MEGATRON_MLA_TO_HF[lookup_key])
+        elif lookup_key in MEGATRON_TO_HF_MODULES:
+            hf_modules.extend(MEGATRON_TO_HF_MODULES[lookup_key])
+        else:
+            hf_modules.append(lookup_key)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for m in hf_modules:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
+    return unique
+
+
 logger = logging.getLogger(__name__)
 
 

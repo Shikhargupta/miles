@@ -28,7 +28,7 @@ class LoRAConfig:
         accept Megatron names. Architecture-specific target validation happens
         after the registry resolves a ``LoRAArchSpec``.
         """
-        from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
+        from miles_plugins.lora.hf_adapter import convert_target_modules_to_hf
 
         rank = int(args.lora_rank)
         assert rank > 0, "native LoRA requires --lora-rank > 0"

@@ -12,6 +12,10 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
+from miles_plugins.lora.hf_adapter import (  # noqa: F401  (re-exported)
+    MEGATRON_MLA_TO_HF,
+    convert_target_modules_to_hf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,48 +69,10 @@ _CANONICAL_LORA_ALL_MODULES = [
     "linear_fc2",
 ]
 
-# Megatron -> HF (inverse mapping, one-to-many)
-# Covers both standard LoRA (merged) and CanonicalLoRA (split) module names.
-_MEGATRON_TO_HF_MODULES = {
-    # Standard LoRA (merged layers)
-    "linear_qkv": ["q_proj", "k_proj", "v_proj"],
-    "linear_proj": ["o_proj"],
-    "linear_fc1": ["gate_proj", "up_proj"],
-    "linear_fc2": ["down_proj"],
-    # CanonicalLoRA (split layers)
-    "linear_q": ["q_proj"],
-    "linear_k": ["k_proj"],
-    "linear_v": ["v_proj"],
-    "linear_fc1_gate": ["gate_proj"],
-    "linear_fc1_up": ["up_proj"],
-    # GDN linear attention: SGLang serves the fused in_proj as two modules
-    "in_proj": ["in_proj_qkvz", "in_proj_ba"],
-}
-
-_HF_MODULE_NAMES = {
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj",
-    "in_proj_qkvz",
-    "in_proj_ba",
-}
+_HF_MODULE_NAMES = frozenset(_STANDARD_LORA_HF_TO_MEGATRON)
 
 # DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).
-_MLA_HF_TO_MEGATRON = {
-    "q_a_proj": "linear_q_down_proj",
-    "kv_a_proj_with_mqa": "linear_kv_down_proj",
-    "q_b_proj": "linear_q_up_proj",
-    "kv_b_proj": "linear_kv_up_proj",
-    # DSA indexer (GLM-5 / DeepSeek-V3.2): HF/SGLang leaf names vs Megatron-Bridge linear_* names.
-    "wq_b": "linear_wq_b",
-    "wk": "linear_wk",
-    "weights_proj": "linear_weights_proj",
-}
-_MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
+_MLA_HF_TO_MEGATRON = {hf: megatron for megatron, hf in MEGATRON_MLA_TO_HF.items()}
 
 # Empty: dropping a module here makes sglang silently skip its shipped adapter tensors.
 _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
@@ -320,42 +286,6 @@ def convert_target_modules_to_megatron(
             megatron_modules.append(megatron_name)
 
     return megatron_modules
-
-
-def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
-    """Convert Megatron LoRA target module names to HuggingFace format.
-
-    Supports both standard LoRA and CanonicalLoRA module names.
-
-    Megatron standard:   linear_qkv, linear_proj, linear_fc1, linear_fc2
-    Megatron canonical:  linear_q, linear_k, linear_v, linear_proj,
-                         linear_fc1_up, linear_fc1_gate, linear_fc2
-    HF:                  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
-    Kimi MLA Megatron:   linear_q_down_proj -> q_a_proj, linear_kv_down_proj -> kv_a_proj_with_mqa, ...
-
-    Wildcards (``*.layers.2.mlp.experts.linear_fc1``) get the last dotted
-    segment mapped to an HF leaf name; SGLang uses the result to choose
-    adapter-buffer types, not to scope by layer.
-    """
-    if isinstance(megatron_modules, tuple):
-        megatron_modules = list(megatron_modules)
-    hf_modules: list[str] = []
-    for module in megatron_modules:
-        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
-        if lookup_key in _MEGATRON_MLA_TO_HF:
-            hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
-        elif lookup_key in _MEGATRON_TO_HF_MODULES:
-            hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
-        else:
-            # same-name passthrough; SGLang needs the leaf, not a path or pattern
-            hf_modules.append(lookup_key)
-    seen: set[str] = set()
-    unique: list[str] = []
-    for m in hf_modules:
-        if m not in seen:
-            seen.add(m)
-            unique.append(m)
-    return unique
 
 
 def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
