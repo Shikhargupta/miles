@@ -57,6 +57,9 @@ def fake_components():
         return {}
 
     async def fake_wait_session_server_ready(args, *, provider):
+        # the real one returns before touching anything when the run asked for no session server
+        if provider is None:
+            return
         args.session_server_addrs = ["10.0.0.2:5000"]
         args.session_server_instance_ids = ["session-0"]
         events.append("session_servers_ready")
@@ -250,7 +253,7 @@ class TestCreatePlacementGroups:
             deploy_component="all",
         )
         defaults.update(overrides)
-        return Namespace(**defaults)
+        return Namespace(**{**parser_defaults(), **defaults})
 
     @staticmethod
     def _patched(monkeypatch, requested: list[int]):
@@ -321,7 +324,7 @@ class TestUpdateWeights:
 
     @staticmethod
     def _args():
-        return Namespace(debug_train_only=True, debug_rollout_only=False, save_inference_engine_weight_checksum=False)
+        return Namespace(**{**parser_defaults(), "debug_train_only": True, "debug_rollout_only": False})
 
     async def test_the_executor_is_told_which_version_the_engines_now_serve(self):
         """Without this the executor stamps every sample it collects with weight_version=None."""
@@ -406,7 +409,7 @@ class TestCreateTrainingModels:
             trainer_controller_addrs=None,
         )
         defaults.update(overrides)
-        return Namespace(**defaults)
+        return Namespace(**{**parser_defaults(), **defaults})
 
     async def test_a_configured_policy_is_addressed_by_its_own_trainer_id(self, tmp_path, monkeypatch):
         """A single entry --megatron-config names the pool '<model_id>-actor'; 'actor' addresses nothing."""
@@ -513,7 +516,7 @@ class TestTakeOverTrainers:
             deploy_component="all",
         )
         defaults.update(overrides)
-        return Namespace(**defaults)
+        return Namespace(**{**parser_defaults(), **defaults})
 
     @staticmethod
     def _identity(**overrides) -> DeploymentIdentity:
