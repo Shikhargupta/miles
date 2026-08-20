@@ -127,7 +127,6 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
 
         config.num_residual_streams = getattr(self.hf_config, "hc_mult", 4)
         config.mhc_sinkhorn_iterations = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
-        config.dsv4_hc_eps = getattr(self.hf_config, "hc_eps", 1e-6)
 
         config.csa_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
         config.csa_compress_rotary_base = getattr(self.hf_config, "compress_rope_theta", 160000)

@@ -53,7 +53,6 @@ def add_dsv4_arguments(parser: ArgumentParser) -> ArgumentParser:
     group.add_argument("--dsv4-n-hash-layers", type=int, default=3)
     group.add_argument("--dsv4-hc-mult", type=int, default=4)
     group.add_argument("--dsv4-hc-sinkhorn-iters", type=int, default=20)
-    group.add_argument("--dsv4-hc-eps", type=float, default=1e-6)
     return parser
 
 
@@ -66,11 +65,9 @@ def normalize_dsv4_args(args: Namespace) -> None:
     _validate_impl(args)
     for arg, field in _ARG_TO_MEGATRON_FIELD.items():
         setattr(args, field, getattr(args, arg))
-    if args.dsv4_impl == "megatron":
-        args.experimental_attention_variant = "dsv4_hybrid"
-        args.enable_hyper_connections = True
-    else:
-        args.experimental_attention_variant = "dsv4"
+    # Both implementations take their hyper-connections from Megatron's own module.
+    args.enable_hyper_connections = True
+    args.experimental_attention_variant = "dsv4_hybrid" if args.dsv4_impl == "megatron" else "dsv4"
 
 
 def _validate_impl(args: Namespace) -> None:

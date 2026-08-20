@@ -7,16 +7,35 @@ def get_deepseek_v4_atomic_update_groups():
     return [
         AtomicUpdateGroup(key, suffixes)
         for key, suffixes in [
-            ("wqkv_a", (".self_attention.wq_a.weight", ".self_attention.wkv.weight")),
+            ("wqkv_a", (".self_attention.linear_q_down_proj.weight", ".self_attention.linear_kv_proj.weight")),
+            (
+                "self_attention_hc_alphas",
+                (
+                    ".self_attention_hyper_connection.alpha_pre",
+                    ".self_attention_hyper_connection.alpha_post",
+                    ".self_attention_hyper_connection.alpha_res",
+                ),
+            ),
+            (
+                "mlp_hc_alphas",
+                (
+                    ".mlp_hyper_connection.alpha_pre",
+                    ".mlp_hyper_connection.alpha_post",
+                    ".mlp_hyper_connection.alpha_res",
+                ),
+            ),
             (
                 "compressor_wkv_gate",
-                (".self_attention.compressor.wkv.weight", ".self_attention.compressor.wgate.weight"),
+                (
+                    ".self_attention.core_attention.compressor.linear_wkv.weight",
+                    ".self_attention.core_attention.compressor.linear_wgate.weight",
+                ),
             ),
             (
                 "indexer_compressor_wkv_gate",
                 (
-                    ".self_attention.indexer.compressor.wkv.weight",
-                    ".self_attention.indexer.compressor.wgate.weight",
+                    ".self_attention.core_attention.indexer.compressor.linear_wkv.weight",
+                    ".self_attention.core_attention.indexer.compressor.linear_wgate.weight",
                 ),
             ),
         ]
@@ -31,11 +50,11 @@ def convert_deepseekv4_to_hf(args, name, param):
     if name == "module.module.decoder.final_layernorm.weight":
         return [("model.norm.weight", param)]
 
-    if name == "module.module.decoder.hc_head_params.hc_head_fn":
+    if name == "module.module.decoder.hc_head_fn":
         return [("model.hc_head_fn", param)]
-    if name == "module.module.decoder.hc_head_params.hc_head_base":
+    if name == "module.module.decoder.hc_head_base":
         return [("model.hc_head_base", param)]
-    if name == "module.module.decoder.hc_head_params.hc_head_scale":
+    if name == "module.module.decoder.hc_head_scale":
         return [("model.hc_head_scale", param)]
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
@@ -43,18 +62,22 @@ def convert_deepseekv4_to_hf(args, name, param):
     if match:
         layer_idx, rest = match.groups()
 
-        if rest == "hc_attn_fn":
+        if rest == "self_attention_hyper_connection.mapping_proj.weight":
             return [(f"model.layers.{layer_idx}.hc_attn_fn", param)]
-        elif rest == "hc_attn_base":
+        elif rest == "self_attention_hyper_connection.bias":
             return [(f"model.layers.{layer_idx}.hc_attn_base", param)]
-        elif rest == "hc_attn_scale":
-            return [(f"model.layers.{layer_idx}.hc_attn_scale", param)]
-        elif rest == "hc_ffn_fn":
+        elif rest == "self_attention_hyper_connection.alpha_pre":
+            return [(f"model.layers.{layer_idx}.hc_attn_scale", _packed_alphas(args, name, param))]
+        elif rest.startswith("self_attention_hyper_connection.alpha_"):
+            return []
+        elif rest == "mlp_hyper_connection.mapping_proj.weight":
             return [(f"model.layers.{layer_idx}.hc_ffn_fn", param)]
-        elif rest == "hc_ffn_base":
+        elif rest == "mlp_hyper_connection.bias":
             return [(f"model.layers.{layer_idx}.hc_ffn_base", param)]
-        elif rest == "hc_ffn_scale":
-            return [(f"model.layers.{layer_idx}.hc_ffn_scale", param)]
+        elif rest == "mlp_hyper_connection.alpha_pre":
+            return [(f"model.layers.{layer_idx}.hc_ffn_scale", _packed_alphas(args, name, param))]
+        elif rest.startswith("mlp_hyper_connection.alpha_"):
+            return []
 
         expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
         match = re.match(expert_pattern, rest)
@@ -86,26 +109,26 @@ def convert_deepseekv4_to_hf(args, name, param):
             else:
                 raise ValueError(f"Unknown shared expert parameter name: {name}")
 
-        if rest == "self_attention.wq_a.weight":
+        if rest == "self_attention.linear_q_down_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.wq_a.weight", param)]
-        elif rest == "self_attention.q_norm.weight":
+        elif rest == "self_attention.q_layernorm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.q_norm.weight", param)]
-        elif rest == "self_attention.wq_b.weight":
+        elif rest == "self_attention.linear_q_up_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.wq_b.weight", param)]
-        elif rest == "self_attention.wkv.weight":
+        elif rest == "self_attention.linear_kv_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.wkv.weight", param)]
-        elif rest == "self_attention.kv_norm.weight":
+        elif rest == "self_attention.kv_layernorm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.kv_norm.weight", param)]
-        elif rest == "self_attention.wo_a.weight":
+        elif rest == "self_attention.linear_o_group_proj":
             return [(f"model.layers.{layer_idx}.self_attn.wo_a.weight", param)]
-        elif rest == "self_attention.wo_b.weight":
+        elif rest == "self_attention.linear_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.wo_b.weight", param)]
         elif rest == "self_attention.attn_sink":
             return [(f"model.layers.{layer_idx}.self_attn.attn_sink", param)]
 
         elif rest == "self_attention.compressor.ape":
             return [(f"model.layers.{layer_idx}.self_attn.compressor.ape", param)]
-        elif rest == "self_attention.compressor.wkv.weight":
+        elif rest == "self_attention.core_attention.compressor.linear_wkv.weight":
             return [(f"model.layers.{layer_idx}.self_attn.compressor.wkv.weight", param)]
         elif rest == "self_attention.compressor.wgate.weight":
             return [(f"model.layers.{layer_idx}.self_attn.compressor.wgate.weight", param)]
@@ -125,7 +148,7 @@ def convert_deepseekv4_to_hf(args, name, param):
 
         elif rest == "self_attention.indexer.compressor.ape":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.ape", param)]
-        elif rest == "self_attention.indexer.compressor.wkv.weight":
+        elif rest == "self_attention.core_attention.indexer.compressor.linear_wkv.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.wkv.weight", param)]
         elif rest == "self_attention.indexer.compressor.wgate.weight":
             return [(f"model.layers.{layer_idx}.self_attn.indexer.compressor.wgate.weight", param)]

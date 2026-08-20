@@ -366,8 +366,6 @@ def get_dsv4_spec(args, config, vp_stage):
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
-    # No Megatron field backs this: hyper-connection epsilon is the plugin's own.
-    config.dsv4_hc_eps = args.dsv4_hc_eps
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):
