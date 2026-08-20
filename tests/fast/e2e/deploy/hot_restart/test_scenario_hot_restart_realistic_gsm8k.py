@@ -3,6 +3,7 @@ import shlex
 import pytest
 
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_realistic_gsm8k as scenario
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
 from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ACTOR_CELL_TYPE
@@ -106,3 +107,28 @@ def _injection(*, succeeded: bool) -> InjectionEvent:
 
 def _crash(*, succeeded: bool) -> InjectionEvent:
     return InjectionEvent(cell_name="actor-1", form_name="crash_pod", succeeded=succeeded, harmed=True)
+
+
+class TestWhatEachTakeOverCost:
+    def test_a_take_over_resuming_from_the_last_save_is_within_the_bound(self):
+        """Whatever the draw's timing, a checkpointed take-over owes at most one save interval."""
+        scenario.assert_no_take_over_threw_away_more_than_a_save_interval(
+            [_record(index=0, saved=19, finished=27), _record(index=1, saved=29, finished=29)]
+        )
+
+    def test_a_take_over_before_the_first_save_is_charged_for_every_step(self):
+        """Starting over from the reference weights costs the whole run so far, which the bound still covers."""
+        scenario.assert_no_take_over_threw_away_more_than_a_save_interval([_record(index=0, saved=None, finished=9)])
+
+    def test_a_take_over_that_threw_away_more_than_a_save_interval_fails(self):
+        """That means the run resumed from something older than its latest checkpoint."""
+        with pytest.raises(AssertionError, match="threw away"):
+            scenario.assert_no_take_over_threw_away_more_than_a_save_interval([_record(index=0, saved=9, finished=40)])
+
+    def test_the_bound_follows_the_save_interval_the_run_is_installed_with(self):
+        """A bound spelled independently would drift the moment the interval changed."""
+        assert scenario.MAX_REDONE_STEPS_PER_TAKE_OVER == scenario.SAVE_INTERVAL + 1
+
+
+def _record(*, index: int, saved: int | None, finished: int) -> HotRestartRecord:
+    return HotRestartRecord(index=index, saved_iteration_at_trigger=saved, frozen_rollout_id=finished)

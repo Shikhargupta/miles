@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Annotated
 
 import typer
@@ -8,7 +9,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, observing_the_cluster
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_checkpoint_dir, compute_release_of_config
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME, HotRestartFaultForm
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
@@ -29,6 +30,9 @@ app: typer.Typer = typer.Typer()
 TEST_NAME: str = "hot_restart_realistic_gsm8k"
 SAVE_INTERVAL: int = 10
 MIN_HOT_RESTARTS: int = 1
+# A take-over resumes from the last checkpoint, so it costs at most one save interval, plus the
+# step whose own save had not landed when the form read the tracker.
+MAX_REDONE_STEPS_PER_TAKE_OVER: int = SAVE_INTERVAL + 1
 DEFAULT_HOT_RESTART_INTERVAL_SECONDS: float = 1800.0
 
 HotRestartIntervalSecondsOption = Annotated[
@@ -75,15 +79,17 @@ def run_ci(
     assert_no_take_over_attempt_failed(outcome.injector.event_log.events)
 
     evidence = HotRestartEvidence(
-        records=(),
+        records=form.records,
         snapshots=tuple(observer.snapshots),
         release=observer.release,
         observation_attempts=observer.attempts,
         observation_failures=observer.failures,
     )
+    evidence.write(dump_dir=outcome.run.dump_dir)
     assert_the_take_overs_replaced_only_the_script(
         evidence, num_restarts=outcome.injector.num_successful_injections, minimum_restarts=MIN_HOT_RESTARTS
     )
+    assert_no_take_over_threw_away_more_than_a_save_interval(evidence.records)
 
     print(f"Hot restart realistic gsm8k test PASSED (seed={seed}, rollouts={num_rollout})")
 
@@ -99,6 +105,19 @@ def assert_no_take_over_attempt_failed(events: list[Event]) -> None:
         f"{len(failed)} take-over attempt(s) failed: {failed}. Every draw of this form fires, so a failure here is "
         f"a relaunch the cluster refused or one that never reached the run, not a draw that was declined"
     )
+
+
+def assert_no_take_over_threw_away_more_than_a_save_interval(records: Sequence[HotRestartRecord]) -> None:
+    for record in records:
+        resumed_from = -1 if record.saved_iteration_at_trigger is None else record.saved_iteration_at_trigger
+        redone = record.frozen_rollout_id - resumed_from
+
+        assert 0 <= redone <= MAX_REDONE_STEPS_PER_TAKE_OVER, (
+            f"take-over {record.index} was drawn against a run standing at step {record.frozen_rollout_id} holding "
+            f"iteration {record.saved_iteration_at_trigger}, so it threw away {redone} step(s); a take-over resumes "
+            f"from the last checkpoint and a run saving every {SAVE_INTERVAL} step(s) cannot owe more than "
+            f"{MAX_REDONE_STEPS_PER_TAKE_OVER}"
+        )
 
 
 def create_hot_restart_forms(run: Gsm8kRun) -> CellFaultForms:
