@@ -76,9 +76,6 @@ class FakeRolloutExecutor:
     async def is_initialized(self) -> bool:
         return self.initialized
 
-    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
-        return None
-
     def dispose(self) -> None:
         return None
 
@@ -112,6 +109,9 @@ class FakeInferenceController:
 
     async def init(self) -> None:
         self.initialized = True
+
+    async def is_initialized(self) -> bool:
+        return self.initialized
 
     async def prepare_rollout(self, rollout_id: int) -> None:
         self.prepared.append(rollout_id)
@@ -498,7 +498,9 @@ class TestKubernetesDriverAssembly:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 await app.router.lifespan_context(app).__aenter__()
                 handle = specs_train.create_trainer_controller_handle(
-                    Namespace(trainer_controller_addrs=None), capability=capability, trainer_id="actor"
+                    Namespace(trainer_controller_addrs=None, megatron_config=None),
+                    capability=capability,
+                    trainer_id="actor",
                 )
                 assert await handle.init(Namespace(num_rollout=7)) == [5]
                 await handle.train(rollout_id=3, rollout_data_pack=_a_data_pack(3))
