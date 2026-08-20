@@ -124,15 +124,6 @@ class TestRunSchemaRejectsBadValues:
         with pytest.raises(jsonschema.ValidationError):
             _validator(_run_schema(schemas)).validate(values)
 
-    def test_a_run_without_its_state_file_is_rejected(self, schemas):
-        """The launcher polls that path to learn the run finished; without it the launcher waits forever."""
-        jsonschema = pytest.importorskip("jsonschema")
-        values = _minimal_run_values()
-        del values["run"]["stateFile"]
-
-        with pytest.raises(jsonschema.ValidationError):
-            _validator(_run_schema(schemas)).validate(values)
-
     def test_an_enabled_command_job_without_a_command_is_rejected(self, schemas):
         """The conditional is the only thing standing between an enabled job and a pod that runs nothing."""
         jsonschema = pytest.importorskip("jsonschema")

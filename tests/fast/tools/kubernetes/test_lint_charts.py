@@ -66,7 +66,7 @@ class TestChartDiscovery:
         module = load_lint_charts()
 
         assert (module.REPO_ROOT / "pyproject.toml").exists()
-        assert module.CHARTS_DIR == LINT_CHARTS_PATH.parents[1] / "charts"
+        assert module.CHARTS_DIR == REPO_ROOT / "charts"
 
     def test_a_repo_with_no_charts_is_not_a_failure(self, lint_charts):
         """The hook lands before the first chart, and an empty repo must not block every commit."""
