@@ -81,7 +81,15 @@ class TestRunAddressBook:
 
     def test_an_engine_deployment_is_not_told_to_dial_itself(self, address_book):
         """Pointing an engine deployment at its own release would leave the run with no controller at all."""
-        assert address_book.release(DeployComponent.INFERENCE, "a") not in address_book.inference_controller_addr_arg()
+        arg = address_book.inference_controller_addr_arg()
+        elsewhere = [
+            address_book.release(DeployComponent.TRAINER),
+            address_book.release(DeployComponent.INFERENCE, "a"),
+            address_book.release(DeployComponent.INFERENCE, "b"),
+        ]
+
+        assert address_book.release(DeployComponent.PRIMARY) in arg
+        assert not [release for release in elsewhere if release in arg]
 
     def test_every_deployment_redeems_its_references_at_one_object_store(self, address_book):
         """The object store master runs beside the orchestration script, and the others dial it there."""

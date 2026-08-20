@@ -44,10 +44,6 @@ def prepare(args: ScriptArgs) -> None:
     )
 
 
-def execute(args: ScriptArgs) -> None:
-    launch_train(build_deployment_train_args(args), args)
-
-
 def build_deployment_train_args(args: ScriptArgs) -> str:
     address_book = RunAddressBook.of_config(args)
     shared = address_book.shared_object_store_args()
@@ -155,9 +151,9 @@ def launch_train(train_args: str, args: ScriptArgs) -> None:
 
 @command_utils.dataclass_cli
 def main(args: ScriptArgs) -> None:
-    build_deployment_train_args(args)
+    train_args = build_deployment_train_args(args)
     prepare(args)
-    execute(args)
+    launch_train(train_args, args)
 
 
 # TODO: unify this launcher when the example scripts are refactored

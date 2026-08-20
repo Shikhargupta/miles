@@ -17,6 +17,9 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/hot_restart/scenario_hot_re
   `generate-data`; the multi policy one exposes `run` / `verify`; the realistic soak exposes `run`
   only. The hot restart deterministic app nests those under one subcommand per mode
   (`checkpointed`, `no_checkpoint`).
+- **Split examples**: every command of a split run runs the example's `prepare` (download,
+  checkpoint convert) before installing its part, so `prepare` has to stay idempotent; a scenario
+  installing the parts in one process runs it once per part.
 - **Dump dirs**: `/node_public/dumps/<TEST_NAME>/` (only `run` deletes it). `--dump-dir` overrides
   it for `baseline` / `target` / `compare` only; `run` and the realistic soak always resolve it
   from the test name. Multi policy: `<output_dir>/multi_policy_solver_verifier/<run_id>/`.

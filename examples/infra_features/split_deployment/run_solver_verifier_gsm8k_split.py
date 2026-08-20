@@ -16,10 +16,6 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_
 from miles.utils.workers.types import DeployComponent
 
 
-def execute(args: ScriptArgs) -> None:
-    launch_train(build_deployment_train_args(args), args)
-
-
 def build_deployment_train_args(args: ScriptArgs) -> str:
     _assert_the_run_id_leaves_room_for_one_release_per_policy(args.run_id)
     address_book = RunAddressBook.of_config(args)
@@ -115,9 +111,9 @@ def _assert_the_run_id_leaves_room_for_one_release_per_policy(run_id: str) -> No
 
 @command_utils.dataclass_cli
 def main(args: ScriptArgs) -> None:
-    build_deployment_train_args(args)
+    train_args = build_deployment_train_args(args)
     prepare(args)
-    execute(args)
+    launch_train(train_args, args)
 
 
 # TODO: unify this launcher when the example scripts are refactored
