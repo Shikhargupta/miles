@@ -5,8 +5,6 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any, Protocol
 
-from pydantic import ValidationError
-
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.k8s_types import Pod, WatchFrame
 
@@ -37,13 +35,12 @@ class PodWatchEvent(FrozenStrictBaseModel):
 
     @classmethod
     def from_frame(cls, *, event_type: str, obj: Any) -> PodWatchEvent:
-        frame = _validated_frame_or_none(obj)
-        is_error = event_type == EVENT_TYPE_ERROR
+        frame = WatchFrame.model_validate(obj)
         return cls(
             type=event_type,
             pod=Pod.model_validate(obj) if event_type in POD_EVENT_TYPES else None,
-            resource_version=frame.metadata.resource_version if frame is not None else None,
-            rejects_cursor=is_error and (frame is None or _frame_rejects_cursor(frame)),
+            resource_version=frame.metadata.resource_version,
+            rejects_cursor=event_type == EVENT_TYPE_ERROR and _frame_rejects_cursor(frame),
         )
 
 
@@ -92,14 +89,6 @@ async def _close_quietly(closing: Any) -> None:
 
 def exception_rejects_cursor(exception: BaseException) -> bool:
     return getattr(exception, "status", None) in _CURSOR_REJECTED_CODES
-
-
-def _validated_frame_or_none(obj: Any) -> WatchFrame | None:
-    try:
-        return WatchFrame.model_validate(obj)
-    except ValidationError:
-        logger.warning(f"a watch frame carries no readable envelope ({obj=})")
-        return None
 
 
 def _frame_rejects_cursor(frame: WatchFrame) -> bool:

@@ -177,14 +177,6 @@ class TestCursorRejection:
         """Only an ERROR frame may invalidate a cursor, and only for a cursor-specific code."""
         assert not PodWatchEvent.from_frame(event_type=event_type, obj=obj).rejects_cursor
 
-    def test_an_error_frame_nobody_can_read_is_taken_at_its_worst(self) -> None:
-        """A cursor the apiserver has already rejected replays forever, so an unreadable error frame has to
-        force the relist rather than be waved through."""
-        event = PodWatchEvent.from_frame(event_type="ERROR", obj=["not an envelope at all"])
-
-        assert event.rejects_cursor
-        assert event.resource_version is None
-
     def test_a_pod_frame_carrying_a_dead_cursor_code_leaves_the_cursor_alone(self) -> None:
         """A pod whose own fields happen to spell 410 must not be read as an expired-cursor error."""
         obj = make_wire_pod()
