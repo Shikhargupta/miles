@@ -7,6 +7,7 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
@@ -26,6 +27,7 @@ from miles.ray.specs.train import (
 )
 from miles.ray.wiring import get_backend_capability
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.audit_utils.event_logger.checkpoint import discard_event_log
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.ft_utils.api_server.server import start_api_server
@@ -175,7 +177,20 @@ def create_trainer_handles(args, *, trainer_configs: list[MegatronTrainerConfig]
 # TODO: move (when reorganizing files)
 async def take_over_trainers(args, *, handles: dict[str, BaseWorkerHandle]) -> bool:
     await wait_external_trainers(args, handles=handles)
-    return await wait_trainers_idle(handles)
+    resumed = await wait_trainers_idle(handles)
+
+    if resumed and _has_no_checkpoint(args):
+        discard_event_log(args)
+
+    return resumed
+
+
+def _has_no_checkpoint(args) -> bool:
+    assert args.megatron_config is None, (
+        "a run training several policies gives every trainer a --load of its own, and the base --load read here "
+        "never holds a checkpoint tracker, so this cannot tell such a run's take-over from one that saved nothing"
+    )
+    return read_checkpoint_tracker_iteration(args.requested_load) is None
 
 
 # TODO: move (when reorganizing files)

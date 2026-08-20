@@ -94,3 +94,42 @@ class TestNoOpCases:
         event_logger_checkpoint.snapshot(_args(event_dir=events), iteration=1)
 
         assert not (tmp_path / "ckpt").exists()
+
+
+class TestDiscardEventLog:
+    def test_moves_the_log_aside_and_leaves_an_empty_directory(self, tmp_path: Path) -> None:
+        """The live loggers reopen this path on every write, so a directory that vanished crashes them."""
+        events = tmp_path / "events"
+        events.mkdir()
+        (events / "main.jsonl").write_text("from the run being taken over\n")
+
+        event_logger_checkpoint.discard_event_log(_args(event_dir=events))
+
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "main.jsonl").read_text() == "from the run being taken over\n"
+        assert events.is_dir() and list(events.iterdir()) == []
+
+    def test_leaves_an_empty_directory_alone(self, tmp_path: Path) -> None:
+        """A take-over of a run that logged nothing has nothing to throw away, and leaves no empty trash."""
+        events = tmp_path / "events"
+        events.mkdir()
+
+        event_logger_checkpoint.discard_event_log(_args(event_dir=events))
+
+        assert list(tmp_path.glob(".trash_*")) == []
+        assert events.is_dir()
+
+    def test_leaves_a_missing_directory_alone(self, tmp_path: Path) -> None:
+        """The run may be taken over before it opened its log at all."""
+        events = tmp_path / "events"
+
+        event_logger_checkpoint.discard_event_log(_args(event_dir=events))
+
+        assert list(tmp_path.glob(".trash_*")) == []
+        assert not events.exists()
+
+    def test_leaves_a_run_that_logs_nowhere_alone(self, tmp_path: Path) -> None:
+        """Without --save-debug-event-data there is no log to move, and nothing may be created."""
+        event_logger_checkpoint.discard_event_log(_args(event_dir=None))
+
+        assert list(tmp_path.iterdir()) == []
