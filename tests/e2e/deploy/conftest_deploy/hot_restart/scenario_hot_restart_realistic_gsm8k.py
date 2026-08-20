@@ -25,6 +25,7 @@ from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import (
 )
 
 from miles.utils.external_utils import command_utils
+from miles.utils.misc import MutableBox
 
 app: typer.Typer = typer.Typer()
 
@@ -52,11 +53,15 @@ def run_ci(
     observer = ClusterObserver(
         release=compute_release_of_config(config), namespace=config.namespace, trainer_id=DEFAULT_TRAINER_ID
     )
-    hot_restart_forms: list[HotRestartFaultForm] = []
+    hot_restart_form: MutableBox[HotRestartFaultForm | None] = MutableBox(value=None)
 
     def create_forms(run: Gsm8kRun) -> CellFaultForms:
         forms = create_hot_restart_forms(run)
-        hot_restart_forms.extend(forms[ACTOR_CELL_TYPE])
+        assert hot_restart_form.value is None, (
+            "the run's fault forms were built twice, so the form this soak reads at the end is not the one the "
+            "second run was injected with"
+        )
+        [hot_restart_form.value] = forms[ACTOR_CELL_TYPE]
         return forms
 
     with observing_the_cluster(observer):
@@ -72,7 +77,9 @@ def run_ci(
             extra_train_args=build_checkpoint_args(resolve_dump_dir(TEST_NAME)),
         )
 
-    [form] = hot_restart_forms
+    form = hot_restart_form.value
+    assert form is not None, "no fault form was ever built for this run, so nothing here was ever taken over"
+
     form.join_relaunches()
     form.assert_every_take_over_installed_cleanly()
     assert_no_take_over_attempt_failed(outcome.injector.event_log.events)

@@ -2,7 +2,6 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 import contextlib
-import dataclasses
 import threading
 import time
 from collections.abc import Iterator
@@ -27,6 +26,7 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_every_rollout_injection_recovered
 
 from miles.utils.external_utils import command_utils
+from miles.utils.misc import MutableBox
 from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
 from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections
 
@@ -69,7 +69,7 @@ def _inject_rollout_faults(
     base_url: str = f"http://{config.create_backend().api_server_host()}:{API_SERVER_PORT}"
     print(f"Injecting into {ROLLOUT_CELL_TYPE} cells only, mean interval {CRASH_INTERVAL_SECONDS:.1f}s, seed {SEED}")
 
-    armed = _MutableBox()
+    armed: MutableBox[FaultInjectorHandle | None] = MutableBox(value=None)
 
     def arm_once_generation_is_under_way() -> None:
         if not _wait_for_first_rollout(dump_dir):
@@ -101,11 +101,6 @@ def _inject_rollout_faults(
     )
     assert_every_rollout_injection_recovered(injector)
     _assert_injections_spread_over_rollouts(injector, dump_dir=dump_dir)
-
-
-@dataclasses.dataclass
-class _MutableBox:
-    value: FaultInjectorHandle | None = None
 
 
 def _wait_for_first_rollout(dump_dir: str) -> bool:
