@@ -73,3 +73,19 @@ class TestReplacingValue:
         """Replacing nothing would leave the pods with the launcher's own address and no sign of why."""
         with pytest.raises(AssertionError, match="not among the arguments"):
             ArgvManipulator.replacing_value(["--rollout-num-gpus", "8"], "--mooncake-store-init-kwargs", "{}")
+
+
+class TestAddOrReplaceValue:
+    def test_appends_the_flag_an_argv_never_named(self):
+        """A run that never asked for the flag still has to leave with the value the launcher computed."""
+        rewritten = ArgvManipulator.add_or_replace_value(["--rollout-num-gpus", "8"], "--run-uuid", "abc")
+
+        assert rewritten == ["--rollout-num-gpus", "8", "--run-uuid", "abc"]
+
+    def test_overwrites_a_value_the_argv_already_carried(self):
+        """The launcher's value wins, and it has to win in place so the flag keeps its position."""
+        argv = ["--run-uuid", "old", "--rollout-num-gpus", "8"]
+
+        rewritten = ArgvManipulator.add_or_replace_value(argv, "--run-uuid", "new")
+
+        assert rewritten == ["--run-uuid", "new", "--rollout-num-gpus", "8"]
