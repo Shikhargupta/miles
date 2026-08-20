@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-from typing import NamedTuple
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple, TypeVar
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Kubectl
 from miles.utils.external_utils.miles_workbench.options import InstallArgs
@@ -26,6 +28,10 @@ from miles.utils.external_utils.miles_workbench.render import RbacPlan, rbac_pla
 logger = logging.getLogger(__name__)
 
 _ROLES_RESOURCE = "roles.rbac.authorization.k8s.io"
+_MAX_CONCURRENT_QUERIES = 32
+
+_QueryT = TypeVar("_QueryT")
+_AnswerT = TypeVar("_AnswerT")
 
 
 class _Answer(NamedTuple):
@@ -37,7 +43,8 @@ class Checker:
     def __init__(self, namespace: str) -> None:
         self.namespace = namespace
         self._reporter = Reporter()
-        self._answered: dict[tuple[str, str], bool] = {}
+        self._can_i_answers: dict[tuple[str, str], bool] = {}
+        self._listings: dict[tuple[str, str], _Answer] = {}
 
     @property
     def failed(self) -> bool:
@@ -83,10 +90,12 @@ class Checker:
             f"app.kubernetes.io/managed-by={MANAGED_BY},app.kubernetes.io/name notin ({family})",
         ]
 
+        self._prefetch_listings((kind, selector) for kind in NAMESPACE_KINDS for selector in selectors)
+
         foreign: list[str] = []
         for kind in NAMESPACE_KINDS:
             for selector in selectors:
-                answer = self._query("get", kind, "-n", self.namespace, "-l", selector, "-o", "name")
+                answer = self._list(kind, selector)
                 if not answer.ok:
                     if any(marker in answer.output for marker in UNSERVED_RESOURCE_MARKERS):
                         break
@@ -160,6 +169,10 @@ class Checker:
         self.report(True, message)
 
     def denied_rules(self, *rule_sets: dict[str, tuple[str, ...]]) -> list[str]:
+        self._prefetch_can_i(
+            (verb, resource) for rules in rule_sets for resource, verbs in rules.items() for verb in verbs
+        )
+
         denied = []
         for rules in rule_sets:
             for resource, verbs in rules.items():
@@ -171,16 +184,39 @@ class Checker:
         return all(self._holds_on_roles(verb, role) for verb in ("escalate", "bind"))
 
     def can_i(self, verb: str, resource: str) -> bool:
-        if (answered := self._answered.get((verb, resource))) is not None:
-            return answered
+        if (answered := self._can_i_answers.get((verb, resource))) is None:
+            answered = self._can_i_answers[(verb, resource)] = self._ask_can_i(verb, resource)
+        return answered
 
+    def _list(self, kind: str, selector: str) -> _Answer:
+        if (answer := self._listings.get((kind, selector))) is None:
+            answer = self._listings[(kind, selector)] = self._ask_listing(kind, selector)
+        return answer
+
+    def _prefetch_listings(self, wanted: Iterable[tuple[str, str]]) -> None:
+        pending = sorted({pair for pair in wanted if pair not in self._listings})
+        if not pending:
+            return
+
+        self._listings.update(_ask_in_parallel(pending, lambda pair: self._ask_listing(*pair)))
+
+    def _ask_listing(self, kind: str, selector: str) -> _Answer:
+        return self._query("get", kind, "-n", self.namespace, "-l", selector, "-o", "name")
+
+    def _prefetch_can_i(self, wanted: Iterable[tuple[str, str]]) -> None:
+        pending = sorted({pair for pair in wanted if pair not in self._can_i_answers})
+        if not pending:
+            return
+
+        self._can_i_answers.update(_ask_in_parallel(pending, lambda pair: self._ask_can_i(*pair)))
+
+    def _ask_can_i(self, verb: str, resource: str) -> bool:
         target, _, subresource = resource.partition("/")
         args = ["auth", "can-i", verb, target]
         if subresource:
             args.append(f"--subresource={subresource}")
         args += ["-n", self.namespace]
-        self._answered[(verb, resource)] = self._query(*args).ok
-        return self._answered[(verb, resource)]
+        return self._query(*args).ok
 
     def kubectl(self, *args: str) -> subprocess.CompletedProcess[str]:
         return Kubectl.run_raw(*args)
@@ -203,3 +239,8 @@ class Checker:
 
 def _is_cluster_provided(name: str) -> bool:
     return name in CLUSTER_PROVIDED_RESOURCES or name.startswith(DEFAULT_TOKEN_PREFIX)
+
+
+def _ask_in_parallel(queries: list[_QueryT], ask: Callable[[_QueryT], _AnswerT]) -> dict[_QueryT, _AnswerT]:
+    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_QUERIES) as pool:
+        return dict(zip(queries, pool.map(ask, queries), strict=True))
