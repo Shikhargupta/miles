@@ -44,7 +44,7 @@ def execute(
     assert_every_rank_trained_with_its_own_policy_args(
         events_dir, megatron_config=megatron_config, expected_num_ranks=args.actor_num_gpus_per_policy
     )
-    assert_every_policy_learned(events_dir, bounds=train_reward_bounds or TRAIN_REWARD_BOUNDS)
+    assert_every_policy_reported_reward_in_bounds(events_dir, bounds=train_reward_bounds or TRAIN_REWARD_BOUNDS)
 
 
 def assert_every_rank_trained_with_its_own_policy_args(
@@ -98,7 +98,7 @@ def assert_every_rank_trained_with_its_own_policy_args(
             )
 
 
-def assert_every_policy_learned(events_dir: Path, *, bounds: dict[str, TrainRewardBounds]) -> None:
+def assert_every_policy_reported_reward_in_bounds(events_dir: Path, *, bounds: dict[str, TrainRewardBounds]) -> None:
     for model_id, model_bounds in bounds.items():
         rewards = _read_train_reward_series(events_dir, model_id=model_id)
         assert rewards, (
