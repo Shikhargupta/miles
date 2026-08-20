@@ -138,3 +138,58 @@ class TestForm:
     def test_the_form_declares_that_it_leaves_the_cell_it_was_drawn_for_running(self):
         """A cell counted as crashed is dropped from the live set forever, and no later draw would fire."""
         assert not _form(lambda _config: None).harms_the_cell
+
+
+class TestTheClosingContract:
+    def test_a_soak_whose_take_overs_all_installed_cleanly_passes(self, monkeypatch):
+        """Nothing raised and nothing is still running, so what was collected can be read."""
+        _install_run(monkeypatch, attempts=[{0: 1, 1: 1}, {0: 1}])
+        form = _form(lambda _config: None)
+        form.inject(CELL, Random(0))
+
+        form.join_relaunches(timeout_seconds=30.0)
+        form.assert_every_take_over_installed_cleanly()
+
+    def test_the_run_verdict_raised_by_the_last_relaunch_is_not_lost(self, monkeypatch):
+        """The last relaunch's launcher is what observes the run's own metric checker."""
+        _install_run(monkeypatch, attempts=[{0: 1, 1: 1}, {0: 1}])
+        form = _form(_raise_the_run_verdict)
+        form.inject(CELL, Random(0))
+
+        form.join_relaunches(timeout_seconds=30.0)
+
+        with pytest.raises(AssertionError, match="did not install cleanly"):
+            form.assert_every_take_over_installed_cleanly()
+
+    def test_a_relaunch_still_running_at_the_end_is_reported(self, monkeypatch):
+        """A run still being replaced under the dumps about to be read is not a finished soak."""
+        never_returns = threading.Event()
+        _install_run(monkeypatch, attempts=[{0: 1, 1: 1}, {0: 1}])
+        form = _form(lambda _config: never_returns.wait(timeout=30.0))
+        form.inject(CELL, Random(0))
+
+        try:
+            form.join_relaunches(timeout_seconds=0.05)
+            with pytest.raises(AssertionError, match="still installing a hot restart"):
+                form.assert_every_take_over_installed_cleanly()
+        finally:
+            never_returns.set()
+
+    def test_a_failure_from_an_earlier_take_over_is_still_reported_at_the_end(self, monkeypatch):
+        """Per-draw judgement must not throw away what an earlier draw already proved broken."""
+        _install_run(monkeypatch, attempts=[{0: 1, 1: 1}])
+        form = _form(_raise_refused)
+        with pytest.raises(AssertionError, match="refused rather than installed"):
+            form.inject(CELL, Random(0))
+
+        _install_run(monkeypatch, attempts=[{0: 1, 1: 1}, {0: 1}])
+        form._launch = lambda _config: None
+        form.inject(CELL, Random(0))
+        form.join_relaunches(timeout_seconds=30.0)
+
+        with pytest.raises(AssertionError, match="take-over 0"):
+            form.assert_every_take_over_installed_cleanly()
+
+
+def _raise_the_run_verdict(_config: ExecuteTrainConfig) -> None:
+    raise SystemExit("eval/gsm8k 0.31 is below the required 0.55")

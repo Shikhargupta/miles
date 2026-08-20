@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 HOT_RESTART_FORM_NAME: str = "hot_restart"
 TAKE_OVER_TIMEOUT_SECONDS: float = 1800.0
 TAKE_OVER_POLL_INTERVAL_SECONDS: float = 10.0
+RELAUNCH_JOIN_TIMEOUT_SECONDS: float = 1800.0
 
 
 class HotRestartFaultForm(BaseFaultForm):
@@ -47,6 +48,26 @@ class HotRestartFaultForm(BaseFaultForm):
     @property
     def name(self) -> str:
         return HOT_RESTART_FORM_NAME
+
+    @property
+    def records(self) -> tuple[HotRestartRecord, ...]:
+        return tuple(self._records)
+
+    def join_relaunches(self, *, timeout_seconds: float = RELAUNCH_JOIN_TIMEOUT_SECONDS) -> None:
+        for thread in self._threads:
+            thread.join(timeout=timeout_seconds)
+
+    def assert_every_take_over_installed_cleanly(self) -> None:
+        # The last relaunch is what drives the run to its end, so this is where the run's own
+        # verdict surfaces: its launcher raises, and that exception lands in _failures.
+        assert not self._failures, "a hot restart of this run did not install cleanly:\n" + "\n".join(
+            f"  - take-over {at}: {failure!r}" for at, failure in self._failures
+        )
+        alive = [thread.name for thread in self._threads if thread.is_alive()]
+        assert not alive, (
+            f"{alive} are still installing a hot restart, so this run may still be replaced under the dumps that "
+            f"are about to be read"
+        )
 
     @property
     def harms_the_cell(self) -> bool:

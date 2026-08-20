@@ -48,6 +48,13 @@ def run_ci(
     observer = ClusterObserver(
         release=compute_release_of_config(config), namespace=config.namespace, trainer_id=DEFAULT_TRAINER_ID
     )
+    hot_restart_forms: list[HotRestartFaultForm] = []
+
+    def create_forms(run: Gsm8kRun) -> CellFaultForms:
+        forms = create_hot_restart_forms(run)
+        hot_restart_forms.extend(forms[ACTOR_CELL_TYPE])
+        return forms
+
     with observing_the_cluster(observer):
         outcome = run_realistic_gsm8k(
             config=config,
@@ -57,9 +64,13 @@ def run_ci(
             metric_threshold=metric_threshold,
             fully_async=False,
             mean_interval_seconds_of_cell_type={ACTOR_CELL_TYPE: hot_restart_interval_seconds},
-            create_forms=create_hot_restart_forms,
+            create_forms=create_forms,
             extra_train_args=build_checkpoint_args(resolve_dump_dir(TEST_NAME)),
         )
+
+    [form] = hot_restart_forms
+    form.join_relaunches()
+    form.assert_every_take_over_installed_cleanly()
 
     evidence = HotRestartEvidence(
         records=(),
