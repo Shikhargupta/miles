@@ -37,23 +37,23 @@ def release_patch(
     base_gpu_id: int,
     gates: list[str],
     has_node_selector: bool,
-    annotations: Mapping[str, str] | None,
+    annotations: Mapping[str, str],
 ) -> list[dict[str, object]]:
+    key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
+    assert annotations, (
+        f"the pod carries no annotations, so adding {key} under a map that does not exist is a patch "
+        f"the apiserver refuses"
+    )
+
     index = gates.index(_GATE_NAME)
     pin = (
         {"op": "add", "path": f"/spec/nodeSelector/{_escape_pointer(_HOSTNAME_LABEL)}", "value": node_name}
         if has_node_selector
         else {"op": "add", "path": "/spec/nodeSelector", "value": {_HOSTNAME_LABEL: node_name}}
     )
-    key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
-    annotation_ops = (
-        {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)}
-        if annotations is not None
-        else {"op": "add", "path": "/metadata/annotations", "value": {key: str(base_gpu_id)}}
-    )
     return [
         pin,
-        annotation_ops,
+        {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)},
         {"op": "test", "path": f"/spec/schedulingGates/{index}/name", "value": _GATE_NAME},
         {"op": "remove", "path": f"/spec/schedulingGates/{index}"},
     ]
