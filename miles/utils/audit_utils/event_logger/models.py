@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator
+from pydantic import ConfigDict, Discriminator
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.process_identity import ProcessIdentity
@@ -49,6 +49,8 @@ class EnvReport(FrozenStrictBaseModel):
 
 
 class EventBase(FrozenStrictBaseModel):
+    model_config = ConfigDict(ser_json_inf_nan="constants")
+
     timestamp: datetime
     source: ProcessIdentity
 
