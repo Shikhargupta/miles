@@ -53,6 +53,10 @@ def compute_checkpoint_dir(dump_dir: str) -> Path:
 
 @dataclass(frozen=True)
 class ScheduledFreeze:
+    # This checks only what a freeze can know on its own. That the frozen step is not itself a
+    # save step, and that the pinned iteration is the one the run's cadence really writes, needs
+    # the save interval the run is installed with: see the deterministic scenario's
+    # assert_the_freeze_schedule_leaves_a_window_the_run_can_redo.
     frozen_rollout_id: int
     saved_iteration: int | None
 
