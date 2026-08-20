@@ -34,6 +34,7 @@ from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.object_store_config import compute_mooncake_init_kwargs
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import requirements_relaxed
@@ -3856,6 +3857,9 @@ def miles_validate_args(args):
                 f"{ObjectStoreBackend.MOONCAKE.value} under --cluster-backend {ClusterBackend.KUBERNETES.value}."
             )
             args.object_store_backend = ObjectStoreBackend.MOONCAKE.value
+        if not args.mooncake_store_init_kwargs:
+
+            args.mooncake_store_init_kwargs = compute_mooncake_init_kwargs()
 
     args.run_uuid = _resolve_run_uuid(args)
 
