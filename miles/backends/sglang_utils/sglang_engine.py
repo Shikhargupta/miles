@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def assert_sglang_serves_a_launch_gate() -> None:
+def _assert_sglang_serves_a_launch_gate() -> None:
     # the run holds every engine at its gate until the fleet is complete, so an sglang serving
     # nothing on that port leaves each cell waiting out its whole activation deadline on an engine
     # that is already up; said at spec time so it is one line rather than a thirty minute silence

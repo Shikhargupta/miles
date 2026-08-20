@@ -12,7 +12,7 @@ pytest.importorskip("sglang")
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.sglang_engine import (
-    assert_sglang_serves_a_launch_gate,
+    _assert_sglang_serves_a_launch_gate,
     compute_engine_launch_cmd,
 )
 
@@ -204,13 +204,13 @@ class TestTheLaunchGateSglangMustServe:
     @staticmethod
     def _pretend_sglang_is(monkeypatch, server_args: type) -> None:
         monkeypatch.setattr(sglang_engine, "ServerArgs", server_args)
-        assert_sglang_serves_a_launch_gate.cache_clear()
+        _assert_sglang_serves_a_launch_gate.cache_clear()
 
     def test_an_sglang_that_serves_the_gate_is_accepted(self, monkeypatch) -> None:
         """The run launches every engine through the gate, so the one field it needs is the whole check."""
         self._pretend_sglang_is(monkeypatch, _SglangWithTheGate)
 
-        assert_sglang_serves_a_launch_gate()
+        _assert_sglang_serves_a_launch_gate()
 
     def test_an_sglang_without_the_gate_is_refused(self, monkeypatch) -> None:
         """An sglang serving nothing on that port leaves each cell waiting out its whole activation
@@ -218,4 +218,4 @@ class TestTheLaunchGateSglangMustServe:
         self._pretend_sglang_is(monkeypatch, _SglangWithoutTheGate)
 
         with pytest.raises(AssertionError, match="--gated-launch-port"):
-            assert_sglang_serves_a_launch_gate()
+            _assert_sglang_serves_a_launch_gate()

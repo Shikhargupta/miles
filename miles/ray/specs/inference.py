@@ -5,7 +5,7 @@ import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
-from miles.backends.sglang_utils.sglang_engine import assert_sglang_serves_a_launch_gate, compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
@@ -287,8 +287,6 @@ def _compute_spec_inference_engine(
     model_cfg: ModelConfig,
     server_group_config: ServerGroupConfig,
 ) -> CommandWorkerSpec:
-    assert_sglang_serves_a_launch_gate()
-
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         dist_init = ctx.self_addrs["dist_init"]
         return compute_engine_launch_cmd(
