@@ -7,6 +7,7 @@ import pytest
 import tests.e2e.deploy
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_deterministic as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import compute_freeze_plan_path
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import (
     HotRestartMode,
@@ -235,3 +236,32 @@ class TestTheOneEventPerRolloutPremise:
             scenario._assert_each_step_leaves_exactly_one_train_event(
                 "--global-batch-size 128 --rollout-batch-size 32 --n-samples-per-prompt 8 "
             )
+
+
+class TestTheVerdictEachModeIsMeasuredAgainst:
+    def test_the_checkpointed_mode_is_paired_with_the_checkpointed_verdict(self):
+        """A mode pointing at the other verdict would measure the run against the wrong redo."""
+        assert scenario.CHECKPOINTED.assert_redone is scenario.assert_only_the_steps_after_a_checkpoint_were_redone
+
+    def test_the_comparison_hands_the_verdict_the_target_side_dumps(self):
+        """Handing it the base directory would read the two sides' logs as one run's."""
+        recorded: dict[str, object] = {}
+
+        def record(**kwargs) -> None:
+            recorded.update(kwargs)
+
+        mode = dataclasses.replace(scenario.CHECKPOINTED, assert_redone=record)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(scenario.HotRestartEvidence, "load", classmethod(lambda _cls, *, dump_dir: _evidence()))
+            patch.setattr(scenario, "assert_the_take_overs_replaced_only_the_script", lambda *a, **k: None)
+            patch.setattr(scenario, "compare_deterministic_sides", lambda **_kwargs: None)
+            scenario._compare(mode, "/dumps/hot_restart_checkpointed", scenario._MODE)
+
+        assert str(recorded["dump_dir"]).endswith("/target")
+        assert str(recorded["checkpoint_dir"]).endswith("/target/checkpoints")
+        assert recorded["num_rollouts"] == scenario.NUM_ROLLOUTS
+        assert recorded["schedule"] == mode.schedule
+
+
+def _evidence() -> HotRestartEvidence:
+    return HotRestartEvidence(records=(), snapshots=(), release="miles-run-demo-all")
