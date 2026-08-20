@@ -96,8 +96,10 @@ Steps: as scenario_realistic_gsm8k
 Injection: HotRestartFaultForm at random intervals via the ft fault-injection plan, seed logged
 Eligibility: none - every draw fires, wherever the run stands. A draw before the first save takes
         over a run holding no checkpoint, which legitimately starts again from --ref-load; that
-        is a product path this soak is meant to cover, not skip. A draw lands once the run has
-        redone a step it had already trained (a rolled-back log, or step 0 trained twice).
+        is a product path this soak is meant to cover, not skip. A draw lands once this release's
+        orchestration workloads carry one restart stamp per take-over drawn so far; a run that
+        redid a step it had already trained (a rolled-back log, or step 0 trained twice) is the
+        faster signal off the run's own event log, and covers nothing extra.
 Load-bearing: this scenario adds --save/--load of its own plus --save-interval 10 (a take-over
         resumes from the last checkpoint, so the interval bounds what one costs); mean seconds
         between draws defaults to 1800 (--hot-restart-interval-seconds)
