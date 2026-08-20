@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import shlex
 import sys
 
@@ -9,7 +10,11 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils import sglang_engine
+from miles.backends.sglang_utils.sglang_engine import (
+    assert_sglang_serves_a_launch_gate,
+    compute_engine_launch_cmd,
+)
 
 
 def _cmd(
@@ -182,3 +187,35 @@ class TestLoraTargetModules:
         targets = self._parsed_lora_targets(["all"])
 
         assert set(targets) == {"all"}
+
+
+@dataclasses.dataclass
+class _SglangWithTheGate:
+    model_path: str = ""
+    gated_launch_port: int = 0
+
+
+@dataclasses.dataclass
+class _SglangWithoutTheGate:
+    model_path: str = ""
+
+
+class TestTheLaunchGateSglangMustServe:
+    @staticmethod
+    def _pretend_sglang_is(monkeypatch, server_args: type) -> None:
+        monkeypatch.setattr(sglang_engine, "ServerArgs", server_args)
+        assert_sglang_serves_a_launch_gate.cache_clear()
+
+    def test_an_sglang_that_serves_the_gate_is_accepted(self, monkeypatch) -> None:
+        """The run launches every engine through the gate, so the one field it needs is the whole check."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithTheGate)
+
+        assert_sglang_serves_a_launch_gate()
+
+    def test_an_sglang_without_the_gate_is_refused(self, monkeypatch) -> None:
+        """An sglang serving nothing on that port leaves each cell waiting out its whole activation
+        deadline against an engine that is already up, so it has to be refused at spec time."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithoutTheGate)
+
+        with pytest.raises(AssertionError, match="--gated-launch-port"):
+            assert_sglang_serves_a_launch_gate()

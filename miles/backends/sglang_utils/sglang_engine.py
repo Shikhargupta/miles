@@ -21,8 +21,14 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def sglang_supports_gated_launch() -> bool:
-    return any(field.name == "gated_launch_port" for field in dataclasses.fields(ServerArgs))
+def assert_sglang_serves_a_launch_gate() -> None:
+    # the run holds every engine at its gate until the fleet is complete, so an sglang serving
+    # nothing on that port leaves each cell waiting out its whole activation deadline on an engine
+    # that is already up; said at spec time so it is one line rather than a thirty minute silence
+    assert any(field.name == "gated_launch_port" for field in dataclasses.fields(ServerArgs)), (
+        "this sglang has no --gated-launch-port, and miles launches every inference engine through "
+        "that gate; upgrade sglang to one that serves it"
+    )
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
@@ -72,7 +78,7 @@ def compute_engine_launch_cmd(
     port: int,
     disaggregation_bootstrap_port: int | None,
     engine_info_bootstrap_port: int,
-    gated_launch_port: int | None,
+    gated_launch_port: int,
 ) -> str:
     _assert_sglang_serves_a_launch_gate()
 
@@ -110,7 +116,7 @@ def _compute_server_args(
     engine_info_bootstrap_port: int | None,
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
-    gated_launch_port: int | None,
+    gated_launch_port: int,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
@@ -131,6 +137,7 @@ def _compute_server_args(
         "dist_init_addr": dist_init_addr,
         "gpu_id_step": 1,
         "base_gpu_id": base,
+        "gated_launch_port": gated_launch_port,
         # parallel
         "tp_size": _gpus_per_engine,
         "dp_size": args.sglang_dp_size,
@@ -166,8 +173,6 @@ def _compute_server_args(
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
-    if gated_launch_port is not None:
-        kwargs["gated_launch_port"] = gated_launch_port
 
     if is_multi_lora_enabled(args):
         kwargs["enable_lora"] = True

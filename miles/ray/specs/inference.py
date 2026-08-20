@@ -5,7 +5,7 @@ import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, sglang_supports_gated_launch
+from miles.backends.sglang_utils.sglang_engine import assert_sglang_serves_a_launch_gate, compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
@@ -287,6 +287,8 @@ def _compute_spec_inference_engine(
     model_cfg: ModelConfig,
     server_group_config: ServerGroupConfig,
 ) -> CommandWorkerSpec:
+    assert_sglang_serves_a_launch_gate()
+
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         dist_init = ctx.self_addrs["dist_init"]
         return compute_engine_launch_cmd(
@@ -303,7 +305,7 @@ def _compute_spec_inference_engine(
             port=ctx.self_addrs["primary"].port,
             disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
-            gated_launch_port=gate.port if (gate := ctx.self_addrs.get(GATE_PORT_NAME)) else None,
+            gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
         )
 
     envs = compute_inference_engine_env_vars(args)
@@ -345,13 +347,7 @@ def _compute_spec_inference_engine(
                 else []
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
-            # an sglang without the gate serves nothing on this port, and a cell that got one anyway
-            # would wait out its whole activation deadline on an engine that is already serving
-            *(
-                [PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True)]
-                if sglang_supports_gated_launch()
-                else []
-            ),
+            PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
         env_var=lambda _ctx: envs,
         scheduling=scheduling,
