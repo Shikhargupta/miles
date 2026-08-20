@@ -38,6 +38,13 @@ class TestAssertTheTrainerNeverRebooted:
         with pytest.raises(AssertionError, match="never reached after"):
             assert_the_trainer_never_rebooted(evidence_of(snapshots=snapshots, records=[]))
 
+    def test_a_trainer_the_rpc_server_never_answered_for_fails_as_such(self):
+        """One uuid out of zero readings used to fail as "the uuid(s) [] , not one", which reads as a reboot."""
+        never_answered = [restart_snapshot(uid_of_pod={}, stamp_of_workload={}, boot_uuid=None) for _ in range(3)]
+
+        with pytest.raises(AssertionError, match="never reached across 3 observation"):
+            assert_the_trainer_never_rebooted(evidence_of(snapshots=never_answered, records=[]))
+
 
 class TestAssertTheRunWasWatchedCloselyEnough:
     def test_a_run_observed_throughout_passes(self):

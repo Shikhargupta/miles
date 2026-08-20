@@ -26,6 +26,10 @@ def assert_the_run_was_watched_closely_enough(evidence: HotRestartEvidence) -> N
 
 def assert_the_trainer_never_rebooted(evidence: HotRestartEvidence) -> None:
     boot_uuids = _compute_trainer_boot_uuids(evidence.snapshots)
+    assert boot_uuids, (
+        f"the trainer's rpc server was never reached across {len(evidence.snapshots)} observation(s), so nothing "
+        f"here says whether the process a take-over reloaded a checkpoint into is the one that had been training"
+    )
     assert len(boot_uuids) == 1, (
         f"the trainer's rpc server answered with the boot uuid(s) {sorted(boot_uuids)}, not one: the process a "
         f"take-over reloaded a checkpoint into is not the process that had been training"
