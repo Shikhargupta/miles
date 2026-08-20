@@ -16,7 +16,13 @@ from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values 
 
 from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME, release_patch
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
-from miles.utils.workers.env_vars import BASE_GPU_ID_ENV_VAR, CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR
+from miles.utils.workers.env_vars import (
+    BASE_GPU_ID_ENV_VAR,
+    CELL_INDEX_ENV_VAR,
+    NAMESPACE_ENV_VAR,
+    POD_INDEX_ENV_VAR,
+    RELEASE_ENV_VAR,
+)
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 ENGINES = [
@@ -248,14 +254,24 @@ class TestAPoolTheConfigDoesNotName:
 
 
 @requires_helm
-class TestTheVariablesAPodLearnsFromItself:
-    @pytest.mark.parametrize("name", [CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, BASE_GPU_ID_ENV_VAR])
+class TestTheVariablesThePlatformOwns:
+    @pytest.mark.parametrize(
+        "name", [CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR]
+    )
     @pytest.mark.parametrize("section", ["infra", "run"])
     def test_the_schema_refuses_one_in_a_values_environment(self, section: str, name: str):
         """Kubernetes keeps the last entry of a name, and these render first, so a values entry wins silently."""
         error = render_run_error("--set", f"{section}.env.{name}=anything")
 
         assert name in error
+
+    def test_the_release_and_namespace_a_pod_is_told_are_the_ones_it_runs_in(self):
+        """They are how a pod selects its own workers, so an entry pointing elsewhere reaches someone else's run."""
+        container = pool_pod(render_run(*ENABLE), "myrun-miles-run-decode")["containers"][0]
+        env = {entry["name"]: entry.get("value") for entry in container["env"]}
+
+        assert env[NAMESPACE_ENV_VAR] == NAMESPACE
+        assert env[RELEASE_ENV_VAR] == RUN_RELEASE_NAME
 
 
 def _sub_node_engine_argv() -> list[str]:

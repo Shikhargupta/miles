@@ -9,7 +9,13 @@ from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.env_vars import BASE_GPU_ID_ENV_VAR, CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR
+from miles.utils.workers.env_vars import (
+    BASE_GPU_ID_ENV_VAR,
+    CELL_INDEX_ENV_VAR,
+    NAMESPACE_ENV_VAR,
+    POD_INDEX_ENV_VAR,
+    RELEASE_ENV_VAR,
+)
 
 _DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 _OPTIONAL_DNS_LABEL = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
@@ -17,7 +23,13 @@ _DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])
 _OPTIONAL_DNS_SUBDOMAIN = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
 
 _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
-_PLATFORM_OWNED_ENV_VARS = [CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, BASE_GPU_ID_ENV_VAR]
+_PLATFORM_OWNED_ENV_VARS = [
+    CELL_INDEX_ENV_VAR,
+    POD_INDEX_ENV_VAR,
+    BASE_GPU_ID_ENV_VAR,
+    NAMESPACE_ENV_VAR,
+    RELEASE_ENV_VAR,
+]
 _ENV_KEYS = {
     "propertyNames": {
         "pattern": "^[ -<>-~]+$",
