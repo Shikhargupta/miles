@@ -3,6 +3,7 @@ import os
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.common import DATA_DIR, MODEL_DIR
 from miles.utils.workers.types import WorkerCommBackend
 
 register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"])
@@ -17,17 +18,17 @@ NUM_GPUS = 4 if FEW_GPU else 8
 
 def prepare():
     U = command_utils.default_config().create_backend()
-    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
 def execute(*, comm_backend: WorkerCommBackend, test_file: str) -> None:
     U = command_utils.default_config().create_backend()
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}/ "
 
     rollout_args = (
-        "--prompt-data /root/datasets/gsm8k/train.parquet "
+        f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
         "--input-key messages "
         "--label-key label "
         "--apply-chat-template "
@@ -45,7 +46,7 @@ def execute(*, comm_backend: WorkerCommBackend, test_file: str) -> None:
 
     eval_args = (
         "--eval-interval 20 "
-        "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
+        f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 1024 "
         "--eval-top-k 1 "
