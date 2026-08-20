@@ -56,16 +56,16 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
     # The HF checkpoint keeps the three alphas packed as one hc_*_scale tensor, ordered
     # [pre, post, res] — the same order both implementations feed their kernels.
     _OTHER_MAPPING = {
-        "self_attention_hc_mapping_proj": ["model.layers.{layer_number}.hc_attn_fn"],
-        "self_attention_hc_bias": ["model.layers.{layer_number}.hc_attn_base"],
-        "self_attention_hc_alpha_pre": ["model.layers.{layer_number}.hc_attn_scale"],
-        "self_attention_hc_alpha_post": ["model.layers.{layer_number}.hc_attn_scale"],
-        "self_attention_hc_alpha_res": ["model.layers.{layer_number}.hc_attn_scale"],
-        "mlp_hc_mapping_proj": ["model.layers.{layer_number}.hc_ffn_fn"],
-        "mlp_hc_bias": ["model.layers.{layer_number}.hc_ffn_base"],
-        "mlp_hc_alpha_pre": ["model.layers.{layer_number}.hc_ffn_scale"],
-        "mlp_hc_alpha_post": ["model.layers.{layer_number}.hc_ffn_scale"],
-        "mlp_hc_alpha_res": ["model.layers.{layer_number}.hc_ffn_scale"],
+        "self_attention_hyper_connection.mapping_proj.weight": ["model.layers.{layer_number}.hc_attn_fn"],
+        "self_attention_hyper_connection.bias": ["model.layers.{layer_number}.hc_attn_base"],
+        "self_attention_hyper_connection.alpha_pre": ["model.layers.{layer_number}.hc_attn_scale"],
+        "self_attention_hyper_connection.alpha_post": ["model.layers.{layer_number}.hc_attn_scale"],
+        "self_attention_hyper_connection.alpha_res": ["model.layers.{layer_number}.hc_attn_scale"],
+        "mlp_hyper_connection.mapping_proj.weight": ["model.layers.{layer_number}.hc_ffn_fn"],
+        "mlp_hyper_connection.bias": ["model.layers.{layer_number}.hc_ffn_base"],
+        "mlp_hyper_connection.alpha_pre": ["model.layers.{layer_number}.hc_ffn_scale"],
+        "mlp_hyper_connection.alpha_post": ["model.layers.{layer_number}.hc_ffn_scale"],
+        "mlp_hyper_connection.alpha_res": ["model.layers.{layer_number}.hc_ffn_scale"],
     }
 
     _MLP_MAPPING = DeepseekV3Bridge._MLP_MAPPING.copy()
@@ -78,9 +78,9 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
     _DIRECT_MAPPING = DeepseekV3Bridge._DIRECT_MAPPING.copy()
     _DIRECT_MAPPING.update(
         {
-            "decoder.hc_head_params.hc_head_fn": "model.hc_head_fn",
-            "decoder.hc_head_params.hc_head_base": "model.hc_head_base",
-            "decoder.hc_head_params.hc_head_scale": "model.hc_head_scale",
+            "decoder.hc_head_fn": "model.hc_head_fn",
+            "decoder.hc_head_base": "model.hc_head_base",
+            "decoder.hc_head_scale": "model.hc_head_scale",
         }
     )
 
