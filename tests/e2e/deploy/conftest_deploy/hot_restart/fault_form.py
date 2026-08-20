@@ -137,9 +137,10 @@ class HotRestartFaultForm(BaseFaultForm):
             )
 
         raise AssertionError(
-            f"the relaunch of {self._release} was installed {self._timeout_seconds}s ago and {sorted(self._stamped_workloads)} "
-            f"still carry the stamps they carried before it ({stamps_before}), nor has the run redone any of the "
-            f"steps it had trained ({before}), so a take-over cannot be told from a relaunch that hung"
+            f"the relaunch of {self._release} was installed {self._timeout_seconds}s ago and "
+            f"{sorted(self._stamped_workloads)} still carry the stamps they carried before it ({stamps_before}), "
+            f"nor has the run redone any of the steps it had trained ({before}), so a take-over cannot be told "
+            f"from a relaunch that hung"
         )
 
     def _read_the_stamps_this_take_over_has_to_replace(self) -> dict[str, str | None]:

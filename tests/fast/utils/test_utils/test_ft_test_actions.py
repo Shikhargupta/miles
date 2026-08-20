@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from tests.e2e.ft.conftest_ft.execution import DEFAULT_TRAIN_SCRIPT
 
 from miles.utils.test_utils.ft_test_actions import (
     _ACTOR_ACTIONS,
@@ -633,6 +634,10 @@ class TestWhichLoopsCanBeParked:
 
         with pytest.raises(AssertionError, match="several policies"):
             FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id="solver")
+
+    def test_the_parkable_script_is_the_one_the_harness_launches_by_default(self) -> None:
+        """A literal of its own would go on naming train.py after the harness moved to another script."""
+        assert PARKABLE_TRAIN_SCRIPT == DEFAULT_TRAIN_SCRIPT
 
     def test_the_loop_the_action_was_written_for_is_accepted(self, driven_by) -> None:
         """train.py updates weights once per step, for one policy, after the step is done."""
