@@ -157,7 +157,9 @@ _WHOLE_NODE_GRID = dict(
 
 
 def _whole_node_cases() -> list[dict[str, int]]:
-    return [dict(zip(_WHOLE_NODE_GRID, values)) for values in itertools.product(*_WHOLE_NODE_GRID.values())]
+    return [
+        dict(zip(_WHOLE_NODE_GRID, values, strict=True)) for values in itertools.product(*_WHOLE_NODE_GRID.values())
+    ]
 
 
 def _pod_granular_layout_is_legal(*, gpu_offset: int, **case: int) -> bool:
