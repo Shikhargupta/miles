@@ -175,7 +175,7 @@ class TestBuildArgs:
         monkeypatch.setenv("WANDB_API_KEY", "unused-in-this-test")
         monkeypatch.delenv("GITHUB_COMMIT_NAME", raising=False)
 
-        baseline = scenario._build_baseline_args(_request(mode, side=BASELINE_SIDE))
+        baseline = scenario._build_baseline_args(mode, DUMP_DIR, True, _request(mode).config)
 
         assert value_of(baseline, "--wandb-group") == RUN_ID
 
