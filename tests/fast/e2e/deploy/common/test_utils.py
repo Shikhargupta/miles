@@ -1,8 +1,16 @@
+from typing import Any
+
 import pytest
 from tests.e2e.deploy.conftest_deploy.common import utils
+from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.workers.types import ClusterBackend
+
+_BASELINE_DIR: str = "/dumps/baseline"
+_TARGET_DIR: str = "/dumps/target"
+_MIN_TRAINED_ROLLOUTS: int = 2
+_EXPECTED_ENGINE_COUNT: int = 2
 
 
 def _config(*, cluster_backend: ClusterBackend, namespace: str) -> ExecuteTrainConfig:
@@ -82,3 +90,47 @@ def _refuse_to_probe(config: ExecuteTrainConfig) -> None:
 
 def _refuse_the_cluster(config: ExecuteTrainConfig) -> None:
     raise AssertionError("no cluster here")
+
+
+@pytest.fixture
+def recorded_calls(monkeypatch) -> dict[str, list[dict[str, Any]]]:
+    calls: dict[str, list[dict[str, Any]]] = {"compare_deterministic_sides": [], "assert_engine_count": []}
+
+    def record(name: str):
+        def recorder(**kwargs: Any) -> None:
+            calls[name].append(kwargs)
+
+        return recorder
+
+    monkeypatch.setattr(utils.comparisons, "compare_deterministic_sides", record("compare_deterministic_sides"))
+    monkeypatch.setattr(utils, "assert_engine_count", record("assert_engine_count"))
+
+    return calls
+
+
+def _compare() -> None:
+    utils.compare_deterministic_sides(
+        baseline_dir=_BASELINE_DIR,
+        target_dir=_TARGET_DIR,
+        expected_engine_count=_EXPECTED_ENGINE_COUNT,
+        min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+    )
+
+
+class TestCompareDeterministicSides:
+    def test_the_two_sides_are_compared_exactly_as_an_unsplit_pair_is(self, recorded_calls):
+        """A deploy comparison that dropped one of ft's checks would pass a split run ft would refuse."""
+        _compare()
+
+        assert recorded_calls["compare_deterministic_sides"] == [
+            dict(baseline_dir=_BASELINE_DIR, target_dir=_TARGET_DIR, min_trained_rollouts=_MIN_TRAINED_ROLLOUTS)
+        ]
+
+    def test_both_sides_are_required_to_have_served_the_engines_the_run_declared(self, recorded_calls):
+        """This is what the unsplit comparison cannot check: a split run losing an engine deployment."""
+        _compare()
+
+        assert recorded_calls["assert_engine_count"] == [
+            dict(side=BASELINE_SIDE, dump_dir=_BASELINE_DIR, expected=_EXPECTED_ENGINE_COUNT),
+            dict(side=TARGET_SIDE, dump_dir=_TARGET_DIR, expected=_EXPECTED_ENGINE_COUNT),
+        ]
