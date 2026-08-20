@@ -31,8 +31,6 @@ app: typer.Typer = typer.Typer()
 TEST_NAME: str = "hot_restart_realistic_gsm8k"
 SAVE_INTERVAL: int = 10
 MIN_HOT_RESTARTS: int = 1
-# A take-over resumes from the last checkpoint, so it costs at most one save interval, plus the
-# step whose own save had not landed when the form read the tracker.
 MAX_REDONE_STEPS_PER_TAKE_OVER: int = SAVE_INTERVAL + 1
 DEFAULT_HOT_RESTART_INTERVAL_SECONDS: float = 1800.0
 

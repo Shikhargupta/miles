@@ -67,8 +67,6 @@ class HotRestartFaultForm(BaseFaultForm):
             thread.join(timeout=timeout_seconds)
 
     def assert_every_take_over_installed_cleanly(self) -> None:
-        # The last relaunch is what drives the run to its end, so this is where the run's own
-        # verdict surfaces: its launcher raises, and that exception lands in _failures.
         assert not self._failures, "a hot restart of this run did not install cleanly:\n" + "\n".join(
             f"  - take-over {at}: {failure!r}" for at, failure in self._failures
         )
@@ -177,14 +175,12 @@ class HotRestartFaultForm(BaseFaultForm):
 def restamped_every_workload_a_take_over_replaces(
     *, before: dict[str, str | None], after: dict[str, str | None] | None, workloads: frozenset[str]
 ) -> bool:
-    """A take-over rewrites one restart stamp per workload it replaces, so a landing is a value that changed."""
     if after is None:
         return False
     return all((stamp := after.get(one)) is not None and stamp != before.get(one) for one in workloads)
 
 
 def describes_a_run_that_redid_a_step(*, before: dict[int, int], after: dict[int, int] | None) -> bool:
-    """A take-over resuming from a checkpoint rolls the log back; one starting over re-trains step 0."""
     if after is None or not before:
         return False
     if max(after, default=-1) < max(before):

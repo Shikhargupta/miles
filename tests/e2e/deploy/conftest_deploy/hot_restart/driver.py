@@ -53,10 +53,6 @@ def compute_checkpoint_dir(dump_dir: str) -> Path:
 
 @dataclass(frozen=True)
 class ScheduledFreeze:
-    # This checks only what a freeze can know on its own. That the frozen step is not itself a
-    # save step, and that the pinned iteration is the one the run's cadence really writes, needs
-    # the save interval the run is installed with: see the deterministic scenario's
-    # assert_the_freeze_schedule_leaves_a_window_the_run_can_redo.
     frozen_rollout_id: int
     saved_iteration: int | None
 
@@ -158,9 +154,6 @@ class HotRestartDriver:
 
     def stop_collecting(self) -> None:
         self._worker.stop_and_join(timeout_seconds=RELAUNCH_JOIN_TIMEOUT_SECONDS)
-        # Before joining: the relaunch threads follow the run to its end, and the release is
-        # torn down from there, so a snapshot taken after them can only describe a run that is
-        # already gone.
         self._observer.observe_once_or_warn()
         for thread in self._relaunch_threads:
             thread.join(timeout=RELAUNCH_JOIN_TIMEOUT_SECONDS)
@@ -258,8 +251,6 @@ class HotRestartDriver:
                 f"the injection that freezes it never fired, so a take-over would race the run"
             )
 
-        # The run writes this only once it is already inside its sleep loop, so a plan rewritten
-        # after it appears cannot be read by the run it was meant to freeze.
         return read_frozen_rollout_id(self.freeze_plan_path) == scheduled.frozen_rollout_id
 
     def _compute_record(self, *, index: int, scheduled: ScheduledFreeze, progress: RunProgress) -> HotRestartRecord:
@@ -277,9 +268,6 @@ class HotRestartDriver:
         )
 
     def _read_saved_iteration_until_it_settles(self, *, on: int | None, progress: RunProgress) -> int | None:
-        # The tracker is written by the save itself, so a frozen run can be observed a moment
-        # before the checkpoint it is holding shows up. Re-read a bounded number of times rather
-        # than deciding on the first look.
         saved = progress.last_saved_iteration
         for _ in range(self.tracker_settle_attempts):
             if saved == on:

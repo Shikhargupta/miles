@@ -109,7 +109,6 @@ def _install_frozen_at(monkeypatch, rollout_id: int | None) -> None:
 
 
 def _install_progress(monkeypatch, reported: list[RunProgress]) -> None:
-    """Feed the loop a progress sequence, with the run parked wherever the latest one says it stands."""
     remaining = list(reported)
     latest: list[RunProgress] = []
 

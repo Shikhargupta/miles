@@ -49,7 +49,6 @@ def _install_run(
     saved: int | None = 1,
     stamps: list[dict[str, str | None] | None] | None = None,
 ) -> None:
-    """Feed the form the per-rollout attempt counts and the workload restart stamps it reads, one per look."""
     remaining = list(attempts)
     monkeypatch.setattr(
         fault_form_module,

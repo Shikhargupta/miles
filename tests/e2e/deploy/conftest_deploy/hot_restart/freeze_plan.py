@@ -12,7 +12,6 @@ from miles.utils.test_utils.ft_test_actions import (
 )
 
 # TODO ad hoc hack: this whole module goes away with the args refactor. Reverting it means
-# deleting the file and dropping the two calls the deterministic scenario makes into it.
 logger = logging.getLogger(__name__)
 
 FREEZE_PLAN_DIRNAME: str = "hot_restart"

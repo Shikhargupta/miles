@@ -257,9 +257,6 @@ def read_ft_test_actions(path: Path) -> str:
         f"file nothing wrote would quietly perform no action at all"
     )
 
-    # The orchestration script consults this once per step, and the file lives on shared
-    # storage, so re-read it only once its stamp has moved. The plan is written whole under a
-    # scratch name and renamed, so a moved stamp always means a whole new plan.
     stamped_at = (stamp.st_mtime_ns, stamp.st_size)
     if (cached := _ACTIONS_OF_STAMP.get(path)) is not None and cached[0] == stamped_at:
         return cached[1]
