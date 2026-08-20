@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -145,6 +146,60 @@ class TestPairingLayout:
                 gpu_offset=0,
                 podsPerInferenceCell=1,
             )
+
+
+_WHOLE_NODE_GRID = dict(
+    num_inference_cells=(1, 2, 3),
+    num_trainer_cells=(1, 2),
+    num_pods_per_inference_cell=(1, 2, 3),
+    num_pods_per_trainer_cell=(1, 2, 4),
+)
+
+
+def _whole_node_cases() -> list[dict[str, int]]:
+    return [dict(zip(_WHOLE_NODE_GRID, values)) for values in itertools.product(*_WHOLE_NODE_GRID.values())]
+
+
+def _pod_granular_layout_is_legal(*, gpu_offset: int, **case: int) -> bool:
+    pods_per_inference_cell = case["num_pods_per_inference_cell"]
+    pods_per_trainer_cell = case["num_pods_per_trainer_cell"]
+    pod_offset = gpu_offset // GPUS_PER_NODE
+    return (
+        pods_per_inference_cell <= pods_per_trainer_cell
+        and pods_per_trainer_cell % pods_per_inference_cell == 0
+        and gpu_offset % GPUS_PER_NODE == 0
+        and pod_offset % pods_per_inference_cell == 0
+        and pod_offset + case["num_inference_cells"] * pods_per_inference_cell
+        <= case["num_trainer_cells"] * pods_per_trainer_cell
+    )
+
+
+def _gpu_granular_layout_is_legal(*, gpu_offset: int, **case: int) -> bool:
+    try:
+        _layout(gpu_offset=gpu_offset, num_gpus_per_inference_pod=GPUS_PER_NODE, **case)
+    except pydantic.ValidationError:
+        return False
+    return True
+
+
+class TestWholeNodeLayoutsAreJudgedExactlyAsTheyWereInPods:
+    @pytest.mark.parametrize("gpu_offset", [0, 4, 8, 12, 16, 24, 32])
+    def test_accepts_and_refuses_the_same_layouts_the_pod_granular_rules_did(self, gpu_offset: int):
+        """The gpu rewrite has to be a pure generalisation: a whole-node pool sees no change in verdict."""
+        disagreements = [
+            case
+            for case in _whole_node_cases()
+            if _gpu_granular_layout_is_legal(gpu_offset=gpu_offset, **case)
+            != _pod_granular_layout_is_legal(gpu_offset=gpu_offset, **case)
+        ]
+
+        assert disagreements == []
+
+    def test_the_grid_it_compares_reaches_both_verdicts(self):
+        """A grid that only ever accepts, or only ever refuses, would make the comparison above vacuous."""
+        verdicts = {_gpu_granular_layout_is_legal(gpu_offset=8, **case) for case in _whole_node_cases()}
+
+        assert verdicts == {True, False}
 
 
 class TestTargetTrainerPod:
