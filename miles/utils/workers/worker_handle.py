@@ -47,8 +47,8 @@ class LazyWorkerHandle(BaseWorkerHandle):
         self._resolve = resolve
         self._resolved: BaseWorkerHandle | None = None
 
-    async def wait_ready(self, *, timeout: float) -> None:
-        await self._handle.wait_ready(timeout=timeout)
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
+        await self._handle.wait_ready(timeout=timeout, allow_server_uuid_change=allow_server_uuid_change)
 
     async def probe_is_dead(self) -> bool:
         return await self._handle.probe_is_dead()
