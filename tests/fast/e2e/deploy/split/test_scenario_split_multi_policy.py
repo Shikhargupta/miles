@@ -12,11 +12,13 @@ from tests.e2e.deploy.conftest_deploy.split import scenario_split_multi_policy a
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 NAMESPACE: str = "rl"
 RUN_ID: str = "demo"
 RUN_UUID: str = "0123456789abcdef"
+NUM_DEPLOYMENTS_OF_THE_RUN: int = 5
+NUM_TRAINER_DEPLOYMENTS: int = 2
 
 
 @pytest.fixture
@@ -33,9 +35,20 @@ class TestBuildDeployments:
             (one.deploy_component, one.deploy_instance_id) for one in deployments
         ] == compute_deployment_identities(args)
 
+    def test_the_scenario_deploys_the_two_policy_five_release_shape_its_spec_describes(self, args):
+        """Every assertion here follows the example, so a run that shrank to one policy would satisfy them all."""
+        deployments = scenario._build_deployments(args)
+        trainers = [one for one in deployments if one.deploy_component is DeployComponent.TRAINER]
+
+        assert len(deployments) == NUM_DEPLOYMENTS_OF_THE_RUN
+        assert len(trainers) == NUM_TRAINER_DEPLOYMENTS
+
     def test_every_part_is_launched_with_the_arguments_the_example_composes_for_it(self, args):
         """Arguments rebuilt here rather than imported would drift from the commands a reader types."""
-        for one in scenario._build_deployments(args):
+        deployments = scenario._build_deployments(args)
+
+        assert len(deployments) == NUM_DEPLOYMENTS_OF_THE_RUN
+        for one in deployments:
             assert one.train_args == build_deployment_train_args(
                 dataclasses.replace(
                     args, deploy_component=one.deploy_component, deploy_instance_id=one.deploy_instance_id

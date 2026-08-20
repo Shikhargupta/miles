@@ -32,6 +32,8 @@ from miles.utils.workers.types import ClusterBackend, DeployComponent
 NAMESPACE: str = "rl"
 RUN_ID: str = "demo"
 RUN_UUID: str = "0123456789abcdef"
+NUM_POLICIES: int = 2
+NUM_DEPLOYMENTS_OF_THE_RUN: int = 5
 MEGATRON_CONFIG_FLAG: str = "--megatron-config"
 SGLANG_CONFIG_FLAG: str = "--sglang-config"
 
@@ -66,6 +68,11 @@ class TestComputeDeploymentIdentities:
             (DeployComponent.PRIMARY, None),
         ]
 
+    def test_the_run_is_the_two_policy_five_release_shape_every_assertion_here_reads(self, args):
+        """The comparisons below are written against MODEL_IDS, and would all hold for a run of one policy."""
+        assert len(MODEL_IDS) == NUM_POLICIES
+        assert len(compute_deployment_identities(args)) == NUM_DEPLOYMENTS_OF_THE_RUN
+
     def test_the_command_that_drives_the_run_is_the_one_typed_last(self, args):
         """That command blocks until the run ends, so anything after it is typed into a finished run."""
         component, _ = compute_deployment_identities(args)[-1]
@@ -76,31 +83,37 @@ class TestComputeDeploymentIdentities:
 class TestBuildDeploymentTrainArgs:
     def test_a_trainer_command_carries_exactly_the_trainer_it_is_named_after(self, train_args_of_identity):
         """A command handed another policy's config would train a second copy of that policy instead."""
-        for (component, instance_id), train_args in train_args_of_identity.items():
-            if component is DeployComponent.TRAINER:
-                trainers = _config_of(train_args, MEGATRON_CONFIG_FLAG)["trainers"]
+        carried = {
+            instance_id: [one["trainer_id"] for one in _config_of(train_args, MEGATRON_CONFIG_FLAG)["trainers"]]
+            for (component, instance_id), train_args in train_args_of_identity.items()
+            if component is DeployComponent.TRAINER
+        }
 
-                assert [one["trainer_id"] for one in trainers] == [instance_id]
+        assert carried == {compute_trainer_id(model_id): [compute_trainer_id(model_id)] for model_id in MODEL_IDS}
 
     def test_a_trainer_command_carries_every_argument_the_whole_run_gives_that_policy(
         self, train_args_of_identity, args
     ):
         """Splitting the config per command must copy it, not rewrite it: a dropped override trains another model."""
         whole_run = {one["trainer_id"]: one for one in compute_megatron_config(args)["trainers"]}
+        carried = {
+            instance_id: _config_of(train_args, MEGATRON_CONFIG_FLAG)["trainers"]
+            for (component, instance_id), train_args in train_args_of_identity.items()
+            if component is DeployComponent.TRAINER
+        }
 
-        for (component, instance_id), train_args in train_args_of_identity.items():
-            if component is DeployComponent.TRAINER:
-                [trainer] = _config_of(train_args, MEGATRON_CONFIG_FLAG)["trainers"]
-
-                assert trainer == whole_run[instance_id]
+        assert len(whole_run) == NUM_POLICIES
+        assert carried == {instance_id: [whole_run[instance_id]] for instance_id in whole_run}
 
     def test_an_engine_command_serves_exactly_the_policy_it_is_named_after(self, train_args_of_identity):
         """An engine command that also declared its neighbour's model would install those engines twice."""
-        for (component, instance_id), train_args in train_args_of_identity.items():
-            if component is DeployComponent.INFERENCE:
-                models = _config_of(train_args, SGLANG_CONFIG_FLAG)["sglang"]
+        served = {
+            instance_id: [one["name"] for one in _config_of(train_args, SGLANG_CONFIG_FLAG)["sglang"]]
+            for (component, instance_id), train_args in train_args_of_identity.items()
+            if component is DeployComponent.INFERENCE
+        }
 
-                assert [one["name"] for one in models] == [instance_id]
+        assert served == {model_id: [model_id] for model_id in MODEL_IDS}
 
     def test_the_engine_commands_together_carry_what_one_run_declares(self, train_args_of_identity, args):
         """A run short of engines still starts, and only the policy that never generates shows it."""
