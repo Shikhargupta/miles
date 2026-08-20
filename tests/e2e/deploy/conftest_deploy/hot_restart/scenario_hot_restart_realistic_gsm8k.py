@@ -9,10 +9,11 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import (
 from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver, observing_the_cluster
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_checkpoint_dir, compute_release_of_config
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
-from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
+from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME, HotRestartFaultForm
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ACTOR_CELL_TYPE, CellFaultForms
+from tests.e2e.ft.conftest_ft.fault_injection.state import Event, InjectionEvent
 from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import (
     DEFAULT_METRIC_THRESHOLD,
     DEFAULT_NUM_ROLLOUT,
@@ -71,6 +72,7 @@ def run_ci(
     [form] = hot_restart_forms
     form.join_relaunches()
     form.assert_every_take_over_installed_cleanly()
+    assert_no_take_over_attempt_failed(outcome.injector.event_log.events)
 
     evidence = HotRestartEvidence(
         records=(),
@@ -84,6 +86,19 @@ def run_ci(
     )
 
     print(f"Hot restart realistic gsm8k test PASSED (seed={seed}, rollouts={num_rollout})")
+
+
+def assert_no_take_over_attempt_failed(events: list[Event]) -> None:
+    failed = [
+        one
+        for one in events
+        if isinstance(one, InjectionEvent) and one.form_name == HOT_RESTART_FORM_NAME and not one.succeeded
+    ]
+
+    assert not failed, (
+        f"{len(failed)} take-over attempt(s) failed: {failed}. Every draw of this form fires, so a failure here is "
+        f"a relaunch the cluster refused or one that never reached the run, not a draw that was declined"
+    )
 
 
 def create_hot_restart_forms(run: Gsm8kRun) -> CellFaultForms:

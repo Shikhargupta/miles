@@ -1,9 +1,12 @@
 import shlex
 
+import pytest
+
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_realistic_gsm8k as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
 from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ACTOR_CELL_TYPE
+from tests.e2e.ft.conftest_ft.fault_injection.state import InjectionEvent
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
@@ -77,6 +80,29 @@ class TestCheckpointArgs:
         assert ArgvManipulator.values_of(argv, "--save-interval") == [str(scenario.SAVE_INTERVAL)]
         assert scenario.SAVE_INTERVAL < scenario.DEFAULT_NUM_ROLLOUT
 
+
+class TestEveryDrawHasToLand:
+    def test_a_soak_where_no_attempt_failed_passes(self):
+        """Every draw of this form fires, so the log should hold successes only."""
+        scenario.assert_no_take_over_attempt_failed(
+            [_injection(succeeded=True), _injection(succeeded=True), _crash(succeeded=False)]
+        )
+
+    def test_a_soak_where_a_take_over_attempt_failed_is_a_failure(self):
+        """Without the eligibility gate a failed attempt can only mean a relaunch that did not land."""
+        with pytest.raises(AssertionError, match="take-over attempt\\(s\\) failed"):
+            scenario.assert_no_take_over_attempt_failed([_injection(succeeded=True), _injection(succeeded=False)])
+
     def test_a_run_nothing_restarted_is_a_failure_and_not_a_pass(self):
         """Every assertion past this one is vacuous on a run whose script was never replaced."""
         assert scenario.MIN_HOT_RESTARTS >= 1
+
+
+def _injection(*, succeeded: bool) -> InjectionEvent:
+    return InjectionEvent(
+        cell_name="actor-0", form_name=scenario.HOT_RESTART_FORM_NAME, succeeded=succeeded, harmed=False
+    )
+
+
+def _crash(*, succeeded: bool) -> InjectionEvent:
+    return InjectionEvent(cell_name="actor-1", form_name="crash_pod", succeeded=succeeded, harmed=True)
