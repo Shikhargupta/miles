@@ -15,7 +15,13 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     compute_sglang_config,
     compute_trainer_id,
 )
-from tests.fast.train_args import shared_argv, value_of, values_after
+from tests.fast.train_args import (
+    FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON,
+    ROLLOUT_NUM_GPUS_FLAG,
+    shared_argv,
+    value_of,
+    values_after,
+)
 
 from miles.ray.specs.inference import INFERENCE_CONTROLLER_ADDR_FLAG
 from miles.ray.specs.train import TRAINER_CONTROLLER_ADDRS_FLAG
@@ -28,15 +34,11 @@ RUN_ID: str = "demo"
 RUN_UUID: str = "0123456789abcdef"
 MEGATRON_CONFIG_FLAG: str = "--megatron-config"
 SGLANG_CONFIG_FLAG: str = "--sglang-config"
-ROLLOUT_NUM_GPUS_FLAG: str = "--rollout-num-gpus"
 
 _FLAGS_A_COMPONENT_MAY_DIFFER_ON: tuple[str, ...] = (
-    INFERENCE_CONTROLLER_ADDR_FLAG,
-    INIT_EXPECTED_NUM_CELLS_FLAG,
-    TRAINER_CONTROLLER_ADDRS_FLAG,
+    *FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON,
     MEGATRON_CONFIG_FLAG,
     SGLANG_CONFIG_FLAG,
-    ROLLOUT_NUM_GPUS_FLAG,
 )
 
 

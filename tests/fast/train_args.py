@@ -1,6 +1,20 @@
 import shlex
 
-from miles.utils.external_utils.command_utils.common import ArgvManipulator
+from examples.infra_features.split_deployment.address_book import INIT_EXPECTED_NUM_CELLS_FLAG
+
+from miles.ray.specs.inference import INFERENCE_CONTROLLER_ADDR_FLAG
+from miles.ray.specs.train import TRAINER_CONTROLLER_ADDRS_FLAG
+from miles.utils.external_utils.command_utils.common import MOONCAKE_INIT_KWARGS_FLAG, ArgvManipulator
+
+ROLLOUT_NUM_GPUS_FLAG: str = "--rollout-num-gpus"
+
+FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON: tuple[str, ...] = (
+    INFERENCE_CONTROLLER_ADDR_FLAG,
+    INIT_EXPECTED_NUM_CELLS_FLAG,
+    TRAINER_CONTROLLER_ADDRS_FLAG,
+    MOONCAKE_INIT_KWARGS_FLAG,
+    ROLLOUT_NUM_GPUS_FLAG,
+)
 
 
 def value_of(train_args: str, flag: str) -> str:

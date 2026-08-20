@@ -1,7 +1,11 @@
 from dataclasses import dataclass, field
 
 import pytest
-from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID, RunAddressBook
+from examples.infra_features.split_deployment.address_book import (
+    DEFAULT_TRAINER_ID,
+    INIT_EXPECTED_NUM_CELLS_FLAG,
+    RunAddressBook,
+)
 from tests.e2e.deploy.conftest_deploy.common import utils as deploy_utils
 from tests.e2e.deploy.conftest_deploy.split import scenario_split_deterministic as scenario
 from tests.e2e.deploy.conftest_deploy.split import split_deployment
@@ -9,7 +13,7 @@ from tests.e2e.deploy.conftest_deploy.split.split_deployment import RunDeploymen
 from tests.e2e.ft.conftest_ft import app as ft_app
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, RunSideRequest
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
-from tests.fast.train_args import shared_argv, value_of, values_after
+from tests.fast.train_args import FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON, shared_argv, value_of, values_after
 
 from miles.ray.specs.inference import INFERENCE_CONTROLLER_ADDR_FLAG
 from miles.ray.specs.train import TRAINER_CONTROLLER_ADDRS_FLAG
@@ -83,6 +87,14 @@ class TestBuildDeployments:
         driver = _deployments_of(deployments, DeployComponent.PRIMARY)[0]
 
         assert value_of(driver.train_args, scenario.ROLLOUT_NUM_GPUS_FLAG) == str(mode.total_rollout_gpus)
+
+    def test_only_the_driving_deployment_is_told_how_many_engines_to_wait_for(self, deployments, mode):
+        """A deployment that installs no engines of its own has to be told, and would start on a bare run."""
+        told = {one.deploy_component for one in deployments if INIT_EXPECTED_NUM_CELLS_FLAG in one.train_args}
+        driver = _deployments_of(deployments, DeployComponent.PRIMARY)[0]
+
+        assert told == {DeployComponent.PRIMARY}
+        assert value_of(driver.train_args, INIT_EXPECTED_NUM_CELLS_FLAG) == str(mode.rollout_num_engines)
 
     def test_only_the_engine_deployments_are_told_where_to_register(self, deployments):
         """Every other deployment holds the controller itself and refuses to be pointed at one."""
@@ -220,16 +232,8 @@ def _without_engines(mode: FTTestMode) -> FTTestMode:
     )
 
 
-_FLAGS_A_DEPLOYMENT_MAY_DIFFER_ON: tuple[str, ...] = (
-    INFERENCE_CONTROLLER_ADDR_FLAG,
-    TRAINER_CONTROLLER_ADDRS_FLAG,
-    MOONCAKE_INIT_KWARGS_FLAG,
-    scenario.ROLLOUT_NUM_GPUS_FLAG,
-)
-
-
 def _shared_argv(train_args: str) -> list[str]:
-    return shared_argv(train_args, differing_flags=_FLAGS_A_DEPLOYMENT_MAY_DIFFER_ON)
+    return shared_argv(train_args, differing_flags=FLAGS_A_SPLIT_DEPLOYMENT_MAY_DIFFER_ON)
 
 
 # =========================== how the pipeline dispatches ==========================
