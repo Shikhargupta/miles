@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS: float = 5.0
 FREEZE_TIMEOUT_SECONDS: float = 3600.0
 RELAUNCH_JOIN_TIMEOUT_SECONDS: float = 1800.0
+CONSECUTIVE_READ_FAILURE_LIMIT: int = 20
 HOT_RESTART_ARG: str = HOT_RESTART_SEPARATOR.join(one.value for one in HotRestartComponent)
 
 
@@ -111,6 +112,7 @@ class HotRestartDriver:
     schedule: tuple[ScheduledFreeze, ...]
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS
     freeze_timeout_seconds: float = FREEZE_TIMEOUT_SECONDS
+    read_failure_limit: int = CONSECUTIVE_READ_FAILURE_LIMIT
     records: list[HotRestartRecord] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -202,17 +204,25 @@ class HotRestartDriver:
         self, stop_event: threading.Event, *, index: int, scheduled: ScheduledFreeze
     ) -> RunProgress | None:
         deadline = time.monotonic() + self.freeze_timeout_seconds
+        failures = 0
 
         while not stop_event.is_set():
-            if (progress := self._read_progress_and_observe_the_cluster()) is not None:
+            if (progress := self._read_progress_and_observe_the_cluster()) is None:
+                failures += 1
+                assert failures < self.read_failure_limit, (
+                    f"hot restart {index} failed to read how far the run had come {failures} time(s) in a row, so "
+                    f"it cannot tell a run frozen after step {scheduled.frozen_rollout_id} from one still training"
+                )
+            else:
+                failures = 0
                 self._assert_the_run_never_lost_a_step_outside_a_take_over(progress)
                 if self._stands_frozen_at(scheduled, progress=progress):
                     return progress
 
-                assert time.monotonic() < deadline, (
-                    f"hot restart {index} waited {self.freeze_timeout_seconds}s for a run frozen after step "
-                    f"{scheduled.frozen_rollout_id}, and the run only reached {progress}"
-                )
+            assert time.monotonic() < deadline, (
+                f"hot restart {index} waited {self.freeze_timeout_seconds}s for a run frozen after step "
+                f"{scheduled.frozen_rollout_id}, and the run only reached {progress}"
+            )
             stop_event.wait(timeout=self.poll_interval_seconds)
 
         return None

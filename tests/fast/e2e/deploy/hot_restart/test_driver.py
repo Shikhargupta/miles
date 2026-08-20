@@ -391,3 +391,31 @@ class TestWatchingPastTheLastTakeOver:
 
         assert len(driver.records) == 1
         assert observed_after.count(1) >= 2, "the run has to keep being sampled once the schedule is spent"
+
+
+class TestWhenTheDriverCannotReadTheRun:
+    def test_a_read_that_never_answers_still_runs_out_of_time(self, tmp_path, monkeypatch):
+        """The deadline used to be checked only on a successful read, so this hung to the ci limit."""
+        driver = _driver(tmp_path, freeze_timeout_seconds=0.0)
+        monkeypatch.setattr(driver_module, "read_run_progress", _refuse_to_read)
+        monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
+
+        driver._drive(threading.Event())
+
+        with pytest.raises(AssertionError, match="waited 0.0s"):
+            driver.assert_every_restart_happened()
+
+    def test_a_read_that_keeps_failing_is_reported_rather_than_retried_forever(self, tmp_path, monkeypatch):
+        """A dump directory nobody can read is not a run that has not frozen yet."""
+        driver = _driver(tmp_path, freeze_timeout_seconds=1_000_000.0, read_failure_limit=3)
+        monkeypatch.setattr(driver_module, "read_run_progress", _refuse_to_read)
+        monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
+
+        driver._drive(threading.Event())
+
+        with pytest.raises(AssertionError, match="3 time\\(s\\) in a row"):
+            driver.assert_every_restart_happened()
+
+
+def _refuse_to_read(**_kwargs):
+    raise OSError("the dump directory did not answer")
