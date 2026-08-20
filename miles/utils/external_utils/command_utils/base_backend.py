@@ -79,8 +79,6 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
     extra_manifests: list[str]
 
 
-COMMAND_EXECUTING_METHODS = ("exec_command_cpu", "exec_command_gpu", "exec_command_multi_node")
-
 CLUSTER_BACKEND_FLAG = "--cluster-backend"
 _DEPLOY_COMPONENT_FLAG = "--deploy-component"
 
@@ -95,6 +93,15 @@ class BaseCommandBackend(ABC):
         assert isinstance(config, CommandUtilConfig), "config must be a CommandUtilConfig"
         configure_logger_raw("launcher")
         self.config = config
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        for name in DELEGATING_METHODS:
+            assert name not in vars(cls), (
+                f"{cls.__name__} defines its own {name}, but every command any backend runs has to pass through "
+                f"the one BaseCommandBackend defines, so that stubbing that single method out cannot be bypassed "
+                f"by a backend nobody remembered to name; implement _{name}_inner instead"
+            )
 
     def execute_train(
         self,
@@ -271,15 +278,6 @@ class BaseCommandBackend(ABC):
             cmd, capture_output=capture_output, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node
         )
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        for name in COMMAND_EXECUTING_METHODS:
-            assert name not in vars(cls), (
-                f"{cls.__name__} defines its own {name}, but every command any backend runs has to pass through "
-                f"the one BaseCommandBackend defines, so that stubbing that single method out cannot be bypassed "
-                f"by a backend nobody remembered to name; implement _{name}_inner instead"
-            )
-
     def _exec_command_cpu_inner(self, cmd: str, capture_output: bool = False) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)
 
@@ -296,6 +294,11 @@ class BaseCommandBackend(ABC):
         num_nodes: int | None = None,
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]: ...
+
+
+DELEGATING_METHODS = tuple(
+    name for name in vars(BaseCommandBackend) if f"_{name}_inner" in vars(BaseCommandBackend)
+)
 
 
 def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, deploy_component: str) -> None:

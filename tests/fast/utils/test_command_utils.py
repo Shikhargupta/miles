@@ -23,7 +23,7 @@ def _backend():
 @pytest.fixture(autouse=True)
 def a_bare_environment(monkeypatch):
     """Every test here launches onto ray, and a workbench pod exports variables that choose another backend."""
-    for name in [name for name in os.environ if name.startswith(SCRIPT_ENV_VAR_PREFIX)]:
+    for name in [key for key in os.environ if key.startswith(SCRIPT_ENV_VAR_PREFIX)]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -31,7 +31,7 @@ def a_bare_environment(monkeypatch):
 def commands(monkeypatch):
     recorded = record_commands(monkeypatch)
     patch_helper(monkeypatch, "_check_has_nvlink", lambda self: False, backend_class=RayCommandBackend)
-    for name in ("MILES_SCRIPT_EXTERNAL_RAY", "RAY_ADDRESS", "NCCL_NVLS_ENABLE", "WANDB_API_KEY"):
+    for name in ("RAY_ADDRESS", "NCCL_NVLS_ENABLE", "WANDB_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
     monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
@@ -64,34 +64,32 @@ class TestTheRecorderCoversEveryBackendTheEnvironmentCanChoose:
         monkeypatch.setenv("MILES_SCRIPT_CLUSTER_BACKEND", "kubernetes")
         monkeypatch.setenv("MILES_SCRIPT_NAMESPACE", "miles-someones-namespace")
 
+    @pytest.fixture
+    def recorded(self, monkeypatch, kubernetes_environment, submitted_jobs) -> list[str]:
+        return record_commands(monkeypatch)
+
     def test_a_kubernetes_environment_records_a_gpu_command_instead_of_installing_a_job(
-        self, monkeypatch, kubernetes_environment, submitted_jobs
+        self, recorded, submitted_jobs
     ):
         """A stub naming only the ray backend leaves the kubernetes one live, and a fast test then takes real gpus."""
-        recorded = record_commands(monkeypatch)
-
         _backend().exec_command_gpu("nvidia-smi", num_gpus_per_node=8)
 
         assert submitted_jobs == []
         assert recorded == ["nvidia-smi"]
 
     def test_a_kubernetes_environment_records_a_multi_node_command_instead_of_installing_a_job(
-        self, monkeypatch, kubernetes_environment, submitted_jobs
+        self, recorded, submitted_jobs
     ):
         """The multi-node form is the one convert_checkpoint reaches, i.e. the one that really installed a Job."""
-        recorded = record_commands(monkeypatch)
-
         _backend().exec_command_multi_node("torchrun --nnodes={{nnodes}}", num_nodes=2, num_gpus_per_node=8)
 
         assert submitted_jobs == []
         assert recorded == ["[multi_node num_nodes=2] torchrun --nnodes={{nnodes}}"]
 
     def test_a_kubernetes_environment_converts_a_checkpoint_without_reaching_the_cluster(
-        self, monkeypatch, kubernetes_environment, submitted_jobs, tmp_path
+        self, recorded, submitted_jobs, tmp_path
     ):
         """This is the observed incident: the recorded tmp_path showed up in a Job installed on a real namespace."""
-        recorded = record_commands(monkeypatch)
-
         _backend().convert_checkpoint(
             model_name="Qwen3-4B",
             megatron_model_type="qwen3-4B",
@@ -104,24 +102,11 @@ class TestTheRecorderCoversEveryBackendTheEnvironmentCanChoose:
         assert submitted_jobs == []
         assert len(recorded) == 1
 
-    def test_no_shipped_backend_hides_a_recorded_method_behind_an_override(self):
-        """The stub patches the base class alone, so an override anywhere would reach the cluster again."""
-        from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
-        from miles.utils.external_utils.command_utils.helm_backend.backend import KubernetesCommandBackend
-
-        for backend_class in [KubernetesCommandBackend, RayCommandBackend, *BaseCommandBackend.__subclasses__()]:
-            for name in base_backend.COMMAND_EXECUTING_METHODS:
-                assert getattr(backend_class, name) is getattr(
-                    BaseCommandBackend, name
-                ), f"{backend_class.__name__} overrides {name}, which record_commands stubs on the base class"
-
     def test_a_backend_added_later_is_refused_the_override_that_caused_this(self):
         """Enumerating backends in the stub is what rotted, so the ban has to be enforced where they are declared."""
-        from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
-
         with pytest.raises(AssertionError, match="implement _exec_command_gpu_inner instead"):
 
-            class SlurmCommandBackend(BaseCommandBackend):
+            class SlurmCommandBackend(base_backend.BaseCommandBackend):
                 def exec_command_gpu(self, cmd, capture_output=False, num_gpus_per_node=None): ...
 
 
@@ -415,7 +400,6 @@ class TestExecuteTrain:
     def test_exports_unbuffered_python_to_ray(self, monkeypatch):
         """Ray start and job submit must export the correctly spelled PYTHONUNBUFFERED."""
         commands = []
-        monkeypatch.delenv("MILES_SCRIPT_EXTERNAL_RAY", raising=False)
         monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
         patch_helper(monkeypatch, "exec_command_cpu", lambda self, cmd, capture_output=False: commands.append(cmd))
         patch_helper(monkeypatch, "_check_has_nvlink", lambda self: False, backend_class=RayCommandBackend)

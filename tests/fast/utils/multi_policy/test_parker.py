@@ -98,21 +98,14 @@ class TestTheFollowerAlwaysGivesTheLoopATurn:
     async def test_an_open_gate_still_suspends_the_follower(self):
         """An open gate that returns without suspending lets the follower's unbounded loop starve the loop."""
         parker = Parker(num_followers=1)
-        turns = 0
+        other_task_ran = False
 
-        async def ticker() -> None:
-            nonlocal turns
-            while True:
-                turns += 1
-                await asyncio.sleep(0)
+        async def other_task() -> None:
+            nonlocal other_task_ran
+            other_task_ran = True
 
-        task = asyncio.create_task(ticker())
-        await asyncio.sleep(0)
-        turns_before = turns
+        asyncio.create_task(other_task())
 
-        for _ in range(10):
-            await parker.maybe_park_follower()
+        await parker.maybe_park_follower()
 
-        task.cancel()
-
-        assert turns > turns_before
+        assert other_task_ran

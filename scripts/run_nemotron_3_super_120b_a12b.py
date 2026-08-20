@@ -64,9 +64,10 @@ def _wait_for_head_port(args: ScriptArgs) -> None:
         U.exec_command_cpu("sleep 5")
 
 
-def _wait_for_ray_gpus(args: ScriptArgs, expected_gpus: int) -> None:
+def _wait_for_ray_gpus(args: ScriptArgs) -> None:
     """The head reports only its own 8 GPUs until the worker joins, and a job submitted then gets one node."""
     U = args.create_backend()
+    expected_gpus = args.num_nodes * args.num_gpus_per_node
     for _ in range(120):
         if f"{expected_gpus}.0 GPU" in U.exec_command_cpu("ray status 2>/dev/null || true", capture_output=True):
             print(f"[ray] cluster ready: {expected_gpus} GPUs")
@@ -183,7 +184,7 @@ def _execute_train(args: ScriptArgs):
         train_args=train_args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        before_ray_job_submit=lambda: _wait_for_ray_gpus(args=args, expected_gpus=total_gpus),
+        before_ray_job_submit=lambda: _wait_for_ray_gpus(args),
         megatron_path=args.megatron_path,
     )
 

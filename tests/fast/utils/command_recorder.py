@@ -7,7 +7,7 @@ def patch_helper(monkeypatch, name: str, replacement, *, backend_class: type = B
 
 
 def record_commands(monkeypatch) -> list[str]:
-    """Replace every command-executing backend method with a recorder and return the list it appends to.
+    """Replace every exec_command backend method with a recorder and return the list it appends to.
 
     Patching BaseCommandBackend covers every backend, including one added after this was written: the
     public forms are defined there and no subclass is allowed to hide them behind an override.
