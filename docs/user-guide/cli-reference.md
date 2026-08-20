@@ -26,7 +26,7 @@ This page has two passes.
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
-| `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. |
+| `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. Any `--deploy-component` other than `all` has to be given one, on every cluster backend: the parts of a split run are joined by nothing else. |
 
 See [Training Backends](/user-guide/training-backend) for what `--colocate` flips on under the hood.
 

@@ -266,7 +266,7 @@ def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifes
     assert not config.deploy_component.is_split(), (
         f"--deploy-component {config.deploy_component.value} installs one part of a run whose other parts are "
         f"installed by other launches, and they are joined by nothing but the run uuid, so the layer that deploys "
-        f"them all has to name it"
+        f"them all has to name it with --run-uuid"
     )
 
     if installed_manifest is not None:
