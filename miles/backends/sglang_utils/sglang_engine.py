@@ -7,6 +7,7 @@ import shlex
 import sys
 
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils.common import LORA_TARGET_ALL_MODULES, SUPPORTED_LORA_TARGET_MODULES
 
 from miles.backends.megatron_utils.lora_utils import (
     convert_target_modules_to_hf,
@@ -167,15 +168,15 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+        kwargs["lora_target_modules"] = _lora_target_modules_for_cli(args)
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
         if sglang_lora_target_all_sentinel(args):
-            kwargs["lora_target_modules"] = ["all"]
+            kwargs["lora_target_modules"] = [LORA_TARGET_ALL_MODULES]
         else:
-            kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+            kwargs["lora_target_modules"] = _lora_target_modules_for_cli(args)
 
         if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
             kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
@@ -215,6 +216,14 @@ def _compute_server_args(
             kwargs.pop(key)
 
     return kwargs
+
+
+def _lora_target_modules_for_cli(args) -> list[str]:
+    targets = convert_target_modules_to_hf(args.target_modules)
+    if unlisted := sorted(set(targets) - set(SUPPORTED_LORA_TARGET_MODULES)):
+        logger.info(f"Letting sglang discover its lora targets: it does not accept {unlisted} on the command line")
+        return [LORA_TARGET_ALL_MODULES]
+    return targets
 
 
 @functools.cache
