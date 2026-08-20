@@ -361,6 +361,111 @@ class TestBaseGpuIdOfAnInferencePod:
 
         assert [_base_gpu(index, layout) for index in range(3)] == [4, 0, 4]
 
+    def test_a_multi_pod_cell_of_sub_node_pods_walks_across_the_trainer_pods(self):
+        """Cells and pods per cell were only ever varied one at a time; together they index one flat gpu line."""
+        layout = _layout(
+            num_inference_cells=2,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+            num_gpus_per_inference_pod=4,
+        )
+        placements = [_place(cell, layout, pod) for cell in range(2) for pod in range(2)]
+
+        assert [(placement.trainer_coord, placement.base_gpu_id) for placement in placements] == [
+            (_coordinate(0, 0), 0),
+            (_coordinate(0, 0), 4),
+            (_coordinate(0, 1), 0),
+            (_coordinate(0, 1), 4),
+        ]
+
+    def test_a_multi_pod_cell_of_quarter_node_pods_stays_on_one_trainer_pod(self):
+        """Four quarter-node pods spread over two cells still share one node, a pair of its cards each."""
+        layout = _layout(
+            num_inference_cells=2,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+            num_gpus_per_inference_pod=2,
+        )
+        placements = [_place(cell, layout, pod) for cell in range(2) for pod in range(2)]
+
+        assert {placement.trainer_coord for placement in placements} == {_coordinate(0, 0)}
+        assert [placement.base_gpu_id for placement in placements] == [0, 2, 4, 6]
+
+
+_DISJOINT_CARD_LAYOUTS = {
+    "half node pods, two cells of two": _layout(
+        num_inference_cells=2,
+        num_trainer_cells=1,
+        num_pods_per_inference_cell=2,
+        num_pods_per_trainer_cell=2,
+        num_gpus_per_inference_pod=4,
+    ),
+    "quarter node pods on one trainer pod": _layout(
+        num_inference_cells=2,
+        num_trainer_cells=1,
+        num_pods_per_inference_cell=2,
+        num_pods_per_trainer_cell=2,
+        num_gpus_per_inference_pod=2,
+    ),
+    "one gpu pods across two nodes": _layout(
+        num_inference_cells=16,
+        num_trainer_cells=2,
+        num_pods_per_trainer_cell=1,
+        num_gpus_per_inference_pod=1,
+    ),
+    "half node pods offset by one pod": _sub_node_layout(gpu_offset=4, num_inference_cells=3),
+}
+
+
+def _cards_by_trainer_pod(layouts: dict[str, PairingLayout]) -> dict[PodCoordinate, list[tuple[str, range]]]:
+    cards: dict[PodCoordinate, list[tuple[str, range]]] = {}
+    for pool_id, layout in layouts.items():
+        for cell_index in range(layout.num_inference_cells):
+            for pod_index in range(layout.num_pods_per_inference_cell):
+                placement = _place(cell_index, layout, pod_index)
+                span = range(placement.base_gpu_id, placement.base_gpu_id + layout.num_gpus_per_inference_pod)
+                cards.setdefault(placement.trainer_coord, []).append((pool_id, span))
+    return cards
+
+
+def _cards_two_pods_of_one_trainer_both_claim(cards: dict[PodCoordinate, list[tuple[str, range]]]) -> list[Any]:
+    return [
+        (trainer, first, second)
+        for trainer, entries in cards.items()
+        for first, second in itertools.combinations(entries, 2)
+        if set(first[1]) & set(second[1])
+    ]
+
+
+class TestTheEnginesOfOneTrainerPodHoldDifferentCards:
+    @pytest.mark.parametrize("name", sorted(_DISJOINT_CARD_LAYOUTS))
+    def test_no_two_pods_of_a_pool_are_given_an_overlapping_stretch(self, name: str):
+        """Two engines on one node sharing a card is the failure this whole mechanism exists to avoid."""
+        cards = _cards_by_trainer_pod({name: _DISJOINT_CARD_LAYOUTS[name]})
+
+        assert _cards_two_pods_of_one_trainer_both_claim(cards) == []
+
+    @pytest.mark.parametrize("name", sorted(_DISJOINT_CARD_LAYOUTS))
+    def test_at_least_one_trainer_pod_really_seats_several_of_them(self, name: str):
+        """A layout whose trainer pods seat one engine each would satisfy the test above without testing it."""
+        cards = _cards_by_trainer_pod({name: _DISJOINT_CARD_LAYOUTS[name]})
+
+        assert max(len(entries) for entries in cards.values()) >= 2
+
+    def test_two_pools_splitting_a_node_are_given_different_halves_of_it(self):
+        """Prefill and decode share a trainer node on purpose, and only their offsets keep them apart."""
+        cards = _cards_by_trainer_pod(
+            {
+                INFERENCE_POOL_ID: _sub_node_layout(num_inference_cells=1),
+                DECODE_POOL_ID: _sub_node_layout(gpu_offset=4, num_inference_cells=1),
+            }
+        )
+
+        assert _cards_two_pods_of_one_trainer_both_claim(cards) == []
+        assert len(cards[_coordinate(0, 0)]) == 2
+
 
 def _target_by_cell_division(
     inference_cell_index: int, inference_pod_index: int, layout: PairingLayout
