@@ -23,9 +23,6 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
-    DEPLOY_INSTANCE_ID_MAX_LENGTH,
-)
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import load_function
@@ -38,6 +35,7 @@ from miles.utils.object_store_config import MOONCAKE_MASTER_ADDRESS_KEY, compute
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import with_relax_parser_required_args
+from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 
 logger = logging.getLogger(__name__)
