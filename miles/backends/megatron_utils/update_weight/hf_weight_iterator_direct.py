@@ -71,9 +71,16 @@ def _get_megatron_full_params(
     params = []
     for info in megatron_local_param_infos:
         if dist.get_rank() == info.src_rank:
+            local_weight = megatron_local_weights[info.name]
+            assert local_weight.dtype == info.dtype and tuple(local_weight.shape) == tuple(info.shape), (
+                f"{info.name} drifted from the param info snapshot: live "
+                f"{local_weight.dtype}/{tuple(local_weight.shape)} vs recorded "
+                f"{info.dtype}/{tuple(info.shape)}. Peer ranks allocate their receive buffer from the "
+                f"recorded values, so the cross-PP broadcast would transfer the wrong number of bytes."
+            )
             params.append(
                 torch.nn.Parameter(
-                    megatron_local_weights[info.name].to(device=torch.cuda.current_device(), non_blocking=True),
+                    local_weight.to(device=torch.cuda.current_device(), non_blocking=True),
                     requires_grad=False,
                 )
             )
