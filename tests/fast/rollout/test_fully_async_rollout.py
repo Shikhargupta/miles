@@ -945,4 +945,3 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
     release.set()
     output = await drain
     assert len(output.samples) == 2
-
