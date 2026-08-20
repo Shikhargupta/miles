@@ -185,3 +185,35 @@ class TestTheFreezeTheRunIsInstalledWith:
         args = scenario._build_frozen_args(scenario.CHECKPOINTED, scenario._MODE, dump_dir, False)
 
         assert read_installed_args(dump_dir) == args
+
+
+class TestTheModesThisScenarioRefuses:
+    def test_a_mode_whose_last_take_over_leaves_no_step_to_train_is_refused(self):
+        """Every remaining step being a redone one proves nothing about training on past a take-over."""
+        too_late = dataclasses.replace(
+            scenario.CHECKPOINTED,
+            schedule=(ScheduledFreeze(frozen_rollout_id=scenario.NUM_ROLLOUTS - 1, saved_iteration=3),),
+        )
+
+        with pytest.raises(AssertionError, match="leaving no step past the last take-over"):
+            scenario.assert_the_freeze_schedule_leaves_a_window_the_run_can_redo(too_late)
+
+    def test_a_colocated_mode_is_refused(self):
+        """A take-over keeps the trainers and the engines up, and a colocated mode shares their gpus."""
+        colocated = dataclasses.replace(
+            scenario._MODE, colocate=True, rollout_num_engines=2, rollout_gpus_per_engine=1
+        )
+
+        with pytest.raises(AssertionError, match="colocates them"):
+            scenario._build_script_args(
+                scenario.CHECKPOINTED, mode=colocated, dump_dir="/dumps/target", enable_dumper=False
+            )
+
+    def test_a_mode_with_no_engines_is_refused(self):
+        """The take-over replaces the rollout executor, which needs engines to drive when it returns."""
+        engineless = dataclasses.replace(scenario._MODE, rollout_num_engines=0, rollout_gpus_per_engine=0)
+
+        with pytest.raises(AssertionError, match="no engines for it to drive"):
+            scenario._build_script_args(
+                scenario.CHECKPOINTED, mode=engineless, dump_dir="/dumps/target", enable_dumper=False
+            )
