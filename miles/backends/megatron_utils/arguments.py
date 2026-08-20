@@ -44,6 +44,10 @@ def set_default_megatron_args(args):
         args.tokenizer_model = args.hf_checkpoint
         args.tokenizer_type = "HuggingFaceTokenizer"
 
+    # Megatron builds its tokenizer through this flag; miles passes trust_remote_code=True
+    # everywhere it loads a checkpoint itself, and models like Kimi ship custom tokenizer code.
+    args.trust_remote_code = True
+
     if not hasattr(args, "miles_dsa_topk_backend"):
         args.miles_dsa_topk_backend = "torch"
 
