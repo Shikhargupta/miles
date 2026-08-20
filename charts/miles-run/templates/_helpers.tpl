@@ -100,18 +100,14 @@ affinity:
 
 {{- define "miles-run.shmVolume" -}}
 - name: dev-shm
-  emptyDir:
-    medium: Memory
-    sizeLimit: {{ include "miles-run.shmSize" . | quote }}
+  hostPath:
+    path: /dev/shm
+    type: Directory
 {{- end }}
 
 {{- define "miles-run.shmVolumeMount" -}}
 - name: dev-shm
   mountPath: /dev/shm
-{{- end }}
-
-{{- define "miles-run.shmSize" -}}
-{{- .Values.run.shmSize | default "32Gi" -}}
 {{- end }}
 
 {{- define "miles-run.nodeLocalVolumeMount" -}}

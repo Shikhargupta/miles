@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from tests.fast.charts.utils import objects_of_kind, render_run, requires_helm, with_object_names
+from tests.fast.charts.utils import objects_of_kind, render_run, render_run_error, requires_helm, with_object_names
 
 TRAINER = [
     {
@@ -34,30 +34,32 @@ def _shm_mounts(pod_spec: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 @requires_helm
-class TestPoolPodsGetSharedMemoryNcclCanUse:
+class TestPoolPodsShareTheHostSharedMemory:
     def test_a_pool_container_mounts_dev_shm(self):
         """Kubernetes' default 64Mi of /dev/shm is less than NCCL asks for per peer it cannot reach over p2p."""
         assert len(_shm_mounts(_pod_spec_of_the_only_pool())) == 1
 
-    def test_that_mount_is_backed_by_memory_rather_than_the_node_disk(self):
-        """A disk-backed tmpfs would let NCCL rendezvous succeed while running at disk speed."""
-        assert _shm_volume(_pod_spec_of_the_only_pool())["emptyDir"]["medium"] == "Memory"
+    def test_that_mount_is_the_host_dev_shm_itself(self):
+        """The pods share the host IPC namespace, and a CUDA IPC refcounter only works in the shm they all see."""
+        assert _shm_volume(_pod_spec_of_the_only_pool())["hostPath"]["path"] == "/dev/shm"
 
-    def test_the_volume_is_bounded_so_it_cannot_eat_the_node(self):
-        """A memory-backed emptyDir without a limit is charged to the node until it is out of ram."""
-        assert _shm_volume(_pod_spec_of_the_only_pool())["emptyDir"]["sizeLimit"] == "32Gi"
+    def test_the_host_directory_has_to_exist_already(self):
+        """DirectoryOrCreate would silently make a plain disk directory on a node whose /dev/shm is missing."""
+        assert _shm_volume(_pod_spec_of_the_only_pool())["hostPath"]["type"] == "Directory"
 
-    def test_a_run_that_needs_more_or_less_of_it_may_say_so(self):
-        """The default is copied from the docker quick start, not measured, so it has to be overridable."""
-        pod_spec = _pod_spec_of_the_only_pool("--set", "run.shmSize=8Gi")
+    def test_no_private_volume_of_its_own_shadows_it(self):
+        """An emptyDir here is what breaks the sharing, so its absence is the property worth pinning."""
+        assert "emptyDir" not in _shm_volume(_pod_spec_of_the_only_pool())
 
-        assert _shm_volume(pod_spec)["emptyDir"]["sizeLimit"] == "8Gi"
+    def test_the_pods_that_mount_it_share_the_host_ipc_namespace(self):
+        """Sharing the directory buys nothing unless the pods also share the namespace the handles live in."""
+        assert _pod_spec_of_the_only_pool()["hostIPC"] is True
 
-    def test_a_suffixless_size_still_reaches_kubernetes_as_a_quantity(self):
-        """An unquoted 32 is a yaml integer, and a resource quantity that is not a string is rejected."""
-        pod_spec = _pod_spec_of_the_only_pool("--set-string", "run.shmSize=32")
+    def test_a_run_cannot_ask_for_a_private_size_any_more(self):
+        """The size knob belonged to the emptyDir; leaving it accepted would let a values file break sharing."""
+        error = render_run_error("--set", "run.shmSize=8Gi")
 
-        assert _shm_volume(pod_spec)["emptyDir"]["sizeLimit"] == "32"
+        assert "'shmSize' not allowed" in error
 
     def test_every_mounted_volume_is_declared_by_the_pod_that_mounts_it(self):
         """A container naming a volume the pod does not declare makes the whole manifest invalid."""
@@ -68,7 +70,7 @@ class TestPoolPodsGetSharedMemoryNcclCanUse:
         assert mounted <= declared, f"{mounted - declared} is mounted but never declared"
 
     def test_a_pod_that_runs_no_collective_is_left_alone(self):
-        """The orchestrator only talks to the apiserver, so shared memory it never uses is wasted ram."""
+        """The orchestrator only talks to the apiserver, so it has no reason to reach into the host's shm."""
         rendered = render_run("--set-json", f"run.trainerEngines={json.dumps(with_object_names(TRAINER))}")
         [orchestrator] = [
             obj for obj in objects_of_kind(rendered, "StatefulSet") if "orchestrator" in obj["metadata"]["name"]
