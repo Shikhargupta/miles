@@ -315,7 +315,12 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 self._transfer_engine_meta_list.append((model_replica, remote_infos))
 
             first_server_args = next(iter(self.session_id_to_server_args.values()))
-            if first_server_args.speculative_algorithm:
+            # The draft consumes only model.layers.{num_hidden_layers}.* names (its
+            # embed_tokens and shared_head.head are shared with the target), and the
+            # converter emits those only when the MTP layer is trained. A serving-only
+            # MTP setup keeps that layer frozen, so building a draft replica there
+            # would register memory that never receives a byte.
+            if first_server_args.speculative_algorithm and self.args.enable_mtp_training:
                 self._connect_draft_sessions(rollout_engines, targets_grouped_by_engine_rank)
 
     def _connect_draft_sessions(self, rollout_engines, targets_grouped_by_engine_rank) -> None:
