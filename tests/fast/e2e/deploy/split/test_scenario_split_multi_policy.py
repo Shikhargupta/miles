@@ -97,6 +97,13 @@ class TestVerify:
         with pytest.raises(AssertionError, match="nothing compares"):
             scenario._assert_the_trainer_scores_what_its_engines_generated(dump_dir, model_id=LEADER_MODEL_ID)
 
+    def test_one_rollout_reported_over_several_steps_is_not_several_rollouts(self, dump_dir):
+        """Optimizer steps within one rollout all score the same generated tokens, so they prove it once."""
+        _write_metrics(dump_dir, _logprob_diffs_of_rollouts(LEADER_MODEL_ID, [(0, 0.01), (0, 0.02), (0, 0.015)]))
+
+        with pytest.raises(AssertionError, match="reported for only 1 rollout"):
+            scenario._assert_the_trainer_scores_what_its_engines_generated(dump_dir, model_id=LEADER_MODEL_ID)
+
 
 @pytest.fixture
 def dump_dir(tmp_path) -> str:
@@ -108,8 +115,12 @@ def _leader_grad_norms(rollout_ids) -> list[tuple[int, dict[str, float]]]:
 
 
 def _logprob_diffs(model_id: str, values: list[float]) -> list[tuple[int, dict[str, float]]]:
+    return _logprob_diffs_of_rollouts(model_id, list(enumerate(values)))
+
+
+def _logprob_diffs_of_rollouts(model_id: str, points: list[tuple[int, float]]) -> list[tuple[int, dict[str, float]]]:
     key = f"{model_id}/train/train_rollout_logprob_abs_diff"
-    return [(rollout_id, {key: value}) for rollout_id, value in enumerate(values)]
+    return [(rollout_id, {key: value}) for rollout_id, value in points]
 
 
 def _write_metrics(dump_dir: str, points: list[tuple[int, dict[str, float]]]) -> None:

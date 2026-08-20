@@ -69,10 +69,12 @@ def assert_gradients_were_nonzero(*, side: str, dump_dir: str, min_trained_rollo
 def assert_metric_was_finite_and_nonzero(*, side: str, dump_dir: str, key: str, min_rollouts: int) -> None:
     series = read_metric_series(dump_dir, key=key)
     usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
+    usable_rollouts = {rollout_id for rollout_id, _ in usable}
 
-    assert len(usable) >= min_rollouts, (
-        f"{side}: {key} is finite and non-zero in only {len(usable)} of {len(series)} rollout(s) ({series}), so "
-        f"this run's weights may have moved on nothing training produced"
+    assert len(usable_rollouts) >= min_rollouts, (
+        f"{side}: {key} is finite and non-zero in only {len(usable_rollouts)} of "
+        f"{len({rollout_id for rollout_id, _ in series})} rollout(s) ({series}), so this run's weights may have "
+        f"moved on nothing training produced"
     )
 
 

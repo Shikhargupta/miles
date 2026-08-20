@@ -104,8 +104,9 @@ def _assert_the_trainer_scores_what_its_engines_generated(dump_dir: str, *, mode
     key = f"{model_id}/train/train_rollout_logprob_abs_diff"
     series = read_metric_series(dump_dir, key=key)
 
-    assert len(series) >= MIN_TRAINED_ROLLOUTS, (
-        f"{key} was reported for only {len(series)} rollout(s) ({series}), so nothing compares what the engines "
+    rollouts = {rollout_id for rollout_id, _ in series}
+    assert len(rollouts) >= MIN_TRAINED_ROLLOUTS, (
+        f"{key} was reported for only {len(rollouts)} rollout(s) ({series}), so nothing compares what the engines "
         f"of policy {model_id!r} generated against what its trainer scored"
     )
 
