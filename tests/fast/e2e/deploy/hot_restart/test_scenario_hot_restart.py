@@ -195,7 +195,7 @@ class TestTheFreezeTheRunIsInstalledWith:
 
     def test_the_relaunch_repeats_the_frozen_arguments_the_run_is_up_with(self, tmp_path):
         """A relaunch whose argv differs from the installed one is refused as more than a hot restart."""
-        dump_dir = f"{tmp_path}/installed"
+        dump_dir = f"{tmp_path}/target"
         args = scenario._build_frozen_args(scenario.CHECKPOINTED, scenario._MODE, dump_dir, False)
 
         assert read_installed_args(dump_dir) == args

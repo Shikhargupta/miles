@@ -133,7 +133,7 @@ class TestBuildArgs:
     # TODO ad hoc hack: revert after the args refactor
     def test_the_target_side_is_armed_to_sleep_before_the_run_has_saved_anything(self, tmp_path):
         """Nothing else holds the run in the one window where it has trained but written nothing."""
-        dump_dir = f"{tmp_path}/frozen"
+        dump_dir = f"{tmp_path}/target"
         args = scenario._build_frozen_args(scenario.NO_CHECKPOINT, scenario._MODE, dump_dir, False)
 
         plan_path = compute_freeze_plan_path(dump_dir)
