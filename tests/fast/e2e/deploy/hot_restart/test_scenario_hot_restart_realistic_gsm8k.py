@@ -1,4 +1,5 @@
 import shlex
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,20 @@ class TestTheInjectionPlan:
 
         assert form._checkpoint_dir == scenario.compute_checkpoint_dir(run.dump_dir)
         assert form._events_dir == run.events_dir
+
+
+class TestTheSpecTheseConstantsAreDocumentedIn:
+    def test_the_spec_names_the_save_interval_the_run_is_installed_with(self):
+        """The spec is what a reader reaches for, and a stale number there is worse than none."""
+        assert f"--save-interval {scenario.SAVE_INTERVAL}" in _readme()
+
+    def test_the_spec_names_the_interval_the_draws_are_spaced_by(self):
+        """Both halves of this soak's cost are quoted there, and both drift the same way."""
+        assert f"interval {int(scenario.DEFAULT_HOT_RESTART_INTERVAL_SECONDS)}s" in _readme()
+
+
+def _readme() -> str:
+    return (Path(__file__).resolve().parents[4] / "e2e" / "deploy" / "README.md").read_text()
 
 
 class TestCheckpointArgs:
