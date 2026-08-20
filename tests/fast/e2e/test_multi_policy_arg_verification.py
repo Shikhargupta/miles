@@ -54,9 +54,14 @@ def _pin_the_verified_argument_count(monkeypatch):
     monkeypatch.setattr(e2e, "NUM_VERIFIED_ARGS_PER_POLICY", {"solver": 2, "verifier": 2})
 
 
+_EXPECTED_NUM_RANKS: int = 2
+
+
 def _assert_with(monkeypatch, events: list) -> None:
     monkeypatch.setattr(e2e, "read_events", lambda events_dir: events)
-    e2e.assert_every_rank_trained_with_its_own_policy_args(Path("/events"), megatron_config=MEGATRON_CONFIG)
+    e2e.assert_every_rank_trained_with_its_own_policy_args(
+        Path("/events"), megatron_config=MEGATRON_CONFIG, expected_num_ranks=_EXPECTED_NUM_RANKS
+    )
 
 
 class TestAssertEveryRankTrainedWithItsOwnPolicyArgs:
@@ -89,6 +94,13 @@ class TestAssertEveryRankTrainedWithItsOwnPolicyArgs:
         events = _reports_of("solver") + rank_zero + rank_zero
 
         with pytest.raises(AssertionError, match="reported from ranks"):
+            _assert_with(monkeypatch, events)
+
+    def test_every_policy_missing_the_same_rank_is_caught(self, monkeypatch):
+        """Ranks compared only against each other agree on a run that started half the trainer it declared."""
+        events = _reports_of("solver")[:2] + _reports_of("verifier")[:2]
+
+        with pytest.raises(AssertionError, match="trains each policy on"):
             _assert_with(monkeypatch, events)
 
     def test_a_rank_whose_report_disagrees_with_its_own_identity_is_caught(self, monkeypatch):

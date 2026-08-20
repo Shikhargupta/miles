@@ -71,7 +71,11 @@ def _verify(args: ScriptArgs) -> None:
         f"was given {args.run_id!r}"
     )
 
-    assert_every_rank_trained_with_its_own_policy_args(events_dir, megatron_config=compute_megatron_config(args))
+    assert_every_rank_trained_with_its_own_policy_args(
+        events_dir,
+        megatron_config=compute_megatron_config(args),
+        expected_num_ranks=args.actor_num_gpus_per_policy,
+    )
     assert_every_policy_learned(events_dir, bounds=TRAIN_REWARD_BOUNDS)
     _assert_the_leader_policy_ran_every_rollout(dump_dir, num_rollout=args.num_rollout)
 
