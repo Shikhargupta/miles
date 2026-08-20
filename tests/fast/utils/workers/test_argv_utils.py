@@ -21,7 +21,7 @@ from miles.utils.workers.argv_utils import (
     parse_config_argv,
     parse_declared_args,
     render_cli_argv,
-    requirements_relaxed,
+    with_relax_parser_required_args,
 )
 
 
@@ -724,14 +724,14 @@ class TestParseDeclaredArgs:
             parser.parse_args(["--num-layers", "24"])
 
 
-class TestRequirementsRelaxed:
+class TestWithRelaxParserRequiredArgs:
     def test_lets_a_parser_read_argv_that_omits_its_required_arguments(self):
         """A throwaway parser is asked what it declares, not to validate a run, so required must not fire."""
         parser = argparse.ArgumentParser()
         parser.add_argument("--needed", required=True)
         parser.add_argument("--optional", default="d")
 
-        with requirements_relaxed(parser):
+        with with_relax_parser_required_args(parser):
             namespace, _ = parser.parse_known_args(["--optional", "v"])
 
         assert namespace.optional == "v"
@@ -742,7 +742,7 @@ class TestRequirementsRelaxed:
         parser.add_argument("--needed", required=True)
         stderr = io.StringIO()
 
-        with contextlib.redirect_stderr(stderr), requirements_relaxed(parser):
+        with contextlib.redirect_stderr(stderr), with_relax_parser_required_args(parser):
             parser.parse_known_args([])
 
         assert stderr.getvalue() == ""
@@ -752,7 +752,7 @@ class TestRequirementsRelaxed:
         parser = argparse.ArgumentParser()
         parser.add_argument("--needed", required=True)
 
-        with requirements_relaxed(parser):
+        with with_relax_parser_required_args(parser):
             parser.parse_known_args([])
 
         with pytest.raises(SystemExit):
@@ -763,7 +763,7 @@ class TestRequirementsRelaxed:
         parser = argparse.ArgumentParser()
         parser.add_argument("--needed", required=True)
 
-        with contextlib.suppress(RuntimeError), requirements_relaxed(parser):
+        with contextlib.suppress(RuntimeError), with_relax_parser_required_args(parser):
             raise RuntimeError("boom")
 
         assert [action for action in parser._actions if action.required]

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from miles.utils.arguments import get_miles_extra_args_provider
 from miles.utils.run_uuid import RUN_UUID_LENGTH
-from miles.utils.workers.argv_utils import requirements_relaxed
+from miles.utils.workers.argv_utils import with_relax_parser_required_args
 
 # megatron's own parser adds these and miles' code reads them, but a unit test builds only the miles
 # extras, so nothing else would put them on the namespace
@@ -34,6 +34,6 @@ def parser_defaults() -> dict[str, Any]:
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
 
-    with requirements_relaxed(parser), patch.object(sys, "argv", ["test"]):
+    with with_relax_parser_required_args(parser), patch.object(sys, "argv", ["test"]):
         parsed, _ = parser.parse_known_args([])
     return {**_TRAIN_BACKEND_DEFAULTS, **vars(parsed), **_RESOLVED_AFTER_PARSING}
