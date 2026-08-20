@@ -250,6 +250,23 @@ class TestWatchEvents:
         assert "carries no pod" in caplog.text
         await collector.close()
 
+    async def test_a_stream_that_failed_relists_rather_than_replaying_the_frame_that_failed_it(self):
+        """The cursor never advanced past the poison frame, so resuming from it would redeliver it forever."""
+        api = FakePodApi()
+        api.list_pages.append(make_pod_list([], resource_version="1"))
+        api.list_pages.append(make_pod_list([], resource_version="9"))
+        api.stream_scripts.append([PodWatchEvent(type="MODIFIED", pod=None, resource_version="5", rejects_cursor=False)])
+        api.stream_scripts.append(None)
+        clock = FakeClock()
+        collector = EventCollector(make_reflector(api, clock=clock, retry_delay=1.0).watch())
+        await settle()
+        await clock.elapse(1.0)
+        await settle()
+
+        assert len(api.list_calls) == 2
+        assert [call["resource_version"] for call in api.stream_calls] == ["1", "9"]
+        await collector.close()
+
     async def test_watch_end_resumes_without_relisting(self):
         """A watch that ends cleanly is reopened from the latest cursor, with no second ReplaceEvent."""
         api = FakePodApi()
