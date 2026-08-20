@@ -54,6 +54,9 @@ class KubernetesReflector:
                 if exception_rejects_cursor(exception):
                     logger.warning(f"KubernetesReflector cursor is no longer usable, relisting {cursor=}")
                     cursor.resource_version = None
+                elif isinstance(exception, _UnreadableFrameError):
+                    logger.error("KubernetesReflector could not read a frame, relisting", exc_info=True)
+                    cursor.resource_version = None
                 else:
                     logger.error("KubernetesReflector stream failed, retrying", exc_info=True)
                 await self._clock.sleep(self._retry_delay)
@@ -80,10 +83,17 @@ class KubernetesReflector:
                     cursor.resource_version = None
                     return
 
-                event = _to_source_event(raw_event)
+                try:
+                    event = _to_source_event(raw_event)
+                except Exception as exception:
+                    raise _UnreadableFrameError(f"a frame the cursor cannot advance past: {raw_event=}") from exception
                 cursor.resource_version = raw_event.resource_version or cursor.resource_version
                 if event is not None:
                     yield event
+
+
+class _UnreadableFrameError(Exception):
+    pass
 
 
 @dataclass
