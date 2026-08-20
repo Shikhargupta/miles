@@ -87,6 +87,11 @@ class InferenceController:
 
         await self.wait_expected_num_cells()
 
+    # TEMPORARY: exists only so a suspend can take this lock, reverted with the weight-update fault tolerance work
+    @with_lock
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        await self._engine_provider.stop_cells(cell_ids=[cell_id])
+
     # -------------------------- take over -----------------------------
 
     @lock_exempt
