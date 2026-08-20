@@ -191,8 +191,18 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         """A comparison over fewer steps than the run was asked for would quietly prove less."""
         run = _run_restarted_before_it_saved(tmp_path)
 
-        with pytest.raises(AssertionError, match="every step"):
+        with pytest.raises(AssertionError, match="was asked for 7 steps"):
             run.assert_redone_from_scratch(num_rollouts=7)
+
+    def test_a_step_the_take_over_should_have_redone_but_did_not_fails(self, tmp_path):
+        """The take-over throws away every step up to the freeze, so each of those is trained twice."""
+        run = _Run(dump_dir=tmp_path)
+        run.train(0, 1)
+        run.train(1, 2, 3, 4, 5)
+        run.save(5)
+
+        with pytest.raises(AssertionError, match="every step is written"):
+            run.assert_redone_from_scratch()
 
     def test_a_run_that_never_saved_after_it_was_restarted_fails(self, tmp_path):
         """The point of restarting before the first save is to watch the save that follows it."""
