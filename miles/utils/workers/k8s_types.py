@@ -61,7 +61,7 @@ class ContainerStateTerminated(FrozenPartialBaseModel):
 
 
 class ContainerStateRunning(FrozenPartialBaseModel):
-    """A running block carries a start time nobody reads; what matters is that it parses at all."""
+    started_at: datetime | None = Field(default=None, validation_alias=AliasChoices("started_at", "startedAt"))
 
 
 class ContainerState(FrozenPartialBaseModel):
