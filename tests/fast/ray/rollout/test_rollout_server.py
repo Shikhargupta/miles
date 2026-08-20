@@ -547,7 +547,7 @@ class _StubProvider:
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         raise AssertionError(f"cell startup is patched out in this module ({worker_name=})")
 
-    def expected_num_cells(self, *, model_id: str) -> int | None:
+    def expected_num_cells(self, *, group_id: str) -> int | None:
         return None
 
 

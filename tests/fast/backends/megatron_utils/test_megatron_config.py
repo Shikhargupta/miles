@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pydantic
 import pytest
 import yaml
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.backends.megatron_utils import megatron_config as megatron_config_module
@@ -78,7 +79,7 @@ def _make_args(megatron_config: str | None = None, **overrides) -> Namespace:
         multi_lora_n_adapters=0,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**{**parser_defaults(), **defaults})
 
 
 class TestResolveMegatronConfig:
@@ -299,7 +300,7 @@ def _make_checkpoint_args(tmp_path, **overrides) -> Namespace:
         start_rollout_id=None,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**{**parser_defaults(), **defaults})
 
 
 def _write_megatron_checkpoint(tmp_path) -> str:

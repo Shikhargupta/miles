@@ -316,10 +316,11 @@ class TestTheWaitCoversWhatEachServerDoesBeforeItBinds:
                 return {"primary": HostAndPort(host="10.0.0.9", port=5004)}
 
         budgets: list[float] = []
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: budgets.append(timeout),
-        )
+
+        async def record_budget(host, port, timeout) -> None:
+            budgets.append(timeout)
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", record_budget)
 
         await wait_router_ready(model_idx=0, provider=_FakeProvider())
         router_budget = budgets.pop()

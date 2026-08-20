@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from tests.e2e.ft.conftest_ft.fault_injection import state, views
+from tests.fast.e2e.ft.fault_injection.utils import note_injected
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import inference_controller as inference_controller_module
@@ -315,7 +316,7 @@ async def test_the_observed_sequence_satisfies_the_soak_recovery_witness(harness
     """The fast-layer stand-in is only worth anything if the e2e witness accepts the sequence it produces."""
     log = state.EventLog()
     log.observe(list((await harness.observe()).values()))
-    log.note_injected(_CELL_IDS[0])
+    note_injected(log, _CELL_IDS[0])
     harness.crash(_CELL_IDS[0])
 
     await harness.run_ft_controller_once()
@@ -331,7 +332,7 @@ async def test_the_witness_rejects_a_replacement_that_never_reaches_the_router(h
     """A weight update that silently skips the replaced cell leaves it Running forever, and must fail the soak."""
     log = state.EventLog()
     log.observe(list((await harness.observe()).values()))
-    log.note_injected(_CELL_IDS[0])
+    note_injected(log, _CELL_IDS[0])
     harness.crash(_CELL_IDS[0])
 
     await harness.run_ft_controller_once()

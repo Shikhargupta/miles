@@ -9,6 +9,10 @@ from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend
 
 
+def note_injected(log: state.EventLog, cell_name: str) -> None:
+    log.note_injection_attempt(cell_name=cell_name, form_name="sigkill", succeeded=True)
+
+
 @contextlib.contextmanager
 def patched_requests() -> Iterator[MagicMock]:
     # the loop lists cells through core and injects through fault_forms, so a mock on core alone
@@ -77,7 +81,7 @@ def log_of(
     log = state.EventLog()
     for index, cell_state in enumerate(cell_states):
         for _ in range((inject_before or {}).get(index, 0)):
-            log.note_injected("rollout-engine-0")
+            note_injected(log, "rollout-engine-0")
         log.observe([staged("rollout-engine-0", cell_state)])
     return log
 
