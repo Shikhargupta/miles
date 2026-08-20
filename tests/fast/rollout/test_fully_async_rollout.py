@@ -919,6 +919,14 @@ class TestRolloutFnContract:
         base is rejected at startup no matter how complete its behaviour is."""
         assert issubclass(fully_async.FullyAsyncRolloutFn, BaseRolloutFn)
 
+    def test_the_constructor_input_reaches_the_base(self, monkeypatch):
+        """The base stores it as constructor_input; skipping super().__init__ leaves the
+        attribute missing on every path that reads it."""
+        data_source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
+
+        assert fn.constructor_input.data_source is data_source
+
 
 async def test_worker_bounds_in_flight_groups(monkeypatch):
     release = asyncio.Event()
@@ -938,10 +946,3 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
     output = await drain
     assert len(output.samples) == 2
 
-    def test_the_constructor_input_reaches_the_base(self, monkeypatch):
-        """The base stores it as constructor_input; skipping super().__init__ leaves the
-        attribute missing on every path that reads it."""
-        data_source = FakeDataSource()
-        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
-
-        assert fn.constructor_input.data_source is data_source
