@@ -1,18 +1,21 @@
 import asyncio
 from argparse import Namespace
-from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 import train_multi_policy as multi_policy_driver
+from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from train_multi_policy import train_multi_policy
 
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.multi_policy.utils import TrainerInfo
 
 
-def _make_args(**overrides) -> Namespace:
+def _make_args(**overrides: Any) -> Namespace:
     defaults = dict(
+        megatron_config=encode_megatron_config("a", "b"),
         num_rollout=2,
         update_weights_interval=1,
         save=None,
@@ -25,7 +28,7 @@ def _make_args(**overrides) -> Namespace:
         check_weight_update_skip_list=None,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**{**parser_defaults(), **defaults})
 
 
 def _make_trainers(model_ids, handles=None, start_rollout_ids=None) -> dict[str, TrainerInfo]:
@@ -74,11 +77,6 @@ def _stub_driver_environment(monkeypatch):
         "assert_consistent_restore",
     ):
         monkeypatch.setattr(multi_policy_driver, name, lambda *a, **kw: None)
-    monkeypatch.setattr(
-        multi_policy_driver,
-        "resolve_megatron_config",
-        lambda args: SimpleNamespace(leader_model_id="a", model_ids=["a", "b"]),
-    )
     monkeypatch.setattr(multi_policy_driver, "create_trainers", AsyncMock(return_value={}))
     monkeypatch.setattr(multi_policy_driver, "create_rollout_components", AsyncMock())
 
