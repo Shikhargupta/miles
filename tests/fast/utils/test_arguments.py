@@ -28,13 +28,11 @@ from miles.utils.arguments import (
     validate_skip_actor_forward_only,
 )
 from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
-    DEPLOY_INSTANCE_ID_MAX_LENGTH,
-)
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
-from miles.utils.object_store_config import compute_mooncake_init_kwargs
+from miles.utils.object_store import compute_mooncake_init_kwargs
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
+from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
