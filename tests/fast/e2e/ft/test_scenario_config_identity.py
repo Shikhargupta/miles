@@ -31,7 +31,6 @@ class _RecordingBackend:
 
 class _StubInjector:
     def __init__(self) -> None:
-        self.num_successful_injections = 0
         self.event_log = state.EventLog()
 
     def stop_and_join(self) -> None:

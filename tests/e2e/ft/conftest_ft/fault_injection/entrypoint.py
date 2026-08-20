@@ -5,7 +5,6 @@ import threading
 from tests.e2e.ft.conftest_ft.fault_injection.core import list_cells, run_fault_injection_loop
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog
-from tests.e2e.ft.conftest_ft.fault_injection.views import compute_num_injections
 
 from miles.utils.test_utils.polling_worker import PollingWorker
 
@@ -38,10 +37,6 @@ class FaultInjectorHandle:
             )
 
         self._worker = PollingWorker(name="ft-random-fault-injector", run=inject_until_asked_to_stop)
-
-    @property
-    def num_successful_injections(self) -> int:
-        return compute_num_injections(self.event_log.events)
 
     def start(self) -> None:
         self._worker.start()

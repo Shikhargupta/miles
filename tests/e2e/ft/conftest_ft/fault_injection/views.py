@@ -118,7 +118,7 @@ def compute_injection_times(events: list[Event], *, cell_type: str | None = None
 def compute_states_of_cell_name(events: list[Event]) -> dict[str, list[ObservedCellState]]:
     return {
         name: states
-        for name, cell_events in _compute_cell_events(events, harmed_only=True).items()
+        for name, cell_events in _compute_cell_events(events).items()
         if (states := _compute_distinct_states(cell_events))
     }
 
@@ -134,7 +134,7 @@ class _CellEvent:
     state: ObservedCellState | None = None
 
 
-def _compute_cell_events(events: list[Event], *, harmed_only: bool) -> dict[str, list[_CellEvent]]:
+def _compute_cell_events(events: list[Event], *, harmed_only: bool = True) -> dict[str, list[_CellEvent]]:
     cell_events_of_name: dict[str, list[_CellEvent]] = {}
     for event in events:
         if isinstance(event, InjectionEvent):
