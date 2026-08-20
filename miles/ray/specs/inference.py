@@ -18,7 +18,7 @@ from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.reporter import RegistrationReporter
 from miles.utils.workers.types import DeployComponent
-from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_handle import BaseWorkerHandle, LazyWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
@@ -122,9 +122,12 @@ def compute_router_providers(args, *, capability: BackendCapability) -> list[Bas
 
 
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
-    worker_name = inference_controller_worker_name()
-    provider = capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
-    return provider.get_handle(worker_name)
+    def _resolve() -> BaseWorkerHandle:
+        return capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID).get_handle(
+            inference_controller_worker_name()
+        )
+
+    return LazyWorkerHandle(_resolve)
 
 
 def compute_inference_controller_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
