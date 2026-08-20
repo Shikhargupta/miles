@@ -6,7 +6,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_hot_restart_config, compute_release_of_config
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import RunProgress, read_run_progress
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+    HotRestartRecord,
+    read_attempts_of_rollout_id,
+    read_run_progress,
+)
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
@@ -16,10 +20,6 @@ logger = logging.getLogger(__name__)
 HOT_RESTART_FORM_NAME: str = "hot_restart"
 TAKE_OVER_TIMEOUT_SECONDS: float = 1800.0
 TAKE_OVER_POLL_INTERVAL_SECONDS: float = 10.0
-
-
-class HotRestartIsNotDueYet(Exception):
-    pass
 
 
 class HotRestartFaultForm(BaseFaultForm):
@@ -41,7 +41,8 @@ class HotRestartFaultForm(BaseFaultForm):
         self._poll_interval_seconds = poll_interval_seconds
         self._timeout_seconds = timeout_seconds
         self._threads: list[threading.Thread] = []
-        self._failures: list[BaseException] = []
+        self._failures: list[tuple[int, BaseException]] = []
+        self._records: list[HotRestartRecord] = []
 
     @property
     def name(self) -> str:
@@ -53,69 +54,73 @@ class HotRestartFaultForm(BaseFaultForm):
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         progress = read_run_progress(checkpoint_dir=self._checkpoint_dir, events_dir=self._events_dir)
-        if not can_be_taken_over(progress):
-            raise HotRestartIsNotDueYet(
-                f"the run has saved {progress.last_saved_iteration} and finished step "
-                f"{progress.last_finished_rollout_id}; a take-over only costs steps no checkpoint covers, so this "
-                f"draw waits for a save with a finished step past it"
-            )
+        before = read_attempts_of_rollout_id(self._events_dir)
 
         logger.info(f"Hot restarting {self._release} of a run that stands at {progress}")
+        index = len(self._threads)
         self._relaunch_on_a_thread()
-        self._wait_until_the_take_over_reached_the_run(progress)
+        self._wait_until_the_take_over_reached_the_run(index=index, before=before)
+        self._records.append(
+            HotRestartRecord(
+                index=index,
+                saved_iteration_at_trigger=progress.last_saved_iteration,
+                frozen_rollout_id=max(before, default=-1),
+            )
+        )
 
     def _relaunch_on_a_thread(self) -> None:
-        self._failures.clear()
-        thread = threading.Thread(target=self._relaunch, daemon=True, name=f"take-over-{len(self._threads)}")
+        index = len(self._threads)
+        thread = threading.Thread(target=self._relaunch, args=(index,), daemon=True, name=f"take-over-{index}")
         self._threads.append(thread)
         thread.start()
 
-    def _relaunch(self) -> None:
+    def _relaunch(self, index: int) -> None:
         try:
             self._launch(compute_hot_restart_config(self._config, installed_release=self._release))
         except BaseException as e:
             logger.warning(f"The hot restart of {self._release} failed to install", exc_info=True)
-            self._failures.append(e)
+            self._failures.append((index, e))
 
-    def _wait_until_the_take_over_reached_the_run(self, before: RunProgress) -> None:
+    def _wait_until_the_take_over_reached_the_run(self, *, index: int, before: dict[int, int]) -> None:
         deadline = time.monotonic() + self._timeout_seconds
-        relaunch = self._threads[-1]
+        relaunch = self._threads[index]
 
         while time.monotonic() < deadline:
             time.sleep(self._poll_interval_seconds)
-            if _describes_a_run_rolled_back_to_its_checkpoint(before=before, after=self._read_progress_or_none()):
-                logger.info(f"The take-over of {self._release} landed, rolling the run back from {before}")
+            if describes_a_run_that_redid_a_step(before=before, after=self._read_attempts_or_none()):
+                logger.info(f"The take-over of {self._release} landed; the run redid a step it had trained")
                 return
 
-            assert not self._failures, (
+            assert not self._failures_of(index), (
                 f"the hot restart of {self._release} was refused rather than installed, so the run keeps training "
-                f"under the script this injection meant to replace: {self._failures}"
+                f"under the script this injection meant to replace: {self._failures_of(index)}"
             )
             assert relaunch.is_alive(), (
-                f"the relaunch of {self._release} returned without the run ever rolling back from {before}, so "
-                f"nothing took its orchestration script over"
+                f"the relaunch of {self._release} returned without the run ever redoing a step, so nothing took "
+                f"its orchestration script over"
             )
 
         raise AssertionError(
-            f"the relaunch of {self._release} was installed {self._timeout_seconds}s ago and the run still stands "
-            f"at {before}, so a take-over cannot be told from a relaunch that hung"
+            f"the relaunch of {self._release} was installed {self._timeout_seconds}s ago and the run has still not "
+            f"redone any of the steps it had trained ({before}), so a take-over cannot be told from a relaunch "
+            f"that hung"
         )
 
-    def _read_progress_or_none(self) -> RunProgress | None:
+    def _failures_of(self, index: int) -> list[BaseException]:
+        return [failure for at, failure in self._failures if at == index]
+
+    def _read_attempts_or_none(self) -> dict[int, int] | None:
         try:
-            return read_run_progress(checkpoint_dir=self._checkpoint_dir, events_dir=self._events_dir)
+            return read_attempts_of_rollout_id(self._events_dir)
         except Exception:
             logger.warning("Failed to read how far the run being hot restarted has come", exc_info=True)
             return None
 
 
-def can_be_taken_over(progress: RunProgress) -> bool:
-    if (saved := progress.last_saved_iteration) is None:
+def describes_a_run_that_redid_a_step(*, before: dict[int, int], after: dict[int, int] | None) -> bool:
+    """A take-over resuming from a checkpoint rolls the log back; one starting over re-trains step 0."""
+    if after is None or not before:
         return False
-    return progress.last_finished_rollout_id is not None and progress.last_finished_rollout_id > saved
-
-
-def _describes_a_run_rolled_back_to_its_checkpoint(*, before: RunProgress, after: RunProgress | None) -> bool:
-    if after is None or after.last_finished_rollout_id is None or before.last_finished_rollout_id is None:
-        return False
-    return after.last_finished_rollout_id < before.last_finished_rollout_id
+    if max(after, default=-1) < max(before):
+        return True
+    return any(after.get(rollout_id, 0) > attempts for rollout_id, attempts in before.items())
