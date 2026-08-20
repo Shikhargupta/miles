@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 CI_FT_TEST_ACTIONS_FLAG: str = "--ci-ft-test-actions"
 SLEEP_FOREVER_AT_END_ACTION: str = "sleep_forever_at_end"
 SLEEP_FOREVER_INTERVAL_SECONDS: float = 60.0
+PARKABLE_TRAIN_SCRIPT: str = "train.py"
 
 
 def compute_ft_test_actions_arg(actions: Sequence[dict]) -> str:
@@ -76,10 +78,10 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
 
 
 def _assert_this_loop_can_be_parked(args: object, *, trainer_model_id: str | None) -> None:
-    assert not getattr(args, "fully_async", False), (
-        f"{SLEEP_FOREVER_AT_END_ACTION} parks the orchestration script between two steps, and the fully async loop "
-        f"has already started the next rollout by the time it reaches this point, so the run would not be standing "
-        f"where the action names"
+    assert (script := Path(sys.argv[0]).name) == PARKABLE_TRAIN_SCRIPT, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks the orchestration script between two steps, and only "
+        f"{PARKABLE_TRAIN_SCRIPT} stands still at that point; {script} has already started the next rollout by the "
+        f"time it reaches here, so the run would not be standing where the action names"
     )
     assert (interval := getattr(args, "update_weights_interval", 1)) == 1, (
         f"{SLEEP_FOREVER_AT_END_ACTION} parks the run where it updates weights, and --update-weights-interval "

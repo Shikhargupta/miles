@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from miles.utils.test_utils.ft_test_actions import (
     _ACTOR_ACTIONS,
     _CONTROLLER_ACTIONS,
     _ORCHESTRATION_ACTIONS,
+    PARKABLE_TRAIN_SCRIPT,
     SLEEP_FOREVER_AT_END_ACTION,
     FTTestAction,
     FTTestActionActorExecutor,
@@ -600,33 +602,55 @@ class TestHowOftenThePlanIsReadOffDisk:
 
 
 class TestWhichLoopsCanBeParked:
-    def test_a_plan_reaching_the_fully_async_loop_is_refused(self) -> None:
-        """That loop has already started the next rollout, so the run would not be where the action names."""
-        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]), fully_async=True)
+    def test_a_plan_reaching_a_loop_of_another_train_script_is_refused(self, driven_by) -> None:
+        """train_async.py has already started the next rollout, so the run would not be where the action names."""
+        driven_by("train_async.py")
+        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]))
 
-        with pytest.raises(AssertionError, match="fully async"):
+        with pytest.raises(AssertionError, match="train_async.py has already started"):
             FTTestActionOrchestrationExecutor.from_args(args)
 
-    def test_a_plan_reaching_a_run_that_syncs_weights_every_other_step_is_refused(self) -> None:
+    def test_a_loop_is_judged_by_the_script_driving_it_and_not_by_a_flag_it_declares(self, driven_by) -> None:
+        """--fully-async is one way to reach an async loop; the train script is what actually chooses one."""
+        driven_by("train_async.py")
+        args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]), fully_async=False)
+
+        with pytest.raises(AssertionError, match="train_async.py has already started"):
+            FTTestActionOrchestrationExecutor.from_args(args)
+
+    def test_a_plan_reaching_a_run_that_syncs_weights_every_other_step_is_refused(self, driven_by) -> None:
         """The action parks the run where it updates weights; a gated update skips that point."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
         args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]), update_weights_interval=2)
 
         with pytest.raises(AssertionError, match="update-weights-interval"):
             FTTestActionOrchestrationExecutor.from_args(args)
 
-    def test_a_plan_reaching_one_policy_of_a_multi_policy_run_is_refused(self) -> None:
+    def test_a_plan_reaching_one_policy_of_a_multi_policy_run_is_refused(self, driven_by) -> None:
         """Only that policy's coroutine would park; the others would train past the step."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
         args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]))
 
         with pytest.raises(AssertionError, match="several policies"):
             FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id="solver")
 
-    def test_the_loop_the_action_was_written_for_is_accepted(self) -> None:
+    def test_the_loop_the_action_was_written_for_is_accepted(self, driven_by) -> None:
         """train.py updates weights once per step, for one policy, after the step is done."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
         args = SimpleNamespace(ci_ft_test_actions=json.dumps([_SLEEP_ACTION.model_dump()]))
 
         assert FTTestActionOrchestrationExecutor.from_args(args)._actions == [_SLEEP_ACTION]
 
-    def test_a_run_with_no_plan_is_never_asked_which_loop_it_is(self) -> None:
+    def test_a_run_with_no_plan_is_never_asked_which_loop_it_is(self, driven_by) -> None:
         """Every run passes through here; only the ones carrying the action are constrained."""
+        driven_by("train_async.py")
+
         FTTestActionOrchestrationExecutor.from_args(SimpleNamespace(ci_ft_test_actions=None, fully_async=True))
+
+
+@pytest.fixture
+def driven_by(monkeypatch):
+    def install(train_script: str) -> None:
+        monkeypatch.setattr(sys, "argv", [f"/miles/{train_script}", "--some-flag", "some-value"])
+
+    return install
