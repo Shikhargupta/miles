@@ -57,6 +57,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
+    session_server_ip: str = ""  # bind address reachable by the external agent server
 
     # W&B settings
     use_wandb: bool = True
@@ -165,6 +166,12 @@ def execute(args: ScriptArgs):
         "--sglang-router-port 31000 "
     )
 
+    session_server_args = (
+        f"--session-server-ip {args.session_server_ip} "
+        if args.session_server_ip
+        else ""
+    )
+
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path swe_agent_function.run "
@@ -173,6 +180,7 @@ def execute(args: ScriptArgs):
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model glm47 "
         "--use-session-server v2 "
+        f"{session_server_args}"
         "--session-server-port 30000 "
     )
 
