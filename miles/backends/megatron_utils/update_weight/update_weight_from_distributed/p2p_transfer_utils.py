@@ -173,14 +173,25 @@ class P2PTransferManager:
         return future
 
     def wait_transfers(self) -> None:
-        """Wait for all submitted tasks to complete."""
+        """Wait for all submitted tasks; fail the update if any of them did.
+
+        Writes are submitted fire-and-forget, so this is the only place their
+        outcome is observed. A dropped transfer leaves the rollout engine
+        serving the previous step's weights with nothing downstream to notice,
+        so every failure must reach the caller. Drain all futures first so the
+        log names every failure, not just the first.
+        """
+        errors = []
         for future in self.transfer_futures:
             try:
                 future.result(timeout=self.transfer_timeout)
             except Exception as e:
                 logger.error(f"[P2P] Transfer future failed: {e}")
+                errors.append(e)
 
         self.transfer_futures.clear()
+        if errors:
+            raise RuntimeError(f"[P2P] {len(errors)} weight transfer(s) failed, first: {errors[0]}") from errors[0]
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
