@@ -33,6 +33,16 @@ def raw_event(event_type: str, obj: Any) -> PodWatchEvent:
     return PodWatchEvent.from_frame(event_type=event_type, obj=obj)
 
 
+def _a_frame_the_parser_rejects() -> ValidationError:
+    pod = wire_pod("pod-0")
+    pod.status = SimpleNamespace(container_statuses=[SimpleNamespace(name="main", state=None)])
+    try:
+        PodWatchEvent.from_frame(event_type="MODIFIED", obj=pod)
+    except ValidationError as error:
+        return error
+    raise AssertionError("the frame parsed, so it no longer stands for one the parser rejects")
+
+
 def make_status(*, code: int, reason: str = "Expired") -> SimpleNamespace:
     return SimpleNamespace(code=code, reason=reason, status="Failure")
 
@@ -261,6 +271,24 @@ class TestWatchEvents:
         api.stream_scripts.append(
             [PodWatchEvent(type="MODIFIED", pod=None, resource_version="5", rejects_cursor=False)]
         )
+        api.stream_scripts.append(None)
+        clock = FakeClock()
+        collector = EventCollector(make_reflector(api, clock=clock, retry_delay=1.0).watch())
+        await settle()
+        await clock.elapse(1.0)
+        await settle()
+
+        assert len(api.list_calls) == 2
+        assert [call["resource_version"] for call in api.stream_calls] == ["1", "9"]
+        await collector.close()
+
+    async def test_a_frame_the_parser_rejected_relists_rather_than_replaying_itself(self):
+        """A frame miles cannot parse fails inside from_frame, so no PodWatchEvent ever reaches the reflector
+        to be rejected; without relisting here every reconnect redelivers the frame that failed."""
+        api = FakePodApi()
+        api.list_pages.append(make_pod_list([], resource_version="1"))
+        api.list_pages.append(make_pod_list([], resource_version="9"))
+        api.stream_scripts.append([_a_frame_the_parser_rejects()])
         api.stream_scripts.append(None)
         clock = FakeClock()
         collector = EventCollector(make_reflector(api, clock=clock, retry_delay=1.0).watch())

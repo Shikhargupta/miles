@@ -5,6 +5,8 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.k8s_types import Pod, WatchFrame
 
@@ -89,6 +91,10 @@ async def _close_quietly(closing: Any) -> None:
 
 def exception_rejects_cursor(exception: BaseException) -> bool:
     return getattr(exception, "status", None) in _CURSOR_REJECTED_CODES
+
+
+def exception_is_unreadable_frame(exception: BaseException) -> bool:
+    return isinstance(exception, ValidationError)
 
 
 def _frame_rejects_cursor(frame: WatchFrame) -> bool:

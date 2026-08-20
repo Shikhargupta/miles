@@ -14,6 +14,7 @@ from miles.utils.workers.reconcile.k8s_api import (
     POD_EVENT_TYPES,
     KubernetesPodApi,
     PodWatchEvent,
+    exception_is_unreadable_frame,
     exception_rejects_cursor,
 )
 from miles.utils.workers.reconcile.source_event import DeleteEvent, ReplaceEvent, SourceEvent, UpsertEvent
@@ -54,7 +55,7 @@ class KubernetesReflector:
                 if exception_rejects_cursor(exception):
                     logger.warning(f"KubernetesReflector cursor is no longer usable, relisting {cursor=}")
                     cursor.resource_version = None
-                elif isinstance(exception, _UnreadableFrameError):
+                elif _is_unreadable_frame(exception):
                     logger.error("KubernetesReflector could not read a frame, relisting", exc_info=True)
                     cursor.resource_version = None
                 else:
@@ -90,6 +91,10 @@ class KubernetesReflector:
                 cursor.resource_version = raw_event.resource_version or cursor.resource_version
                 if event is not None:
                     yield event
+
+
+def _is_unreadable_frame(exception: BaseException) -> bool:
+    return isinstance(exception, _UnreadableFrameError) or exception_is_unreadable_frame(exception)
 
 
 class _UnreadableFrameError(Exception):
