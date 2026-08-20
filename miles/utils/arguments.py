@@ -89,6 +89,9 @@ def _resolve_rollout_functions(args) -> None:
         "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
         "backend; the fleet would boot and then hand the work to the other one."
     )
+    assert not (
+        args.eval_num_gpus > 0 and _compute_rollout_external(args)
+    ), "eval_num_gpus cannot be set with external rollout engines."
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
@@ -3883,10 +3886,6 @@ def miles_validate_args(args):
     assert not (
         args.sglang_config is not None and args.rollout_external
     ), "sglang_config cannot be set with external rollout engines; the topology comes from discovery."
-
-    assert not (
-        args.eval_num_gpus > 0 and args.rollout_external
-    ), "eval_num_gpus cannot be set with external rollout engines."
 
     assert not (
         args.rollout_external_router_pd and not args.rollout_external
