@@ -119,6 +119,8 @@ class TestPolicyCompletion:
 
         finished = [call.kwargs["model_id"] for call in context["inference_controller"].prepare_eval.await_args_list]
         assert sorted(finished) == ["a", "b"]
+
+
 async def _slow_train(rollout_id: int, rollout_data_ref, **kwargs) -> None:
     await asyncio.sleep(0.05)
 

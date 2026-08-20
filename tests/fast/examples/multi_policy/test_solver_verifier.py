@@ -44,9 +44,7 @@ class _RunResult:
     samples: list[Sample]
 
 
-async def _run(
-    monkeypatch, *, solver_response: str, verifier_response: str, abort_solver: bool = False
-) -> _RunResult:
+async def _run(monkeypatch, *, solver_response: str, verifier_response: str, abort_solver: bool = False) -> _RunResult:
     fake = _FakeGenerate(
         responses={SOLVER_URL: solver_response, VERIFIER_URL: verifier_response},
         aborted_urls=frozenset({SOLVER_URL}) if abort_solver else frozenset(),
@@ -215,9 +213,7 @@ class TestIsCorrect:
 class TestBuildVerifierSample:
     def test_the_verifier_sample_keeps_the_identity_of_the_solver_sample(self):
         """Both samples belong to one trajectory, and the group is what advantage is computed over."""
-        solver = Sample(
-            group_index=3, index=7, rollout_id=2, prompt=[dict(role="user", content="q")], label="#### 18"
-        )
+        solver = Sample(group_index=3, index=7, rollout_id=2, prompt=[dict(role="user", content="q")], label="#### 18")
         solver.response = "#### 18"
 
         verifier = solver_verifier._build_verifier_sample(solver)

@@ -4,15 +4,15 @@ from unittest.mock import MagicMock, patch
 
 from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state, views
 from tests.fast.e2e.ft.fault_injection.utils import (
-    intervals,
-    api_server_fault_forms,
-    fixed_fault_forms,
-    typed_cell,
-    StubFaultForm,
     SERVING,
+    StubFaultForm,
+    api_server_fault_forms,
     cell,
+    fixed_fault_forms,
+    intervals,
     mock_response,
     staged,
+    typed_cell,
 )
 
 

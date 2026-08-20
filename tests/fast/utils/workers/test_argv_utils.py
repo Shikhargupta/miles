@@ -601,9 +601,7 @@ class TestCoerceDictToArgs:
 
     def _coerce(self, values: dict, *, allowed: set[str] | None = None) -> dict:
         allowed_names = frozenset(allowed if allowed is not None else values)
-        return coerce_dict_to_args(
-            values, parser=self._parser(), allowed_names=allowed_names, context="the overlay"
-        )
+        return coerce_dict_to_args(values, parser=self._parser(), allowed_names=allowed_names, context="the overlay")
 
     def test_a_yaml_scalar_is_coerced_the_way_the_command_line_would(self):
         """The overlay never reaches argparse, so this is the only place its strings become typed values."""

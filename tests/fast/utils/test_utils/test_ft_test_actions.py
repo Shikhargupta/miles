@@ -503,9 +503,10 @@ class TestActionsDeliveredThroughAFile:
 
         assert _load_actions(args, _ORCHESTRATION_ACTIONS) == []
 
-    def test_a_file_that_does_not_exist_yet_names_no_action(self, tmp_path) -> None:
-        """The run reads the plan every step and starts before whatever writes it has run."""
-        assert _load_actions(_args_of_path(str(tmp_path / "absent.json")), _ORCHESTRATION_ACTIONS) == []
+    def test_a_file_the_run_was_pointed_at_but_nobody_wrote_is_refused(self, tmp_path) -> None:
+        """A plan nothing wrote would leave the run performing no action while looking armed."""
+        with pytest.raises(AssertionError, match="does not exist"):
+            _load_actions(_args_of_path(str(tmp_path / "absent.json")), _ORCHESTRATION_ACTIONS)
 
     def test_a_run_told_both_the_plan_and_a_file_holding_one_is_refused(self, tmp_path) -> None:
         """Two plans mean the run silently follows one of them, and nobody can tell which."""

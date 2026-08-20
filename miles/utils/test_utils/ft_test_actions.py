@@ -220,7 +220,8 @@ def write_ft_test_actions(path: Path, actions: Sequence[dict]) -> None:
 
 # TODO ad hoc hack: revert after the args refactor
 def read_ft_test_actions(path: Path) -> str:
-    if not path.is_file():
-        logger.info("No FT test actions at %s yet; this run performs none until there are", path)
-        return ""
+    assert path.is_file(), (
+        f"{CI_FT_TEST_ACTIONS_PATH_FLAG} names {path}, which does not exist; a run told to read its plan from a "
+        f"file nothing wrote would quietly perform no action at all"
+    )
     return path.read_text()
