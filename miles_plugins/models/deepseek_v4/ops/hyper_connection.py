@@ -13,7 +13,7 @@ a no-grad forward path — see ``_HYPER_CONNECTION_MIXER_NO_GRAD = True``).
 import einops
 import torch
 import torch.nn.functional as F
-from megatron.core.transformer.module import MegatronModule
+from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 from tile_kernels.modeling.mhc.ops import (
     mhc_head_compute_mix,
@@ -42,7 +42,7 @@ class HCHeadParams(MegatronModule):
         self.hc_head_scale = torch.nn.Parameter(torch.empty(1, dtype=torch.float32))
 
         for p in [self.hc_head_fn, self.hc_head_base, self.hc_head_scale]:
-            p._keep_fp32 = True
+            mark_keep_in_fp32(p)
 
     def forward(self):
         raise NotImplementedError

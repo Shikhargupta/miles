@@ -1,6 +1,7 @@
 import einops
 import torch
 import torch.nn as nn
+from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.nn import Linear
 
@@ -87,7 +88,7 @@ class DeepSeekV4Compressor(nn.Module):
         self.wgate = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.bfloat16)
         self.norm = RMSNorm(self.head_dim, norm_eps)
 
-        self.ape._keep_fp32 = True
+        mark_keep_in_fp32(self.ape)
 
         base = config.csa_compress_rotary_base
         assert rope_head_dim == 64

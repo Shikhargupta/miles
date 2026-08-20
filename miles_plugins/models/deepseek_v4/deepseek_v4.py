@@ -19,7 +19,7 @@ from megatron.core.tensor_parallel.mappings import (
     scatter_to_sequence_parallel_region,
 )
 from megatron.core.transformer.experimental_attention_variant.dsa import DSAIndexer, DSAIndexerSubmodules
-from megatron.core.transformer.module import MegatronModule
+from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
@@ -96,7 +96,7 @@ class DeepSeekV4Attention(MegatronModule):
         config_no_sp.sequence_parallel = False
 
         self.attn_sink = nn.Parameter(torch.empty(self.n_local_heads, dtype=torch.float32))
-        self.attn_sink._keep_fp32 = True
+        mark_keep_in_fp32(self.attn_sink)
         self.attn_sink.tensor_model_parallel = True
         self.attn_sink.partition_dim = 0
         self.attn_sink.partition_stride = 1
