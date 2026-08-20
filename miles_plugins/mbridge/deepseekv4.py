@@ -103,21 +103,21 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         config.dsa_indexer_head_dim = getattr(self.hf_config, "index_head_dim", 128)
         config.dsa_indexer_topk = getattr(self.hf_config, "index_topk", 512)
 
-        config.dsv4_hc_mult = getattr(self.hf_config, "hc_mult", 4)
-        config.dsv4_hc_sinkhorn_iters = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
+        config.num_residual_streams = getattr(self.hf_config, "hc_mult", 4)
+        config.mhc_sinkhorn_iterations = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
         config.dsv4_hc_eps = getattr(self.hf_config, "hc_eps", 1e-6)
 
-        config.dsv4_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
-        config.dsv4_compress_rope_theta = getattr(self.hf_config, "compress_rope_theta", 160000)
+        config.csa_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
+        config.csa_compress_rotary_base = getattr(self.hf_config, "compress_rope_theta", 160000)
 
-        config.dsv4_swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
-        if config.dsv4_swiglu_limit > 0:
+        swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
+        if swiglu_limit > 0:
             config.bias_activation_fusion = False
-            config.activation_func_clamp_value = config.dsv4_swiglu_limit
+            config.activation_func_clamp_value = swiglu_limit
 
-        config.dsv4_o_groups = getattr(self.hf_config, "o_groups", 8)
-        config.dsv4_o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
-        config.dsv4_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)
-        config.dsv4_window_size = getattr(self.hf_config, "window_size", 128)
+        config.o_groups = getattr(self.hf_config, "o_groups", 8)
+        config.o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
+        config.moe_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)
+        config.csa_window_size = getattr(self.hf_config, "window_size", 128)
 
         return config

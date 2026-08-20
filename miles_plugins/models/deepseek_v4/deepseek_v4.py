@@ -74,14 +74,14 @@ class DeepSeekV4Attention(MegatronModule):
         self.n_heads = config.num_attention_heads
         self.n_local_heads = self.n_heads // config.tensor_model_parallel_size
         self.q_lora_rank = config.q_lora_rank
-        self.o_lora_rank = config.dsv4_o_lora_rank
+        self.o_lora_rank = config.o_lora_rank
         self.head_dim = config.kv_lora_rank
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.nope_head_dim = self.head_dim - self.rope_head_dim
-        self.n_groups = config.dsv4_o_groups
+        self.n_groups = config.o_groups
         self.n_local_groups = self.n_groups // config.tensor_model_parallel_size
-        self.window_size = config.dsv4_window_size
-        self.compress_ratio = config.dsv4_compress_ratios[layer_id] if config.dsv4_compress_ratios else 0
+        self.window_size = config.csa_window_size
+        self.compress_ratio = config.csa_compress_ratios[layer_id] if config.csa_compress_ratios else 0
         self.eps = config.layernorm_epsilon
         self.use_fp8_qat = config.fp8 is not None
 
@@ -229,7 +229,7 @@ class DeepSeekV4Attention(MegatronModule):
         x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
-        rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
+        rope_base = self.config.csa_compress_rotary_base if self.compress_ratio else self.config.rotary_base
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
         )
@@ -340,10 +340,16 @@ def _dsv4_attention_module_spec(config, backend=None):
 
 
 def get_dsv4_spec(args, config, vp_stage):
-    """
+    """Build the DeepSeek-V4 layer spec for the implementation --dsv4-impl selects.
+
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
+    if args.dsv4_impl == "megatron":
+        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    # No Megatron field backs this: hyper-connection epsilon is the plugin's own.
+    config.dsv4_hc_eps = args.dsv4_hc_eps
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

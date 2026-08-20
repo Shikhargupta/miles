@@ -35,7 +35,7 @@ _HC_POST_MULT_VALUE = 2.0
 class HCHeadParams(MegatronModule):
     def __init__(self, config: TransformerConfig):
         super().__init__(config)
-        hc_mult = config.dsv4_hc_mult
+        hc_mult = config.num_residual_streams
         hc_dim = hc_mult * config.hidden_size
         self.hc_head_fn = torch.nn.Parameter(torch.empty(hc_mult, hc_dim, dtype=torch.float32))
         self.hc_head_base = torch.nn.Parameter(torch.empty(hc_mult, dtype=torch.float32))
@@ -53,8 +53,8 @@ class DeepSeekV4HyperConnectionUtil:
 
     def __init__(self, config: TransformerConfig):
         self.norm_eps = config.layernorm_epsilon
-        self.hc_mult = config.dsv4_hc_mult
-        self.hc_sinkhorn_iters = config.dsv4_hc_sinkhorn_iters
+        self.hc_mult = config.num_residual_streams
+        self.hc_sinkhorn_iters = config.mhc_sinkhorn_iterations
         self.hc_eps = config.dsv4_hc_eps
 
     def hc_pre_raw(
