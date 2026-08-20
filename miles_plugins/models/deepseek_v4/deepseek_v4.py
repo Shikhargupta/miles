@@ -207,9 +207,16 @@ class DeepSeekV4Attention(MegatronModule):
         ans = super().sharded_state_dict(prefix, sharded_offsets, metadata)
         ans.update(
             make_sharded_tensors_for_checkpoint(
-                state_dict={"core_attention.attn_sink": self.core_attention.attn_sink},
+                state_dict={
+                    "core_attention.attn_sink": self.core_attention.attn_sink,
+                    # Bare parameters: nothing else declares how they shard.
+                    "linear_o_group_proj": self.linear_o_group_proj,
+                },
                 prefix=prefix,
-                tensor_parallel_layers_axis_map={"core_attention.attn_sink": 0},
+                tensor_parallel_layers_axis_map={
+                    "core_attention.attn_sink": 0,
+                    "linear_o_group_proj": 0,
+                },
                 sharded_offsets=sharded_offsets,
                 tp_group=self.tp_group,
                 dp_cp_group=metadata["dp_cp_group"],
