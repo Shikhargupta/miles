@@ -113,17 +113,24 @@ class TestWhatEachTakeOverCost:
     def test_a_take_over_resuming_from_the_last_save_is_within_the_bound(self):
         """Whatever the draw's timing, a checkpointed take-over owes at most one save interval."""
         scenario.assert_no_take_over_threw_away_more_than_a_save_interval(
-            [_record(index=0, saved=19, finished=27), _record(index=1, saved=29, finished=29)]
+            [
+                _record(index=0, saved=19, finished=19 + scenario.SAVE_INTERVAL),
+                _record(index=1, saved=29, finished=29 + scenario.MAX_REDONE_STEPS_PER_TAKE_OVER),
+            ]
         )
 
     def test_a_take_over_before_the_first_save_is_charged_for_every_step(self):
         """Starting over from the reference weights costs the whole run so far, which the bound still covers."""
-        scenario.assert_no_take_over_threw_away_more_than_a_save_interval([_record(index=0, saved=None, finished=9)])
+        scenario.assert_no_take_over_threw_away_more_than_a_save_interval(
+            [_record(index=0, saved=None, finished=scenario.SAVE_INTERVAL - 2)]
+        )
 
     def test_a_take_over_that_threw_away_more_than_a_save_interval_fails(self):
         """That means the run resumed from something older than its latest checkpoint."""
         with pytest.raises(AssertionError, match="threw away"):
-            scenario.assert_no_take_over_threw_away_more_than_a_save_interval([_record(index=0, saved=9, finished=40)])
+            scenario.assert_no_take_over_threw_away_more_than_a_save_interval(
+                [_record(index=0, saved=9, finished=9 + scenario.MAX_REDONE_STEPS_PER_TAKE_OVER + 1)]
+            )
 
     def test_the_bound_follows_the_save_interval_the_run_is_installed_with(self):
         """A bound spelled independently would drift the moment the interval changed."""

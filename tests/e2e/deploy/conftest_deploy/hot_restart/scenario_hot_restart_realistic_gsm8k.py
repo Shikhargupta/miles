@@ -29,10 +29,10 @@ from miles.utils.external_utils import command_utils
 app: typer.Typer = typer.Typer()
 
 TEST_NAME: str = "hot_restart_realistic_gsm8k"
-SAVE_INTERVAL: int = 10
+SAVE_INTERVAL: int = 3
 MIN_HOT_RESTARTS: int = 1
 MAX_REDONE_STEPS_PER_TAKE_OVER: int = SAVE_INTERVAL + 1
-DEFAULT_HOT_RESTART_INTERVAL_SECONDS: float = 1800.0
+DEFAULT_HOT_RESTART_INTERVAL_SECONDS: float = 600.0
 
 HotRestartIntervalSecondsOption = Annotated[
     float, typer.Option(help="Mean seconds between take-overs of the orchestration script")

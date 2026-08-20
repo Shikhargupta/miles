@@ -94,8 +94,8 @@ Eligibility: none - every draw fires; a draw before the first save starts the ru
         --ref-load, a product path this soak covers rather than skips
 Landing: both replaced workloads (orchestrator, rollout-executor) carry a stamp other than the
         one they carried at the draw - rewritten, not added; a redone step is the faster signal
-Load-bearing: adds --save/--load and --save-interval 10 (bounds one take-over's cost); mean draw
-        interval 1800s (--hot-restart-interval-seconds)
+Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's cost); mean draw
+        interval 600s (--hot-restart-interval-seconds)
 
 1. Run the realistic gsm8k recipe while the plan injects hot restarts
 2. Assert: gsm8k reward improves as in scenario_realistic_gsm8k
