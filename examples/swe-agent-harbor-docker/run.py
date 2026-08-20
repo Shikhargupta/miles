@@ -59,7 +59,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
-    wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
+    use_wandb: bool = True
     wandb_project: str = os.environ.get("WANDB_PROJECT", "my-wandb-project")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
     wandb_run_name: str = "glm47-flash-swe-tito"
@@ -201,12 +201,11 @@ def execute(args: ScriptArgs):
         )
 
     wandb_args = ""
-    if args.wandb_key:
+    if args.use_wandb:
         wandb_args = (
             "--use-wandb "
             f"--wandb-project {args.wandb_project} "
             f"--wandb-group {args.wandb_run_name} "
-            f"--wandb-key {args.wandb_key} "
         )
         if args.wandb_team:
             wandb_args += f"--wandb-team {args.wandb_team} "
