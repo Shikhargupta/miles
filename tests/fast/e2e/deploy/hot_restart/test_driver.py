@@ -1,4 +1,5 @@
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ _SCHEDULE: tuple[ScheduledFreeze, ...] = (
     ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),
     ScheduledFreeze(frozen_rollout_id=4, saved_iteration=3),
 )
+_DRIVE_TIMEOUT_SECONDS: float = 30.0
+_DRIVE_POLL_SECONDS: float = 0.01
 
 
 class TestScheduledFreeze:
@@ -101,7 +104,25 @@ def _driver(tmp_path: Path, **overrides: Any) -> HotRestartDriver:
 
 def _join_relaunches(driver: HotRestartDriver) -> None:
     for thread in driver._relaunch_threads:
-        thread.join(timeout=30.0)
+        thread.join(timeout=_DRIVE_TIMEOUT_SECONDS)
+
+
+def _drive_until_the_take_overs_landed(driver: HotRestartDriver, *, take_overs: int) -> None:
+    stop_event = threading.Event()
+    thread = threading.Thread(target=driver._drive, args=(stop_event,), name="hot-restart-driver-under-test")
+    deadline = time.monotonic() + _DRIVE_TIMEOUT_SECONDS
+
+    thread.start()
+    while len(driver.records) < take_overs and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(_DRIVE_POLL_SECONDS)
+
+    stop_event.set()
+    thread.join(timeout=_DRIVE_TIMEOUT_SECONDS)
+
+    assert not thread.is_alive(), (
+        f"the hot restart driver was still driving {_DRIVE_TIMEOUT_SECONDS}s after it was asked to stop, so the "
+        f"records about to be read would race it"
+    )
 
 
 def _install_frozen_at(monkeypatch, rollout_id: int | None) -> None:
@@ -284,7 +305,7 @@ class TestTheTakeOverLoop:
             ],
         )
 
-        driver._drive(threading.Event())
+        _drive_until_the_take_overs_landed(driver, take_overs=2)
         _join_relaunches(driver)
 
         assert driver.records == [
@@ -308,7 +329,7 @@ class TestTheTakeOverLoop:
             ],
         )
 
-        driver._drive(threading.Event())
+        _drive_until_the_take_overs_landed(driver, take_overs=1)
         _join_relaunches(driver)
 
         assert armed == [None]
@@ -339,7 +360,7 @@ class TestTheTakeOverLoop:
         monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
         monkeypatch.setattr(driver_module, "read_frozen_rollout_id", lambda _path: 2 if len(reads) > 1 else None)
 
-        driver._drive(threading.Event())
+        _drive_until_the_take_overs_landed(driver, take_overs=1)
         _join_relaunches(driver)
 
         assert len(driver.records) == 1
@@ -434,6 +455,18 @@ class TestWhenTheCheckpointTrackerLagsTheFreeze:
         )
 
         assert record.saved_iteration_at_trigger == 1
+
+    def test_a_reread_that_answered_nothing_does_not_erase_what_the_freeze_reported(self, tmp_path, monkeypatch):
+        """A tracker nobody could read is no evidence, and reading it as none matches a scenario pinning none."""
+        driver = _driver(tmp_path)
+        monkeypatch.setattr(driver_module.HotRestartDriver, "_reread_saved_iteration", lambda _self: None)
+
+        with pytest.raises(AssertionError, match="save cadence"):
+            driver._compute_record(
+                index=0,
+                scheduled=_FROM_SCRATCH,
+                progress=RunProgress(last_saved_iteration=0, last_finished_rollout_id=1),
+            )
 
     def test_a_tracker_that_never_catches_up_still_fails(self, tmp_path, monkeypatch):
         """Re-reading is for a save in flight, not for a run saving at another pace altogether."""

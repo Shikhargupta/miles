@@ -273,7 +273,8 @@ class HotRestartDriver:
             if saved == on:
                 return saved
             time.sleep(self.tracker_settle_interval_seconds)
-            saved = self._reread_saved_iteration()
+            if (reread := self._reread_saved_iteration()) is not None:
+                saved = reread
         return saved
 
     def _reread_saved_iteration(self) -> int | None:
