@@ -282,6 +282,12 @@ def assert_the_freeze_schedule_leaves_a_window_the_run_can_redo(restart_mode: Ho
         f"{restart_mode.test_name} freezes the run after step {max(restart_mode.frozen_rollout_ids)} of "
         f"{NUM_ROLLOUTS}, leaving no step past the last take-over that is not a redone one"
     )
+    frozen = restart_mode.frozen_rollout_ids
+    assert len(set(frozen)) == len(frozen), (
+        f"{restart_mode.test_name} freezes the run twice after the same step ({list(frozen)}), and the driver "
+        f"tells one freeze from the one before it by the step the sentinel names: the sentinel a previous freeze "
+        f"left would be read as this one, and the take-over would go before the run had parked"
+    )
 
     saved = compute_saved_rollout_ids(save_interval=restart_mode.save_interval)
     for scheduled in restart_mode.schedule:

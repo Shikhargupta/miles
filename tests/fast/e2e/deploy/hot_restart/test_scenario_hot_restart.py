@@ -100,6 +100,19 @@ class TestTiming:
         with pytest.raises(AssertionError, match="only ever saves the last step"):
             scenario.assert_the_freeze_schedule_leaves_a_window_the_run_can_redo(rare)
 
+    def test_a_mode_freezing_twice_after_the_same_step_is_refused(self):
+        """The driver reads the sentinel's step to tell this freeze from the one before it."""
+        repeated = dataclasses.replace(
+            scenario.CHECKPOINTED,
+            schedule=(
+                ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),
+                ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),
+            ),
+        )
+
+        with pytest.raises(AssertionError, match="freezes the run twice after the same step"):
+            scenario.assert_the_freeze_schedule_leaves_a_window_the_run_can_redo(repeated)
+
     def test_a_mode_pinning_a_save_its_own_cadence_never_writes_is_refused(self):
         """The pinned save is a literal now, and a wrong one would resume the take-over somewhere else."""
         wrong = dataclasses.replace(
