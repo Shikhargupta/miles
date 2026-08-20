@@ -390,7 +390,7 @@ spec:
             - name: shared-storage
               mountPath: "/cluster-storage"
             - name: shared-storage
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: shared-storage
               mountPath: "/root/Megatron-LM"
@@ -417,7 +417,7 @@ spec:
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
             - name: "PYTHONPATH"
-              value: "<REPO_ROOT>:/root/Megatron-LM"
+              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           resources:
@@ -484,7 +484,7 @@ spec:
             - name: shared-storage
               mountPath: "/cluster-storage"
             - name: shared-storage
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: shared-storage
               mountPath: "/root/Megatron-LM"
@@ -522,7 +522,7 @@ spec:
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
             - name: "PYTHONPATH"
-              value: "<REPO_ROOT>:/root/Megatron-LM"
+              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           resources:
@@ -593,7 +593,7 @@ spec:
             - name: shared-storage
               mountPath: "/cluster-storage"
             - name: shared-storage
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: shared-storage
               mountPath: "/root/Megatron-LM"
@@ -631,7 +631,7 @@ spec:
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
             - name: "PYTHONPATH"
-              value: "<REPO_ROOT>:/root/Megatron-LM"
+              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -699,7 +699,7 @@ spec:
             - name: shared-storage
               mountPath: "/cluster-storage"
             - name: shared-storage
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: shared-storage
               mountPath: "/root/Megatron-LM"
@@ -737,7 +737,7 @@ spec:
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
             - name: "PYTHONPATH"
-              value: "<REPO_ROOT>:/root/Megatron-LM"
+              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -804,7 +804,7 @@ spec:
             - name: shared-storage
               mountPath: "/cluster-storage"
             - name: shared-storage
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: shared-storage
               mountPath: "/root/Megatron-LM"
@@ -846,7 +846,7 @@ spec:
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
             - name: "PYTHONPATH"
-              value: "<REPO_ROOT>:/root/Megatron-LM"
+              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -915,7 +915,7 @@ spec:
             - name: shared-storage
               mountPath: "/cluster-storage"
             - name: shared-storage
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: shared-storage
               mountPath: "/root/Megatron-LM"
@@ -927,7 +927,7 @@ spec:
             - "-m"
             - "miles.rollout.session.server"
             - "--config-json"
-            - "{\"host\":\"0.0.0.0\",\"port\":8000,\"instance_id\":\"0123456789abcdef-0\",\"backend_url\":\"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000\",\"timeout\":null,\"hf_checkpoint\":\"<REPO_ROOT>/tests/fast/charts/miles_run/typical-model\",\"chat_template_path\":null,\"tito_model\":\"default\",\"apply_chat_template_kwargs\":{},\"use_rollout_routing_replay\":false,\"use_rollout_indexer_replay\":false,\"sglang_speculative_algorithm\":null,\"num_layers\":36,\"moe_router_topk\":2,\"save_debug_trajectory_data\":null,\"lora_rank\":0,\"lora_adapter_path\":null,\"use_session_server\":true,\"session_message_matcher\":\"strict\",\"pause_generation_mode\":\"retract\",\"session_sample_picker_path\":\"miles.rollout.session.v2.picker_hub.drop_retries\",\"session_sample_postprocessor_path\":\"miles.rollout.session.v2.postprocessor_hub.default_postprocess\"}"
+            - "{\"host\":\"0.0.0.0\",\"port\":8000,\"instance_id\":\"0123456789abcdef-0\",\"backend_url\":\"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000\",\"timeout\":null,\"hf_checkpoint\":\"<FIXTURE_DIR>/typical-model\",\"chat_template_path\":null,\"tito_model\":\"default\",\"apply_chat_template_kwargs\":{},\"use_rollout_routing_replay\":false,\"use_rollout_indexer_replay\":false,\"sglang_speculative_algorithm\":null,\"num_layers\":36,\"moe_router_topk\":2,\"save_debug_trajectory_data\":null,\"lora_rank\":0,\"lora_adapter_path\":null,\"use_session_server\":true,\"session_message_matcher\":\"strict\",\"pause_generation_mode\":\"retract\",\"session_sample_picker_path\":\"miles.rollout.session.v2.picker_hub.drop_retries\",\"session_sample_postprocessor_path\":\"miles.rollout.session.v2.postprocessor_hub.default_postprocess\"}"
           env:
             - name: MILES_CELL_INDEX
               valueFrom:
@@ -946,7 +946,7 @@ spec:
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
             - name: "PYTHONPATH"
-              value: "<REPO_ROOT>:/root/Megatron-LM"
+              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -1014,7 +1014,7 @@ spec:
             - name: shared-storage
               mountPath: "/cluster-storage"
             - name: shared-storage
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: shared-storage
               mountPath: "/root/Megatron-LM"
@@ -1052,7 +1052,7 @@ spec:
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
             - name: "PYTHONPATH"
-              value: "<REPO_ROOT>:/root/Megatron-LM"
+              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -1122,7 +1122,7 @@ spec:
               - name: shared-storage
                 mountPath: "/cluster-storage"
               - name: shared-storage
-                mountPath: "<REPO_ROOT>"
+                mountPath: "/root/miles"
                 subPath: "myuser/miles"
               - name: shared-storage
                 mountPath: "/root/Megatron-LM"
@@ -1137,7 +1137,7 @@ spec:
               - "sglang.launch_server"
               - "--trust-remote-code"
               - "--model-path"
-              - "<REPO_ROOT>/tests/fast/charts/miles_run/typical-model"
+              - "<FIXTURE_DIR>/typical-model"
               - "--host"
               - "0.0.0.0"
               - "--port"
@@ -1205,7 +1205,7 @@ spec:
               - name: "NVSHMEM_DISABLE_NCCL"
                 value: "1"
               - name: "PYTHONPATH"
-                value: "<REPO_ROOT>:/root/Megatron-LM"
+                value: "/root/miles:/root/Megatron-LM"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
               - name: "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
@@ -1321,7 +1321,7 @@ spec:
               - name: shared-storage
                 mountPath: "/cluster-storage"
               - name: shared-storage
-                mountPath: "<REPO_ROOT>"
+                mountPath: "/root/miles"
                 subPath: "myuser/miles"
               - name: shared-storage
                 mountPath: "/root/Megatron-LM"
@@ -1336,7 +1336,7 @@ spec:
               - "sglang.launch_server"
               - "--trust-remote-code"
               - "--model-path"
-              - "<REPO_ROOT>/tests/fast/charts/miles_run/typical-model"
+              - "<FIXTURE_DIR>/typical-model"
               - "--host"
               - "0.0.0.0"
               - "--port"
@@ -1398,7 +1398,7 @@ spec:
               - name: "NVSHMEM_DISABLE_NCCL"
                 value: "1"
               - name: "PYTHONPATH"
-                value: "<REPO_ROOT>:/root/Megatron-LM"
+                value: "/root/miles:/root/Megatron-LM"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
               - name: "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
@@ -1511,7 +1511,7 @@ spec:
               - name: shared-storage
                 mountPath: "/cluster-storage"
               - name: shared-storage
-                mountPath: "<REPO_ROOT>"
+                mountPath: "/root/miles"
                 subPath: "myuser/miles"
               - name: shared-storage
                 mountPath: "/root/Megatron-LM"
@@ -1546,7 +1546,7 @@ spec:
               - name: "NCCL_SOCKET_IFNAME"
                 value: "bond0"
               - name: "PYTHONPATH"
-                value: "<REPO_ROOT>:/root/Megatron-LM"
+                value: "/root/miles:/root/Megatron-LM"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
             ports:

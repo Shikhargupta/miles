@@ -9,7 +9,7 @@ import pytest
 import yaml
 from megatron.training import arguments as megatron_arguments
 from tests.fast.charts.utils import NAMESPACE, RUN_CHART_DIR, RUN_ID, RUN_RELEASE_NAME, requires_helm
-from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot, sanitize
+from tests.fast.launch_scripts.sh_harness import REPO_ROOT, SANDBOX_PLACEHOLDER, assert_matches_snapshot
 
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.arguments import parse_args
@@ -26,6 +26,7 @@ SGLANG_CONFIG = FIXTURE_DIR / "typical-sglang.yaml"
 HF_CHECKPOINT = FIXTURE_DIR / "typical-model"
 
 PYTHON_PLACEHOLDER = "<PYTHON>"
+FIXTURE_DIR_PLACEHOLDER = "<FIXTURE_DIR>"
 RANDOM_SEED_PLACEHOLDER = "<RANDOM_SEED>"
 RANDOM_SEED_FLAG = "--random-seed"
 
@@ -217,9 +218,11 @@ def render_from(values_file: Path) -> str:
 
 
 def freeze(text: str, sandbox: Path) -> str:
-    # the repo paths a run renders come from the checkout the launcher itself is imported from, so
-    # they differ on every machine and have to be masked, this test's own fixtures included
-    return mask_random_seeds(sanitize(text, sandbox=sandbox).replace(sys.executable, PYTHON_PLACEHOLDER))
+    # only this test's own fixtures really move from machine to machine. the chart mounts the repo at
+    # a fixed container path, so masking the whole checkout instead would mask that constant away on
+    # any machine that happens to be checked out there, and record a snapshot only it can reproduce
+    masked = text.replace(str(sandbox), SANDBOX_PLACEHOLDER).replace(str(FIXTURE_DIR), FIXTURE_DIR_PLACEHOLDER)
+    return mask_random_seeds(masked.replace(sys.executable, PYTHON_PLACEHOLDER))
 
 
 def mask_random_seeds(text: str) -> str:
