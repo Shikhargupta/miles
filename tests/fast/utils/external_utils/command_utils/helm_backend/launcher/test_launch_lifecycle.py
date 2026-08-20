@@ -216,7 +216,7 @@ class TestDefusingAPendingUninstall:
             installed=True,
             rendered=_RENDERED_ORCHESTRATOR,
             proposed=_RENDERED_ORCHESTRATOR_REPLACED,
-            force=True,
+            skip_upgrade_check=True,
         )
 
         assert _DELETE_UNINSTALL_JOB in recorded.kubectl
@@ -265,7 +265,7 @@ class TestChoosingTheStateFile:
             installed=True,
             rendered=_RENDERED_ORCHESTRATOR,
             proposed=_RENDERED_ORCHESTRATOR_REPLACED,
-            force=True,
+            skip_upgrade_check=True,
         )
 
         assert followed[0]["state_file"] != tmp_path / "attached.state"
@@ -344,7 +344,9 @@ class TestAnOrdinaryRelaunchOfAHotRestartedRun:
         assert followed[0]["state_file"] == tmp_path / "attached.state"
         assert proposals[-1]["orchestrator"]["restartAt"] == _STAMP
 
-    def test_a_relaunch_that_changes_the_orchestration_arguments_is_refused_without_force(self, monkeypatch, tmp_path):
+    def test_a_relaunch_that_changes_the_orchestration_arguments_is_refused_without_skip_upgrade_check(
+        self, monkeypatch, tmp_path
+    ):
         """Changing the arguments of a live run is what --hot-restart is for, and nothing else may do it."""
         recorded = _Recorded(kubectl=[], upgraded=[])
 
@@ -415,7 +417,7 @@ def _launch(
     proposed: str | None = None,
     proposals: list[dict] | None = None,
     delete_fails: bool = False,
-    force: bool = False,
+    skip_upgrade_check: bool = False,
     hot_restart: str = "",
     rendered: str | None = None,
     deploy_component: str = "all",
@@ -465,7 +467,7 @@ def _launch(
             helm_values=(str(_launchable_infra_file(tmp_path)),),
             deploy_component=component,
             run_uuid=_RUN_UUID if component.is_split() else None,
-            force=force,
+            skip_upgrade_check=skip_upgrade_check,
             hot_restart=hot_restart,
         ),
     )
