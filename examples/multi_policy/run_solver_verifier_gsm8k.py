@@ -104,7 +104,6 @@ def build_train_args(
         f"--prompt-data {args.data_dir}/gsm8k/train.parquet "
         "--input-key messages "
         "--label-key label "
-        "--apply-chat-template "
         "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "
         "--rollout-batch-size 8 "
