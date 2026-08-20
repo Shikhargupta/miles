@@ -172,7 +172,7 @@ def execute(args: ScriptArgs):
         "--rollout-function-path generate.RolloutFn "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--tito-model glm47 "
-        "--use-session-server "
+        "--use-session-server v2 "
         "--session-server-port 30000 "
     )
 
@@ -182,6 +182,8 @@ def execute(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
+        "--observe-training-entropy "
+        "--log-multi-turn "
         "--colocate "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
@@ -192,7 +194,11 @@ def execute(args: ScriptArgs):
 
     trace_args = ""
     if args.save_traces_dir:
-        trace_args = f"--dump-details {args.save_traces_dir} "
+        trace_args = (
+            f"--dump-details {args.save_traces_dir} "
+            "--use-miles-dashboard "
+            "--use-rollout-entropy "
+        )
 
     wandb_args = ""
     if args.wandb_key:
@@ -204,6 +210,7 @@ def execute(args: ScriptArgs):
         )
         if args.wandb_team:
             wandb_args += f"--wandb-team {args.wandb_team} "
+        wandb_args += "--disable-wandb-random-suffix "
 
     prometheus_args = ""
     if args.use_prometheus:
