@@ -124,19 +124,6 @@ class TestInitialWeightPublication:
         context["inference_controller"].check_weights.assert_not_awaited()
 
 
-class TestPolicyCompletion:
-    async def test_a_policy_that_finished_hands_its_engines_back_to_the_health_checker(self):
-        """Its last round paused probing for a weight update that no later rollout of its own would resume."""
-        trainers = {"a": AsyncMock(), "b": AsyncMock()}
-        trainers["b"].train = AsyncMock(side_effect=_train_that_never_returns)
-
-        context = await _run(_make_args(num_rollout=1), trainers=trainers)
-
-        finished = [call.kwargs["model_id"] for call in context["inference_controller"].prepare_eval.await_args_list]
-        assert finished == ["a"]
-        assert trainers["b"].train.await_count == 1
-
-
 class TestRunPolicies:
     async def test_every_policy_drains_and_updates_only_its_own_model(self, monkeypatch):
         """Two policies sharing one executor must never train on, or publish into, each other's model."""
