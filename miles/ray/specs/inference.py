@@ -83,7 +83,7 @@ def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
             ),
             worker_class=INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS,
             ctor_kwargs=lambda ctx: dict(
-                reporter=_create_inference_registration_reporter(args, capability=ctx.capability)
+                args=args, reporter=_create_inference_registration_reporter(args, capability=ctx.capability)
             ),
         )
     ]
