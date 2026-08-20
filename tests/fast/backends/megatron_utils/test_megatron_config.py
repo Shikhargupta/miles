@@ -130,12 +130,12 @@ class TestResolveMegatronConfig:
 
     def test_a_trainer_id_defaults_to_the_model_id_and_the_role(self, tmp_path):
         """The trainer id addresses a pool, so its default must stay the name every deployment already uses."""
-        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b", "role": "critic"}]}, tmp_path)
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
 
         config = resolve_megatron_config(_make_args(path))
 
-        assert [trainer.trainer_id for trainer in config.trainers] == ["a-actor", "b-critic"]
-        assert [trainer.role for trainer in config.trainers] == ["actor", "critic"]
+        assert [trainer.trainer_id for trainer in config.trainers] == ["a-actor", "b-actor"]
+        assert [trainer.role for trainer in config.trainers] == ["actor", "actor"]
 
     def test_an_explicit_trainer_id_wins_over_the_derived_one(self, tmp_path):
         """A deployment that already named its pools must be able to keep those names."""
@@ -159,13 +159,11 @@ class TestResolveMegatronConfig:
 
     def test_several_entries_of_one_model_id_are_not_a_multi_policy_run(self, tmp_path):
         """An actor and a critic of one policy share its id, and one policy is not several policies."""
-        path = _write_yaml(
-            {"trainers": [{"model_id": "a"}, {"model_id": "a", "role": "critic"}]},
-            tmp_path,
-        )
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
 
-        config = resolve_megatron_config(_make_args(path))
+        config = resolve_megatron_config(_make_args(path, use_critic=True))
 
+        assert [trainer.trainer_id for trainer in config.trainers] == ["a-actor", "a-critic"]
         assert config.model_ids == ["a"]
         assert config.leader_model_id == "a"
         assert not config.is_multi_policy
@@ -193,9 +191,12 @@ class TestResolveMegatronConfig:
 
     def test_getting_a_model_id_answers_its_first_trainer(self, tmp_path):
         """Callers ask by model id and expect the actor: the critic of that policy is addressed by role."""
-        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "a", "role": "critic"}]}, tmp_path)
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
 
-        assert resolve_megatron_config(_make_args(path)).get("a").role == "actor"
+        config = resolve_megatron_config(_make_args(path, use_critic=True))
+
+        assert [trainer.role for trainer in config.trainers] == ["actor", "critic"]
+        assert config.get("a").role == "actor"
 
     def test_a_run_without_the_flag_has_no_leader_model_id(self):
         """A single policy run has no leader to index the trainers by, and must answer None rather than invent one."""
@@ -462,25 +463,24 @@ class TestTrainerCheckpointDirs:
         assert (model_a.save, model_a.load) == ("/ckpt/run/trainers/a-actor", str(old / "trainers" / "a-actor"))
         assert (model_b.save, model_b.load) == ("/ckpt/run/trainers/b-actor", str(old / "trainers" / "b-actor"))
 
-    def test_two_trainers_of_one_policy_do_not_share_a_directory(self, tmp_path):
+    def test_a_checkpoint_dir_is_keyed_by_the_trainer_id_and_not_by_the_model_id(self, tmp_path):
         """A trainer id is unique where a model id is not, so keying the directory by the model would collide."""
-        path = _write_yaml(
-            {"trainers": [{"model_id": "a"}, {"model_id": "a", "role": "critic"}, {"model_id": "b"}]}, tmp_path
-        )
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "a-second"}, {"model_id": "b"}]}, tmp_path)
         args = _make_args(path, save="/ckpt/run")
 
         saves = [compute_trainer_args(args, trainer).save for trainer in resolve_megatron_config(args).trainers]
 
-        assert saves == ["/ckpt/run/trainers/a-actor", "/ckpt/run/trainers/a-critic", "/ckpt/run/trainers/b-actor"]
+        assert saves == ["/ckpt/run/trainers/a-second", "/ckpt/run/trainers/b-actor"]
 
     def test_a_single_policy_run_keeps_the_paths_it_was_given(self, tmp_path):
         """Existing checkpoints and existing resume commands must keep working byte for byte."""
+        load = _write_megatron_checkpoint(tmp_path)
         path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
-        args = _make_args(path, save="/ckpt/run", load="/ckpt/old")
+        args = _make_args(path, save="/ckpt/run", load=load)
 
         model = _model_args(args, model_id="a")
 
-        assert (model.save, model.load) == ("/ckpt/run", "/ckpt/old")
+        assert (model.save, model.load) == ("/ckpt/run", load)
 
     def test_an_unset_checkpoint_dir_stays_unset(self, tmp_path):
         """A run without --save must not grow a derived path out of None."""
@@ -501,7 +501,7 @@ class TestTrainerCheckpointDirs:
             {"trainers": [{"model_id": "a", "overrides": {"load": "/ckpt/a"}}, {"model_id": "b"}]}, tmp_path
         )
 
-        with pytest.raises(AssertionError, match="not a per-policy argument"):
+        with pytest.raises(AssertionError, match="sets 'load', which it may not override"):
             resolve_megatron_config(_make_args(path))
 
 
@@ -609,8 +609,9 @@ class TestSynthesizedCriticTrainer:
         with pytest.raises(AssertionError, match="does not support --use-critic"):
             resolve_megatron_config(_make_args(path, use_critic=True))
 
-    def test_a_config_that_already_declares_a_critic_gets_no_second_one(self, tmp_path):
-        """A config naming its own critic owns that critic's overrides, which a synthesized one would not carry."""
+    def test_a_config_that_declares_its_own_critic_is_refused(self, tmp_path):
+        """The critic checkpoint, learning rate and neutralized knobs only reach the synthesized critic, so a
+        declared one would run as a plain trainer under a critic's name."""
         path = _write_yaml(
             {
                 "trainers": [
@@ -621,10 +622,8 @@ class TestSynthesizedCriticTrainer:
             tmp_path,
         )
 
-        config = resolve_megatron_config(_make_args(path, use_critic=True))
-
-        assert [(t.trainer_id, t.role) for t in config.trainers] == [("a-actor", "actor"), ("a-critic", "critic")]
-        assert config.trainers[1].overrides == {"lr": 5e-7}
+        with pytest.raises(AssertionError, match="declares a critic for"):
+            resolve_megatron_config(_make_args(path, use_critic=True))
 
     def test_the_critic_of_a_named_policy_inherits_its_id_and_its_overlay(self, tmp_path):
         """The critic trains the same policy, so it must be addressed by that policy and see its settings."""
