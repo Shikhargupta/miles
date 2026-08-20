@@ -52,12 +52,16 @@ class TestResourceVersionParsing:
             {},
             dict(metadata=None),
             dict(metadata={}),
-            "a payload that is not an object at all",
         ],
     )
     def test_a_frame_without_a_readable_version_parses_to_none(self, obj: Any) -> None:
         """A missing or malformed metadata block must parse to None, never raise: the caller keeps its cursor."""
         assert PodWatchEvent.from_frame(event_type="BOOKMARK", obj=obj).resource_version is None
+
+    def test_a_payload_that_is_not_an_object_at_all_ends_the_stream(self) -> None:
+        """A frame no parser can read is not a frame with a missing field, and the watch must not go on."""
+        with pytest.raises(ValidationError):
+            PodWatchEvent.from_frame(event_type="BOOKMARK", obj="a payload that is not an object at all")
 
 
 class TestPodParsing:
