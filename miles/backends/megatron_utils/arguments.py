@@ -32,9 +32,9 @@ def set_default_megatron_args(args):
     # Notice(Jiajun): new megatron has removed this argument and use dp_reshardable instead of fully_shard
     if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1":
         args.dist_ckpt_save_pre_mcore_014 = True
-    # Router gating through torch.mm, as it was before megatron picked up te_general_gemm:
-    # TE multiplies in the operand dtype, which silently downgrades --moe-router-dtype fp32
-    # to a bf16 multiply. Top-k then turns that last ulp into a different expert.
+    # Before 20260819, radixark/Megatron-LM pick torch gemm for router, which is fp32 x fp32 ->
+    # fp32, and 20260819 convert the default to TE gemm which is bf16 x bf16 -> fp32. Result show
+    # the TE one increase log prob diff so manually set back
     args.moe_router_use_torch_mm = True
     # compatible for megatron
     if hasattr(args, "rope_type") and args.rope_type is None:
@@ -48,8 +48,6 @@ def set_default_megatron_args(args):
         args.tokenizer_model = args.hf_checkpoint
         args.tokenizer_type = "HuggingFaceTokenizer"
 
-    # Megatron builds its tokenizer through this flag; miles passes trust_remote_code=True
-    # everywhere it loads a checkpoint itself, and models like Kimi ship custom tokenizer code.
     args.trust_remote_code = True
 
     if not hasattr(args, "miles_dsa_topk_backend"):
