@@ -14,7 +14,7 @@ from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
-from miles.utils.misc import NodeProbeMixin, SingletonMeta, get_current_node_ip
+from miles.utils.misc import SingletonMeta, get_current_node_ip
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -63,7 +63,7 @@ def _load_subclass(path: str | None, base_cls):
     return cls
 
 
-class MultiLoRAController(NodeProbeMixin):
+class MultiLoRAController:
     def __init__(self, *, args, router_providers: Sequence[BaseWorkerProvider], host: str = "0.0.0.0") -> None:
         configure_logger(args, source=SimpleProcessIdentity(component="multi_lora_controller"))
 
