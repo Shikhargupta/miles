@@ -221,11 +221,6 @@ ci-megatron-pr: my-fix-branch
 ci-image-tag: dev-202608100600
 ```
 
-The ROCm suite bakes SGLang and Megatron-LM into its image and normally keeps them, so it
-runs no install step at all. Naming either ref turns that step back on for ROCm too, and it
-fetches from the `origin` of the image's own checkouts -- a ref that lives only on some
-other remote will not resolve there.
-
 Precedence, when several sources disagree: a `workflow_dispatch` input wins, then the
 PR-description line, then the default. `ci-image-tag:` has one more rule: on a PR that
 built its own image, the fresh `pr-<number>` tag outranks the directive, so a docker PR
