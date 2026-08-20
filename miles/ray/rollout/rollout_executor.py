@@ -36,7 +36,6 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
-from miles.utils.misc import NodeProbeMixin
 from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -50,7 +49,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-class RolloutExecutor(NodeProbeMixin):
+class RolloutExecutor:
     """The class to run rollout and convert rollout data to training data."""
 
     def __init__(

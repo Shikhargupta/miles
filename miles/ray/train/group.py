@@ -27,7 +27,6 @@ from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChe
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
-from miles.utils.misc import NodeProbeMixin
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -50,7 +49,7 @@ def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> S
     return SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
 
 
-class TrainerController(NodeProbeMixin):
+class TrainerController:
     def __init__(
         self,
         *,
