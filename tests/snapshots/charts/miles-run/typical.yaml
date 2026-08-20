@@ -81,44 +81,6 @@ data:
 ---
 # Source: miles-run/templates/colocate-pairing.yaml
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: "myrun-miles-run-colocate-pairing-myns"
-  labels:
-    helm.sh/chart: "miles-run-0.1.0"
-    app.kubernetes.io/name: "miles-run"
-    app.kubernetes.io/instance: "myrun"
-    app.kubernetes.io/component: "colocate-pairing"
-    app.kubernetes.io/version: "0.1.0"
-    app.kubernetes.io/managed-by: "Helm"
-rules:
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get"]
----
-# Source: miles-run/templates/colocate-pairing.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: "myrun-miles-run-colocate-pairing-myns"
-  labels:
-    helm.sh/chart: "miles-run-0.1.0"
-    app.kubernetes.io/name: "miles-run"
-    app.kubernetes.io/instance: "myrun"
-    app.kubernetes.io/component: "colocate-pairing"
-    app.kubernetes.io/version: "0.1.0"
-    app.kubernetes.io/managed-by: "Helm"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: "myrun-miles-run-colocate-pairing-myns"
-subjects:
-  - kind: ServiceAccount
-    name: "myrun-miles-run-colocate-pairing"
-    namespace: "myns"
----
-# Source: miles-run/templates/colocate-pairing.yaml
-apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: "myrun-miles-run-colocate-pairing"
@@ -1265,9 +1227,9 @@ spec:
               path: "/mnt/local-nvme/miles-staging"
               type: DirectoryOrCreate
           - name: dev-shm
-            emptyDir:
-              medium: Memory
-              sizeLimit: "32Gi"
+            hostPath:
+              path: /dev/shm
+              type: Directory
 ---
 # Source: miles-run/templates/inference-engines.yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -1456,9 +1418,9 @@ spec:
               path: "/mnt/local-nvme/miles-staging"
               type: DirectoryOrCreate
           - name: dev-shm
-            emptyDir:
-              medium: Memory
-              sizeLimit: "32Gi"
+            hostPath:
+              path: /dev/shm
+              type: Directory
 
 ---
 # Source: miles-run/templates/trainer-engines.yaml
@@ -1566,6 +1528,6 @@ spec:
               path: "/mnt/local-nvme/miles-staging"
               type: DirectoryOrCreate
           - name: dev-shm
-            emptyDir:
-              medium: Memory
-              sizeLimit: "32Gi"
+            hostPath:
+              path: /dev/shm
+              type: Directory
