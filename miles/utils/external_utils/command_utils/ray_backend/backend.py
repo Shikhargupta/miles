@@ -67,6 +67,8 @@ class RayCommandBackend(BaseCommandBackend):
                 f"{request.train_args}"
             )
 
+        self._release_finished_run(external_ray=external_ray)
+
     def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
@@ -80,6 +82,19 @@ class RayCommandBackend(BaseCommandBackend):
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
         return exec_command_all_ray_nodes(cmd, capture_output=capture_output, num_nodes=num_nodes)
+
+    def _release_finished_run(self, external_ray: bool) -> None:
+        if self.config.deploy_component.is_split():
+            return
+        self.exec_command_cpu(
+            "pkill -9 sglang; "
+            "sleep 3; "
+            f"{'' if external_ray else 'ray stop --force; '}"
+            f"{'' if external_ray else 'pkill -9 ray; '}"
+            "pkill -9 miles; "
+            "pkill -x mooncake_master; "
+            "true; "
+        )
 
     def _clean_up_previous_run(self, external_ray: bool) -> None:
         self.exec_command_cpu(
