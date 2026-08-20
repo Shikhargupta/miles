@@ -296,9 +296,7 @@ class BaseCommandBackend(ABC):
     ) -> list[str | None]: ...
 
 
-DELEGATING_METHODS = tuple(
-    name for name in vars(BaseCommandBackend) if f"_{name}_inner" in vars(BaseCommandBackend)
-)
+DELEGATING_METHODS = tuple(name for name in vars(BaseCommandBackend) if f"_{name}_inner" in vars(BaseCommandBackend))
 
 
 def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, deploy_component: str) -> None:
