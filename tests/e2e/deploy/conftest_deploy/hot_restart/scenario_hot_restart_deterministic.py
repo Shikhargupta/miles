@@ -230,6 +230,7 @@ def _driving_the_take_overs_of(
         release=release,
         namespace=config.namespace,
         trainer_id=DEFAULT_TRAINER_ID,
+        freeze_plan_path=plan_path,
         schedule=restart_mode.schedule,
     )
 

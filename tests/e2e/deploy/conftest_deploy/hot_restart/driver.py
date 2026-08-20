@@ -19,7 +19,7 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
-from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION
+from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
 from miles.utils.test_utils.polling_worker import PollingWorker
 from miles.utils.workers.types import HOT_RESTART_SEPARATOR, HotRestartComponent
 
@@ -107,6 +107,7 @@ class HotRestartDriver:
     release: str
     namespace: str
     trainer_id: str
+    freeze_plan_path: Path
     schedule: tuple[ScheduledFreeze, ...]
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS
     freeze_timeout_seconds: float = FREEZE_TIMEOUT_SECONDS
@@ -217,14 +218,15 @@ class HotRestartDriver:
         return progress
 
     def _stands_frozen_at(self, scheduled: ScheduledFreeze, *, progress: RunProgress) -> bool:
-        if (finished := progress.last_finished_rollout_id) is None:
-            return False
+        if (finished := progress.last_finished_rollout_id) is not None:
+            assert finished <= scheduled.frozen_rollout_id, (
+                f"the run was armed to sleep after step {scheduled.frozen_rollout_id} and finished step {finished}: "
+                f"the injection that freezes it never fired, so a take-over would race the run"
+            )
 
-        assert finished <= scheduled.frozen_rollout_id, (
-            f"the run was armed to sleep after step {scheduled.frozen_rollout_id} and finished step {finished}: the "
-            f"injection that freezes it never fired, so a take-over would race the run"
-        )
-        return finished == scheduled.frozen_rollout_id
+        # The run writes this only once it is already inside its sleep loop, so a plan rewritten
+        # after it appears cannot be read by the run it was meant to freeze.
+        return read_frozen_rollout_id(self.freeze_plan_path) == scheduled.frozen_rollout_id
 
     def _compute_record(self, *, index: int, scheduled: ScheduledFreeze, progress: RunProgress) -> HotRestartRecord:
         assert progress.last_saved_iteration == scheduled.saved_iteration, (

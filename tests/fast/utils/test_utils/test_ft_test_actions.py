@@ -15,6 +15,8 @@ from miles.utils.test_utils.ft_test_actions import (
     FTTestActionControllerExecutor,
     FTTestActionOrchestrationExecutor,
     _load_actions,
+    read_frozen_rollout_id,
+    write_frozen_sentinel,
     write_ft_test_actions,
 )
 
@@ -517,3 +519,55 @@ class TestActionsDeliveredThroughAFile:
 
         with pytest.raises(AssertionError, match="both name the actions"):
             _load_actions(args, _ORCHESTRATION_ACTIONS)
+
+
+# TODO ad hoc hack: revert after the args refactor
+class TestTheSentinelAFrozenRunLeaves:
+    @pytest.mark.asyncio
+    async def test_a_run_that_parked_says_so_where_the_plan_was_read_from(self, tmp_path) -> None:
+        """Only the run knows it is parked; a reader of its metrics sees the step end, not the sleep."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[_SLEEP_ACTION], sleep=_stop_after_one_sleep, actions_path=path
+        )
+
+        with pytest.raises(_SleptOnce):
+            await executor.run_after_step(rollout_id=2)
+
+        assert read_frozen_rollout_id(path) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_never_parked_leaves_no_sentinel(self, tmp_path) -> None:
+        """Reading a stale sentinel as this freeze would take a still-training run over."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        executor = FTTestActionOrchestrationExecutor(actions=[_SLEEP_ACTION], actions_path=path)
+
+        await executor.run_after_step(rollout_id=1)
+
+        assert read_frozen_rollout_id(path) is None
+
+    @pytest.mark.asyncio
+    async def test_each_freeze_overwrites_what_the_previous_one_left(self, tmp_path) -> None:
+        """A take-over waits for its own step, so the value has to move on with the run."""
+        path = tmp_path / "plan.json"
+        write_frozen_sentinel(path, rollout_id=2)
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[FTTestAction(at_rollout=4, action=SLEEP_FOREVER_AT_END_ACTION)],
+            sleep=_stop_after_one_sleep,
+            actions_path=path,
+        )
+
+        with pytest.raises(_SleptOnce):
+            await executor.run_after_step(rollout_id=4)
+
+        assert read_frozen_rollout_id(path) == 4
+
+
+class _SleptOnce(Exception):
+    pass
+
+
+async def _stop_after_one_sleep(_seconds: float) -> None:
+    raise _SleptOnce

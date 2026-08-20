@@ -159,14 +159,20 @@ class FTTestActionOrchestrationExecutor:
         actions: list[FTTestAction],
         sleep: SleepFn = asyncio.sleep,
         interval_seconds: float = SLEEP_FOREVER_INTERVAL_SECONDS,
+        actions_path: Path | None = None,
     ) -> None:
         self._actions = actions
         self._sleep = sleep
         self._interval_seconds = interval_seconds
+        self._actions_path = actions_path
 
     @staticmethod
     def from_args(args: object) -> "FTTestActionOrchestrationExecutor":
-        return FTTestActionOrchestrationExecutor(actions=_load_actions(args, _ORCHESTRATION_ACTIONS))
+        path: str | None = getattr(args, "ci_ft_test_actions_path", None)
+        return FTTestActionOrchestrationExecutor(
+            actions=_load_actions(args, _ORCHESTRATION_ACTIONS),
+            actions_path=Path(path) if path is not None else None,
+        )
 
     async def run_after_step(self, rollout_id: int) -> None:
         actions = [action for action in self._actions if action.at_rollout == rollout_id]
@@ -184,6 +190,8 @@ class FTTestActionOrchestrationExecutor:
         )
         logger.warning(msg)
         print(msg, flush=True)
+        if self._actions_path is not None:
+            write_frozen_sentinel(self._actions_path, rollout_id=rollout_id)
         await self._sleep_forever()
 
     async def _sleep_forever(self) -> None:
@@ -225,3 +233,29 @@ def read_ft_test_actions(path: Path) -> str:
         f"file nothing wrote would quietly perform no action at all"
     )
     return path.read_text()
+
+
+FROZEN_SENTINEL_SUFFIX: str = "_frozen_at.json"
+
+
+# TODO ad hoc hack: revert after the args refactor
+def compute_frozen_sentinel_path(actions_path: Path) -> Path:
+    return actions_path.with_name(f"{actions_path.stem}{FROZEN_SENTINEL_SUFFIX}")
+
+
+# TODO ad hoc hack: revert after the args refactor
+def write_frozen_sentinel(actions_path: Path, *, rollout_id: int) -> None:
+    path = compute_frozen_sentinel_path(actions_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    scratch.write_text(json.dumps({"rollout_id": rollout_id}))
+    scratch.replace(path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+def read_frozen_rollout_id(actions_path: Path) -> int | None:
+    path = compute_frozen_sentinel_path(actions_path)
+    if not path.is_file():
+        return None
+    return int(json.loads(path.read_text())["rollout_id"])

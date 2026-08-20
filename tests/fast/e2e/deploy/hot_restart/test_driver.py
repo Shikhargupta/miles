@@ -90,6 +90,7 @@ def _driver(tmp_path: Path, **overrides: Any) -> HotRestartDriver:
         release=RELEASE,
         namespace=NAMESPACE,
         trainer_id="actor",
+        freeze_plan_path=tmp_path / "hot_restart" / "target_freeze_plan.json",
         schedule=_SCHEDULE,
         poll_interval_seconds=0.0,
     )
@@ -102,12 +103,26 @@ def _join_relaunches(driver: HotRestartDriver) -> None:
         thread.join(timeout=30.0)
 
 
+def _install_frozen_at(monkeypatch, rollout_id: int | None) -> None:
+    monkeypatch.setattr(driver_module, "read_frozen_rollout_id", lambda _path: rollout_id)
+
+
 def _install_progress(monkeypatch, reported: list[RunProgress]) -> None:
+    """Feed the loop a progress sequence, with the run parked wherever the latest one says it stands."""
     remaining = list(reported)
-    monkeypatch.setattr(
-        driver_module, "read_run_progress", lambda **_kwargs: remaining.pop(0) if remaining else reported[-1]
-    )
+    latest: list[RunProgress] = []
+
+    def read(**_kwargs) -> RunProgress:
+        latest.append(remaining.pop(0) if remaining else reported[-1])
+        return latest[-1]
+
+    monkeypatch.setattr(driver_module, "read_run_progress", read)
     monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
+    monkeypatch.setattr(
+        driver_module,
+        "read_frozen_rollout_id",
+        lambda _path: latest[-1].last_finished_rollout_id if latest else None,
+    )
 
 
 class TestHotRestartDriverStart:
@@ -152,26 +167,51 @@ class TestHotRestartDriverProgressGuard:
 
 
 class TestTheFreezeATakeOverWaitsFor:
-    def test_a_run_that_has_finished_nothing_is_not_frozen_yet(self, tmp_path):
+    def test_a_run_that_has_finished_nothing_is_not_frozen_yet(self, tmp_path, monkeypatch):
         """Polling starts before the pods are even up."""
+        _install_frozen_at(monkeypatch, None)
+
         assert not _driver(tmp_path)._stands_frozen_at(
             _CHECKPOINTED, progress=RunProgress(last_saved_iteration=None, last_finished_rollout_id=None)
         )
 
-    def test_a_run_short_of_the_pinned_step_is_not_frozen_yet(self, tmp_path):
+    def test_a_run_short_of_the_pinned_step_is_not_frozen_yet(self, tmp_path, monkeypatch):
         """Taking a run over one step early would resume it from another checkpoint than the pinned one."""
+        _install_frozen_at(monkeypatch, None)
+
         assert not _driver(tmp_path)._stands_frozen_at(
             _CHECKPOINTED, progress=RunProgress(last_saved_iteration=1, last_finished_rollout_id=1)
         )
 
-    def test_the_run_standing_at_the_pinned_step_is_the_frozen_one(self, tmp_path):
-        """The run sleeps from here on, so this is where it stands until something replaces it."""
+    def test_a_run_standing_at_the_pinned_step_that_has_not_parked_is_not_frozen_yet(self, tmp_path, monkeypatch):
+        """The metric event is written before the sleep, so the step being over is not the run being parked."""
+        _install_frozen_at(monkeypatch, None)
+
+        assert not _driver(tmp_path)._stands_frozen_at(
+            _CHECKPOINTED, progress=RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)
+        )
+
+    def test_the_run_that_wrote_the_sentinel_at_the_pinned_step_is_the_frozen_one(self, tmp_path, monkeypatch):
+        """The run writes it from inside its sleep loop, so it can no longer read a rewritten plan."""
+        _install_frozen_at(monkeypatch, 2)
+
         assert _driver(tmp_path)._stands_frozen_at(
             _CHECKPOINTED, progress=RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)
         )
 
-    def test_a_run_that_trained_past_the_pinned_step_fails_instead_of_firing(self, tmp_path):
+    def test_a_sentinel_left_by_the_previous_take_over_is_not_read_as_this_one(self, tmp_path, monkeypatch):
+        """Each freeze overwrites it, so the value only matches once the new run has parked."""
+        _install_frozen_at(monkeypatch, 2)
+
+        assert not _driver(tmp_path)._stands_frozen_at(
+            ScheduledFreeze(frozen_rollout_id=4, saved_iteration=3),
+            progress=RunProgress(last_saved_iteration=3, last_finished_rollout_id=3),
+        )
+
+    def test_a_run_that_trained_past_the_pinned_step_fails_instead_of_firing(self, tmp_path, monkeypatch):
         """The freeze is what makes the take-over exact, and a run that moved on was never frozen."""
+        _install_frozen_at(monkeypatch, None)
+
         with pytest.raises(AssertionError, match="never fired"):
             _driver(tmp_path)._stands_frozen_at(
                 _CHECKPOINTED, progress=RunProgress(last_saved_iteration=3, last_finished_rollout_id=3)
@@ -297,6 +337,7 @@ class TestTheTakeOverLoop:
         driver = _driver(tmp_path, schedule=(ScheduledFreeze(frozen_rollout_id=2, saved_iteration=1),))
         monkeypatch.setattr(driver_module, "read_run_progress", read)
         monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
+        monkeypatch.setattr(driver_module, "read_frozen_rollout_id", lambda _path: 2 if len(reads) > 1 else None)
 
         driver._drive(threading.Event())
         _join_relaunches(driver)
