@@ -301,8 +301,10 @@ def _fake_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tru
     return "--some-flag some-value "
 
 
-def _fake_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
-    return "--some-flag some-value --its-own-object-store "
+def _fake_baseline_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
+    return f"--some-flag some-value --its-own-object-store --run-id-of {None if config is None else config.run_id} "
 
 
 def _pipeline_config() -> ExecuteTrainConfig:
@@ -332,8 +334,16 @@ class TestTheScenarioPipeline:
         pipeline.run_ci()
 
         assert [train_args for _, train_args in pipeline.unsplit_sides] == [
-            _fake_baseline_args(scenario._MODE, DUMP_DIR)
+            _fake_baseline_args(scenario._MODE, DUMP_DIR, True, _pipeline_config())
         ]
+
+    def test_the_baseline_is_built_against_the_run_it_is_installed_as(self, pipeline):
+        """Built against a config of its own, it would file this run's metrics under a run nobody launched."""
+        pipeline.run_ci()
+
+        [(_, train_args)] = pipeline.unsplit_sides
+
+        assert f"--run-id-of {RUN_ID} " in train_args
 
     def test_the_run_reaches_the_cluster_one_deployment_at_a_time_in_this_order(self, pipeline):
         """The baseline is one release; the target's parts install in the order the run needs them installed."""

@@ -79,8 +79,10 @@ def _build_args(
     return train_args
 
 
-def _build_baseline_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
-    return _build_args(mode, dump_dir, enable_dumper) + get_mooncake_object_store_args()
+def _build_baseline_args(
+    mode: FTTestMode, dump_dir: str, enable_dumper: bool = True, config: ExecuteTrainConfig | None = None
+) -> str:
+    return _build_args(mode, dump_dir, enable_dumper, config) + get_mooncake_object_store_args()
 
 
 def _build_deployments(request: RunSideRequest) -> list[RunDeployment]:
@@ -120,7 +122,7 @@ def _create_app_and_run_ci() -> tuple[typer.Typer, Callable[[], None]]:
         build_baseline_args=_build_baseline_args,
         build_target_args=_build_args,
         compare_fn=_compare,
-        run_side=create_split_run_side(build_deployments=_build_deployments),
+        run_side=create_split_run_side(build_baseline_args=_build_baseline_args, build_deployments=_build_deployments),
         resolve_mode_fn=lambda _name: _MODE,
     )
     return app, run_on_a_cluster(run_ci)
