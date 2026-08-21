@@ -1170,6 +1170,21 @@ class TestUpdateWeightsReturnsTheVersion:
 
         group._execute_first_alive.assert_awaited_once_with("update_weights", info=info)
 
+    async def test_a_failed_broadcast_returns_to_the_window_orchestrator_before_retrying(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A failed attempt must close its engine window before another trainer cell is selected."""
+        from miles.ray.train import group as group_module
+
+        monkeypatch.setattr(group_module, "_RETRY_MAX_ATTEMPTS", 2)
+        group = self._make_group(per_worker_versions=[])
+        group._execute_first_alive.side_effect = [RuntimeError("dead rollout engine"), [11]]
+
+        with pytest.raises(RuntimeError, match="dead rollout engine"):
+            await group.update_weights(info=MagicMock())
+
+        group._execute_first_alive.assert_awaited_once()
+
 
 class TestInitForwardsModelFlags:
     async def test_every_worker_learns_its_role_and_which_extra_models_to_build(self):

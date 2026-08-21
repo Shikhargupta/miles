@@ -70,6 +70,43 @@ class _RpcWeightUpdateTrainer:
         return 11
 
 
+class _RetryWindowController:
+    def __init__(self, order: list[str], *, wait_for_heal: bool = False) -> None:
+        self._order = order
+        self._generation = 0
+        self._wait_for_heal = wait_for_heal
+        self.context_lock = ContextLock("InferenceController")
+        self.heal_finished = asyncio.Event()
+
+    async def start_update_weights(self, model_id: str | None = None) -> UpdatableEngines:
+        await self.context_lock.acquire()
+        self.context_lock.detach()
+        self._generation += 1
+        generation = f"generation-{self._generation}"
+        self._order.append(f"start:{generation}")
+        return UpdatableEngines(
+            rollout_engines=[],
+            engine_gpu_counts=[],
+            engine_gpu_offsets=[],
+            snapshot_cell_id_to_hashes={"cell": generation},
+        )
+
+    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        self.context_lock.reattach()
+        self._order.append(f"end:{snapshot_cell_id_to_hashes}")
+        self.context_lock.release()
+
+    async def heal_dead_cell(self) -> None:
+        async with self.context_lock:
+            self._order.append("heal")
+            self.heal_finished.set()
+
+    async def wait_expected_num_cells(self) -> None:
+        self._order.append("wait:rollout")
+        if self._wait_for_heal:
+            await self.heal_finished.wait()
+
+
 @contextlib.asynccontextmanager
 async def _rpc_handle(worker: object, *, call_timeout_seconds: float = 3600.0) -> AsyncIterator[RpcWorkerHandle]:
     app = create_rpc_app(worker)
@@ -176,6 +213,8 @@ def _orchestration_args(**overrides) -> Namespace:
         save_inference_engine_weight_checksum=True,
         ci_ft_test_actions=None,
         ci_ft_test_actions_path=None,
+        mini_ft_controller_enable=True,
+        mini_ft_controller_poll_interval=0.01,
     )
     values.update(overrides)
     return Namespace(**values)
@@ -335,6 +374,7 @@ async def test_a_timed_out_rpc_broadcast_drains_before_releasing_the_window(monk
     from miles.ray import placement_group
 
     monkeypatch.setattr(rpc_handle_module, "_IDLE_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(placement_group, "_WEIGHT_UPDATE_RETRY_MAX_ATTEMPTS", 1)
     controller = _RpcWeightUpdateController()
     trainer = _RpcWeightUpdateTrainer()
     async with _rpc_handle(controller) as controller_handle, _rpc_handle(
@@ -362,10 +402,11 @@ async def test_a_timed_out_rpc_broadcast_drains_before_releasing_the_window(monk
 
 
 @pytest.mark.asyncio
-async def test_a_failed_broadcast_closes_the_update_window_without_readying_cells():
+async def test_a_failed_broadcast_closes_the_update_window_without_readying_cells(monkeypatch: pytest.MonkeyPatch):
     """A failed policy broadcast releases its update window without accepting partial weights."""
-    from miles.ray.placement_group import update_weights
+    from miles.ray import placement_group
 
+    monkeypatch.setattr(placement_group, "_WEIGHT_UPDATE_RETRY_MAX_ATTEMPTS", 1)
     order: list[str] = []
     inference_controller = _OrderRecordingInferenceController(order)
 
@@ -376,7 +417,7 @@ async def test_a_failed_broadcast_closes_the_update_window_without_readying_cell
     actor_model = MagicMock(update_weights=AsyncMock(side_effect=_fail_update_weights))
 
     with pytest.raises(RuntimeError, match="broadcast failed"):
-        await update_weights(
+        await placement_group.update_weights(
             _orchestration_args(),
             actor_model,
             MagicMock(set_weight_version=AsyncMock()),
@@ -386,6 +427,136 @@ async def test_a_failed_broadcast_closes_the_update_window_without_readying_cell
     assert order == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
     [end_kwargs] = [kwargs for name, _args, kwargs in inference_controller.calls if name == "end_update_weights"]
     assert end_kwargs == {"snapshot_cell_id_to_hashes": {}}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_broadcast_releases_the_window_before_retrying_with_a_fresh_snapshot():
+    """A retry lets healing take the lock and snapshots the replacement engines from scratch."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _RetryWindowController(order, wait_for_heal=True)
+    heal_task: asyncio.Task[None] | None = None
+    broadcast_count = 0
+
+    async def _broadcast(*, info: UpdatableEngines, rollout_id: int | None = None) -> int:
+        nonlocal broadcast_count, heal_task
+        broadcast_count += 1
+        [generation] = info.snapshot_cell_id_to_hashes.values()
+        order.append(f"broadcast:{generation}")
+        if broadcast_count == 1:
+            heal_task = asyncio.create_task(inference_controller.heal_dead_cell())
+            await asyncio.sleep(0)
+            assert not inference_controller.heal_finished.is_set()
+            raise RuntimeError("dead rollout engine")
+        assert inference_controller.heal_finished.is_set()
+        return 11
+
+    actor_model = MagicMock(update_weights=AsyncMock(side_effect=_broadcast))
+
+    await update_weights(
+        _orchestration_args(),
+        actor_model,
+        MagicMock(set_weight_version=AsyncMock()),
+        inference_controller,
+    )
+    assert heal_task is not None
+    await asyncio.wait_for(heal_task, timeout=5)
+
+    assert order == [
+        "start:generation-1",
+        "broadcast:generation-1",
+        "end:{}",
+        "heal",
+        "wait:rollout",
+        "start:generation-2",
+        "broadcast:generation-2",
+        "end:{'cell': 'generation-2'}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_retried_broadcast_drains_it_before_closing_its_fresh_window():
+    """Cancellation during a retry cannot close its fresh window ahead of the in-flight broadcast."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _RetryWindowController(order)
+    retry_started = asyncio.Event()
+    retry_release = asyncio.Event()
+    broadcast_count = 0
+
+    async def _broadcast(*, info: UpdatableEngines, rollout_id: int | None = None) -> int:
+        nonlocal broadcast_count
+        broadcast_count += 1
+        [generation] = info.snapshot_cell_id_to_hashes.values()
+        order.append(f"broadcast:{generation}")
+        if broadcast_count == 1:
+            raise RuntimeError("dead rollout engine")
+        retry_started.set()
+        await retry_release.wait()
+        return 11
+
+    task = asyncio.create_task(
+        update_weights(
+            _orchestration_args(),
+            MagicMock(update_weights=AsyncMock(side_effect=_broadcast)),
+            MagicMock(set_weight_version=AsyncMock()),
+            inference_controller,
+        )
+    )
+    await asyncio.wait_for(retry_started.wait(), timeout=5)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    order_while_retry_was_blocked = list(order)
+
+    retry_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert order_while_retry_was_blocked == [
+        "start:generation-1",
+        "broadcast:generation-1",
+        "end:{}",
+        "wait:rollout",
+        "start:generation-2",
+        "broadcast:generation-2",
+    ]
+    assert order[-1] == "end:{'cell': 'generation-2'}"
+
+
+@pytest.mark.asyncio
+async def test_a_second_failed_broadcast_closes_its_fresh_window_before_giving_up(monkeypatch: pytest.MonkeyPatch):
+    """Exhausting broadcast attempts closes every fresh window without accepting either snapshot."""
+    from miles.ray import placement_group
+
+    monkeypatch.setattr(placement_group, "_WEIGHT_UPDATE_RETRY_MAX_ATTEMPTS", 2)
+    order: list[str] = []
+    inference_controller = _RetryWindowController(order)
+
+    async def _broadcast(*, info: UpdatableEngines, rollout_id: int | None = None) -> int:
+        [generation] = info.snapshot_cell_id_to_hashes.values()
+        order.append(f"broadcast:{generation}")
+        raise RuntimeError(generation)
+
+    with pytest.raises(RuntimeError, match="generation-2"):
+        await placement_group.update_weights(
+            _orchestration_args(),
+            MagicMock(update_weights=AsyncMock(side_effect=_broadcast)),
+            MagicMock(set_weight_version=AsyncMock()),
+            inference_controller,
+        )
+
+    assert order == [
+        "start:generation-1",
+        "broadcast:generation-1",
+        "end:{}",
+        "wait:rollout",
+        "start:generation-2",
+        "broadcast:generation-2",
+        "end:{}",
+    ]
 
 
 @pytest.mark.asyncio

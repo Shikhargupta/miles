@@ -379,11 +379,8 @@ class TrainerController:
         """Broadcast weights to rollout engines and answer the version they now serve."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        weight_versions = await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
-        )
+        # Cells with exceptions are auto marked errored; orchestration retries after closing the engine window
+        weight_versions = await self._execute_first_alive("update_weights", info=info)
         return weight_versions[0]
 
     async def get_deployment_identity(self) -> DeploymentIdentity:

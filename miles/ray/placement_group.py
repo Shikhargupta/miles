@@ -35,6 +35,7 @@ from miles.utils.hot_restart import (
     wait_trainers_idle,
     wait_until_worker_not_initialized,
 )
+from miles.utils.retry_utils import retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionOrchestrationExecutor
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -43,6 +44,7 @@ from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 logger = logging.getLogger(__name__)
 
 _REMOTE_CALL_DRAIN_TIMEOUT_SECONDS: float = 3600.0
+_WEIGHT_UPDATE_RETRY_MAX_ATTEMPTS: int = 30
 _T = TypeVar("_T")
 
 
@@ -293,6 +295,37 @@ async def update_weights(
             rollout_id=rollout_id
         )
 
+    weight_version = await retry(
+        lambda attempt: _run_weight_update_attempt(
+            actor_model=actor_model,
+            inference_controller=inference_controller,
+            rollout_id=rollout_id,
+            trainer_model_id=trainer_model_id,
+            wait_for_recovery=attempt > 0,
+        ),
+        initial_delay=args.mini_ft_controller_poll_interval if args.mini_ft_controller_enable else 1.0,
+        max_attempts=_WEIGHT_UPDATE_RETRY_MAX_ATTEMPTS,
+    )
+
+    await _maybe_log_inference_engine_weight_checksums(
+        args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
+    )
+
+    if weight_version is not None:
+        await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
+
+
+async def _run_weight_update_attempt(
+    *,
+    actor_model: BaseWorkerHandle,
+    inference_controller: BaseWorkerHandle,
+    rollout_id: int | None,
+    trainer_model_id: str | None,
+    wait_for_recovery: bool,
+) -> int | None:
+    if wait_for_recovery:
+        await inference_controller.wait_expected_num_cells()
+
     weight_update = asyncio.create_task(
         _complete_weight_update(
             actor_model=actor_model,
@@ -301,14 +334,7 @@ async def update_weights(
             trainer_model_id=trainer_model_id,
         )
     )
-    weight_version = await _await_task_before_cancelling(weight_update)
-
-    await _maybe_log_inference_engine_weight_checksums(
-        args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
-    )
-
-    if weight_version is not None:
-        await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
+    return await _await_task_before_cancelling(weight_update)
 
 
 async def _complete_weight_update(

@@ -163,6 +163,7 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 - **Why an engine takes sigkill alone**: exiting and segfaulting are what a process does to itself from the inside, and no signal reproduces them from outside — SIGTERM is a clean shutdown, SIGSEGV is delivered rather than provoked. The other modes are refused, not approximated.
 - **Why a kubernetes engine takes no kill at all**: its pod runs sglang as the entrypoint (`CommandWorkerSpec`), so no actor and no rpc server exist to receive one. Not a gap — the engine *is* the pod, so deleting it is the faithful analogue.
 - **Deletion is the test layer's own `kubectl delete pod`**, timeout-bounded and selecting on release, pool and cell index. It models an outsider, and deliberately avoids the production heal path `KubernetesCellOperations.suspend`, whose bugs an injector sharing it would hide.
+- **A weight-update retry opens a new window**: each failed broadcast attempt closes its inference-controller window without accepting partial weights. The retry waits one mini-controller poll interval, then waits for the expected engine cell count while healing and reconcile stop or replace failed engines; its surviving trainer cell takes a fresh engine snapshot in a new window instead of retrying against the previous snapshot while holding that window open.
 
 ### `scenario_trainer_no_failure`
 
