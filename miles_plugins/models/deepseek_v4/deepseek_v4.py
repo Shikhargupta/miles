@@ -236,7 +236,7 @@ class DeepSeekV4Attention(MegatronModule):
         attention_bias=None,
         packed_seq_params=None,
         sequence_len_offset=None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, None]:
         if self.sequence_parallel:
             hidden_states = gather_from_sequence_parallel_region(
                 hidden_states, tensor_parallel_output_grad=False, group=self.tp_group
@@ -337,7 +337,7 @@ class DeepSeekV4Attention(MegatronModule):
         if self.sequence_parallel:
             output = scatter_to_sequence_parallel_region(output, group=self.tp_group)
 
-        return output
+        return output, None
 
     def _compute_indexer_mask(self, *, q_positions: torch.Tensor, seqlen_global: int) -> torch.Tensor:
         """Dense causal mask for legacy DSAIndexer path."""
