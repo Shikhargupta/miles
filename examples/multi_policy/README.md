@@ -13,10 +13,3 @@ namespace, from `MILES_SCRIPT_CLUSTER_BACKEND` / `MILES_SCRIPT_NAMESPACE` or `--
 ```bash
 python examples/multi_policy/run_solver_verifier_gsm8k.py
 ```
-
-## Failure Propagation
-
-The first policy task to finish ends the run and cancels the other policy tasks. If that
-task failed, its exception remains the run's primary error; failures raised while the
-other tasks clean up are logged and attached to the primary exception as traceback notes.
-If the first task finished normally, a cleanup failure still fails the run.
