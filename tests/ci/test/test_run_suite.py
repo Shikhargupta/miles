@@ -469,7 +469,7 @@ class TestRocmWorkflowScopeSeam:
         stage = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
-        assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
+        assert "needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]" in stage
         assert "allow_self_hosted" not in stage
         assert "partition_id: [0, 1]" in stage
         assert "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}" in stage
@@ -481,6 +481,10 @@ class TestRocmWorkflowScopeSeam:
         assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
         assert "needs.resolve-ci-policy.result == 'success'" in stage
         assert "needs.resolve-ci-image.result == 'success'" in stage
+        assert "needs.resolve-ci-deps.result == 'success'" in stage
+        assert (
+            "skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}" in stage
+        )
         assert (
             "!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')"
             in stage
