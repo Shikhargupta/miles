@@ -81,8 +81,9 @@ Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
      beside that checkpoint), so the run resumed there, not at step 0; the redone steps are
      exactly the pinned (save, frozen step] windows; per-step attempts all 1 or 2
    - no_checkpoint: record carries no saved iteration; NO .trash_* (the run's --load resolves to
-     --ref-load, which holds no snapshot to restore); steps 0..1 appear exactly twice, nothing
-     thrice; the run still saves after the restart
+     --ref-load, which holds no snapshot to restore); the abandoned event stream is discarded and
+     restored steps 0..5 each appear exactly once; the restart record and the exact +2 weight-version
+     delta at every rollout witness the work that was redone; the run still saves after the restart
 5. Compare every metric exactly as in scenario_split_deterministic. Ordinary metrics require a zero
    target-minus-baseline delta. The four rollout weight-version statistics require the exact cumulative number
    of updates redone after each recorded restore point, because the trainer and engines survive and their

@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
-    compute_expected_attempts,
     read_checkpoint_snapshot_dirs,
     read_discarded_event_dirs,
     read_step_events,
@@ -42,6 +41,8 @@ def assert_a_run_that_had_saved_nothing_was_redone_from_scratch(
         f"checkpoint after all"
     )
 
+    _assert_the_run_saved_after_it_was_restarted(checkpoint_dir=checkpoint_dir, dump_dir=dump_dir)
+
     attempts = {
         rollout_id: len(logged) for rollout_id, logged in read_step_events(Path(dump_dir) / EVENTS_DIRNAME).items()
     }
@@ -50,14 +51,12 @@ def assert_a_run_that_had_saved_nothing_was_redone_from_scratch(
         f"take-over of a run holding no checkpoint restarts it at step 0 and it trains to the end from there"
     )
 
-    expected = compute_expected_attempts(num_rollouts=num_rollouts, schedule=schedule)
+    expected = {rollout_id: 1 for rollout_id in range(num_rollouts)}
     assert attempts == expected, (
-        f"the run was frozen after step {scheduled.frozen_rollout_id} holding no checkpoint, so the take-over threw "
-        f"away exactly the steps 0..{scheduled.frozen_rollout_id}: every step is written {expected} time(s), and "
-        f"this run left {attempts}"
+        f"the run was frozen after step {scheduled.frozen_rollout_id} holding no checkpoint, so its restored audit "
+        f"stream discards every abandoned attempt: every step is written once as {expected}, and this run left "
+        f"{attempts}; the restart record and weight-version comparison witness the work that was redone"
     )
-
-    _assert_the_run_saved_after_it_was_restarted(checkpoint_dir=checkpoint_dir, dump_dir=dump_dir)
 
     return RedoneFromScratch(frozen_rollout_id=scheduled.frozen_rollout_id, attempts_of_rollout_id=attempts)
 

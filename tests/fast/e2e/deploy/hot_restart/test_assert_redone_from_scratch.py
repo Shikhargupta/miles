@@ -87,14 +87,14 @@ def _run_restarted_before_it_saved(tmp_path: Path) -> _Run:
 
 
 class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
-    def test_a_take_over_of_the_frozen_run_that_threw_away_its_two_steps_passes(self, tmp_path):
-        """The run was frozen after step 1 holding nothing, so exactly steps 0 and 1 are trained twice."""
+    def test_a_take_over_keeps_only_the_restored_attempt_of_every_step(self, tmp_path):
+        """The restored audit stream contains only the committed attempt while the restart record witnesses redo."""
         run = _run_restarted_before_it_saved(tmp_path)
 
         redone = run.assert_redone_from_scratch()
 
         assert redone.frozen_rollout_id == 1
-        assert redone.attempts_of_rollout_id == {0: 2, 1: 2, 2: 1, 3: 1, 4: 1, 5: 1}
+        assert redone.attempts_of_rollout_id == {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1}
 
     def test_a_take_over_that_found_a_checkpoint_after_all_fails(self, tmp_path):
         """A save before the freeze turns this into the scenario the checkpointed mode covers."""
@@ -133,6 +133,13 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         with pytest.raises(AssertionError, match="taken over once"):
             run.assert_redone_from_scratch(records=_records() * 2)
 
+    def test_a_missing_restart_record_cannot_claim_that_the_run_redid_work(self, tmp_path):
+        """The restored event stream is intentionally clean, so durable lifecycle evidence must witness takeover."""
+        run = _run_restarted_before_it_saved(tmp_path)
+
+        with pytest.raises(AssertionError, match="taken over once"):
+            run.assert_redone_from_scratch(records=[])
+
     def test_a_schedule_freezing_the_run_more_than_once_fails(self, tmp_path):
         """The second freeze would find a run holding a checkpoint of its own."""
         run = _run_restarted_before_it_saved(tmp_path)
@@ -152,8 +159,8 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
                 records=[HotRestartRecord(index=0, saved_iteration_at_trigger=None, frozen_rollout_id=2)],
             )
 
-    def test_a_run_that_redid_more_than_the_freeze_bounds_fails(self, tmp_path):
-        """A run frozen after step 1 had not finished step 2, so nothing could have thrown it away."""
+    def test_abandoned_events_beyond_the_recorded_freeze_are_not_in_the_restored_stream(self, tmp_path):
+        """The event reset removes every abandoned event rather than retaining attempts as redo evidence."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1, 2)
         run.take_over()
@@ -161,11 +168,12 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         run.save(3)
         run.train(4, 5)
 
-        with pytest.raises(AssertionError, match="every step is written"):
-            run.assert_redone_from_scratch()
+        redone = run.assert_redone_from_scratch()
 
-    def test_a_run_that_redid_a_window_instead_of_its_whole_history_fails(self, tmp_path):
-        """Redoing step 1 but not 0 is a resume from a checkpoint, however it came about."""
+        assert redone.attempts_of_rollout_id == {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1}
+
+    def test_a_restored_stream_with_a_duplicate_window_fails(self, tmp_path):
+        """A duplicate in the restored stream would compare an abandoned attempt as committed work."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1)
         run.train(1, 2, 3)
@@ -175,8 +183,8 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         with pytest.raises(AssertionError, match="every step is written"):
             run.assert_redone_from_scratch()
 
-    def test_a_step_trained_a_third_time_fails(self, tmp_path):
-        """One take-over throws away one run's worth of work, and a third attempt is a second take-over."""
+    def test_a_restored_stream_with_three_attempts_of_a_step_fails(self, tmp_path):
+        """The restored stream must not retain any abandoned attempt, however many times a step ran."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1)
         run.train(0, 1)
@@ -194,8 +202,8 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         with pytest.raises(AssertionError, match="the run was asked for 7 steps"):
             run.assert_redone_from_scratch(num_rollouts=7)
 
-    def test_a_step_the_take_over_should_have_redone_but_did_not_fails(self, tmp_path):
-        """The take-over throws away every step up to the freeze, so each of those is trained twice."""
+    def test_a_restored_stream_with_one_duplicate_step_fails(self, tmp_path):
+        """The durable restart record witnesses redo without permitting a duplicate committed event."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1)
         run.train(1, 2, 3, 4, 5)
