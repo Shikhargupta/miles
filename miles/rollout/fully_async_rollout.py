@@ -40,7 +40,6 @@ from miles.rollout.fully_async_data_buffer import (
     DefaultMultiDataBuffer,
     Group,
     add_data_buffer_arguments,
-    complete_trainer_model_ids,
     first_sample,
 )
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
@@ -86,7 +85,6 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._output: DataBuffer | None = None
         self._active: set[asyncio.Task] = set()
         self._publishing: set[asyncio.Task[None]] = set()
-        self._publish_tails: dict[str | None, asyncio.Task[None]] = {}
         self._close_task: asyncio.Task[None] | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
@@ -145,6 +143,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return DataBufferInput(prompt_group=prompt_group, group=result)
 
     async def _worker_loop(self):
+        primary_error: BaseException | None = None
         try:
             while True:
                 await self._producer_resumed.wait()
@@ -172,27 +171,43 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                     else:
                         self._active.remove(task)
                         self._publishing.add(self._submit_publish(task.result()))
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            tasks = self._active | self._publishing
+            tasks = list(self._active | self._publishing)
+            publishing = set(self._publishing)
+            cancelled_by_owner: set[asyncio.Task] = set()
             for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+                if not task.done() and task.cancel():
+                    cancelled_by_owner.add(task)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             self._active.clear()
             self._publishing.clear()
-            self._publish_tails.clear()
+            errors: list[BaseException] = []
+            for task, result in zip(tasks, results, strict=True):
+                if not isinstance(result, BaseException):
+                    continue
+                if isinstance(result, asyncio.CancelledError):
+                    if task in cancelled_by_owner:
+                        continue
+                    message = (
+                        "rollout publish task was cancelled" if task in publishing else "rollout task was cancelled"
+                    )
+                    cancellation = RuntimeError(message)
+                    cancellation.__cause__ = result
+                    errors.append(cancellation)
+                else:
+                    errors.append(result)
+            if errors and (primary_error is None or isinstance(primary_error, asyncio.CancelledError)):
+                for error in errors[1:]:
+                    logger.error("Additional rollout worker cleanup failure", exc_info=error)
+                raise errors[0]
+            for error in errors:
+                logger.error("Additional rollout worker cleanup failure", exc_info=error)
 
     def _submit_publish(self, input: DataBufferInput) -> asyncio.Task[None]:
-        route = complete_trainer_model_ids(input, self.args.n_samples_per_prompt)
-        predecessors = {self._publish_tails[model_id] for model_id in route if model_id in self._publish_tails}
-        task = asyncio.create_task(self._publish_after(input, predecessors=predecessors))
-        for model_id in route:
-            self._publish_tails[model_id] = task
-        return task
-
-    async def _publish_after(self, input: DataBufferInput, *, predecessors: set[asyncio.Task[None]]) -> None:
-        if predecessors:
-            await asyncio.gather(*predecessors)
-        await self._output.put(input)
+        return asyncio.create_task(self._output.put(input))
 
     # -------------------------- consumer --------------------------
 
