@@ -51,6 +51,7 @@ spec:
       containers:
         - name: worker
           {{- include "miles-run.containerDefaults" $context | nindent 10 }}
+          workingDir: /root/miles
           command:
             {{- range $worker.command }}
             - {{ . | quote }}

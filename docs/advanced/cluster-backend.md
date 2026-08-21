@@ -72,6 +72,8 @@ A path that is on none of them is the most common way a run fails.
 - To run your own branch instead of the image's copy, mount it over the path the image imports
   from — `/root/miles`, `/root/Megatron-LM`, `/sgl-workspace/sglang`. All three are editable
   installs, so a copy mounted anywhere else is silently never imported.
+- Static workers run from `/root/miles`, so repository-local modules such as custom generate
+  functions under `examples/` resolve from the same Miles checkout mounted at that path.
 
 ## For cluster administrator
 

@@ -630,6 +630,7 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          workingDir: /root/miles
           command:
             - "<PYTHON>"
             - "-m"
@@ -741,6 +742,7 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          workingDir: /root/miles
           command:
             - "<PYTHON>"
             - "-m"
@@ -851,6 +853,7 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          workingDir: /root/miles
           command:
             - "<PYTHON>"
             - "-m"
@@ -967,6 +970,7 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          workingDir: /root/miles
           command:
             - "<PYTHON>"
             - "-m"
@@ -1071,6 +1075,7 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          workingDir: /root/miles
           command:
             - "<PYTHON>"
             - "-m"

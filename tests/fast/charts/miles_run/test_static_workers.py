@@ -69,6 +69,12 @@ class TestStaticWorkers:
 
         assert router["command"] == TWO_WORKERS[0]["command"]
 
+    def test_runs_from_the_repository_root_for_repo_local_imports(self):
+        """A worker loading a custom function must find modules mounted beside the miles package."""
+        router = only_container_of(_render(), "StatefulSet", "myrun-miles-run-router")
+
+        assert router["workingDir"] == "/root/miles"
+
     def test_renders_per_worker_environment(self):
         """Each worker learns its role and addresses from its own environment, not a shared config."""
         env = only_container_of(_render(), "StatefulSet", "myrun-miles-run-router")["env"]
