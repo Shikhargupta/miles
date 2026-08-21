@@ -130,9 +130,7 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
         if name in direct_name_mapping:
             return [direct_name_mapping[name]]
 
-        _mtp_inner = next(
-            (p for p in ("transformer_layer", "mtp_model_layer") if f"mtp.layers.0.{p}" in name), None
-        )
+        _mtp_inner = next((p for p in ("transformer_layer", "mtp_model_layer") if f"mtp.layers.0.{p}" in name), None)
         assert _mtp_inner is not None, "mtp not found"
         proxy_name = name.replace(f"mtp.layers.0.{_mtp_inner}", f"decoder.layers.{mtp_layer_id}")
         if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
