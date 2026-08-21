@@ -144,7 +144,7 @@ class TestPublicCellInventory:
 
         statuses = await group.get_cell_statuses()
         assert sorted(statuses) == group.cell_ids
-        assert [status.phase for status in statuses.values()] == ["Running"] * 3
+        assert [status.phase for status in statuses.values()] == ["Pending", "Pending", "Running"]
         assert _healthy_condition(statuses[_cell_id(0)]) == (TriState.TRUE, None)
         assert _healthy_condition(statuses[_cell_id(1)]) == (TriState.FALSE, "ExecutionErrored")
         assert _healthy_condition(statuses[_cell_id(2)]) == (TriState.TRUE, None)
