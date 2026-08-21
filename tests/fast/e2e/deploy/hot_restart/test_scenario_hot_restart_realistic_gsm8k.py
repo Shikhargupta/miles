@@ -100,28 +100,49 @@ class TestCheckpointArgs:
 class TestEveryDrawHasToLand:
     def test_a_soak_where_no_attempt_failed_passes(self):
         """Every draw of this form fires, so the log should hold successes only."""
-        scenario.assert_no_take_over_attempt_failed(
-            [_injection(succeeded=True), _injection(succeeded=True), _crash(succeeded=False)]
-        )
+        events = [
+            _injection(workers_hash="generation-0", succeeded=True),
+            _injection(workers_hash="generation-1", succeeded=True),
+            _crash(workers_hash="generation-0", succeeded=False),
+        ]
+
+        assert [(event.cell_name, event.workers_hash) for event in events] == [
+            ("actor-0", "generation-0"),
+            ("actor-0", "generation-1"),
+            ("actor-1", "generation-0"),
+        ]
+        scenario.assert_no_take_over_attempt_failed(events)
 
     def test_a_soak_where_a_take_over_attempt_failed_is_a_failure(self):
         """Without the eligibility gate a failed attempt can only mean a relaunch that did not land."""
+        events = [
+            _injection(workers_hash="generation-0", succeeded=True),
+            _injection(workers_hash="generation-1", succeeded=False),
+        ]
+
+        assert [event.workers_hash for event in events] == ["generation-0", "generation-1"]
         with pytest.raises(AssertionError, match="take-over attempt\\(s\\) failed"):
-            scenario.assert_no_take_over_attempt_failed([_injection(succeeded=True), _injection(succeeded=False)])
+            scenario.assert_no_take_over_attempt_failed(events)
 
     def test_a_run_nothing_restarted_is_a_failure_and_not_a_pass(self):
         """Every assertion past this one is vacuous on a run whose script was never replaced."""
         assert scenario.MIN_HOT_RESTARTS >= 1
 
 
-def _injection(*, succeeded: bool) -> InjectionEvent:
+def _injection(*, workers_hash: str, succeeded: bool) -> InjectionEvent:
     return InjectionEvent(
-        cell_name="actor-0", form_name=scenario.HOT_RESTART_FORM_NAME, succeeded=succeeded, harmed=False
+        cell_name="actor-0",
+        workers_hash=workers_hash,
+        form_name=scenario.HOT_RESTART_FORM_NAME,
+        succeeded=succeeded,
+        harmed=False,
     )
 
 
-def _crash(*, succeeded: bool) -> InjectionEvent:
-    return InjectionEvent(cell_name="actor-1", form_name="crash_pod", succeeded=succeeded, harmed=True)
+def _crash(*, workers_hash: str, succeeded: bool) -> InjectionEvent:
+    return InjectionEvent(
+        cell_name="actor-1", workers_hash=workers_hash, form_name="crash_pod", succeeded=succeeded, harmed=True
+    )
 
 
 class TestWhatEachTakeOverCost:
