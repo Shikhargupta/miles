@@ -114,9 +114,9 @@ class BaseCommandBackend(ABC):
         config: ExecuteTrainConfig | None = None,
     ) -> None:
         if config is None:
-            assert isinstance(self.config, ExecuteTrainConfig), (
-                "execute_train requires an ExecuteTrainConfig, either as config or as the backend's config"
-            )
+            assert isinstance(
+                self.config, ExecuteTrainConfig
+            ), "execute_train requires an ExecuteTrainConfig, either as config or as the backend's config"
             config = self.config
 
         assert config.cluster_backend is self.config.cluster_backend, (
