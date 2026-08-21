@@ -86,6 +86,7 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
 def _object_names(release: str) -> ObjectNames:
     return ObjectNames(
         orchestrator=naming.component_name(release, naming.ORCHESTRATOR_COMPONENT),
+        platform_reader=naming.component_name(release, naming.PLATFORM_READER_COMPONENT),
         mooncake_master=MooncakeInfo.master_object_name(release),
         colocate_pairing=naming.component_name(release, _COLOCATE_PAIRING_COMPONENT),
         uninstall=RunNames.uninstall_job(release=release),

@@ -86,6 +86,10 @@ role does not include them.
 may create workloads can name another ServiceAccount and read its token. Keep privileged accounts
 out of it.
 
+The run chart gives pod observers a dedicated ServiceAccount that can only get, list, and watch
+pods. The orchestrator keeps its separate pod-deletion and optional uninstall-job permissions;
+worker processes that only report pod state do not inherit them.
+
 **Write one `infra.yaml`.** The same file drives every Miles chart:
 
 ```yaml

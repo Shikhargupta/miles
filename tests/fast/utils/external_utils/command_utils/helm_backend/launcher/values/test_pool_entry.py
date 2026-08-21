@@ -147,6 +147,14 @@ class TestTheAccountAPoolRunsUnder:
 
         entry = build_values([spec], LAYOUT).as_values()["run"]["staticWorkers"][0]
 
+        assert entry["serviceAccountName"] == "r-miles-run-platform-reader"
+
+    def test_a_pool_that_deletes_platform_pods_keeps_the_orchestrator_account(self):
+        """A trainer controller suspends cells by deleting pods and must retain that existing capability."""
+        spec = session_server(num_cells=1).model_copy(update={"needs_platform_delete_permission": True})
+
+        entry = build_values([spec], LAYOUT).as_values()["run"]["staticWorkers"][0]
+
         assert entry["serviceAccountName"] == "r-miles-run-orchestrator"
 
     def test_every_other_pool_stays_on_the_namespace_default(self):

@@ -11,6 +11,7 @@ from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME, component_name
 
 ORCHESTRATOR_COMPONENT = "orchestrator"
+PLATFORM_READER_COMPONENT = "platform-reader"
 
 _HELM_RELEASE_NAME_MAX = 53
 _LONGEST_COMPONENT_VALUE = max((component.value for component in DeployComponent), key=len)

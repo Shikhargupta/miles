@@ -192,6 +192,7 @@ run:
     colocatePairing: myrun-miles-run-colocate-pairing
     mooncakeMaster: myrun-miles-run-mooncake-master
     orchestrator: myrun-miles-run-orchestrator
+    platformReader: myrun-miles-run-platform-reader
     uninstall: myrun-miles-run-uninstall
     uninstallManifest: myrun-miles-run-uninstall-manifest
   orchestrator:
@@ -243,7 +244,7 @@ run:
     - name: rpc
       port: 8000
     replicas: 1
-    serviceAccountName: myrun-miles-run-orchestrator
+    serviceAccountName: myrun-miles-run-platform-reader
   - command:
     - <PYTHON>
     - -m

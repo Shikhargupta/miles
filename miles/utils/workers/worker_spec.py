@@ -98,12 +98,21 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     meta: SpecMetaFn | None = None
     deploy_component: DeployComponent = DeployComponent.PRIMARY
     needs_platform_read_permission: bool = False
+    needs_platform_delete_permission: bool = False
 
     @model_validator(mode="after")
     def _reject_the_selector_as_a_component(self) -> "BaseWorkerSpec":
         assert (
             self.deploy_component is not DeployComponent.ALL
         ), f"pool {self.name} must name the one component it is deployed with, not the selector for all of them"
+        return self
+
+    @model_validator(mode="after")
+    def _reject_overlapping_platform_permissions(self) -> "BaseWorkerSpec":
+        assert not (self.needs_platform_read_permission and self.needs_platform_delete_permission), (
+            f"pool {self.name} asks for both platform read and delete permission; delete already includes "
+            f"get, list, and watch"
+        )
         return self
 
 

@@ -27,6 +27,20 @@ metadata:
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: "Helm"
 ---
+# Source: miles-run/templates/platform-reader-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "myrun-miles-run-platform-reader"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-reader"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+---
 # Source: miles-run/templates/uninstall-manifest.yaml
 apiVersion: v1
 kind: ConfigMap
@@ -118,6 +132,24 @@ rules:
     resources: ["jobs"]
     verbs: ["create"]
 ---
+# Source: miles-run/templates/platform-reader-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "myrun-miles-run-platform-reader"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-reader"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
 # Source: miles-run/templates/colocate-pairing.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -160,6 +192,29 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: "myrun-miles-run-orchestrator"
+    namespace: "myns"
+
+---
+# Source: miles-run/templates/platform-reader-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "myrun-miles-run-platform-reader"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-reader"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "myrun-miles-run-platform-reader"
+subjects:
+  - kind: ServiceAccount
+    name: "myrun-miles-run-platform-reader"
     namespace: "myns"
 
 ---
@@ -666,7 +721,7 @@ spec:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
-      serviceAccountName: "myrun-miles-run-orchestrator"
+      serviceAccountName: "myrun-miles-run-platform-reader"
       restartPolicy: Always
       containers:
         - name: worker

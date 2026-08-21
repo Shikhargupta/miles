@@ -97,6 +97,8 @@ def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
             "--set",
             f"run.objectNames.orchestrator={RUN_ORCHESTRATOR_NAME}",
             "--set",
+            f"run.objectNames.platformReader={RUN_RELEASE_NAME}-miles-run-platform-reader",
+            "--set",
             f"run.objectNames.mooncakeMaster={RUN_RELEASE_NAME}-miles-run-mooncake-master",
             "--set",
             f"run.objectNames.colocatePairing={RUN_RELEASE_NAME}-miles-run-colocate-pairing",

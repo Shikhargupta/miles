@@ -506,6 +506,13 @@ class TestSpecTrainerController:
 
         assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
 
+    def test_it_keeps_the_platform_delete_capability_used_to_suspend_cells(self):
+        """Fault injection deletes trainer pods, so moving readers off the orchestrator account must not break it."""
+        spec = specs_trainer_controller(_make_args())[0]
+
+        assert spec.needs_platform_read_permission is False
+        assert spec.needs_platform_delete_permission is True
+
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the controller up by name, so these names are part of the release's contract."""
         assert trainer_controller_worker_name("actor") == "trainer-controller-actor-00000-00000"

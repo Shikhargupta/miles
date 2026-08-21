@@ -131,6 +131,15 @@ class TestBaseWorkerSpec:
         with pytest.raises(ValidationError):
             spec.name = "other"
 
+    def test_delete_permission_is_not_combined_with_the_read_only_capability(self):
+        """Pod deletion already includes reads, so combining both capabilities would choose an ambiguous account."""
+        with pytest.raises(ValidationError, match="both platform read and delete"):
+            BaseWorkerSpec(
+                **_make_base_kwargs(),
+                needs_platform_read_permission=True,
+                needs_platform_delete_permission=True,
+            )
+
 
 class TestCommandWorkerSpec:
     def test_constructs_with_launch_command(self):

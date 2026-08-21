@@ -222,6 +222,7 @@ class TestObjectNames:
         """A schema-required field the launcher only sometimes writes would refuse half the runs."""
         assert build_values([], LAYOUT).as_values()["run"]["objectNames"] == {
             "orchestrator": "r-miles-run-orchestrator",
+            "platformReader": "r-miles-run-platform-reader",
             "mooncakeMaster": "r-miles-run-mooncake-master",
             "colocatePairing": "r-miles-run-colocate-pairing",
             "uninstall": "r-miles-run-uninstall",

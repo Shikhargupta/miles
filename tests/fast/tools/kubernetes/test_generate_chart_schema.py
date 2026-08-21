@@ -52,6 +52,7 @@ def _minimal_run_values() -> dict[str, Any]:
             "stateFile": "/cluster-storage/miles_data/miles-runs/260101-000000-000/state/orchestrator.state",
             "objectNames": {
                 "orchestrator": "r-miles-run-orchestrator",
+                "platformReader": "r-miles-run-platform-reader",
                 "mooncakeMaster": "r-miles-run-mooncake-master",
                 "colocatePairing": "r-miles-run-colocate-pairing",
                 "uninstall": "r-miles-run-uninstall",

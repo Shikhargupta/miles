@@ -28,6 +28,7 @@ from miles.ray.specs.inference import (
     spec_inference_controller,
     spec_session_server,
     specs_inference_engine,
+    specs_inference_registration_reporter,
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
@@ -716,6 +717,20 @@ class TestSpecInferenceController:
         spec = spec_inference_controller(self._args(tmp_path))
 
         assert load_function(spec.worker_class) is InferenceController
+
+    def test_it_declares_only_the_platform_reads_its_provider_performs(self, tmp_path):
+        """Watching engine pods needs reads, while deleting them remains outside this worker's capability."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        assert spec.needs_platform_read_permission is True
+        assert spec.needs_platform_delete_permission is False
+
+    def test_the_registration_reporter_declares_only_platform_reads(self, tmp_path):
+        """Reporting engine pods must not grant the standalone reporter either deletion or uninstall rights."""
+        (spec,) = specs_inference_registration_reporter(self._args(tmp_path, deploy_component="inference"))
+
+        assert spec.needs_platform_read_permission is True
+        assert spec.needs_platform_delete_permission is False
 
     def test_the_worker_name_is_stable(self):
         """The driver looks the controller up by name, so this name is part of the release's contract."""
