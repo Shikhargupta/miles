@@ -9,6 +9,7 @@ from miles.ray.placement_group import (
     update_weights,
 )
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.async_utils import eager_create_task
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
@@ -127,6 +128,7 @@ async def train(args):
     await actor_model.dispose()
     if critic_model is not None:
         await critic_model.dispose()
+    await shutdown_worker_manager(_worker_manager)
 
 
 if __name__ == "__main__":

@@ -200,13 +200,16 @@ commands you see in the log, in order:
    `--extra-env-vars`.
 5. Submits the job: `ray job submit -- python3 train.py <architecture flags>
    <recipe flags>`.
+6. On normal driver completion, shuts down only the cells, actors, and subprocesses
+   owned by that run's Ray worker manager. The launcher does not sweep host processes
+   by name after the job exits.
 
 Two environment variables skip parts of this sequence:
 
 | Env var | Effect |
 |---|---|
 | `MILES_SCRIPT_EXTERNAL_RAY=1` | The Ray cluster is already running: skip the Ray teardown and `ray start`, only submit |
-| `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
+| `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run preparation, leave the resulting Ray cluster ready, and skip submission |
 
 The head-node address defaults to `127.0.0.1` and is taken from `MASTER_ADDR`; export
 it on multi-node runs so Ray and torch distributed bind to the right interface.

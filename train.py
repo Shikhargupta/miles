@@ -10,6 +10,7 @@ from miles.ray.placement_group import (
     maybe_start_api_server,
     update_weights,
 )
+from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.arguments import parse_args
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -143,6 +144,7 @@ async def train(args):
     await actor_model.dispose()
     if critic_model is not None:
         await critic_model.dispose()
+    await shutdown_worker_manager(_worker_manager)
 
 
 if __name__ == "__main__":
