@@ -94,6 +94,37 @@ class TestCollectSpecs:
         specs = collect_rpc_method_specs(_GoodWorker)
         assert specs["demo_grouped"].concurrency_group == "heavy"
 
+    def test_default_serialized_outcome_limit(self) -> None:
+        """Undecorated RPC methods reserve the bounded default outcome size."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_default_arg"].max_serialized_outcome_bytes == 64 * 1024
+
+    def test_decorated_serialized_outcome_limit(self) -> None:
+        """A method can declare a smaller proven serialized outcome bound."""
+
+        class Worker:
+            @rpc(max_serialized_outcome_bytes=2048)
+            def demo(self) -> str:
+                return "ok"
+
+        assert collect_rpc_method_specs(Worker)["demo"].max_serialized_outcome_bytes == 2048
+
+    def test_control_plane_marker_is_explicit_in_the_method_spec(self) -> None:
+        """Heartbeat-class methods carry an explicit bounded control-admission marker."""
+
+        class Worker:
+            @rpc(control_plane=True)
+            def heartbeat(self) -> str:
+                return "alive"
+
+        assert collect_rpc_method_specs(Worker)["heartbeat"].control_plane
+        assert not collect_rpc_method_specs(_GoodWorker)["demo_default_arg"].control_plane
+
+    def test_too_small_serialized_outcome_limit_is_rejected(self) -> None:
+        """A result bound must leave enough room for a terminal protocol envelope."""
+        with pytest.raises(ValueError, match="at least"):
+            rpc(max_serialized_outcome_bytes=1)
+
     def test_is_async_flag(self):
         """Coroutine methods are flagged async, plain ones are not."""
         specs = collect_rpc_method_specs(_GoodWorker)

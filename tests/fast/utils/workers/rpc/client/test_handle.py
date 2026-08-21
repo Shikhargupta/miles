@@ -111,6 +111,41 @@ class _PollRecordingTransport(_HookTransport):
         return response
 
 
+class _AcknowledgementResponseCancelledTransport(_HookTransport):
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        self.cancelled_ack = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await super().handle_async_request(request)
+        if request.method == "POST" and str(request.url).endswith("/ack") and not self.cancelled_ack:
+            self.cancelled_ack = True
+            await response.aread()
+            raise asyncio.CancelledError
+        return response
+
+
+class _AcknowledgementOwnershipGateTransport(_HookTransport):
+    def __init__(self, app: Any, *, cancel_after_server_ownership: bool) -> None:
+        super().__init__(app)
+        self.cancel_after_server_ownership = cancel_after_server_ownership
+        self.ack_reached_gate = asyncio.Event()
+        self.release_ack = asyncio.Event()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method != "POST" or not str(request.url).endswith("/ack"):
+            return await super().handle_async_request(request)
+
+        if self.cancel_after_server_ownership:
+            response = await super().handle_async_request(request)
+            await response.aread()
+        else:
+            response = None
+        self.ack_reached_gate.set()
+        await self.release_ack.wait()
+        return response if response is not None else await super().handle_async_request(request)
+
+
 def _fail_hook(
     times: int,
     method: str | None = None,
@@ -151,6 +186,7 @@ def _status_hook(
 @pytest.fixture
 def fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rpc_client_module, "SUBMIT_RETRY_WINDOW_SECONDS", 0.5)
+    monkeypatch.setattr(rpc_client_module, "ACK_RETRY_WINDOW_SECONDS", 0.5)
     monkeypatch.setattr(rpc_client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.02)
     monkeypatch.setattr(rpc_client_module, "RETRY_MAX_DELAY_SECONDS", 0.1)
     monkeypatch.setattr(rpc_handle_module, "RETRY_INITIAL_DELAY_SECONDS", 0.02)
@@ -217,6 +253,225 @@ class TestTypedCalls:
         async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
             with pytest.raises(RpcWorkerCallError, match="ValueError"):
                 await handle.demo_raises()
+
+    @pytest.mark.parametrize(("method", "raises"), [("demo_default_arg", False), ("demo_raises", True)])
+    async def test_terminal_outcome_is_acknowledged_after_decoding(self, method: str, raises: bool) -> None:
+        """Successful results and copied remote errors are ACKed only after the client consumes them."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                if raises:
+                    with pytest.raises(RpcWorkerCallError, match="ValueError"):
+                        await getattr(handle, method)()
+                else:
+                    assert await getattr(handle, method)(a=1, b=2) == 3
+
+        acknowledgements = [
+            request for request in transport.seen if request.method == "POST" and str(request.url).endswith("/ack")
+        ]
+        assert len(acknowledgements) == 1
+        assert EXPECTED_BOOT_UUID_HEADER in acknowledgements[0].headers
+
+    @pytest.mark.parametrize(("method", "raises"), [("demo_default_arg", False), ("demo_raises", True)])
+    async def test_acknowledgement_failure_does_not_mask_the_primary_outcome(
+        self, method: str, raises: bool, fast_retries: None
+    ) -> None:
+        """An ACK transport failure preserves the already decoded result or remote business error."""
+
+        def fail_ack(request: httpx.Request) -> httpx.Response | None:
+            if request.method == "POST" and str(request.url).endswith("/ack"):
+                return httpx.Response(status_code=503, request=request)
+            return None
+
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=fail_ack)
+            async with _handle_over(transport) as handle:
+                if raises:
+                    with pytest.raises(RpcWorkerCallError, match="ValueError"):
+                        await getattr(handle, method)()
+                else:
+                    assert await getattr(handle, method)(a=1, b=2) == 3
+
+        acknowledgements = [
+            request for request in transport.seen if request.method == "POST" and str(request.url).endswith("/ack")
+        ]
+        assert len(acknowledgements) >= 2
+
+    async def test_transient_acknowledgement_failure_retries_on_the_same_boot(self, fast_retries: None) -> None:
+        """A transient ACK 503 is retried with the terminal outcome server's pinned boot uuid."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app,
+                hook=_status_hook(status_code=503, times=1, method="POST", path_fragment="/ack"),
+            )
+            async with _handle_over(transport) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        acknowledgements = [
+            request for request in transport.seen if request.method == "POST" and str(request.url).endswith("/ack")
+        ]
+        assert len(acknowledgements) == 2
+        assert len({request.headers[EXPECTED_BOOT_UUID_HEADER] for request in acknowledgements}) == 1
+
+    async def test_default_acknowledgement_budget_permits_a_real_retry(self) -> None:
+        """The production ACK delay is shorter than its budget and retries one transient failure."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app,
+                hook=_status_hook(status_code=503, times=1, method="POST", path_fragment="/ack"),
+            )
+            async with _handle_over(transport) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        acknowledgements = [
+            request for request in transport.seen if request.method == "POST" and str(request.url).endswith("/ack")
+        ]
+        assert len(acknowledgements) == 2
+
+    async def test_acknowledgement_uses_the_terminal_outcome_boot_not_a_later_observation(self) -> None:
+        """A concurrent health response cannot redirect ACK away from the boot that returned the outcome."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                original_verify = handle._boot_uuid_pin.verify
+
+                def interleave_health_response(response: httpx.Response) -> None:
+                    original_verify(response)
+                    if response.request.method == "GET" and "/v1/calls/" in str(response.request.url):
+                        health_request = httpx.Request("GET", "http://testserver/v1/health")
+                        health_response = httpx.Response(
+                            200,
+                            headers={BOOT_UUID_HEADER: "later-health-boot"},
+                            json={"status": "ok"},
+                            request=health_request,
+                        )
+                        asyncio.get_running_loop().call_soon(original_verify, health_response)
+
+                handle._boot_uuid_pin.verify = interleave_health_response
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        acknowledgement = next(
+            request for request in transport.seen if request.method == "POST" and str(request.url).endswith("/ack")
+        )
+        assert acknowledgement.headers[EXPECTED_BOOT_UUID_HEADER] == app.state.rpc_server.boot_uuid
+
+    async def test_malformed_result_is_not_acknowledged_before_successful_decode(self) -> None:
+        """A terminal envelope whose result cannot decode remains pollable for diagnosis and retry."""
+
+        def malformed_result(request: httpx.Request) -> httpx.Response | None:
+            if request.method == "GET" and "/v1/calls/" in str(request.url):
+                return httpx.Response(
+                    200,
+                    headers={BOOT_UUID_HEADER: "boot"},
+                    json={"status": "success", "result": {"not": "an integer"}, "error": None},
+                    request=request,
+                )
+            return None
+
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=malformed_result)
+            async with _handle_over(transport) as handle:
+                with pytest.raises(ValidationError):
+                    await handle.demo_default_arg(a=1, b=2)
+
+        assert not [
+            request for request in transport.seen if request.method == "POST" and str(request.url).endswith("/ack")
+        ]
+
+    @pytest.mark.parametrize("error_type", [httpx.ReadTimeout, httpx.ConnectError])
+    @pytest.mark.parametrize(("method", "raises"), [("demo_default_arg", False), ("demo_raises", True)])
+    async def test_ack_transport_errors_retry_without_masking_the_primary(
+        self,
+        error_type: type[httpx.TransportError],
+        method: str,
+        raises: bool,
+        fast_retries: None,
+    ) -> None:
+        """Real timeout and connection errors retry within budget and preserve results and remote errors."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app,
+                hook=_fail_hook(2, "POST", "/ack", error_type=error_type),
+            )
+            async with _handle_over(transport) as handle:
+                if raises:
+                    with pytest.raises(RpcWorkerCallError, match="ValueError"):
+                        await getattr(handle, method)()
+                else:
+                    assert await getattr(handle, method)(a=1, b=2) == 3
+
+        acknowledgements = [
+            request for request in transport.seen if request.method == "POST" and str(request.url).endswith("/ack")
+        ]
+        assert len(acknowledgements) == 3
+        assert len({request.headers[EXPECTED_BOOT_UUID_HEADER] for request in acknowledgements}) == 1
+
+    async def test_ack_retry_budget_does_not_add_seconds_to_the_primary_result(self, fast_retries: None) -> None:
+        """A permanently unavailable ACK path returns the copied result within the bounded maintenance budget."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app,
+                hook=_status_hook(status_code=503, times=-1, method="POST", path_fragment="/ack"),
+            )
+            async with _handle_over(transport) as handle:
+                started = time.monotonic()
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+                elapsed = time.monotonic() - started
+
+        assert elapsed < 0.75
+
+    @pytest.mark.parametrize(("method", "raises"), [("demo_default_arg", False), ("demo_raises", True)])
+    async def test_cancelled_ack_response_does_not_mask_the_copied_primary(self, method: str, raises: bool) -> None:
+        """ACK response cancellation cannot replace either a copied result or remote business error."""
+        async with _running_app(_Worker()) as app:
+            transport = _AcknowledgementResponseCancelledTransport(app)
+            async with _handle_over(transport) as handle:
+                if raises:
+                    with pytest.raises(RpcWorkerCallError, match="ValueError"):
+                        await getattr(handle, method)()
+                else:
+                    assert await getattr(handle, method)(a=1, b=2) == 3
+
+        assert transport.cancelled_ack
+
+    @pytest.mark.parametrize("cancel_after_server_ownership", [False, True])
+    @pytest.mark.parametrize(("method", "raises"), [("demo_default_arg", False), ("demo_raises", True)])
+    async def test_task_cancellation_during_ack_does_not_lose_the_copied_result_or_ack(
+        self,
+        cancel_after_server_ownership: bool,
+        method: str,
+        raises: bool,
+    ) -> None:
+        """Actual cancellation around ACK ownership preserves copied results and errors and completes deduplication."""
+        async with _running_app(_Worker()) as app:
+            transport = _AcknowledgementOwnershipGateTransport(
+                app,
+                cancel_after_server_ownership=cancel_after_server_ownership,
+            )
+            async with _handle_over(transport) as handle:
+                task = asyncio.create_task(getattr(handle, method)() if raises else getattr(handle, method)(a=1, b=2))
+                await asyncio.wait_for(transport.ack_reached_gate.wait(), timeout=1.0)
+                task.cancel()
+                transport.release_ack.set()
+                if raises:
+                    with pytest.raises(RpcWorkerCallError, match="ValueError"):
+                        await task
+                else:
+                    assert await task == 3
+
+                ack_request = next(
+                    request
+                    for request in transport.seen
+                    if request.method == "POST" and str(request.url).endswith("/ack")
+                )
+                call_id = ack_request.url.path.split("/")[-2]
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://testserver",
+                ) as observer:
+                    poll = await observer.get(f"/v1/calls/{call_id}", params={"timeout": 0.0})
+
+        assert poll.status_code == 410
 
 
 class TestSubmitWithoutResult:
@@ -376,7 +631,12 @@ class TestSubmitRetry:
             async with _handle_over(transport) as handle:
                 assert await handle.demo_default_arg(a=1, b=2) == 3
 
-            assert len([r for r in transport.seen if r.method == "POST"]) == 3
+            submits = [
+                request
+                for request in transport.seen
+                if request.method == "POST" and str(request.url).endswith("/v1/demo_default_arg")
+            ]
+            assert len(submits) == 3
 
     @pytest.mark.parametrize("status_code", [500, 502, 503, 504])
     async def test_server_error_submit_gives_up_without_retry(

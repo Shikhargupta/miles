@@ -30,7 +30,11 @@ from miles.ray.specs.train import (
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
-from miles.utils.workers.rpc.common.metadata import _find_rpc_config, declared_concurrency_groups
+from miles.utils.workers.rpc.common.metadata import (
+    _find_rpc_config,
+    collect_rpc_method_specs,
+    declared_concurrency_groups,
+)
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
@@ -317,6 +321,13 @@ class TestConcurrencyGroups:
             "inject_fault": "fault_injector",
             "kill_self": "kill_self",
         }
+
+    def test_heartbeat_uses_the_bounded_rpc_control_reserve(self) -> None:
+        """A saturated training RPC data plane cannot starve the heartbeat used for liveness."""
+        specs = collect_rpc_method_specs(TrainRayActor)
+
+        assert specs["get_heartbeat_status"].control_plane
+        assert not specs["train"].control_plane
 
 
 class TestEnvironmentVariables:

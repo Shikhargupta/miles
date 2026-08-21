@@ -1,4 +1,9 @@
 import asyncio
+import json
+import subprocess
+import sys
+import textwrap
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -9,6 +14,48 @@ from tests.fast.utils.workers.rpc.server.fake_workers import (
     OutcomeRecorder,
     SyncAndAsyncWorker,
 )
+
+from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
+from miles.utils.workers.rpc.server.executor import RpcCallExecutor
+
+
+class _OversizedWorker:
+    @rpc(max_serialized_outcome_bytes=512)
+    def demo_oversized(self) -> str:
+        return "x" * 1024
+
+
+class _BlockingSyncWorker:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+        self.executed: list[str] = []
+
+    @rpc()
+    def demo(self, value: str) -> None:
+        self.executed.append(value)
+        if value == "running":
+            self.started.set()
+            assert self.release.wait(timeout=5.0)
+            self.finished.set()
+
+
+class _CancellationResistantAsyncWorker:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.release = asyncio.Event()
+
+    @rpc()
+    async def demo(self) -> None:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await self.release.wait()
+            raise
 
 
 class TestConcurrencyGroups:
@@ -74,3 +121,115 @@ class TestBackgroundTasks:
 
         assert [outcome.status for outcome in recorder.outcomes] == ["failed"]
         assert under_test.executor._background_tasks == set()
+
+    async def test_close_cancels_queued_sync_work_but_cannot_stop_a_running_thread(self) -> None:
+        """Shutdown hides late outcomes, cancels queued work, and honestly leaves entered sync code to its owner."""
+        worker = _BlockingSyncWorker()
+        specs = collect_rpc_method_specs(_BlockingSyncWorker)
+        executor = RpcCallExecutor(worker=worker, specs=specs)
+        recorder = OutcomeRecorder()
+        executor.start(spec=specs["demo"], kwargs={"value": "running"}, call_id="running", finish=recorder.finish)
+        assert await asyncio.to_thread(worker.started.wait, 1.0)
+        executor.start(spec=specs["demo"], kwargs={"value": "queued"}, call_id="queued", finish=recorder.finish)
+
+        await executor.close()
+        worker.release.set()
+        assert await asyncio.to_thread(worker.finished.wait, 1.0)
+
+        assert worker.executed == ["running"]
+        assert executor.background_task_count == 0
+
+    async def test_a_cancelled_first_close_does_not_abandon_or_bypass_teardown(self) -> None:
+        """Cancelling one close waiter leaves one shared teardown for later callers to finish."""
+        worker = _CancellationResistantAsyncWorker()
+        specs = collect_rpc_method_specs(_CancellationResistantAsyncWorker)
+        executor = RpcCallExecutor(worker=worker, specs=specs)
+        executor.start(spec=specs["demo"], kwargs={}, call_id="running", finish=OutcomeRecorder().finish)
+        await asyncio.wait_for(worker.started.wait(), timeout=1.0)
+
+        first_close = asyncio.create_task(executor.close())
+        await asyncio.wait_for(worker.cancelled.wait(), timeout=1.0)
+        first_close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_close
+        second_close = asyncio.create_task(executor.close())
+        await asyncio.sleep(0)
+
+        assert not second_close.done()
+        worker.release.set()
+        await asyncio.wait_for(second_close, timeout=1.0)
+        assert executor.background_task_count == 0
+
+
+class TestOutcomeSize:
+    async def test_oversized_result_becomes_an_explicit_bounded_protocol_failure(
+        self, make_executor: Callable[[type], ExecutorUnderTest]
+    ) -> None:
+        """A method violating its declared result bound returns a small explicit RPC failure."""
+        under_test = make_executor(_OversizedWorker)
+        recorder = OutcomeRecorder()
+
+        under_test.executor.start(
+            spec=under_test.specs["demo_oversized"], kwargs={}, call_id="c1", finish=recorder.finish
+        )
+        await asyncio.gather(*under_test.executor._background_tasks)
+
+        assert len(recorder.outcomes) == 1
+        assert recorder.outcomes[0].status == "failed"
+        assert "RpcOutcomeTooLargeError" in recorder.outcomes[0].error
+        assert len(recorder.outcomes[0].model_dump_json().encode()) <= 512
+
+    @pytest.mark.parametrize("mode", ["result", "error"])
+    def test_large_result_and_traceback_encoding_have_a_bounded_peak_rss(self, mode: str) -> None:
+        """Result and traceback size enforcement does not materialize a second unbounded wire copy."""
+        script = textwrap.dedent(
+            f"""
+            import asyncio
+            import json
+            import resource
+
+            from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
+            from miles.utils.workers.rpc.server.executor import RpcCallExecutor
+
+            class Worker:
+                @rpc(max_serialized_outcome_bytes=512)
+                def run(self) -> str:
+                    payload = 'x' * (64 * 1024 * 1024)
+                    if {mode!r} == 'error':
+                        raise RuntimeError(payload)
+                    return payload
+
+            async def main():
+                baseline = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+                specs = collect_rpc_method_specs(Worker)
+                outcomes = []
+                executor = RpcCallExecutor(worker=Worker(), specs=specs)
+                executor.start(
+                    spec=specs['run'],
+                    kwargs={{}},
+                    call_id='c1',
+                    finish=lambda *, outcome: outcomes.append(outcome),
+                )
+                await asyncio.gather(*executor._background_tasks)
+                peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+                print(json.dumps({{
+                    'rss_delta': peak - baseline,
+                    'status': outcomes[0].status,
+                    'outcome_bytes': len(outcomes[0].model_dump_json().encode()),
+                }}))
+
+            asyncio.run(main())
+            """
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+        )
+        metrics = json.loads(completed.stdout.splitlines()[-1])
+
+        assert metrics["status"] == "failed"
+        assert metrics["outcome_bytes"] <= 512
+        assert metrics["rss_delta"] <= 96 * 1024 * 1024

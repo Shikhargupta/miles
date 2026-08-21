@@ -114,14 +114,21 @@ class TestTheActorDiesWithItsServer:
         assert exits == [1]
 
     def test_the_server_binds_every_interface(self, monkeypatch):
-        """The driver reaches the worker by the node ip the launcher advertised, never by loopback."""
+        """The actor binds its RPC listener through the bounded HTTP protocol."""
+        import importlib
+
         seen: list[dict[str, Any]] = []
         monkeypatch.setattr(serve_actor_module.uvicorn, "run", lambda app, **kwargs: seen.append(kwargs) or None)
         monkeypatch.setattr(serve_actor_module.os, "_exit", lambda code: None)
 
         serve_until_the_server_stops(app=object(), port=12345)
 
-        assert seen[0] == dict(host="0.0.0.0", port=12345)
+        assert set(seen[0]) == {"host", "port", "http", "backlog"}
+        assert seen[0]["host"] == "0.0.0.0"
+        assert seen[0]["port"] == 12345
+        protocol_module = importlib.import_module("miles.utils.workers.serving.http_protocol")
+        assert seen[0]["http"] is protocol_module._BoundedH11Protocol
+        assert seen[0]["backlog"] == protocol_module.RPC_LISTEN_BACKLOG
 
 
 class TestFaultInjection:

@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import (
@@ -8,6 +9,7 @@ from miles.utils.ft_utils.health_checker import (
     ActivenessTracker,
     NoopHealthChecker,
     SimpleHealthChecker,
+    SimpleHealthCheckerConfig,
 )
 from miles.utils.test_utils.clock import FakeClock
 
@@ -79,6 +81,19 @@ class TestActivenessTracker:
 
         assert after_transition == ActiveAndEpoch(active=False, epoch=1)
         assert tracker.get() == after_transition
+
+
+class TestConfig:
+    @pytest.mark.parametrize("interval", [0.0, 0.999])
+    def test_subsecond_health_check_intervals_are_rejected(self, interval: float) -> None:
+        """The supported heartbeat cadence keeps the twelve-hour RPC identity budget finite."""
+        with pytest.raises(ValidationError):
+            SimpleHealthCheckerConfig(
+                interval=interval,
+                timeout=10.0,
+                first_wait=0.0,
+                failure_threshold=3,
+            )
 
 
 class TestStartStop:

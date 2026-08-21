@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 
-from miles.utils.workers.serving.serve_inner import parse_own_args
+from miles.utils.workers.serving import serve_inner as serve_inner_module
+from miles.utils.workers.serving.serve_inner import main, parse_own_args
 
 SPECS_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_specs"
 POOL_ID = "e2e-pool"
@@ -33,3 +37,33 @@ class TestParseOwnArgs:
             parse_own_args(["--specs", SPECS_PATH, "--pool-id", POOL_ID, "--unknown-option", "1"])
 
         assert exc_info.value.code == 2
+
+
+class TestStartingTheServer:
+    def test_the_inner_worker_uses_the_bounded_http_protocol(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Split workers must have the same pre-task connection bound as Ray actors."""
+        import importlib
+
+        seen: list[dict[str, Any]] = []
+        spec = SimpleNamespace(worker_class="demo.Worker")
+        monkeypatch.setattr(serve_inner_module, "split_worker_argv", lambda argv: ([], []))
+        monkeypatch.setattr(
+            serve_inner_module,
+            "parse_own_args",
+            lambda argv: SimpleNamespace(specs=SPECS_PATH, pool_id=POOL_ID),
+        )
+        monkeypatch.setattr(serve_inner_module, "compute_serve_worker_spec", lambda **kwargs: spec)
+        monkeypatch.setattr(serve_inner_module, "create_worker", lambda *args, **kwargs: object())
+        monkeypatch.setattr(serve_inner_module, "_rpc_port_of", lambda value: 12345)
+        monkeypatch.setattr(serve_inner_module, "read_worker_in_pod_index", lambda environ: 0)
+        monkeypatch.setattr(serve_inner_module, "create_rpc_app", lambda worker: object())
+        monkeypatch.setattr(serve_inner_module.uvicorn, "run", lambda app, **kwargs: seen.append(kwargs) or None)
+
+        main()
+
+        assert set(seen[0]) == {"host", "port", "http", "backlog"}
+        assert seen[0]["host"] == "0.0.0.0"
+        assert seen[0]["port"] == 12345
+        protocol_module = importlib.import_module("miles.utils.workers.serving.http_protocol")
+        assert seen[0]["http"] is protocol_module._BoundedH11Protocol
+        assert seen[0]["backlog"] == protocol_module.RPC_LISTEN_BACKLOG
