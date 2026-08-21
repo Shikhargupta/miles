@@ -64,6 +64,15 @@ class BaseReplayManager:
         self.enabled = False
         self.stage = "fallthrough"
         self.register_replay_list_func = None
+        self.checked_tokens = 0
+        self.mismatched_tokens = 0
+
+    def pop_check_stats(self) -> tuple[int, int]:
+        """Mismatched and checked token counts since the last call, then reset."""
+        stats = (self.mismatched_tokens, self.checked_tokens)
+        self.mismatched_tokens = 0
+        self.checked_tokens = 0
+        return stats
 
     def create_replay(self, stream_idx: int | None = None) -> Replay:
         replay = Replay(stream_idx=stream_idx)
@@ -191,6 +200,8 @@ class BaseReplayManager:
         is_mismatch = (overlap < required) & ~is_padding
 
         mismatch_count = is_mismatch.sum().item()
+        self.checked_tokens += int((~is_padding).sum().item())
+        self.mismatched_tokens += mismatch_count
         if mismatch_count == 0:
             return
 

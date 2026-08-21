@@ -11,6 +11,7 @@ from miles.utils import train_metric_utils
 from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.replay_base import routing_replay_manager
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
@@ -531,6 +532,12 @@ def log_train_step(
     if extra_metrics:
         for key, val in extra_metrics.items():
             log_dict_out[f"train/{role_tag}{key}"] = val
+
+    if routing_replay_manager.enable_check_replay_result:
+        # log_train_step runs on one rank only, so no collective here: the counts are
+        # this rank's, and every rank runs the same layers.
+        mismatched, checked = routing_replay_manager.pop_check_stats()
+        log_dict_out[f"ci/{role_tag}r3_mismatch_fraction"] = mismatched / checked if checked else 0.0
 
     log_dict_out["train/step"] = accumulated_step_id
 
