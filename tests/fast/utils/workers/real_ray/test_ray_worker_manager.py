@@ -177,9 +177,7 @@ class TestRunShutdownOnRealRay:
     async def test_shutdown_terminates_every_owned_worker_process(self, manager_factory, worker_probe_factory):
         """Normal driver completion must reclaim the exact subprocesses its manager launched."""
         probe = worker_probe_factory()
-        handle = manager_factory(
-            [make_command_spec("engine", num_cells=2, launch_command=probe.launch_command)]
-        )
+        handle = manager_factory([make_command_spec("engine", num_cells=2, launch_command=probe.launch_command)])
         records = probe.wait_for_records(2)
 
         await shutdown_worker_manager(handle)
