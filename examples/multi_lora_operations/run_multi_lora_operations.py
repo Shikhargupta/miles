@@ -24,6 +24,12 @@ _ADAPTER_DIR = f"{U.repo_base_dir}/examples/multi_lora_operations/adapters"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
+    """Launch configuration for the Multi-LoRA operation backend example.
+
+    Full-parameter targets can reuse the protocol-neutral operation contract,
+    not the LoRA slot and adapter settings defined by this launcher.
+    """
+
     run_id: str = U.create_run_id()
 
     hf_checkpoint: str | None = None
