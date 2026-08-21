@@ -1,6 +1,6 @@
 import dataclasses
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 
 import torch
 import torch.distributed as dist
@@ -28,7 +28,11 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
         super().__init__(*args, **kwargs)
         self._param_info_buckets: list[list[ParamInfo]] | None = None
 
-    def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
+    def get_hf_weight_chunks(
+        self,
+        megatron_local_weights: Mapping[str, torch.Tensor],
+        weight_type: str = "base",
+    ) -> Iterator[list[tuple[str, torch.Tensor]]]:
         rank = dist.get_rank()
 
         if weight_type == "lora":
@@ -37,9 +41,10 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
             yield export_inkling_lora_hf_named(self.model)
             return
 
-        for megatron_local_param_infos in tqdm(
-            self._resolve_param_info_buckets(), disable=rank != 0, desc="Update weights"
-        ):
+        param_info_buckets = self._resolve_param_info_buckets()
+        _validate_param_info_snapshot(param_info_buckets, megatron_local_weights)
+
+        for megatron_local_param_infos in tqdm(param_info_buckets, disable=rank != 0, desc="Update weights"):
             megatron_full_params = _get_megatron_full_params(
                 self.args, megatron_local_param_infos, megatron_local_weights
             )
@@ -64,7 +69,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
 def _get_megatron_full_params(
     args: Namespace,
     megatron_local_param_infos: Sequence[ParamInfo],
-    megatron_local_weights,
+    megatron_local_weights: Mapping[str, torch.Tensor],
 ) -> Sequence[torch.Tensor]:
     monkey_patch_torch_reductions()
     pp_size = get_parallel_state().pp.size
@@ -75,12 +80,6 @@ def _get_megatron_full_params(
     for info in megatron_local_param_infos:
         if dist.get_rank() == info.src_rank:
             local_weight = megatron_local_weights[info.name]
-            assert local_weight.dtype == info.dtype and tuple(local_weight.shape) == tuple(info.shape), (
-                f"{info.name} drifted from the param info snapshot: live "
-                f"{local_weight.dtype}/{tuple(local_weight.shape)} vs recorded "
-                f"{info.dtype}/{tuple(info.shape)}. Peer ranks allocate their receive buffer from the "
-                f"recorded values, so the cross-PP broadcast would transfer the wrong number of bytes."
-            )
             params.append(
                 torch.nn.Parameter(
                     local_weight.to(device=torch.cuda.current_device(), non_blocking=True),
@@ -131,6 +130,42 @@ def _get_megatron_full_params(
     gathered_params = all_gather_params_async(args, list(zip(megatron_local_param_infos, params, strict=False)))
 
     return gathered_params
+
+
+def _validate_param_info_snapshot(
+    param_info_buckets: Sequence[Sequence[ParamInfo]],
+    megatron_local_weights: Mapping[str, torch.Tensor],
+) -> None:
+    rank = dist.get_rank()
+    local_errors: list[str] = []
+    for param_infos in param_info_buckets:
+        for info in param_infos:
+            if rank != info.src_rank:
+                continue
+            if info.name not in megatron_local_weights:
+                local_errors.append(f"rank {rank}: {info.name} is absent from the live weight mapping")
+                continue
+
+            local_weight = megatron_local_weights[info.name]
+            live_shape = tuple(local_weight.shape)
+            recorded_shape = tuple(info.shape)
+            if local_weight.dtype != info.dtype or live_shape != recorded_shape:
+                local_errors.append(
+                    f"rank {rank}: {info.name} drifted from the param info snapshot: live "
+                    f"{local_weight.dtype}/{live_shape} vs recorded {info.dtype}/{recorded_shape}"
+                )
+
+    all_errors: list[list[str] | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(
+        object_list=all_errors,
+        obj=local_errors,
+        group=get_gloo_group(),
+    )
+    errors: list[str] = [error for rank_errors in all_errors if rank_errors is not None for error in rank_errors]
+    if errors:
+        raise RuntimeError(
+            "Param info snapshot validation failed before weight collectives:\n" + "\n".join(errors)
+        )
 
 
 def _get_megatron_local_param_info_buckets(
