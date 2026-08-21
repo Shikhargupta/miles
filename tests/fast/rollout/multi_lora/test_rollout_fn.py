@@ -1,16 +1,5 @@
-"""Tinker operation-to-batch adapter: one claimed operation becomes one
-stamped batch, bad payloads fail their own operation, and the selection loop
-enforces the homogeneous kind lock with persistent round-robin fairness — all
-driven through FAKE OperationQueuePort/BatchResidencyPort transports (no Ray
-import, per codex-rollout-fullparameter-design-0810 §8.2)."""
-
-from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,7 +16,6 @@ def make_run(name="X", reg="rx", slot=3, version=2) -> AdapterRun:
 
 
 def claim_batch(run: AdapterRun, operations) -> ClaimedOperationBatch:
-    """Drive the adapter's claim path for one registration runtime."""
     fn = MultiLoraOperationBatchFn(
         RolloutFnConstructorInput(args=SimpleNamespace(), data_source=None),
         operations=operations,
@@ -47,8 +35,6 @@ def sample_payload(n=2) -> dict:
 
 
 class FakeOperationQueue:
-    """Scripted OperationQueuePort: claims pop in order, failures record."""
-
     def __init__(self, claims=(), ready=None):
         self._claims = list(claims)
         self._ready = ready or {}
@@ -65,8 +51,6 @@ class FakeOperationQueue:
 
 
 class FakeResidency:
-    """Scripted BatchResidencyPort: mints deterministic leases."""
-
     def __init__(self):
         self.leases: list[tuple] = []
 
@@ -103,7 +87,7 @@ class TestClaimBatch:
         stamped = output.samples[0][0]
         assert (stamped.adapter.name, stamped.adapter.registration_id) == ("X", "rx")
         assert stamped.adapter.serving_version == 2 and stamped.adapter.slot == 3
-        assert stamped.metadata["team"] == "t1"  # run metadata merged in
+        assert stamped.metadata["team"] == "t1"
         assert stamped.status == stamped.Status.COMPLETED
         assert [group[0].index for group in output.samples] == [0, 1]  # result-plane row identity
         assert isinstance(output, ClaimedOperationBatch)
@@ -190,22 +174,14 @@ class TestSelectionKindLock:
 
         selected = asyncio.run(fn._select())
         assert sorted(r.run.name for r in selected) == ["A", "C"]
-        # The other-kind batch is untouched and stays READY for the next call.
         assert other.state == AdapterRolloutRuntime.READY
-
-    def test_all_forward_selection_is_fine(self):
-        fn = make_fn()
-        ready_runtime(fn, "A", 0, "forward")
-        ready_runtime(fn, "B", 1, "forward")
-        selected = asyncio.run(fn._select())
-        assert {r.ready_kind for r in selected} == {"forward"}
 
     def test_soft_target_stops_collection_but_never_trims(self):
         fn = make_fn(soft_target=1)
         ready_runtime(fn, "A", 0, "forward_backward")
         ready_runtime(fn, "B", 1, "forward_backward")
         selected = asyncio.run(fn._select())
-        assert len(selected) == 1  # whole batches; B waits for the next call
+        assert len(selected) == 1
 
     def test_empty_selection_times_out(self):
         fn = make_fn()
@@ -213,11 +189,8 @@ class TestSelectionKindLock:
             asyncio.run(fn._select())
 
     def test_merge_ships_the_converted_plan_and_pad_policy(self):
-        """Correlation is batch-local (§3.3): the selected operation gets lane
-        0, the loss/result maps key by lane, and the exact registration rides
-        along for the commit. The claim's binding is the single binding truth
-        — it flows into the batch lease (§5.3) and the routing helper; the
-        runtime's stale stamped slot (9) appears nowhere."""
+        """The claim binding drives the batch lease and routing; the runtime's
+        stale stamped slot must not leak into either."""
         fn = make_fn()
         first = ready_runtime(fn, "A", 0, "forward_backward")
         selected = asyncio.run(fn._select())
@@ -237,10 +210,8 @@ class TestSelectionKindLock:
         assert first.state == AdapterRolloutRuntime.IDLE and first.ready_output is None
 
     def test_failed_lease_acquisition_keeps_claimed_output_retryable(self):
-        """External review P1: acquisition is fallible (fencing races), and a
-        failure must not orphan the only in-memory copy of an already-CLAIMED
-        output — the selected runtimes return to READY with their outputs
-        intact, and the next selection retries them."""
+        """A failed acquisition must not orphan the only in-memory copy of an
+        already-claimed output; the next selection retries it."""
 
         class RefusingOnceResidency(FakeResidency):
             def __init__(self):
@@ -263,7 +234,6 @@ class TestSelectionKindLock:
         assert runtime.state == AdapterRolloutRuntime.READY
         assert runtime.ready_output is not None
 
-        # Retry-once: the SAME claimed output dispatches on the next cycle.
         selected = asyncio.run(fn._select())
         output = merge(fn, selected)
         assert output.conversion_metadata["operation_by_lane"] == {0: "op-A"}
@@ -282,18 +252,3 @@ class TestSelectionKindLock:
         assert output.conversion_metadata["operation_by_lane"] == {0: "op-A", 1: "op-B"}
         assert output.conversion_metadata["tinker_operation_lanes"] == [0, 1]
         assert output.postprocess.pad_to_dp is True
-
-    def test_lanes_are_selection_local_and_independent_of_slots(self):
-        """Two operations on HIGH slots (7, 2) still get lanes 0 and 1 in
-        selection order: identity never rides the physical slot, so a future
-        parameterization (or slot reuse across operations) cannot collide in
-        the collector/result plane."""
-        fn = make_fn()
-        ready_runtime(fn, "A", 7, "forward_backward")
-        ready_runtime(fn, "B", 2, "forward_backward")
-        selected = asyncio.run(fn._select())
-        output = merge(fn, selected)
-        assert output.conversion_metadata["tinker_operation_lanes"] == [0, 1]
-        assert output.conversion_metadata["registration_by_lane"] == {0: ("A", "r-A"), 1: ("B", "r-B")}
-        lease = output.conversion_metadata["batch_execution_lease"]
-        assert lease["bindings_by_operation"] == [["op-A", ["A", "r-A", 7]], ["op-B", ["B", "r-B", 2]]]

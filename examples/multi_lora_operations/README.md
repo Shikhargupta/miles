@@ -38,7 +38,7 @@ Key flags:
 | `--tinker-backend` | enable the Tinker protocol adapter for the Multi-LoRA operation backend (requires `--multi-lora-n-adapters > 0`) |
 | `--multi-lora-n-adapters N` | fixed slot count; a registration binds a slot for life (queue when full) |
 | `--lora-rank` / `--lora-alpha` | deployment-wide ceiling / fixed alpha — clients may lower `rank`, never set `alpha` |
-| `--multi-lora-disable-service-mode` | exit once all adapters retire (by default the service keeps serving with zero adapters) |
+| `--multi-lora-api-port` | control-plane API port for runtime adapter registration |
 | `--tinker-max-coalesce-wait-s` | how long one train call coalesces additional ready client batches |
 | `--tinker-max-empty-wait-s` | idle-queue yield back to the control phase (keep this small) |
 | `--tinker-frontend` | serve the official tinker SDK REST protocol (`/api/v1`) on the controller HTTP server (requires `--tinker-backend`) |
@@ -270,5 +270,4 @@ codex-0817-sft-fix §4-§6):
 
 ## Files
 
-- `run_multi_lora_operations.py` — disaggregated launch (`prepare` / `serve` / `train`)
-- `adapters/example.yaml` — CLI pre-registration example (`--multi-lora-adapter example adapters/example.yaml`)
+- `run_multi_lora_operations.py` — disaggregated service launch (`prepare` / `serve`)

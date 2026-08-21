@@ -1,14 +1,3 @@
-"""Multi-LoRA operation batching: one claim task per registration turns one
-claimed client operation into one complete batch. The adapter selects whole
-claimed batches with a persistent round-robin under a KIND LOCK — a selection
-is all forward_backward or all forward, never mixed — and the BatchPlan,
-shipped already converted as the output's conversion-metadata contribution, is
-the only rollout-to-train control plane.
-
-Nothing here generates: data operations arrive fully tokenized from the
-client, and sampling happens against the router directly.
-"""
-
 import asyncio
 import logging
 import time
@@ -37,20 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 def batch_plan_to_metadata(batch_plan: list[dict], lease) -> dict[str, Any]:
-    """Distill one tinker selection's BatchPlan into conversion metadata.
-    Selections are homogeneous: exactly one data-operation kind — mixed
-    forward/forward_backward batches are structurally impossible, which is
-    what keeps forward operations gradient-free without loss surgery.
-
-    Correlation is batch-local (codex-rollout-fullparameter-design-0810 §3.3):
-    each selected operation gets a small integer ``lane`` (its position in the
-    selection), and the loss/result plane is keyed by lane — never by trainer
-    slot, so operation identity survives any parameterization.
-
-    The batch's ``BatchExecutionLease`` is the single binding truth (§5.3):
-    it ships plain-encoded, and the conversion derives ``adapter_slots`` by
-    joining ``operation_by_lane`` through it — the plan never stores a second
-    copy of the binding."""
     kinds = {entry["operation_kind"] for entry in batch_plan}
     if len(kinds) != 1 or not kinds <= {"forward_backward", "forward"}:
         raise ValueError(f"tinker selection must be one homogeneous data kind, got {sorted(kinds)}")
@@ -101,10 +76,6 @@ class ClaimedOperationBatch:
 
 
 def decode_operation(operation: dict, run: AdapterRun) -> ClaimedOperationBatch:
-    """Decode one claimed operation into its stamped ClaimedOperationBatch:
-    validate the data kind and payload, assign server-owned row indices, and
-    stamp the registration's CURRENT serving identity (the version advances
-    between batches; identity stays fixed) onto every sample."""
     if operation["kind"] not in DATA_OPERATION_KINDS:
         raise ValueError(f"operation kind '{operation['kind']}' is not a data operation")
     payload = operation.get("payload") or {}
@@ -121,10 +92,6 @@ def decode_operation(operation: dict, run: AdapterRun) -> ClaimedOperationBatch:
     for i, raw in enumerate(raw_samples):
         raw = dict(raw)
         raw.setdefault("status", Sample.Status.COMPLETED.value)
-        # Row identity within the operation is server-owned: the result
-        # plane returns per-datum logprobs in this order, and a negative
-        # index is the DP-padding sentinel — a client-supplied value could
-        # alias it (rows silently dropped) or collide in the collector.
         raw["index"] = i
         sample = Sample.from_dict(raw)
         sample.adapter = ref
@@ -199,22 +166,6 @@ class AdapterRolloutRuntime:
 
 
 class MultiLoraOperationBatchFn:
-    """Operation-to-batch adapter (codex-rollout-fullparameter-design-0810
-    §4.5): turns claimed client operations into whole training batches —
-    persistent round-robin, homogeneous kind lock, coalesce timeout,
-    registration fencing. Transports are injected ports (OperationQueuePort,
-    BatchResidencyPort), so a future RolloutExecutor loads this adapter
-    unchanged and unit tests need no Ray — "unchanged" is the executor/Ray
-    boundary only. The adapter is NOT parameterization-neutral: its runtimes
-    hold ``AdapterRun`` views and the claim path stamps samples with
-    ``AdapterRef``, so a full-parameter deployment reuses the operation/
-    result semantics but still needs a small sample-stamping extraction here
-    (external review 0811: soften, do not pre-build the hook).
-
-    The adapter never samples prompts, never generates, never scores, never
-    builds Datums, and never touches residency policy — it only claims,
-    selects, and converts."""
-
     def __init__(
         self,
         input: RolloutFnConstructorInput,
@@ -286,11 +237,6 @@ class MultiLoraOperationBatchFn:
                 runtime.task = asyncio.create_task(self._run_child(runtime))
 
     async def _claim_batch(self, runtime: AdapterRolloutRuntime) -> ClaimedOperationBatch:
-        """Await the registration's next data-bearing operation and decode it
-        into one complete stamped batch (0813 review §6.5). Blocking while the
-        client queue is idle is normal: the runtime simply stays IN_FLIGHT and
-        other adapters keep training. A malformed payload fails its own
-        operation — never the adapter — and the claim loop continues."""
         key = (runtime.run.name, runtime.run.registration_id)
         while True:
             operation = await self.operations.claim_data(key)
@@ -323,10 +269,6 @@ class MultiLoraOperationBatchFn:
     # ------------------------------ selection ------------------------------
 
     async def _select(self) -> list[AdapterRolloutRuntime]:
-        """Collect READY child batches under the kind lock. The first selected
-        operation locks the selection's kind (D11 homogeneity); other-kind
-        READY batches stay READY for the next call. Two clocks: the empty-batch
-        deadline before anything is selected, the coalesce window after."""
         soft_target = self.args.rollout_batch_size * self.args.n_samples_per_prompt
         coalesce_wait = self.args.tinker_max_coalesce_wait_s
         empty_deadline = time.monotonic() + self.args.tinker_max_empty_wait_s
@@ -372,9 +314,6 @@ class MultiLoraOperationBatchFn:
         return selected
 
     def _pop_next_ready(self, kind_lock: str | None) -> AdapterRolloutRuntime | None:
-        """Persistent round-robin over READY runtimes matching the kind lock:
-        the cursor survives across selections so fast adapters cannot starve
-        slow ones."""
         for _ in range(len(self.rotation)):
             tenant = self.rotation.popleft()
             self.rotation.append(tenant)
@@ -392,19 +331,10 @@ class MultiLoraOperationBatchFn:
         data: list[list[Sample]] = []
         batch_plan: list[dict] = []
         metrics: dict = {}
-        # Read-only pass: build the merged data and plan WITHOUT touching the
-        # runtimes, so a failure anywhere up to and including lease
-        # acquisition leaves every selected runtime READY with its output
-        # intact (the claimed operation stays retryable at the next selection
-        # instead of orphaning the only in-memory copy of an already-CLAIMED
-        # output).
         try:
             for runtime in selected:
                 claim = runtime.ready_output
                 data.extend(claim.samples)
-                # The claim's binding is the dispatch truth (resolved
-                # atomically with the claim); the runtime's AdapterRun view
-                # only names the metrics stream.
                 name, registration_id = claim.binding.registration_key
                 batch_plan.append(
                     dict(
@@ -418,8 +348,6 @@ class MultiLoraOperationBatchFn:
                     )
                 )
                 metrics[f"{runtime.run.name}/operation_samples"] = sum(len(group) for group in claim.samples)
-            # One immutable dispatch receipt for the whole selection: the
-            # controller re-validates exact slot ownership before issuing it.
             lease = await self.residency.acquire_batch(
                 [(entry["operation_id"], entry["binding"]) for entry in batch_plan]
             )
@@ -434,11 +362,6 @@ class MultiLoraOperationBatchFn:
         return RolloutFnTrainOutput(
             samples=data,
             metrics=metrics,
-            # Converted HERE, not in the manager: the generic rollout plane
-            # never recognizes tinker keys.
             conversion_metadata=batch_plan_to_metadata(batch_plan, lease),
-            # Whole client batches: zero-weight pads round the selection up to
-            # the DP grid so the multi-LoRA dynamic-GBS branch sizes the step
-            # to the batch instead of trimming it.
             postprocess=RolloutPostprocessOptions(pad_to_dp=True),
         )

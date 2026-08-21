@@ -1,11 +1,3 @@
-"""Multi-LoRA operation backend: registry, ledger, and engine-facing aborts.
-
-The Tinker protocol adapter is one client of this backend. Adapter-slot
-residency makes the current implementation Multi-LoRA-specific; a future
-full-parameter target can reuse the operation semantics without pretending
-that this concrete owns arbitrary training targets.
-"""
-
 import logging
 import math
 import re
@@ -24,13 +16,9 @@ from miles.utils.operation_contract import BatchExecutionLease
 
 logger = logging.getLogger(__name__)
 
-# v1 compatibility matrix (README table mirrors this): anything outside is a
-# typed user error at enqueue time, never a GPU-side crash.
 SUPPORTED_LOSS_FNS = ("cross_entropy", "importance_sampling", "ppo")
 _ADAM_FIELDS = ("learning_rate", "beta1", "beta2", "eps", "weight_decay", "grad_clip_norm")
 _SAMPLE_TENSOR_FIELDS = ("loss_mask", "loss_weights", "advantages", "rollout_log_probs")
-# Channels each loss reads per token; a missing one must fail at enqueue, not
-# inside the shared GPU loss dispatch.
 _LOSS_REQUIRED_CHANNELS = {
     "cross_entropy": ("loss_weights",),
     "importance_sampling": ("rollout_log_probs", "advantages"),
@@ -44,22 +32,11 @@ class MultiLoraOperationBackend:
     def __init__(self, args: Any, router_url: str) -> None:
         self.args = args
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
-        # The gap timeout is liveness, not ordering: a stalled queue's blocked
-        # operations eventually terminal-fail typed; nothing ever skips or
-        # overtakes a missing ordinal (--tinker-operation-gap-timeout).
         self.operations = OperationLedger(gap_timeout=getattr(args, "tinker_operation_gap_timeout", 600.0))
-        # Registration-keyed step/dirty authority (parameterization-neutral);
-        # the registry only mirrors its transitions into lifecycle pins.
         self.gradient_windows = GradientWindowTracker()
-        # Narrow trainer-residency facade: claims and batch dispatch see
-        # opaque bindings/receipts, never SlotPool internals.
         self.residency = FixedSlotResidency(self.registry)
         self.router_url = router_url.rstrip("/")
-        # Engine admin behind a narrow port: today straight off the router; a
-        # post-split adapter delegates to the InferenceController.
         self.inference_admin = RouterInferenceAdmin(self.router_url)
-        # Readiness (distinct from liveness): the driver flips it once the
-        # training actors exist, so probes never report ok on a dead trainer.
         self.trainer_ready = False
 
     def mark_trainer_ready(self) -> None:
@@ -132,16 +109,12 @@ class MultiLoraOperationBackend:
             await self.abort_adapter_requests(name, record.registration_id)
         slot = self.registry.free_slot(name)
         if record is not None and slot != -1:
-            # The stream stayed queryable through RETIRING/CLEANUP (the final
-            # state save reads its step); it dies with the registration.
             self.gradient_windows.close(record.tenant)
         return slot
 
     # ---------------- training-stream clocks ----------------
 
     def set_adapter_step(self, name: str, step: int) -> None:
-        """Reposition the CURRENT registration's stream (sidecar resume /
-        load_state): tracker first (authority), registry mirror second."""
         record = self.registry.find(name)
         if record is None:
             return
@@ -163,10 +136,6 @@ class MultiLoraOperationBackend:
         payload: dict | None = None,
         expected_registration_id: str | None = None,
     ) -> dict:
-        """Enqueue one client operation against the name's CURRENT
-        registration, after full boundary validation. A caller that pinned a
-        registration passes ``expected_registration_id``: a same-name successor
-        must fence the stale handle, never inherit its operations (anti-ABA)."""
         record = self.registry.find(name)
         if record is None or record.state not in (AdapterState.PENDING, AdapterState.READY):
             raise ValueError(f"Adapter '{name}' is not accepting operations (not registered or retiring)")
@@ -274,9 +243,6 @@ class MultiLoraOperationBackend:
                 raise ValueError(f"{where}: '{field_name}' must be 1-D; nested targets are not supported in v1")
 
     def _preflight_adam_params(self, adam: dict) -> None:
-        """Domain-check AdamParams at the boundary: a NaN/negative rate or an
-        out-of-range beta must never reach (and silently poison) the slot's
-        param groups — the step veto only guards non-finite GRADIENTS."""
         for field_name, value in adam.items():
             if field_name not in _ADAM_FIELDS:
                 raise ValueError(f"unknown adam_params field '{field_name}'")
@@ -296,11 +262,6 @@ class MultiLoraOperationBackend:
     # ---------------- data-operation claims ----------------
 
     def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
-        """Claim-and-bind in ONE controller call (all-or-nothing): resolve the
-        exact READY binding FIRST; only a successful lookup lets the ledger
-        turn the head CLAIMED, and the claim carries the binding. A missing
-        binding leaves the head QUEUED — no rollback branch exists
-        (codex-rollout-fullparameter-design-0810 §3.6)."""
         binding = self.residency.binding_for((name, registration_id))
         if binding is None:
             return None
@@ -311,8 +272,6 @@ class MultiLoraOperationBackend:
         return operation
 
     def acquire_batch_lease(self, bindings_by_operation: list) -> BatchExecutionLease[ResidentBinding]:
-        """Selection finished: snapshot the selected claims' bindings into one
-        immutable dispatch receipt (re-validating exact slot ownership)."""
         return self.residency.acquire_batch(
             tuple((operation_id, binding) for operation_id, binding in bindings_by_operation)
         )
@@ -324,20 +283,9 @@ class MultiLoraOperationBackend:
     # ---------------- control-operation claims ----------------
 
     EXECUTABLE_CONTROL_KINDS = ("optim_step", "save_weights_for_sampler", "save_state", "load_state")
-    # Moving state under unstepped gradients would silently drop them (no
-    # checkpoint carries grads): the client must step or deregister first.
     DIRTY_GATED_KINDS = ("save_state", "load_state")
 
     def claim_ready_control_operations(self) -> dict:
-        """Claim every registration whose next open operation is an executable
-        control kind, gated by the residency facade (exact READY binding —
-        claim-and-bind, same as the data path). The claimed views carry the
-        registry's authoritative clocks but never a slot: one
-        ``BatchExecutionLease`` for the whole control batch is the single
-        binding truth, returned alongside as
-        ``{"operations": [...], "lease": <encoded> | None}``."""
-        # The driver polls this every control phase: the heartbeat that
-        # enforces the gap timeout even when no client is polling results.
         self.operations.sweep_gap_timeouts()
         ready: list[dict] = []
         bindings: list[tuple[str, ResidentBinding]] = []
@@ -354,10 +302,6 @@ class MultiLoraOperationBackend:
             if operation is None:
                 continue
             if operation["kind"] == "optim_step":
-                # Poisoned gradient window (#2258 §5): a failed chunk means the
-                # slot holds PARTIAL gradients. The optim_step still executes —
-                # every rank must clear the window — but as a discard, marked
-                # so the trainer never steps and the operation terminal-fails.
                 blocker = self.operations.poisoned_window_blocker(name, registration_id, operation["ordinal"])
                 if blocker is not None:
                     operation["poison"] = (
@@ -382,13 +326,6 @@ class MultiLoraOperationBackend:
         return {"operations": ready, "lease": lease_to_metadata(lease)}
 
     def complete_control_operations(self, results: dict[str, dict]) -> None:
-        """Book the trainer's control-phase outcomes: an optim_step success
-        advances the step clock; a load_state success repositions the step
-        clock. Dirty state and the window delimiter follow the executor's
-        ``gradient_window_consumed`` bit, NOT mere failure: a step, a poison
-        discard, or a veto consumed the window (grads cleared on every rank),
-        while a pre-mutation refusal left partial gradients in place — its
-        dirty pin and poison evidence must survive for the next optim_step."""
         for operation_id, outcome in results.items():
             operation = self.operations.get(operation_id)
             if operation is None:
@@ -409,8 +346,6 @@ class MultiLoraOperationBackend:
                 if operation["kind"] == "optim_step":
                     self.operations.mark_window_consumed(operation_id)
                     step = self.gradient_windows.commit_step(key)
-                    # Registry hook: mirror the clock, release the dirty pin,
-                    # apply the num_step auto-retire bound.
                     self.registry.on_step_committed(operation["name"], operation["registration_id"], step)
                 elif operation["kind"] == "load_state":
                     step = int((outcome.get("result") or {}).get("step", 0))
@@ -421,11 +356,6 @@ class MultiLoraOperationBackend:
                     operation_id, outcome.get("error", "control operation failed"), outcome.get("category", "server")
                 )
                 if operation["kind"] == "optim_step" and outcome.get("gradient_window_consumed"):
-                    # Executed without committing (veto / poison discard):
-                    # every rank cleared the window's gradients. A refusal
-                    # without the consumed bit changes NOTHING here — the
-                    # partial gradients still exist, so the dirty pin stays
-                    # and the ledger keeps its poison evidence undelimited.
                     self.operations.mark_window_consumed(operation_id)
                     self.gradient_windows.clear_after_executed_optim((operation["name"], operation["registration_id"]))
                     self.registry.clear_dirty(operation["name"])
@@ -436,13 +366,6 @@ class MultiLoraOperationBackend:
         operation_ids: list[str],
         logprobs_by_op: dict[str, list] | None = None,
     ) -> None:
-        """A data selection landed: forward_backward registrations now hold
-        unstepped gradients — ``accumulated`` carries their EXACT registration
-        keys from the BatchPlan, and a key whose registration is gone (or was
-        re-registered) is skipped, never inherited by a successor. Every
-        listed operation completes with its per-datum target logprobs in the
-        operation's row order, plus backend-computed metrics in the SDK
-        combiner's name:reduction format."""
         for name, registration_id in accumulated:
             record = self.registry.find(name)
             if record is None or record.registration_id != registration_id:
@@ -461,21 +384,6 @@ class MultiLoraOperationBackend:
                 self.operations.complete(operation_id, result)
 
     def fail_tinker_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None = None) -> None:
-        """A dispatched data batch did NOT commit (abnormal TrainStepOutcome or
-        a raised train error): terminal-fail its still-CLAIMED operations typed
-        server and release the batch lease — the abnormal-outcome finalizer
-        that keeps a stuck batch from holding its operations CLAIMED forever.
-        Retry ownership is explicit: the failed operations are terminal, so a
-        client retry is a NEW operation (resubmit), never a silent re-claim.
-
-        Operations that already reached a terminal state are left untouched
-        (finalizing after a partial commit must never overwrite a landed
-        result). Nothing here marks dirty streams or delimits the gradient
-        window: a FAILED forward_backward IS the ledger's poison evidence
-        (``poisoned_window_blocker``), so the window's possibly-partial
-        gradients stay poisoned until an optim_step discards them. The lease
-        releases in ``finally`` — even a failing ledger walk must not strand
-        the receipt (a no-op under fixed residency either way)."""
         try:
             for operation_id in operation_ids:
                 operation = self.operations.get(operation_id)
@@ -488,8 +396,6 @@ class MultiLoraOperationBackend:
     # ---------------- engine-facing ----------------
 
     async def abort_adapter_requests(self, adapter_name: str, registration_id: str) -> None:
-        # Registration-scoped: a retiring tenant's abort must never match a
-        # same-name successor's in-flight requests (rid carries the registration).
         await self.inference_admin.abort_registration(rid_prefix(adapter_name, registration_id))
 
     # ---------------- frontend facade ----------------
@@ -515,10 +421,6 @@ class MultiLoraOperationBackend:
         )
 
     def operation_view(self, operation_id: str) -> dict | None:
-        """One operation's client-facing view. Result polls route here, so the
-        sweep runs on the exact path a caller stuck behind a hole is watching;
-        a still-QUEUED operation blocked by an arrival gap says so (typed
-        stall surface: which ordinal it waits on and for how long)."""
         self.operations.sweep_gap_timeouts()
         view = self.operations.get(operation_id)
         if view is not None and view["state"] == "QUEUED":
@@ -539,10 +441,6 @@ class MultiLoraOperationBackend:
     # ---------------- info ----------------
 
     def service_info(self) -> dict:
-        """Deployment facts a tinker frontend needs for get_server_capabilities
-        and weights_info: one base model per deployment, the rank ceiling,
-        slot occupancy, and the v1 loss allowlist — plus the gap-stall
-        observability surface (current stalls and the configured timeout)."""
         self.operations.sweep_gap_timeouts()
         args = self.args
         return dict(
@@ -558,20 +456,6 @@ class MultiLoraOperationBackend:
 
 
 def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict[str, float]:
-    """Recompute a forward_backward operation's loss from its own payload and
-    the returned logprobs, keyed ``name:reduction`` so the tinker SDK combiner
-    can merge chunked operations (``:sum`` adds across chunks — the same
-    chunk-additivity the gradient sum has).
-
-    ``unmasked_tokens:sum`` counts loss_mask-active positions and is NOT a
-    weighted-CE denominator: a teacher-forced SFT datum excludes its prompt
-    via ``loss_weights=0`` while the mask stays 1, so dividing by it dilutes
-    the per-token loss by the prompt length. Cross-entropy therefore also
-    reports ``loss_weight:sum`` (Σ weight·mask, chunk-additive like the loss);
-    ``loss:sum / loss_weight:sum`` is the correct weighted-mean CE — equal to
-    the completion-token mean under 0/1 prompt masking, and still right for
-    fractional weights. Callers must guard the division: weights are any
-    finite floats, so the sum can be zero or negative."""
     spec = payload.get("loss") or {}
     loss_fn = spec.get("loss_fn", "cross_entropy")
     config = spec.get("loss_fn_config") or {}
@@ -589,9 +473,6 @@ def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict
             old = sample.get("rollout_log_probs") or []
             advantages = sample.get("advantages") or []
             for lp, old_lp, advantage, m in zip(sample_logprobs, old, advantages, mask, strict=False):
-                # Clamped: a degenerate old logprob must overflow neither this
-                # recompute nor the result commit (torch.exp on the GPU merely
-                # saturates; math.exp raises OverflowError past ~709).
                 ratio = math.exp(min(lp - old_lp, 80.0))
                 surrogate = ratio * advantage
                 if loss_fn == "ppo":
@@ -601,8 +482,5 @@ def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict
                 total += -surrogate * m
     metrics = {"loss:sum": total, "unmasked_tokens:sum": weighted_tokens}
     if loss_fn == "cross_entropy":
-        # CE only: IS/PPO have no loss_weights channel, and the SDK combiner
-        # drops any metric missing from one chunk — a loss_fn is uniform
-        # across an operation's chunks, so the key is uniformly present.
         metrics["loss_weight:sum"] = loss_weight_sum
     return metrics

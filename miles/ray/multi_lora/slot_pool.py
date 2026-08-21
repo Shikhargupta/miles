@@ -1,10 +1,3 @@
-"""Trainer-slot tenancy under fixed residency: a registration binds the
-lowest free slot for its whole life (or queues when the pool is full) and
-releases it at retirement. There is no eviction and no bind-at-selection —
-tenancy changes only on the driver-sequenced register/deregister path, so no
-reservation transactions are needed. Pins mark slots whose state must not be
-moved (unstepped gradients)."""
-
 from dataclasses import dataclass, field
 
 # (adapter name, registration id): a re-registered name is a different tenant.

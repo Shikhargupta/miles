@@ -192,7 +192,9 @@ def setup_model_and_optimizer(
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif uses_multi_lora_operation_executor(args):
-        from miles.backends.megatron_utils.multi_lora.optimizer import build_multi_lora_operation_optimizer
+        from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
+            build_multi_lora_operation_optimizer,
+        )
 
         optimizer = build_multi_lora_operation_optimizer(args, config, model)
     else:
@@ -445,9 +447,6 @@ def train_one_step(
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
-    # Explicit training-operation semantics, not a LoRA property: the client owns the
-    # optimizer boundary, so a train call accumulates gradients and never
-    # steps inline (the optimizer runs when a client optim_step executes).
     explicit_optim_step = uses_explicit_training_operations(args)
 
     if explicit_optim_step:
@@ -563,8 +562,6 @@ def train_one_step(
             num_rollouts=num_rollouts,
         )
 
-    # Forward pass (tinker forward operations run the schedule forward-only:
-    # the dummy loss is never backwarded, no gradient or grad collective runs).
     forward_backward_func = get_forward_backward_func()
     losses_reduced = forward_backward_func(
         forward_step_func=forward_step,
@@ -626,8 +623,6 @@ def train_one_step(
 
     if not disable_optimizer and valid_step:
         if explicit_optim_step:
-            # Tinker data batches only accumulate gradient sums; the optimizer
-            # steps when the client's optim_step operation executes.
             grad_norm = 0.0
         else:
             # Update parameters.
@@ -637,8 +632,6 @@ def train_one_step(
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
 
-    # release grad (tinker runs retain accumulated grads across train calls;
-    # stepped slots were zeroed selectively inside step_adapter_slots)
     if not explicit_optim_step:
         _zero_grads(model, optimizer, disable_optimizer)
 

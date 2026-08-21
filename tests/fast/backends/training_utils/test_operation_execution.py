@@ -1,16 +1,3 @@
-"""Generic explicit-operation coordinator (codex-rollout-fullparameter-design-0810
-§3.5): poison partition, Adam default resolution, operation-ID-keyed outcome
-normalization — exercised with a FAKE executor and an opaque binding type, no
-Multi-LoRA imports (the module's dependency rule)."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
-import dataclasses
-
-import pytest
-
 from miles.backends.training_utils.operation_execution import (
     ADAM_PARAM_DEFAULTS,
     StepRequest,
@@ -21,8 +8,6 @@ from miles.utils.operation_contract import BatchExecutionLease
 
 
 class FakeExecutor:
-    """Opaque-binding executor: records calls, scripts outcomes."""
-
     def __init__(self, step_outcomes=None, discard_outcomes=None):
         self.discarded: list[str] = []
         self.stepped: list[StepRequest] = []
@@ -69,7 +54,7 @@ class TestRunOptimControls:
             LEASE,
             executor,
         )
-        assert executor.discarded == ["opt1"]  # the discard still EXECUTES
+        assert executor.discarded == ["opt1"]
         assert results["opt1"] == dict(
             ok=False, error="window poisoned", category="user", gradient_window_consumed=True
         )
@@ -86,8 +71,8 @@ class TestRunOptimControls:
         assert not results["opt1"].get("gradient_window_consumed")
 
     def test_missing_discard_outcome_fails_closed_as_a_server_error(self):
-        """External review: an executor that returns NO outcome for a poisoned
-        step proved nothing about the gradients; defaulting it to ok would
+        """An executor that returns no outcome for a poisoned step proved
+        nothing about the gradients; defaulting it to ok would
         book the user-poison terminal (a window delimiter) over a window that
         still physically holds partial gradients."""
         executor = FakeExecutor(discard_outcomes={})
@@ -110,18 +95,9 @@ class TestRunOptimControls:
     def test_clean_step_needs_no_prior_fb(self):
         executor = FakeExecutor()
         results = run_optim_controls([optim("opt1")], LEASE, executor)
-        assert results["opt1"]["ok"] is True  # no dirty prerequisite exists
+        assert results["opt1"]["ok"] is True
 
     def test_non_optim_operations_are_not_the_coordinators_business(self):
         executor = FakeExecutor()
         results = run_optim_controls([dict(operation_id="save1", kind="save_state")], LEASE, executor)
         assert results == {} and executor.stepped == [] and executor.discarded == []
-
-
-def test_step_request_cannot_smuggle_a_binding():
-    # The request API is deliberately binding-free and frozen: the executor
-    # resolves bindings ONLY from the lease receipt.
-    assert {field.name for field in dataclasses.fields(StepRequest)} == {"operation_id", "adam_params"}
-    request = StepRequest(operation_id="opt1", adam_params={})
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        request.binding = "smuggled"

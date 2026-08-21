@@ -1,12 +1,3 @@
-"""Trainer-side verbs for the Multi-LoRA operation backend.
-
-Every function here runs on ALL training ranks with identical inputs (the
-driver broadcasts operation lists and the controller snapshot), in a fixed
-sorted order, so per-slot collectives never diverge. Slots are fixed-residency:
-an adapter binds at registration and stays until retirement — there is no
-eviction and no bind-at-selection.
-"""
-
 import logging
 import re
 from dataclasses import replace as dataclass_replace
@@ -16,9 +7,13 @@ import ray
 import torch
 import torch.distributed as dist
 
-from miles.backends.megatron_utils.multi_lora.checkpoint import load_slot_state, named_state_dir, save_slot_state
-from miles.backends.megatron_utils.multi_lora.executor import MultiLoraParameterExecutor
-from miles.backends.megatron_utils.multi_lora.optimizer import (
+from miles.backends.megatron_utils.api_backends.multi_lora.checkpoint import (
+    load_slot_state,
+    named_state_dir,
+    save_slot_state,
+)
+from miles.backends.megatron_utils.api_backends.multi_lora.executor import MultiLoraParameterExecutor
+from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
     reload_adapter_slot_model_params,
     zero_adapter_slot_grads,
 )
@@ -33,8 +28,6 @@ _STATE_TAG = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def zero_optimizer_state_for_adapter(optimizer, model, slot: int) -> None:
-    """Reset the retired slot's Adam moments and step counters so the next
-    tenant restarts bias correction from zero."""
     from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear, _iter_multi_lora_modules
 
     target_main_params = set()
@@ -72,21 +65,12 @@ def zero_optimizer_state_for_adapter(optimizer, model, slot: int) -> None:
 
 
 def _install_adapter(adapter, args, model, optimizer) -> int | None:
-    """Install one adapter on this rank's local model shard. Resumes from the
-    slot sidecar state (weights + optimizer + step) when a committed one
-    matches this deployment's shape; otherwise fresh init at step 0. Returns
-    the restored step, or None for a fresh init (a restored step CAN be 0)."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
 
     log_prefix = f"[tinker] ({adapter.name})"
     try:
         restored_step = load_slot_state(args, model, optimizer, adapter)
     except ValueError as e:
-        # A sidecar that fails a restore fence (e.g. signed by a different
-        # slot's per-rank ownership) is unloadable HERE, but not an error: the
-        # unanimous fence left every rank unmutated, and registration promises
-        # create-or-resume — so fall through to a fresh init, like the other
-        # shape fences. The sidecar stays on disk for a matching re-bind.
         logger.warning(f"{log_prefix} sidecar state not restorable into slot {adapter.slot} ({e}); fresh init")
         restored_step = None
     if restored_step is not None:
@@ -98,8 +82,6 @@ def _install_adapter(adapter, args, model, optimizer) -> int | None:
 
 
 def load_adapters(args, model, optimizer, adapters) -> int:
-    """Load adapters into their registration-bound Megatron slots; resumed
-    step counts land on the controller before mark_ready opens the gate."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     if dist.is_initialized():
@@ -111,10 +93,6 @@ def load_adapters(args, model, optimizer, adapters) -> int:
         installed_steps[adapter.name] = _install_adapter(adapter, args, model, optimizer)
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
-    # Slot-scoped (a global reload would quantize every other resident slot's
-    # fp32 master through bf16) and fresh inits only: a resumed slot's masters
-    # came from the checkpoint — rebuilding them from the bf16 model weights
-    # would throw the saved fp32 precision away.
     for adapter in adapters:
         if installed_steps[adapter.name] is None:
             reload_adapter_slot_model_params(optimizer, adapter.slot)
@@ -128,8 +106,6 @@ def load_adapters(args, model, optimizer, adapters) -> int:
 
 
 def cleanup_adapters(args, model, optimizer, adapters) -> int:
-    """Retirement: save the final slot state, clear the Megatron slot and its
-    optimizer/gradient residue, then free_slot on the controller."""
     from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
 
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
@@ -154,11 +130,6 @@ def cleanup_adapters(args, model, optimizer, adapters) -> int:
 
 
 def reconcile_adapters(args, model, optimizer, loaded_adapters: dict, pending_push: set, weights_backuper) -> None:
-    """Converge trainer residency to the controller's registry: retire
-    deregistered adapters (dropping their untrained tail), bootstrap queued
-    registrations into freed slots, and load whatever is bound but absent.
-    Loading does NOT stage a weight push — tinker weights reach engines only
-    through an explicit save_weights_for_sampler publish."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     broadcast_buffer = [None]
@@ -168,8 +139,6 @@ def reconcile_adapters(args, model, optimizer, loaded_adapters: dict, pending_pu
         # Queued registrations take freed slots so this reconcile loads them.
         ray.get(controller.bootstrap_pending.remote())
         snapshot = ray.get(controller.snapshot.remote())
-        # CLEANUP is a name list; the final-state save needs each retiree's
-        # authoritative step clock, so ship it with the snapshot.
         cleanup_steps = {name: ray.get(controller.adapter_step.remote(name)) for name in snapshot["cleanup"]}
         broadcast_buffer[0] = (snapshot, cleanup_steps)
     if dist.is_initialized():
@@ -221,17 +190,6 @@ def reconcile_adapters(args, model, optimizer, loaded_adapters: dict, pending_pu
 def execute_controls(
     args, model, optimizer, loaded_adapters, pending_push, weights_backuper, operations, lease_metadata
 ) -> dict:
-    """Run data-less tinker operations on this rank; every rank receives the
-    identical (operations, lease), and the fixed per-kind, slot-sorted order
-    keeps the collective sequence identical.
-
-    The optimizer boundary goes through the generic coordinator
-    (run_optim_controls: poison partition, Adam defaults, outcome
-    normalization) driving the MultiLoraParameterExecutor, which resolves
-    every binding from the batch lease and validates it against this rank's
-    loaded adapters before mutating anything. The storage/publish verbs
-    (save_weights_for_sampler, save_state, load_state) stay target-specific
-    here, but resolve their slot through the same lease."""
     lease = lease_from_metadata(lease_metadata)
     executor = MultiLoraParameterExecutor(model=model, optimizer=optimizer, loaded_adapters=loaded_adapters)
     results = run_optim_controls(operations, lease, executor)
@@ -260,8 +218,6 @@ def execute_controls(
 
 def _execute_state_op(op: dict, lease, args, model, optimizer, loaded_adapters, pending_push) -> dict:
     name, kind = op["name"], op["kind"]
-    # Binding from the lease only; validated against this rank's loaded state
-    # (exact name, registration, slot) before any storage/publish mutation.
     binding = lease.binding_of(op["operation_id"])
     if binding is None:
         return dict(
@@ -269,9 +225,6 @@ def _execute_state_op(op: dict, lease, args, model, optimizer, loaded_adapters, 
         )
     bound_name, bound_registration_id = binding.registration_key
     if bound_name != name:
-        # The complete (name, registration, slot) tuple must match: an
-        # operation whose lease binding names ANOTHER tenant must never
-        # mutate this one's storage/publish state.
         return dict(
             ok=False,
             error=f"operation '{op['operation_id']}' names adapter '{name}' but its lease binding "
@@ -287,16 +240,12 @@ def _execute_state_op(op: dict, lease, args, model, optimizer, loaded_adapters, 
     run = dataclass_replace(run, step=op.get("step", run.step), version=op.get("serving_version", run.version))
 
     if kind == "save_weights_for_sampler":
-        # Stage the push; the driver's update_weights lands it and the
-        # operation completes with the new serving version afterwards.
         pending_push.add(name)
         return dict(ok=True, deferred="publish")
 
     payload = op.get("payload") or {}
     if kind == "save_state":
         tag = str(payload.get("tag") or f"step_{run.step}")
-        # '.'/'..' pass the charset but would escape states/ (".." is the
-        # adapter save root itself) — containment, not just charset.
         if not _STATE_TAG.fullmatch(tag) or tag in (".", ".."):
             return dict(ok=False, error=f"invalid state tag '{tag}'", category="user")
         base = named_state_dir(run, tag)
@@ -314,27 +263,14 @@ def _execute_state_op(op: dict, lease, args, model, optimizer, loaded_adapters, 
     try:
         restored_step = load_slot_state(args, model, optimizer, run, base=Path(path))
     except ValueError as e:
-        # Restore fences (shape/torn-save/ownership-signature) raise on every
-        # rank in unison BEFORE anything mutates: a refused restore is a clean
-        # user failure, never a trainer crash.
         return dict(ok=False, error=str(e), category="user")
     if restored_step is None:
         return dict(ok=False, error=f"no loadable state at '{path}' for adapter '{name}'", category="user")
-    # Serving invalidation: engines must never keep sampling pre-restore
-    # weights, so the restored adapter re-publishes on the next push — and the
-    # operation completes only after that push lands (the same publish barrier
-    # save_weights_for_sampler holds), so a client that saw SUCCEEDED can
-    # never sample pre-restore weights.
     pending_push.add(name)
     return dict(ok=True, deferred="publish", result=dict(step=restored_step, path=str(path)))
 
 
 def validate_batch_lease(rollout_data, loaded_adapters: dict) -> None:
-    """Physical dispatch gate: before ANY gradient mutation, every binding in
-    the batch's execution lease must match a locally loaded adapter with the
-    exact registration and slot. Claim-time READY gating plus the sequential
-    driver make a mismatch unreachable today — if one ever appears, the batch
-    must fail loudly rather than mutate another tenant's state."""
     lease = rollout_data.get("batch_execution_lease")
     if lease is None:
         raise RuntimeError("tinker batch carries no execution lease")
@@ -348,14 +284,6 @@ def validate_batch_lease(rollout_data, loaded_adapters: dict) -> None:
 
 
 def commit_batch(rollout_data, pending_push: set) -> None:
-    """A tinker train/forward call landed: mark the accumulating registration
-    streams dirty and complete the batch's operations with their gathered
-    logprobs. The commit carries EXACT registration keys from the BatchPlan
-    (never a trainer-reported name list), so a stale batch can never dirty a
-    same-name successor. Data batches step nothing and publish nothing —
-    pending_push is untouched. The batch lease releases at this completion
-    boundary (finally: even a failed commit must not strand the receipt —
-    a no-op under fixed residency, so nothing can leak either way)."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     logprobs_by_op = _gather_logprobs(rollout_data)
@@ -376,9 +304,6 @@ def commit_batch(rollout_data, pending_push: set) -> None:
 
 
 def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:
-    """Merge every rank's (lane, row) logprob shards and group them per
-    operation in row order. TP/CP duplicates carry identical values, so the
-    merge is an idempotent dict union; rows live on exactly one DP rank."""
     collector = rollout_data.get("tinker_logprob_collector") or {}
     if dist.is_initialized():
         shards = [None] * dist.get_world_size(get_gloo_group())
@@ -401,16 +326,11 @@ def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:
 
 
 def select_adapters_to_push(loaded_adapters: dict, pending_push: set, has_new_engines: bool) -> tuple[dict, list]:
-    """Pick the staged adapters to push (all loaded adapters when engines are
-    new). Returns (adapters to push keyed by name, names to version-bump —
-    only explicit publishes bump serving)."""
     pending = pending_push & set(loaded_adapters)
     push_names = set(loaded_adapters) if has_new_engines else pending
     return {name: loaded_adapters[name] for name in sorted(push_names)}, sorted(pending)
 
 
 def commit_weight_push(version_update_names: list, is_main_rank: bool) -> None:
-    """A weight push landed: bump the published adapters' serving versions on
-    the controller (KV-cache identity rolls forward with the version)."""
     if version_update_names and is_main_rank:
         ray.get(get_multi_lora_controller().record_weight_update.remote(version_update_names))

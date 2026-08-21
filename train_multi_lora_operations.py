@@ -12,11 +12,9 @@ back to the control phase, not an error.
 
 import asyncio
 import logging
-from pathlib import Path
 
 import ray
 
-from miles.ray.multi_lora.config import parse_adapter_run_yaml
 from miles.ray.multi_lora.controller import create_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_training_models
 from miles.ray.rollout.components import create_rollout_components
@@ -38,8 +36,8 @@ def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
     return isinstance(task_error.as_instanceof_cause(), EmptyBatchTimeoutError)
 
 
-class ActorGroupWeightPublisher:
-    """Physical publish-barrier seam (codex-rollout-fullparameter-design-0810
+class ActorGroupWeightUpdater:
+    """Weight-update seam for the physical publish barrier (codex-rollout-fullparameter-design-0810
     §4.7): one parameterless call that lands whatever the training actors
     staged. It carries no tinker operation IDs, no lease, and no second
     binding list — the actor keeps sole authority over pending-push
@@ -49,7 +47,7 @@ class ActorGroupWeightPublisher:
     def __init__(self, actor_model) -> None:
         self._actor_model = actor_model
 
-    async def publish_staged_weights(self) -> None:
+    async def update_weights(self) -> None:
         await self._actor_model.update_weights()
 
 
@@ -94,7 +92,7 @@ async def train_data_batch(actor_model, controller, rollout_id: int, rollout_dat
         )
 
 
-async def run_control_phase(actor_model, controller, weight_publisher) -> None:
+async def run_control_phase(actor_model, controller, weight_updater) -> None:
     """Claim → execute → complete, with the publish barrier in the middle.
 
     The claim carries one BatchExecutionLease for the whole control batch
@@ -122,7 +120,7 @@ async def run_control_phase(actor_model, controller, weight_publisher) -> None:
 
         # Push staged weights (publishes and load_state re-publishes); a no-op
         # when nothing is staged. Serving versions bump as the push commits.
-        await weight_publisher.publish_staged_weights()
+        await weight_updater.update_weights()
 
         if deferred:
             # The barrier held: these weights are now live, so the operations may
@@ -151,47 +149,39 @@ async def main(args):
     pgs = create_placement_groups(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
-    # Role-separated views over the (currently combined) rollout plane: the
-    # inference controller owns the router/engines, the rollout executor runs
-    # operation batches. PR #1842 swaps only the factory's construction.
+    # Role-separated bundle over the (currently combined) rollout plane, not a
+    # single rollout engine: inference_controller owns the router/engines; the
+    # rollout_executor runs operation batches. PR #1842 swaps construction only.
     rollout_components = create_rollout_components(args, pgs["rollout"])
     inference_controller = rollout_components.inference_controller
     rollout_executor = rollout_components.rollout_executor
 
     inference_endpoint = await inference_controller.get_inference_endpoint()
     args.sglang_router_ip, args.sglang_router_port = inference_endpoint.host, inference_endpoint.port
-    controller = create_multi_lora_controller(args, inference_endpoint.base_url)
-    await controller.start.remote()
-    host = await controller.http_host.remote()
-    api_port = await controller.api_port.remote()
+    multi_lora_controller = create_multi_lora_controller(args, inference_endpoint.base_url)
+    await multi_lora_controller.start.remote()
+    host = await multi_lora_controller.http_host.remote()
+    api_port = await multi_lora_controller.api_port.remote()
     logger.info(f"Tinker control API listening on http://{host}:{api_port} (head node)")
 
-    # Engine/weight-update plumbing wires the factory's opaque weight-update
-    # owner into the training actors; the driver never reaches through the
-    # controller role for it.
+    # As in train_async.py, actor_model is the actor RayTrainGroup. The factory's
+    # opaque weight-update owner is wired into its training actors; the driver
+    # never reaches through the inference-controller role for it.
     actor_model, _ = await create_training_models(args, pgs, rollout_components.weight_update_owner)
-    weight_publisher = ActorGroupWeightPublisher(actor_model)
-
-    # CLI-registered adapters; loaded and marked READY by the first reconcile.
-    for name, path in args.multi_lora_adapters:
-        config = parse_adapter_run_yaml(Path(path))
-        await controller.register_adapter.remote(name, config)
+    weight_updater = ActorGroupWeightUpdater(actor_model)
 
     # The trainer exists and the driver loop is about to run: flip readiness
     # so /api/v1/healthz stops answering 503 (liveness /health was up earlier,
     # but a probe must never see "ok" while trainer init can still fail).
-    await controller.set_trainer_ready.remote()
+    await multi_lora_controller.set_trainer_ready.remote()
 
     rollout_id = 0
     while True:
-        # The controller handle is the actor's only owning
+        # The Multi-LoRA controller handle is the actor's only owning
         # reference (it is not detached): rebinding it — e.g. to the weak
         # ray.get_actor handle — would let Ray reap the controller mid-run.
-        snapshot = await controller.snapshot.remote()
+        snapshot = await multi_lora_controller.snapshot.remote()
         if not (snapshot["pending"] or snapshot["ready"] or snapshot["retiring"] or snapshot["cleanup"]):
-            if not args.multi_lora_service_mode:
-                logger.info("No adapters; exiting.")
-                break
             logger.info(f"No adapters; sleeping for {args.multi_lora_idle_poll_s}s...")
             await asyncio.sleep(args.multi_lora_idle_poll_s)
             continue
@@ -200,9 +190,9 @@ async def main(args):
         # load bound registrations and open their READY gates.
         await actor_model.reconcile_tinker_adapters()
 
-        await run_control_phase(actor_model, controller, weight_publisher)
+        await run_control_phase(actor_model, multi_lora_controller, weight_updater)
 
-        post_control = await controller.snapshot.remote()
+        post_control = await multi_lora_controller.snapshot.remote()
         if not post_control["ready"]:
             continue
 
@@ -218,12 +208,9 @@ async def main(args):
                 # queued optim/save/load operations never wait behind it.
                 continue
             raise
-        await train_data_batch(actor_model, controller, rollout_id, rollout_data)
+        await train_data_batch(actor_model, multi_lora_controller, rollout_id, rollout_data)
         remove_rollout_data_refs(args, rollout_data)
         rollout_id += 1
-
-    await rollout_components.dispose()
-    await controller.stop.remote()
 
 
 if __name__ == "__main__":

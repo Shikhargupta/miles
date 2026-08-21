@@ -170,8 +170,6 @@ def loss_function(
         denominators=batch.get("rollout_mask_sums", None),
     )
 
-    # Tinker batches dispatch per operation lane from the BatchPlan's loss
-    # specs; everything else keeps the process-global args.loss_type.
     if batch.get("tinker_loss_by_lane"):
         func = tinker_loss_function
     else:

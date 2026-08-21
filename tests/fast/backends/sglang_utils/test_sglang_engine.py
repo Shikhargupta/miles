@@ -33,18 +33,7 @@ def test_flush_cache_sleeps_between_pending_request_retries(monkeypatch):
     )
 
 
-@pytest.mark.parametrize(
-    "multi_lora, expected_payload",
-    [
-        # A version bump never aborts in-flight requests (#2589 made the
-        # multi-LoRA tenant-isolation behavior unconditional): a multi-LoRA
-        # tenant's publish must not abort another tenant's sampling, and
-        # single-model runs now share the metadata-only bump.
-        (True, {"new_version": "3", "abort_all_requests": False}),
-        (False, {"new_version": "3", "abort_all_requests": False}),
-    ],
-)
-def test_update_weight_version_abort_policy(monkeypatch, multi_lora, expected_payload):
+def test_update_weight_version_does_not_abort_in_flight_requests(monkeypatch):
     pytest.importorskip("sglang")
     from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 
@@ -52,8 +41,6 @@ def test_update_weight_version_abort_policy(monkeypatch, multi_lora, expected_pa
     engine.node_rank = 0
     engine.server_host = "fake-host"
     engine.server_port = 1234
-    engine.args = SimpleNamespace(multi_lora=multi_lora)
-
     posts = []
 
     def fake_post(url, json=None):
@@ -64,4 +51,6 @@ def test_update_weight_version_abort_policy(monkeypatch, multi_lora, expected_pa
 
     engine.update_weight_version("3")
 
-    assert posts == [("http://fake-host:1234/update_weight_version", expected_payload)]
+    assert posts == [
+        ("http://fake-host:1234/update_weight_version", {"new_version": "3", "abort_all_requests": False})
+    ]

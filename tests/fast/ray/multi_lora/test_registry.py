@@ -1,11 +1,3 @@
-"""Tinker run lifecycle under fixed residency: PENDING -> READY -> RETIRING
--> CLEANUP -> COMPLETED; readiness decoupled from serving; dirty-gradient
-pins; the client-set num_step bound."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import pytest
 
 from miles.ray.multi_lora.config import AdapterRunConfig
@@ -109,9 +101,7 @@ class TestLifecycle:
 
 
 class TestClocksAndPins:
-    """The registry's role after the tracker split: MIRROR hooks. The
-    gradient-window tracker owns step/dirty; on_step_committed mirrors the
-    committed clock, releases the pin, and applies num_step auto-retire."""
+    """The registry mirrors committed clocks, releases pins, and applies num_step retirement."""
 
     def test_committed_step_mirrors_clock_and_releases_the_pin(self):
         registry = AdapterRegistry(1)
@@ -119,7 +109,7 @@ class TestClocksAndPins:
         registry.mark_accumulated(["A"])
         assert registry.is_dirty("A")
         registry.on_step_committed("A", record.registration_id, 1)
-        assert not registry.is_dirty("A")  # step consumed the gradients
+        assert not registry.is_dirty("A")
         assert record.step == 1
 
     def test_hook_ignores_a_stale_registration(self):
@@ -153,9 +143,9 @@ class TestClocksAndPins:
         registry.register("A", config(num_step=2))
         registry.mark_ready(["A"])
         rid = registry.find("A").registration_id
-        registry.set_step("A", 10)  # load_state resume
+        registry.set_step("A", 10)
         registry.on_step_committed("A", rid, 11)
-        assert registry.records["A"].state is AdapterState.READY  # 11-10 < 2
+        assert registry.records["A"].state is AdapterState.READY
         registry.on_step_committed("A", rid, 12)
         assert registry.records["A"].state is AdapterState.RETIRING
 

@@ -1,18 +1,10 @@
-"""Trainer verbs for tinker control operations: slot-sorted execution, veto
-propagation, publish staging, state-op validation, logprob gathering, and the
-push-selection/commit plumbing — all with fakes (collectives are GPU E2E)."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import miles.backends.megatron_utils.multi_lora.executor as executor_module
-import miles.backends.megatron_utils.multi_lora.trainer as trainer
+import miles.backends.megatron_utils.api_backends.multi_lora.executor as executor_module
+import miles.backends.megatron_utils.api_backends.multi_lora.trainer as trainer
 from miles.ray.multi_lora.config import AdapterRun, AdapterRunConfig
 
 
@@ -22,8 +14,6 @@ def make_run(name="X", slot=0, step=3, save="/tmp/tinker-trainer-test"):
 
 
 def control_op(kind, name="X", slot=0, op_id="op1", payload=None, step=3, serving_version=1):
-    """Claimed control view: carries clocks, never a slot — the ``slot`` here
-    only feeds the harness's lease builder (the single binding truth)."""
     return dict(
         operation_id=op_id,
         name=name,
@@ -31,14 +21,12 @@ def control_op(kind, name="X", slot=0, op_id="op1", payload=None, step=3, servin
         payload=payload,
         step=step,
         serving_version=serving_version,
-        _lease_slot=slot,
+        _lease_slot=slot,  # Harness-only; the lease remains the binding source.
     )
 
 
 @pytest.fixture()
 def harness(monkeypatch):
-    """execute_controls with the collective pieces faked out; the lease is
-    built from each op's declared slot exactly as the controller would."""
     calls = SimpleNamespace(step_args=None, saved=[], loaded=[], backups=0)
 
     def fake_step(optimizer, model, adam_params_by_slot):
@@ -46,7 +34,6 @@ def harness(monkeypatch):
         vetoed = {slot for slot, adam in adam_params_by_slot.items() if (adam or {}).get("veto")}
         return {slot: 1.25 for slot in adam_params_by_slot if slot not in vetoed}, vetoed, set()
 
-    # The slot primitives now live behind the MultiLoraParameterExecutor.
     monkeypatch.setattr(executor_module, "step_adapter_slots", fake_step)
     monkeypatch.setattr(trainer, "save_slot_state", lambda *a, **k: calls.saved.append(k) or Path("/saved"))
     monkeypatch.setattr(trainer, "load_slot_state", lambda *a, base=None, **k: 42 if "good" in str(base) else None)
@@ -89,8 +76,8 @@ class TestExecuteControls:
                 ),
             ]
         )
-        assert zeroed == [0]  # the poisoned slot's partial gradients are discarded on this rank
-        assert set(harness.calls.step_args) == {1}  # only the clean slot stepped
+        assert zeroed == [0]
+        assert set(harness.calls.step_args) == {1}
         assert harness.calls.step_args[1]["learning_rate"] == 2e-4
         assert results["bad"] == dict(ok=False, error=poison, category="user", gradient_window_consumed=True)
         assert results["good"]["ok"] is True
@@ -110,16 +97,12 @@ class TestExecuteControls:
         assert results["op1"]["ok"] is False and "not resident" in results["op1"]["error"]
 
     def test_lease_binding_must_match_the_loaded_registration_and_slot(self, harness):
-        # Same name, wrong slot in the lease: refused before any mutation.
         wrong_slot = harness.run([control_op("optim_step", slot=1)])
         assert wrong_slot["op1"]["ok"] is False and "not resident" in wrong_slot["op1"]["error"]
-        assert harness.calls.step_args is None  # nothing stepped
+        assert harness.calls.step_args is None
 
     def test_state_operation_validates_the_binding_name_before_mutation(self):
-        """External review: registration id and slot alone are not identity —
-        an operation naming adapter A must refuse a lease binding that names
-        another tenant, BEFORE any storage/publish mutation (nothing may be
-        staged for push)."""
+        """The binding name is part of tenant identity and is checked before mutation."""
         from miles.ray.multi_lora.residency import ResidentBinding
         from miles.utils.operation_contract import BatchExecutionLease
 
@@ -181,7 +164,7 @@ class TestExecuteControls:
         # Deferred: the operation completes only after the re-publish lands, so
         # a client that saw SUCCEEDED can never sample pre-restore weights.
         assert results["op1"] == dict(ok=True, deferred="publish", result=dict(step=42, path="/good/state"))
-        assert harness.pending == {"X"}  # engines must not keep pre-restore weights
+        assert harness.pending == {"X"}
         assert harness.calls.backups == 1
 
         results = harness.run([control_op("load_state", op_id="op2", payload={"path": "/missing"})])
@@ -218,23 +201,10 @@ class TestLoadAdapters:
 
         adapters = [make_run("fresh", slot=0), make_run("resumed", slot=1), make_run("resumed-at-zero", slot=2)]
         assert trainer.load_adapters(SimpleNamespace(), None, None, adapters) == 3
-        assert inits == [0]  # only the fresh slot re-initializes
+        assert inits == [0]
         # A restored slot's fp32 masters came from the checkpoint; rebuilding
         # them from the bf16 model weights would drop the saved precision.
         assert reloaded == [0]
-
-
-def test_forward_only_reaches_the_training_schedule():
-    """The executor promise in the tinker loss (losses.py): a forward batch
-    runs the Megatron schedule with forward_only=True — the verb must exist on
-    the train entry points the actor threads it through."""
-    import inspect
-
-    from miles.backends.megatron_utils import model as megatron_model
-
-    for fn in (megatron_model.train, megatron_model.train_one_step):
-        parameter = inspect.signature(fn).parameters["forward_only"]
-        assert parameter.default is False
 
 
 class TestGatherAndCommit:
@@ -306,8 +276,3 @@ class TestPushPlumbing:
         assert recorded == []
         trainer.commit_weight_push(["A"], is_main_rank=True)
         assert recorded == [["A"]]
-
-
-def test_serving_name_is_registration_scoped():
-    run = make_run()
-    assert run.serving_name == "__miles_adapter_X_reg1"

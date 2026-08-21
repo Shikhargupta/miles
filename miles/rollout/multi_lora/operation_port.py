@@ -1,13 +1,3 @@
-"""Operation-queue and residency transports for Multi-LoRA operation batches
-(codex-rollout-fullparameter-design-0810 §4.5).
-
-The adapter's scheduling logic (RR, coalesce, kind lock, whole-batch
-selection) talks to these narrow ports; ONLY the Ray concretes below know
-``get_multi_lora_controller()``, ``.remote()`` and ``ray.get`` — a future
-RolloutExecutor injects its own transports and the adapter's policy code
-never changes, and unit tests drive the scheduler with fakes instead of a
-Ray cluster."""
-
 import asyncio
 from typing import Protocol
 

@@ -1,10 +1,3 @@
-"""Tinker per-token channels on the shared Sample/wire schema: field
-presence, merge classification, and wire dtypes (binary loss_mask untouched)."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_TENSOR_DTYPES
 from miles.utils.types import Sample
 

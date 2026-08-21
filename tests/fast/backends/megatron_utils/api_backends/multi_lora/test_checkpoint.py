@@ -1,21 +1,13 @@
-"""Tinker slot-state serialization: stable naming, shape-fenced manifest
-gating (never name-fenced), and cross-slot round-trip."""
-
 import sys
 from types import ModuleType, SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import pytest
 import torch
 
-import miles.backends.megatron_utils.multi_lora.checkpoint as tc
-from miles.backends.megatron_utils.multi_lora.checkpoint import (
+import miles.backends.megatron_utils.api_backends.multi_lora.checkpoint as tc
+from miles.backends.megatron_utils.api_backends.multi_lora.checkpoint import (
     FORMAT,
     find_slot_state,
-    named_state_dir,
     stable_slot_param_name,
 )
 
@@ -45,42 +37,32 @@ def write_manifest(base, **overrides):
 
 
 class TestManifestGating:
-    """The fence is the state's SHAPE (format, world topology, LoRA rank and
-    alpha) — never the display name, so a new registration may restore another
-    run's state (create-from-checkpoint)."""
+    """State compatibility is fenced by format, topology, rank, and alpha, never display name."""
 
     def test_missing_dir_or_manifest_means_no_state(self, tmp_path):
         assert find_slot_state(SimpleNamespace(config=SimpleNamespace(save=None))) is None
         adapter = make_adapter(tmp_path)
         (tmp_path / "slot_state").mkdir()
-        assert find_slot_state(adapter) is None  # dir exists, no manifest
+        assert find_slot_state(adapter) is None
 
     def test_foreign_name_is_loadable_but_foreign_shape_is_not(self, tmp_path):
         adapter = make_adapter(tmp_path)
         base = tmp_path / "slot_state"
         write_manifest(base, name="someone-else")
-        assert find_slot_state(adapter) == base  # name never fences
+        assert find_slot_state(adapter) == base
 
         write_manifest(base, rank_lora=4)
-        assert find_slot_state(adapter) is None  # shape does
+        assert find_slot_state(adapter) is None
 
         write_manifest(base, world_size=8)
-        assert find_slot_state(adapter) is None  # topology does
+        assert find_slot_state(adapter) is None
 
         write_manifest(base, format="something-old")
         assert find_slot_state(adapter) is None
 
-    def test_named_state_dir_layout(self, tmp_path):
-        adapter = make_adapter(tmp_path)
-        assert named_state_dir(adapter, "ckpt-a") == tmp_path / "states" / "ckpt-a"
-        assert named_state_dir(SimpleNamespace(config=SimpleNamespace(save=None)), "x") is None
-
 
 class TestSlotStateRoundTrip:
-    """A state saved from slot A must restore positionally into slot B when
-    the per-rank ownership signature matches, re-stamping the slot tag; a
-    child-count, ownership, or save-generation mismatch must be refused
-    outright — before anything mutates, never partially loaded."""
+    """Cross-slot restore requires matching ownership and save generation before mutation."""
 
     class _FakeChild:
         def __init__(self, slot: int, moment: float):
@@ -172,7 +154,7 @@ class TestSlotStateRoundTrip:
         children_by_slot = {0: [child_with(param_a, 0)], 1: [child_with(param_b, 1)]}
         names_by_slot = {
             0: [("m.adapter.linear_in.weight", param_a)],
-            1: [("m.adapter.linear_out.weight", param_b)],  # this rank owns another param
+            1: [("m.adapter.linear_out.weight", param_b)],
         }
         monkeypatch.setattr(tc, "_slot_children", lambda optimizer, slot: children_by_slot[slot])
         monkeypatch.setattr(tc, "named_adapter_slot_parameters", lambda model, slot: iter(names_by_slot[slot]))

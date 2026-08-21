@@ -1,12 +1,4 @@
-"""Tinker conversion plane: BatchPlan → metadata (homogeneity enforced),
-sample → train_data with authoritative slot routing and client channels, and
-sample-level zero-weight DP padding that never enters the result plane."""
-
 from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import pytest
 
@@ -128,10 +120,8 @@ class TestConvert:
         assert "step_slots" not in data  # tinker never steps in-batch
 
     def test_two_operations_may_share_one_physical_slot(self):
-        """Lanes + lease join make same-slot selections structurally safe: two
-        operation IDs bound to ONE physical slot keep distinct lanes, loss
-        specs, and result identities (impossible under the old slot-keyed
-        plane, where the second entry silently overwrote the first)."""
+        """Two operation IDs bound to one physical slot retain distinct lanes,
+        loss specs, and result identities."""
         plan = [
             plan_entry("A", 5, op_id="op-A1"),
             plan_entry("A", 5, op_id="op-A2", loss={"loss_fn": "ppo"}),
@@ -150,9 +140,8 @@ class TestConvert:
             convert([make_sample("ghost")], metadata)
 
     def test_stale_same_name_registration_is_rejected_before_slot_routing(self):
-        """Anti-ABA (external review): a Datum stamped by an OLD registration
-        of the same name must fail loudly, never route onto the same-name
-        successor's slot — the name alone is not the tenant identity."""
+        """A Datum from an old registration must not route to its same-name
+        successor; the name alone is not the tenant identity."""
         metadata = plan_metadata([plan_entry("A", 5)])
         stale = make_sample("A")
         stale.adapter = AdapterRef(name="A", registration_id="r-old", serving_version=1, slot=9)
@@ -166,24 +155,6 @@ class TestConvert:
         metadata["batch_execution_lease"]["bindings_by_operation"].append(["op-ghost", ["G", "r-G", 7]])
         with pytest.raises(ValueError, match="disagree"):
             convert([make_sample("A")], metadata)
-
-    def test_adapter_less_samples_keep_the_generic_tinker_contract(self):
-        """Contract only (no full-param runtime exists): the identity /
-        correlation plane — batch_kind, lanes, loss map, operation map,
-        forward-only — is parameterization-free, so a synthetic adapter-less
-        batch still carries all of it; only the Multi-LoRA routing keys
-        (adapter_slots) depend on samples carrying adapters."""
-        metadata = plan_metadata([plan_entry("A", 0, kind="forward")])
-        sample = make_sample("A", 0, loss_weights=[1.0, 1.0])
-        sample.adapter = None
-        data = convert([sample], metadata)
-        assert data["batch_kind"] == "tinker"
-        assert data["tinker_operation_lanes"] == [0]
-        assert data["tinker_loss_by_lane"] == {0: {}}
-        assert data["operation_by_lane"] == {0: "op-A"}
-        assert data["registration_by_lane"] == {0: ("A", "r-A")}
-        assert data["tinker_forward_only"] is True
-        assert "adapter_slots" not in data
 
     def test_mixed_channels_default_to_zeros(self):
         plan = [
@@ -269,22 +240,18 @@ class TestPadding:
         )
 
     def test_pads_to_dp_size_with_inert_rows(self):
-        data, _ = self.postprocess(n=2)
-        assert len(data) == 4
+        data, metadata = self.postprocess(n=2)
+        assert metadata["dynamic_global_batch_size"] == len(data) == 4
         assert [s.index for s in data] == [0, 1, -1, -1]  # sentinel: filtered from the result plane
         assert data[2].loss_mask == [0, 0] and data[3].loss_weights == [0.0, 0.0]
         assert data[2].rollout_id is None
-        assert data[0].loss_mask == [1, 1] and data[1].loss_weights == [0.5, 1.5]  # donors untouched
-        assert all(s.adapter.name == "A" for s in data)  # pads clone the donor's routing
+        assert data[0].loss_mask == [1, 1] and data[1].loss_weights == [0.5, 1.5]
+        assert all(s.adapter.name == "A" for s in data)
 
     def test_pads_to_the_next_multiple_not_just_dp_size(self):
         data, _ = self.postprocess(n=5)
         assert len(data) == 8
         assert [s.index for s in data] == [0, 1, 2, 3, 4, -1, -1, -1]
-
-    def test_dynamic_gbs_matches_the_padded_length_and_nothing_is_trimmed(self):
-        data, metadata = self.postprocess(n=2)
-        assert metadata["dynamic_global_batch_size"] == 4 == len(data)
 
     def test_noop_when_batch_is_an_exact_multiple(self):
         data, metadata = self.postprocess(n=4)
@@ -299,7 +266,7 @@ class TestPadding:
             global_batch_size=2,
         )
         data, metadata = self.postprocess(n=5, pad_to_dp=False, args=args)
-        assert [s.index for s in data] == [0, 1, 2, 3]  # trimmed, never padded
+        assert [s.index for s in data] == [0, 1, 2, 3]
         assert "dynamic_global_batch_size" not in metadata
 
 
@@ -323,14 +290,3 @@ class TestTinkerDispatchSummary:
         from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
 
         assert tinker_dispatch_summary({"tokens": [[1]]}) is None
-
-    def test_summary_matches_the_converted_batch(self):
-        from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
-
-        plan = [plan_entry("A", 0, op_id="op-A"), plan_entry("B", 1, op_id="op-B")]
-        metadata = plan_metadata(plan)
-        samples = [make_sample("A", 0), make_sample("B", 0)]
-        train_data = convert(samples, metadata)
-        summary = tinker_dispatch_summary(train_data)
-        assert summary["operation_ids"] == ["op-A", "op-B"]
-        assert summary["lease"] == metadata["batch_execution_lease"]

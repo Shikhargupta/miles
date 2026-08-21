@@ -1,7 +1,3 @@
-"""Multi-LoRA train-data pipeline: group-boundary metadata extraction, exact
-dynamic batch size, stamped-slot fallback, and per-group reward normalization
-with heterogeneous group sizes."""
-
 import pytest
 
 from tests.ci.ci_register import register_cpu_ci
@@ -42,7 +38,6 @@ def adapter_group(
 
 
 def make_batch():
-    """Two adapters, heterogeneous group sizes."""
     return [
         adapter_group("A", 0, 4, [1.0, 0.0, 1.0, 0.0], start_index=0),
         adapter_group("A", 0, 4, [1.0, 1.0, 1.0, 1.0], start_index=4),
@@ -77,7 +72,7 @@ def test_multi_lora_rejects_dp_indivisible_batch():
 
 
 def test_adapter_slots_fall_back_to_the_stamped_slot():
-    # No BatchPlan (adapter_name_by_slot) in metadata: the stamped slot routes.
+    # Without a BatchPlan, each sample's stamped slot remains authoritative.
     _, _, train_data = run_pipeline()
     assert train_data["adapter_slots"] == [0] * 8 + [1] * 2
     assert train_data["prompt_group_sizes"] == [4, 4, 2]

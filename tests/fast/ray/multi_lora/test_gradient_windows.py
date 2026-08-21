@@ -1,12 +1,3 @@
-"""GradientWindowTracker: registration-keyed step/dirty stream state
-(codex-rollout-fullparameter-design-0810 §3.4). Parameterization-neutral —
-these tests never construct a SlotPool or a registry; poison stays the
-ledger's job and never appears here."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 from miles.ray.multi_lora.gradient_windows import GradientWindowTracker
 
 KEY_A = ("A", "reg-1")
@@ -21,7 +12,6 @@ class TestDirtyFlag:
         assert not tracker.is_dirty(KEY_A)
         tracker.mark_forward_backward_succeeded(KEY_A)
         assert tracker.is_dirty(KEY_A)
-        # forward operations have no transition here by design: nothing to call.
 
     def test_committed_step_consumes_the_window(self):
         tracker = GradientWindowTracker()
@@ -40,7 +30,6 @@ class TestDirtyFlag:
         assert tracker.step_of(KEY_A) == 0
 
     def test_clean_commit_needs_no_prior_fb(self):
-        # Current behavior: a clean optim_step is legal and advances the clock.
         tracker = GradientWindowTracker()
         assert tracker.commit_step(KEY_A) == 1
 
