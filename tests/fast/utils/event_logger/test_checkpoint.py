@@ -104,6 +104,26 @@ class TestNoOpCases:
 
         assert events.exists()
 
+    @pytest.mark.parametrize("target_exists", [False, True], ids=["dangling", "live"])
+    def test_restore_without_a_checkpoint_rejects_a_symlink_event_dir(
+        self, tmp_path: Path, target_exists: bool
+    ) -> None:
+        """Resetting audit state refuses both live and dangling event-directory symlinks."""
+        target = tmp_path / "target"
+        if target_exists:
+            target.mkdir()
+            (target / "main.jsonl").write_text("keep\n")
+        events = tmp_path / "events"
+        events.symlink_to(target, target_is_directory=True)
+
+        with pytest.raises(RuntimeError, match="symbolic link"):
+            event_logger_checkpoint.restore(_args(event_dir=events, load=tmp_path / "ckpt"))
+
+        assert events.is_symlink()
+        assert target.exists() is target_exists
+        if target_exists:
+            assert (target / "main.jsonl").read_text() == "keep\n"
+
     def test_restore_skips_when_not_resuming(self, tmp_path: Path) -> None:
         """No --load means no restore."""
         events = tmp_path / "events"

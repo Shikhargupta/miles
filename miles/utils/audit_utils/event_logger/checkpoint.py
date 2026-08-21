@@ -51,6 +51,8 @@ def restore(args: Namespace) -> None:
 
 
 def _discard_abandoned_events(event_dir: Path) -> None:
+    if event_dir.is_symlink():
+        raise RuntimeError(f"Refusing to discard symbolic link event directory {event_dir}")
     if not event_dir.exists():
         return
 
