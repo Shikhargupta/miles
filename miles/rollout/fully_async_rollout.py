@@ -38,11 +38,13 @@ from miles.rollout.fully_async_data_buffer import (
     DefaultMultiDataBuffer,
     Group,
     add_data_buffer_arguments,
+    complete_trainer_model_ids,
     first_sample,
 )
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
+from miles.utils.async_utils import run
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -80,8 +82,14 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
         self._output: DataBuffer | None = None
+        self._active: set[asyncio.Task] = set()
+        self._publishing: set[asyncio.Task[None]] = set()
+        self._publish_tails: dict[str | None, asyncio.Task[None]] = {}
+        self._close_task: asyncio.Task[None] | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
+        if self._close_task is not None:
+            raise RuntimeError("fully-async rollout is closed")
         if input.evaluation:
             return await self._call_eval(input)
         if self._worker is None:
@@ -135,14 +143,54 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         return DataBufferInput(prompt_group=prompt_group, group=result)
 
     async def _worker_loop(self):
-        active: set[asyncio.Task] = set()
-        while True:
-            await self._producer_resumed.wait()
-            while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
-                active.add(self._submit_one_group())
-            done, active = await self._scheduler.wait_for_progress(active)
-            for task in done:
-                await self._output.put(task.result())
+        try:
+            while True:
+                await self._producer_resumed.wait()
+                group_budget = self._max_in_flight_groups()
+                wrapper_count = len(self._active) + len(self._publishing)
+                while wrapper_count < 2 * group_budget and self._scheduler.has_capacity(
+                    pending_groups=len(self._active),
+                    group_budget=group_budget,
+                    reserved_groups=len(self._publishing),
+                ):
+                    self._active.add(self._submit_one_group())
+                    wrapper_count += 1
+                pending = self._active | self._publishing
+                if wrapper_count >= 2 * group_budget:
+                    done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                else:
+                    done, _ = await self._scheduler.wait_for_progress(pending)
+                for task in done:
+                    if task in self._publishing:
+                        self._publishing.remove(task)
+                        try:
+                            task.result()
+                        except asyncio.CancelledError as error:
+                            raise RuntimeError("rollout publish task was cancelled") from error
+                    else:
+                        self._active.remove(task)
+                        self._publishing.add(self._submit_publish(task.result()))
+        finally:
+            tasks = self._active | self._publishing
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._active.clear()
+            self._publishing.clear()
+            self._publish_tails.clear()
+
+    def _submit_publish(self, input: DataBufferInput) -> asyncio.Task[None]:
+        route = complete_trainer_model_ids(input, self.args.n_samples_per_prompt)
+        predecessors = {self._publish_tails[model_id] for model_id in route if model_id in self._publish_tails}
+        task = asyncio.create_task(self._publish_after(input, predecessors=predecessors))
+        for model_id in route:
+            self._publish_tails[model_id] = task
+        return task
+
+    async def _publish_after(self, input: DataBufferInput, *, predecessors: set[asyncio.Task[None]]) -> None:
+        if predecessors:
+            await asyncio.gather(*predecessors)
+        await self._output.put(input)
 
     # -------------------------- consumer --------------------------
 
@@ -150,10 +198,11 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         queue_get = asyncio.create_task(
             self._output.get(current_version=current_version, trainer_model_id=trainer_model_id)
         )
+        buffer_failure = asyncio.create_task(self._output.wait_failed())
         try:
             while True:
                 done, _ = await asyncio.wait(
-                    {queue_get, self._worker},
+                    {queue_get, buffer_failure, self._worker},
                     return_when=asyncio.FIRST_COMPLETED,
                     timeout=NO_PROGRESS_WARN_SECS,
                 )
@@ -162,12 +211,18 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                 if self._worker in done:
                     self._worker.result()
                     raise RuntimeError("fully-async rollout worker exited without an exception")
+                if buffer_failure in done:
+                    buffer_failure.result()
+                    raise RuntimeError("data buffer failure returned without an exception")
                 if queue_get in done:
                     return queue_get.result()
                 logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
         finally:
             if not queue_get.done():
                 queue_get.cancel()
+            if not buffer_failure.done():
+                buffer_failure.cancel()
+            await asyncio.gather(queue_get, buffer_failure, return_exceptions=True)
 
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
@@ -210,3 +265,29 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         for sample in prompt_group:
             sample.reset_for_retry()
         self.data_source.add_samples([prompt_group])
+
+    async def aclose(self) -> None:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        errors: list[BaseException] = []
+        if self._worker is not None:
+            if not self._worker.done():
+                self._worker.cancel()
+            [result] = await asyncio.gather(self._worker, return_exceptions=True)
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                errors.append(result)
+        if self._output is not None:
+            try:
+                await self._output.aclose()
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            for error in errors[1:]:
+                logger.error("Additional fully-async rollout close failure", exc_info=error)
+            raise errors[0]
+
+    def dispose(self) -> None:
+        run(self.aclose())

@@ -2,6 +2,7 @@ import asyncio
 import itertools
 import logging
 import os
+from collections.abc import Awaitable
 from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
@@ -32,62 +33,109 @@ logger = logging.getLogger(__name__)
 async def train_multi_policy(args) -> None:
     megatron_config = resolve_megatron_config(args)
     validate_multi_policy_args(args, megatron_config=megatron_config)
-    _worker_manager = init_orchestration_script(args)
-    define_policy_metric_groups(megatron_config)
+    worker_manager = init_orchestration_script(args)
+    inference_controller: BaseWorkerHandle | None = None
+    rollout_executor: BaseWorkerHandle | None = None
+    trainers: dict[str, TrainerInfo] = {}
+    try:
+        define_policy_metric_groups(megatron_config)
+        inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
 
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+        trainers = await create_trainers(args, rollout_executor=rollout_executor)
+        assert_consistent_restore(args, trainers=trainers, leader_model_id=megatron_config.leader_model_id)
 
-    trainers = await create_trainers(args, rollout_executor=rollout_executor)
-    assert_consistent_restore(args, trainers=trainers, leader_model_id=megatron_config.leader_model_id)
-
-    maybe_start_api_server(
-        args,
-        trainer_models={
-            trainer_config.trainer_id: trainers[trainer_config.model_id].handle
-            for trainer_config in compute_trainer_configs(args)
-        },
-        inference_controller=inference_controller,
-    )
-    maybe_start_mini_ft_controller(args)
-
-    for model_id, trainer in trainers.items():
-        await update_weights(args, trainer.handle, rollout_executor, inference_controller, trainer_model_id=model_id)
-        if args.check_weight_update_equal:
-            await inference_controller.check_weights(
-                action="compare",
-                allow_quant_error=args.check_weight_update_allow_quant_error,
-                selector=args.check_weight_update_selector,
-                skip_list=args.check_weight_update_skip_list,
-                model_id=model_id,
-            )
-
-    parker = Parker(num_followers=len(trainers) - 1)
-    run_ended = asyncio.Event()
-    rollout_ids: dict[str, int] = {}
-    tasks = [
-        asyncio.create_task(
-            _run_policy(
-                args,
-                trainer=trainer,
-                is_leader=trainer.model_id == megatron_config.leader_model_id,
-                trainers=trainers,
-                inference_controller=inference_controller,
-                rollout_executor=rollout_executor,
-                parker=parker,
-                run_ended=run_ended,
-                rollout_ids=rollout_ids,
-                num_rollout_per_epoch=num_rollout_per_epoch,
-            )
+        maybe_start_api_server(
+            args,
+            trainer_models={
+                trainer_config.trainer_id: trainers[trainer_config.model_id].handle
+                for trainer_config in compute_trainer_configs(args)
+            },
+            inference_controller=inference_controller,
         )
-        for trainer in trainers.values()
-    ]
-    await wait_cancelling_pending_on_first_completion(tasks, on_first_completion=run_ended.set)
+        maybe_start_mini_ft_controller(args)
 
-    await rollout_executor.dispose()
-    await inference_controller.dispose()
-    for trainer in trainers.values():
-        await trainer.handle.dispose()
-    await shutdown_worker_manager(_worker_manager)
+        for model_id, trainer in trainers.items():
+            await update_weights(
+                args,
+                trainer.handle,
+                rollout_executor,
+                inference_controller,
+                trainer_model_id=model_id,
+            )
+            if args.check_weight_update_equal:
+                await inference_controller.check_weights(
+                    action="compare",
+                    allow_quant_error=args.check_weight_update_allow_quant_error,
+                    selector=args.check_weight_update_selector,
+                    skip_list=args.check_weight_update_skip_list,
+                    model_id=model_id,
+                )
+
+        parker = Parker(num_followers=len(trainers) - 1)
+        run_ended = asyncio.Event()
+        rollout_ids: dict[str, int] = {}
+        tasks = [
+            asyncio.create_task(
+                _run_policy(
+                    args,
+                    trainer=trainer,
+                    is_leader=trainer.model_id == megatron_config.leader_model_id,
+                    trainers=trainers,
+                    inference_controller=inference_controller,
+                    rollout_executor=rollout_executor,
+                    parker=parker,
+                    run_ended=run_ended,
+                    rollout_ids=rollout_ids,
+                    num_rollout_per_epoch=num_rollout_per_epoch,
+                )
+            )
+            for trainer in trainers.values()
+        ]
+        await wait_cancelling_pending_on_first_completion(tasks, on_first_completion=run_ended.set)
+    except BaseException:
+        try:
+            await _dispose_components(
+                rollout_executor=rollout_executor,
+                inference_controller=inference_controller,
+                trainers=trainers,
+                worker_manager=worker_manager,
+            )
+        except BaseException as cleanup_error:
+            logger.error("Additional failure while disposing the run", exc_info=cleanup_error)
+        raise
+    else:
+        await _dispose_components(
+            rollout_executor=rollout_executor,
+            inference_controller=inference_controller,
+            trainers=trainers,
+            worker_manager=worker_manager,
+        )
+
+
+async def _dispose_components(
+    *,
+    rollout_executor: BaseWorkerHandle | None,
+    inference_controller: BaseWorkerHandle | None,
+    trainers: dict[str, TrainerInfo],
+    worker_manager: object,
+) -> None:
+    dispose_awaitables: list[Awaitable[object]] = [*(trainer.handle.dispose() for trainer in trainers.values())]
+    if rollout_executor is not None:
+        dispose_awaitables.append(rollout_executor.dispose())
+    if inference_controller is not None:
+        dispose_awaitables.append(inference_controller.dispose())
+    results = await asyncio.gather(*dispose_awaitables, return_exceptions=True)
+    try:
+        await shutdown_worker_manager(worker_manager)
+    except BaseException as error:
+        results.append(error)
+
+    errors = [result for result in results if isinstance(result, BaseException)]
+    if errors:
+        primary_error = errors[0]
+        for error in errors[1:]:
+            logger.error("Additional component disposal failure", exc_info=error)
+        raise primary_error
 
 
 async def _run_policy(

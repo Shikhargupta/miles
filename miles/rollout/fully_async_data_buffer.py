@@ -81,6 +81,15 @@ class DataBufferInput:
     group: Group  # finished samples
 
 
+def complete_trainer_model_ids(input: DataBufferInput, group_size: int) -> frozenset[str | None]:
+    trainer_model_ids = {sample.trainer_model_id for sample in iter_samples(input.group)}
+    return frozenset(
+        trainer_model_id
+        for trainer_model_id in trainer_model_ids
+        if len(_filter_group(input.group, trainer_model_id=trainer_model_id)) == group_size
+    )
+
+
 class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
@@ -105,6 +114,14 @@ class DataBuffer(ABC):
     @abstractmethod
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         """Report the metrics of one policy since its previous call (its window counters reset here)."""
+
+    async def wait_failed(self) -> None:
+        """Wait until asynchronous buffer work fails, then raise that terminal error."""
+        await asyncio.Future()
+
+    async def aclose(self) -> None:
+        """Stop background work and wake blocked operations; repeated calls are safe."""
+        return None
 
 
 # ============================= one policy buffer ==============================
@@ -151,8 +168,10 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
         self._metric_consumed_staleness: list[int] = []
+        self._closed_error: RuntimeError | None = None
 
     async def put(self, input: DataBufferInput) -> None:
+        self._raise_if_closed()
         # filters at receiving sample: abort filter, dynamic filter
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
             self._metric_aborted_groups += 1
@@ -165,8 +184,10 @@ class DefaultDataBuffer(DataBuffer):
             return
 
         async with self._cond:
+            self._raise_if_closed()
             while len(self._buffer) >= self._capacity:
                 await self._cond.wait()
+                self._raise_if_closed()
             self._buffer.append(input)
             self._cond.notify_all()
 
@@ -175,8 +196,10 @@ class DefaultDataBuffer(DataBuffer):
             self._current_version = current_version
         async with self._cond:
             while True:
+                self._raise_if_closed()
                 while not self._buffer:
                     await self._cond.wait()
+                    self._raise_if_closed()
                 entry = self._buffer.pop(0)
                 self._cond.notify_all()  # wake producers blocked on a full buffer
 
@@ -214,6 +237,17 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
 
+    async def aclose(self) -> None:
+        async with self._cond:
+            if self._closed_error is not None:
+                return
+            self._closed_error = RuntimeError("data buffer is closed")
+            self._cond.notify_all()
+
+    def _raise_if_closed(self) -> None:
+        if self._closed_error is not None:
+            raise self._closed_error
+
     @staticmethod
     def _staleness(group: Group, current_version: int | None) -> int | None:
         oldest = group_oldest_weight_version(group)
@@ -225,11 +259,20 @@ class DefaultDataBuffer(DataBuffer):
 # ============================ multi policy buffer =============================
 
 
+@dataclass(eq=False)
+class _DispatchGroup:
+    entries: dict[str, DataBufferInput]
+    route: frozenset[str]
+    remaining: set[str]
+
+
 class DefaultMultiDataBuffer(DataBuffer):
     """One plain ``DefaultDataBuffer`` per policy model, composed.
 
     Each policy consumes at its own pace, so each gets its own capacity, staleness accounting and
-    metrics, and the single-policy buffer stays untouched.
+    metrics. A fixed dispatcher per policy preserves FIFO order, while an atomic bounded admission
+    window lets a complete sibling batch progress before global backpressure stops the producer.
+    An asynchronous inner failure is terminal because another sibling may already be admitted.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
@@ -243,22 +286,199 @@ class DefaultMultiDataBuffer(DataBuffer):
             model_id: (load_function(paths.get(model_id)) or DefaultDataBuffer)(input) for model_id in model_ids
         }
         self._group_size = input.args.n_samples_per_prompt
+        self._dispatch_capacity = input.args.rollout_batch_size
+        per_policy_capacity = self._dispatch_capacity * 2 ** (len(model_ids) - 1)
+        self._dispatch_queues = {
+            model_id: asyncio.Queue[_DispatchGroup](maxsize=per_policy_capacity) for model_id in model_ids
+        }
+        self._pending_by_route: dict[frozenset[str], list[_DispatchGroup]] = {}
+        self._dispatch_tasks: dict[str, asyncio.Task[None]] = {}
+        self._failure_tasks: dict[str, asyncio.Task[None]] = {}
+        self._condition = asyncio.Condition()
+        self._terminal_event = asyncio.Event()
+        self._terminal_error: BaseException | None = None
+        self._close_task: asyncio.Task[None] | None = None
+        self._closing = False
 
     async def put(self, input: DataBufferInput) -> None:
         assert (
             len(input.group) == self._group_size
         ), f"a generated prompt group must carry {self._group_size} trajectories, got {len(input.group)}"
-        # TODO: a full inner blocks the one producer for every policy; give each policy its own dispatcher
-        for trainer_model_id, entry in _split_by_trainer_model_id(input).items():
-            inner = self._inner_of(trainer_model_id)
-            if len(entry.group) == self._group_size:
-                await inner.put(entry)
+        entries = _split_by_trainer_model_id(input)
+        for trainer_model_id in entries:
+            self._inner_of(trainer_model_id)
+        complete_entries = {
+            trainer_model_id: entry
+            for trainer_model_id, entry in entries.items()
+            if len(entry.group) == self._group_size
+        }
+        self._raise_if_terminal()
+        if not complete_entries:
+            return
+
+        self._ensure_dispatchers()
+        route = frozenset(complete_entries)
+        async with self._condition:
+            self._raise_if_terminal()
+            while len(self._pending_by_route.get(route, ())) >= self._dispatch_capacity:
+                await self._condition.wait()
+                self._raise_if_terminal()
+            dispatch_group = _DispatchGroup(
+                entries=complete_entries,
+                route=route,
+                remaining=set(complete_entries),
+            )
+            self._pending_by_route.setdefault(route, []).append(dispatch_group)
+            for trainer_model_id in complete_entries:
+                self._dispatch_queues[trainer_model_id].put_nowait(dispatch_group)
+            self._condition.notify_all()
 
     async def get(self, trainer_model_id: str | None = None, **context) -> DataBufferInput:
-        return await self._inner_of(trainer_model_id).get(trainer_model_id=trainer_model_id, **context)
+        inner = self._inner_of(trainer_model_id)
+        self._ensure_dispatchers()
+        self._raise_if_terminal()
+        get_task = asyncio.create_task(inner.get(trainer_model_id=trainer_model_id, **context))
+        failure_task = asyncio.create_task(self.wait_failed())
+        try:
+            await asyncio.wait({get_task, failure_task}, return_when=asyncio.FIRST_COMPLETED)
+            self._raise_if_terminal()
+            return get_task.result()
+        finally:
+            for task in (get_task, failure_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(get_task, failure_task, return_exceptions=True)
 
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
-        return self._inner_of(trainer_model_id).get_metrics()
+        inner_metrics = self._inner_of(trainer_model_id).get_metrics()
+        pending = sum(
+            trainer_model_id in dispatch_group.remaining
+            for dispatch_groups in self._pending_by_route.values()
+            for dispatch_group in dispatch_groups
+        )
+        queue_size = "rollout/fully_async/queue_size"
+        inner_metrics[queue_size] = inner_metrics.get(queue_size, 0) + pending
+        inner_metrics["rollout/fully_async/dispatch_pending"] = pending
+        inner_metrics["rollout/fully_async/dispatch_route_pending"] = sum(
+            len(dispatch_groups) for dispatch_groups in self._pending_by_route.values()
+        )
+        return inner_metrics
+
+    async def wait_failed(self) -> None:
+        await self._terminal_event.wait()
+        self._raise_if_terminal()
+        raise AssertionError("a terminal event must carry an error")
+
+    async def aclose(self) -> None:
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        terminal_error = self._terminal_error
+        self._closing = True
+        if self._terminal_error is None:
+            self._terminal_error = RuntimeError("data buffer is closed")
+            self._terminal_event.set()
+        async with self._condition:
+            self._condition.notify_all()
+
+        tasks = [*self._dispatch_tasks.values(), *self._failure_tasks.values()]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._condition:
+            for queue in self._dispatch_queues.values():
+                while not queue.empty():
+                    queue.get_nowait()
+            self._pending_by_route.clear()
+            self._condition.notify_all()
+
+        results = await asyncio.gather(*(inner.aclose() for inner in self._inners.values()), return_exceptions=True)
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if terminal_error is not None:
+            for error in errors:
+                logger.error("Additional data buffer close failure", exc_info=error)
+            raise terminal_error
+        if errors:
+            for error in errors[1:]:
+                logger.error("Additional data buffer close failure", exc_info=error)
+            raise errors[0]
+
+    def _ensure_dispatchers(self) -> None:
+        self._raise_if_terminal()
+        if self._dispatch_tasks:
+            return
+        self._dispatch_tasks = {
+            trainer_model_id: asyncio.create_task(self._dispatch(trainer_model_id))
+            for trainer_model_id in self._inners
+        }
+        self._failure_tasks = {
+            trainer_model_id: asyncio.create_task(self._watch_inner(trainer_model_id))
+            for trainer_model_id in self._inners
+        }
+
+    async def _dispatch(self, trainer_model_id: str) -> None:
+        queue = self._dispatch_queues[trainer_model_id]
+        inner = self._inners[trainer_model_id]
+        while True:
+            dispatch_group = await queue.get()
+            try:
+                await inner.put(dispatch_group.entries[trainer_model_id])
+            except asyncio.CancelledError as error:
+                if self._closing or self._terminal_error is not None:
+                    raise
+                await self._fail(self._unexpected_cancellation(trainer_model_id, error))
+                return
+            except BaseException as error:
+                await self._fail(error)
+                return
+            finally:
+                await self._complete(trainer_model_id, dispatch_group)
+
+    async def _watch_inner(self, trainer_model_id: str) -> None:
+        try:
+            await self._inners[trainer_model_id].wait_failed()
+        except asyncio.CancelledError as error:
+            if self._closing or self._terminal_error is not None:
+                raise
+            await self._fail(self._unexpected_cancellation(trainer_model_id, error))
+        except BaseException as error:
+            await self._fail(error)
+        else:
+            await self._fail(RuntimeError(f"data buffer failure watcher for {trainer_model_id!r} returned normally"))
+
+    async def _complete(self, trainer_model_id: str, dispatch_group: _DispatchGroup) -> None:
+        async with self._condition:
+            dispatch_group.remaining.remove(trainer_model_id)
+            if not dispatch_group.remaining:
+                dispatch_groups = self._pending_by_route[dispatch_group.route]
+                dispatch_groups.remove(dispatch_group)
+                if not dispatch_groups:
+                    del self._pending_by_route[dispatch_group.route]
+            self._condition.notify_all()
+
+    async def _fail(self, error: BaseException) -> None:
+        if self._terminal_error is not None:
+            return
+        self._terminal_error = error
+        self._terminal_event.set()
+        current = asyncio.current_task()
+        for task in (*self._dispatch_tasks.values(), *self._failure_tasks.values()):
+            if task is not current:
+                task.cancel()
+        async with self._condition:
+            self._condition.notify_all()
+
+    @staticmethod
+    def _unexpected_cancellation(trainer_model_id: str, error: asyncio.CancelledError) -> RuntimeError:
+        terminal_error = RuntimeError(f"data buffer task for policy {trainer_model_id!r} was cancelled")
+        terminal_error.__cause__ = error
+        return terminal_error
+
+    def _raise_if_terminal(self) -> None:
+        if self._terminal_error is not None:
+            raise self._terminal_error
 
     def _inner_of(self, trainer_model_id: str | None) -> DataBuffer:
         assert trainer_model_id in self._inners, (
@@ -295,7 +515,7 @@ def _split_by_trainer_model_id(input: DataBufferInput) -> dict[str, DataBufferIn
     }
 
 
-def _filter_group(group: Group, *, trainer_model_id: str) -> Group:
+def _filter_group(group: Group, *, trainer_model_id: str | None) -> Group:
     ans: Group = []
     for item in group:
         if isinstance(item, list):

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,31 +25,38 @@ class TrainerInfo:
 async def create_trainers(args, *, rollout_executor: BaseWorkerHandle) -> dict[str, TrainerInfo]:
     trainer_configs = compute_trainer_configs(args)
     handles = create_trainer_handles(args, trainer_configs=trainer_configs)
-    resumed = await take_over_trainers(args, handles=handles)
+    try:
+        resumed = await take_over_trainers(args, handles=handles)
 
-    trainers: dict[str, TrainerInfo] = {}
-    for trainer_config in trainer_configs:
-        model_id = trainer_config.model_id
-        assert model_id is not None, f"{trainer_config} carries no policy model id"
-        created = await create_training_model(
-            compute_trainer_args(args, trainer_config),
-            handle=handles[trainer_config.trainer_id],
-            trainer_id=trainer_config.trainer_id,
-            resumed=resumed,
-        )
-        assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"
-        trainers[model_id] = TrainerInfo(
-            model_id=model_id, start_rollout_id=created.start_rollout_id, handle=created.handle
-        )
+        trainers: dict[str, TrainerInfo] = {}
+        for trainer_config in trainer_configs:
+            model_id = trainer_config.model_id
+            assert model_id is not None, f"{trainer_config} carries no policy model id"
+            created = await create_training_model(
+                compute_trainer_args(args, trainer_config),
+                handle=handles[trainer_config.trainer_id],
+                trainer_id=trainer_config.trainer_id,
+                resumed=resumed,
+            )
+            assert model_id not in trainers, f"{trainer_config} shares its model id with an already created trainer"
+            trainers[model_id] = TrainerInfo(
+                model_id=model_id, start_rollout_id=created.start_rollout_id, handle=created.handle
+            )
 
-    for model_id, trainer in trainers.items():
-        await rollout_executor.set_train_parallel_config(
-            await trainer.handle.get_train_parallel_config(), trainer_model_id=model_id
-        )
-    leader_model_id = resolve_megatron_config(args).leader_model_id
-    leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
-    _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
-    await rollout_executor.load(leader_rollout_id)
+        for model_id, trainer in trainers.items():
+            await rollout_executor.set_train_parallel_config(
+                await trainer.handle.get_train_parallel_config(), trainer_model_id=model_id
+            )
+        leader_model_id = resolve_megatron_config(args).leader_model_id
+        leader_rollout_id = trainers[leader_model_id].start_rollout_id - 1
+        _assert_global_rollout_state_exists(args, leader_rollout_id=leader_rollout_id)
+        await rollout_executor.load(leader_rollout_id)
+    except BaseException:
+        results = await asyncio.gather(*(handle.dispose() for handle in handles.values()), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error("Additional trainer setup cleanup failure", exc_info=result)
+        raise
 
     return trainers
 

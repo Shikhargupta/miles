@@ -17,12 +17,13 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp,
 )
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnTrainInput,
     call_rollout_fn,
 )
-from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.checkpoint_eval import EvalSkip
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -73,6 +74,16 @@ class RolloutExecutor:
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
+        self.data_source: Any | None = None
+        self.use_experimental_refactor = False
+        self.generate_rollout: Any | None = None
+        self.eval_generate_rollout: Any | None = None
+        self.custom_reward_post_process_func = None
+        self.custom_convert_samples_to_train_data_func = None
+        self.rollout_id = -1
+        self._eval_lock = asyncio.Lock()
+        self._eval_fleet: RolloutExecutorEvalFleet | None = None
+        self._metric_checker: MetricChecker | None = None
 
     @init_once
     async def init(self) -> None:
@@ -104,18 +115,12 @@ class RolloutExecutor:
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
-        self.custom_reward_post_process_func = None
         if (x := self.args.custom_reward_post_process_path) is not None:
             self.custom_reward_post_process_func = load_function(x)
-        self.custom_convert_samples_to_train_data_func = None
         if (x := self.args.custom_convert_samples_to_train_data_path) is not None:
             self.custom_convert_samples_to_train_data_func = load_function(x)
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
-
-        self.rollout_id = -1
-        self._eval_lock = asyncio.Lock()
-        self._eval_fleet: RolloutExecutorEvalFleet | None = None
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -125,13 +130,36 @@ class RolloutExecutor:
     # -------------------------- lifecycle -----------------------------
 
     def dispose(self) -> None:
-        if (close := getattr(self.data_source, "close", None)) is not None:
-            close()
-        event_analyzer.run_analysis_from_args(self.args)
+        errors: list[BaseException] = []
+        rollout_functions = {
+            id(fn): fn for fn in (self.generate_rollout, self.eval_generate_rollout) if fn is not None
+        }
+        for fn in rollout_functions.values():
+            dispose = fn.dispose if isinstance(fn, BaseRolloutFn) else getattr(fn, "dispose", None)
+            if dispose is not None:
+                try:
+                    dispose()
+                except BaseException as error:
+                    errors.append(error)
+        if self.data_source is not None and (close := getattr(self.data_source, "close", None)) is not None:
+            try:
+                close()
+            except BaseException as error:
+                errors.append(error)
+        try:
+            event_analyzer.run_analysis_from_args(self.args)
+        except BaseException as error:
+            errors.append(error)
         if self._metric_checker is not None:
-            self._metric_checker.dispose()
-        if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
-            self.eval_generate_rollout.dispose()
+            try:
+                self._metric_checker.dispose()
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            primary_error = errors[0]
+            for error in errors[1:]:
+                logger.error("Additional rollout executor disposal failure", exc_info=error)
+            raise primary_error
 
     # -------------------------- data generation -----------------------------
 

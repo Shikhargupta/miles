@@ -106,9 +106,13 @@ async def wait_cancelling_pending_on_first_completion(
         primary_error = task_errors[primary_index][1]
         for index, (_, error) in enumerate(task_errors):
             if index != primary_index:
-                primary_error.add_note(
-                    "Additional task failure while cancelling peers:\n" + "".join(traceback.format_exception(error))
-                )
+                try:
+                    primary_error.add_note(
+                        "Additional task failure while cancelling peers:\n"
+                        + "".join(traceback.format_exception(error))
+                    )
+                except AttributeError:
+                    logger.error("Additional task failure while cancelling peers", exc_info=error)
         raise primary_error
 
 

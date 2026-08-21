@@ -491,33 +491,44 @@ class RolloutComponents(NamedTuple):
 # TODO: move (when reorganizing files)
 async def create_rollout_components(args) -> RolloutComponents:
     capability = get_backend_capability(args)
+    rollout_executor: BaseWorkerHandle | None = None
+    inference_controller: BaseWorkerHandle | None = None
 
-    if not args.debug_train_only:
-        await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
+    try:
+        if not args.debug_train_only:
+            await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
 
-        session_server_provider = (
-            capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID) if args.use_session_server else None
-        )
-        await wait_session_server_ready(args, provider=session_server_provider)
+            session_server_provider = (
+                capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID) if args.use_session_server else None
+            )
+            await wait_session_server_ready(args, provider=session_server_provider)
 
-    rollout_executor = create_rollout_executor_handle(capability=capability)
-    await wait_until_worker_not_initialized(rollout_executor)
+        rollout_executor = create_rollout_executor_handle(capability=capability)
+        await wait_until_worker_not_initialized(rollout_executor)
 
-    inference_controller = create_inference_controller_handle(capability=capability)
-    await init_or_reset_inference_controller(inference_controller)
+        inference_controller = create_inference_controller_handle(capability=capability)
+        await init_or_reset_inference_controller(inference_controller)
 
-    await rollout_executor.init()
+        await rollout_executor.init()
 
-    # calculate num_rollout from num_epoch
-    num_rollout_per_epoch = None
-    if args.num_rollout is None:
-        num_rollout_per_epoch = await rollout_executor.get_num_rollout_per_epoch()
-        args.num_rollout = num_rollout_per_epoch * args.num_epoch
-        assert args.num_rollout > 0
+        # calculate num_rollout from num_epoch
+        num_rollout_per_epoch = None
+        if args.num_rollout is None:
+            num_rollout_per_epoch = await rollout_executor.get_num_rollout_per_epoch()
+            args.num_rollout = num_rollout_per_epoch * args.num_epoch
+            assert args.num_rollout > 0
 
-    if (eval_fleet_info := await inference_controller.get_eval_fleet_info()) is not None:
-        await rollout_executor.set_eval_fleet_info(eval_fleet_info)
+        if (eval_fleet_info := await inference_controller.get_eval_fleet_info()) is not None:
+            await rollout_executor.set_eval_fleet_info(eval_fleet_info)
+    except BaseException:
+        handles = [handle for handle in (rollout_executor, inference_controller) if handle is not None]
+        results = await asyncio.gather(*(handle.dispose() for handle in handles), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error("Additional rollout component setup cleanup failure", exc_info=result)
+        raise
 
+    assert inference_controller is not None and rollout_executor is not None
     return RolloutComponents(
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
