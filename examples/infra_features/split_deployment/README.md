@@ -38,6 +38,11 @@ helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-inference-e1 -n $MILES_SCRIPT_NAME
 verifier demo the same way: one release per policy trainer, one per policy's engines, and the
 orchestration script last — five releases for two policies.
 
+Each trainer release carries only its named policy, but remains policy-scoped:
+
+- Training metrics and process identities keep the policy's model ID.
+- `--save`, `--load`, and `--save-hf` resolve under `trainers/<trainer-id>`, so policy releases never share a checkpoint writer.
+
 ```bash
 SCRIPT=examples/infra_features/split_deployment/run_solver_verifier_gsm8k_split.py
 
