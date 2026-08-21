@@ -21,12 +21,16 @@ from miles.utils.workers.rpc.client.misc import (
 )
 from miles.utils.workers.rpc.common.metadata import RpcMethodSpec
 from miles.utils.workers.rpc.common.protocol import (
+    ACKNOWLEDGE_PATH,
     CALL_STATUS_PATH,
     DEFAULT_POLL_TIMEOUT_SECONDS,
     SUBMIT_PATH,
+    AcknowledgeRequest,
+    AcknowledgeResponse,
     CallStatusResponse,
     SubmitRequest,
     SubmitResponse,
+    compute_request_digest,
 )
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 
@@ -34,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 SUBMIT_RETRY_WINDOW_SECONDS = 60.0
 SUBMIT_ATTEMPT_TIMEOUT_SECONDS = 10.0
+ACK_RETRY_WINDOW_SECONDS = 0.5
+ACK_ATTEMPT_TIMEOUT_SECONDS = 0.1
+ACK_RETRY_INITIAL_DELAY_SECONDS = 0.05
+ACK_RETRY_MAX_DELAY_SECONDS = 0.1
 POLL_SLACK_SECONDS = 5.0
 
 
@@ -64,14 +72,17 @@ class RpcCall:
 
         started_at = time.monotonic()
         await self.submit()
-        outcome = await self._poll_until_done()
+        outcome, outcome_boot_uuid = await self._poll_until_done()
         elapsed = time.monotonic() - started_at
 
         ok = outcome.status != "failed"
         log_structured(logger.debug, op="call", phase="end", ok=ok, **self._log_fields, elapsed_s=round(elapsed, 3))
         if not ok:
+            await self._acknowledge(expected_boot_uuid=outcome_boot_uuid)
             raise RpcWorkerCallError(f"{self._method_label} failed remotely:\n{outcome.error}")
-        return self._spec.serializer.decode_result(outcome.result)
+        result = self._spec.serializer.decode_result(outcome.result)
+        await self._acknowledge(expected_boot_uuid=outcome_boot_uuid)
+        return result
 
     async def submit(self) -> None:
         request = SubmitRequest(call_id=self._call_id, query=self._query)
@@ -99,7 +110,7 @@ class RpcCall:
         )
         log_structured(logger.debug, op="submit", phase="accepted", **self._log_fields)
 
-    async def _poll_until_done(self) -> CallStatusResponse:
+    async def _poll_until_done(self) -> tuple[CallStatusResponse, str]:
         try:
             return await retry_until_deadline(
                 self._poll_once,
@@ -120,11 +131,11 @@ class RpcCall:
                 f"{self._method_label} (call id {self._call_id}) still pending after {self._call_timeout_seconds}s"
             ) from None
 
-    async def _poll_once(self, remaining: float) -> CallStatusResponse:
+    async def _poll_once(self, remaining: float) -> tuple[CallStatusResponse, str]:
         poll_seconds = min(DEFAULT_POLL_TIMEOUT_SECONDS, remaining)
         server_seconds = poll_seconds - min(POLL_SLACK_SECONDS, poll_seconds / 2)
         try:
-            outcome = await self._transport.request(
+            outcome, outcome_boot_uuid = await self._transport.request_with_boot_uuid(
                 "GET",
                 CALL_STATUS_PATH.format(call_id=self._call_id),
                 seconds=poll_seconds,
@@ -139,7 +150,46 @@ class RpcCall:
 
         if outcome.status == "pending":
             raise _CallStillPendingError("call still pending")
-        return outcome
+        if outcome_boot_uuid is None:
+            raise WorkerUnreachableError(f"{self._method_label} terminal response is missing its server boot uuid")
+        return outcome, outcome_boot_uuid
+
+    async def _acknowledge(self, *, expected_boot_uuid: str) -> None:
+        request = AcknowledgeRequest(
+            request_digest=compute_request_digest(method_name=self._spec.name, query=self._query).hex()
+        )
+        task = asyncio.create_task(
+            self._acknowledge_with_retries(request=request, expected_boot_uuid=expected_boot_uuid)
+        )
+        while True:
+            try:
+                await asyncio.shield(task)
+                return
+            except asyncio.CancelledError:
+                log_structured(logger.warning, op="ack", phase="cancelled", **self._log_fields)
+                if task.done():
+                    return
+
+    async def _acknowledge_with_retries(self, *, request: AcknowledgeRequest, expected_boot_uuid: str) -> None:
+        try:
+            await retry_until_deadline(
+                lambda remaining: self._transport.request(
+                    "POST",
+                    ACKNOWLEDGE_PATH.format(call_id=self._call_id),
+                    seconds=min(ACK_ATTEMPT_TIMEOUT_SECONDS, remaining),
+                    response_model=AcknowledgeResponse,
+                    expected_boot_uuid=expected_boot_uuid,
+                    json=request.model_dump(),
+                ),
+                total_seconds=ACK_RETRY_WINDOW_SECONDS,
+                attempt_seconds=ACK_ATTEMPT_TIMEOUT_SECONDS,
+                retry_on=RETRYABLE_ERRORS,
+                initial_delay=ACK_RETRY_INITIAL_DELAY_SECONDS,
+                max_delay=ACK_RETRY_MAX_DELAY_SECONDS,
+                log_fields={**self._log_fields, "op": "ack"},
+            )
+        except Exception:
+            log_structured(logger.warning, op="ack", phase="failed", **self._log_fields, exc_info=True)
 
     @property
     def _log_fields(self) -> dict[str, Any]:

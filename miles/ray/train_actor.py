@@ -166,7 +166,7 @@ class TrainRayActor(NodeProbeMixin):
     def load_state(self) -> int:
         raise NotImplementedError(f"{type(self).__name__} cannot reload its state without restarting")
 
-    @rpc(concurrency_group="heartbeat_status")
+    @rpc(concurrency_group="heartbeat_status", control_plane=True)
     def get_heartbeat_status(self) -> HeartbeatStatus:
         return self._heartbeat.status()
 

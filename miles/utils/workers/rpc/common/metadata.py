@@ -10,6 +10,8 @@ from typing import Any, TypeVar
 from miles.utils.workers.rpc.common.serialization import RpcSerializer
 
 DEFAULT_CONCURRENCY_GROUP = "default"
+DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES = 64 * 1024
+MIN_SERIALIZED_OUTCOME_BYTES = 512
 
 _RPC_CONFIG_ATTR = "_miles_rpc_config"
 
@@ -18,8 +20,19 @@ _RAY_TRACE_CONTEXT_PARAMETER = "_ray_trace_ctx"
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
-def rpc(*, concurrency_group: str = DEFAULT_CONCURRENCY_GROUP) -> Callable[[_F], _F]:
-    config = _RpcConfig(concurrency_group=concurrency_group)
+def rpc(
+    *,
+    concurrency_group: str = DEFAULT_CONCURRENCY_GROUP,
+    max_serialized_outcome_bytes: int = DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES,
+    control_plane: bool = False,
+) -> Callable[[_F], _F]:
+    if max_serialized_outcome_bytes < MIN_SERIALIZED_OUTCOME_BYTES:
+        raise ValueError(f"max_serialized_outcome_bytes must be at least {MIN_SERIALIZED_OUTCOME_BYTES}")
+    config = _RpcConfig(
+        concurrency_group=concurrency_group,
+        max_serialized_outcome_bytes=max_serialized_outcome_bytes,
+        control_plane=control_plane,
+    )
 
     def decorator(fn: _F) -> _F:
         setattr(fn, _RPC_CONFIG_ATTR, config)
@@ -32,6 +45,8 @@ def rpc(*, concurrency_group: str = DEFAULT_CONCURRENCY_GROUP) -> Callable[[_F],
 class RpcMethodSpec:
     name: str
     concurrency_group: str
+    max_serialized_outcome_bytes: int
+    control_plane: bool
     is_async: bool
     serializer: RpcSerializer
     positional_parameter_names: tuple[str, ...]
@@ -88,6 +103,8 @@ def _collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
 @dataclasses.dataclass(frozen=True)
 class _RpcConfig:
     concurrency_group: str
+    max_serialized_outcome_bytes: int
+    control_plane: bool
 
 
 def _find_rpc_config(attr: Callable[..., Any]) -> _RpcConfig:
@@ -97,7 +114,11 @@ def _find_rpc_config(attr: Callable[..., Any]) -> _RpcConfig:
         if config is not None:
             return config
         layer = getattr(layer, "__wrapped__", None)
-    return _RpcConfig(concurrency_group=DEFAULT_CONCURRENCY_GROUP)
+    return _RpcConfig(
+        concurrency_group=DEFAULT_CONCURRENCY_GROUP,
+        max_serialized_outcome_bytes=DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES,
+        control_plane=False,
+    )
 
 
 def _build_method_spec(*, worker_cls: type, name: str, attr: Callable[..., Any]) -> RpcMethodSpec:
@@ -157,6 +178,8 @@ def _build_method_spec(*, worker_cls: type, name: str, attr: Callable[..., Any])
     return RpcMethodSpec(
         name=name,
         concurrency_group=config.concurrency_group,
+        max_serialized_outcome_bytes=config.max_serialized_outcome_bytes,
+        control_plane=config.control_plane,
         is_async=is_async,
         positional_parameter_names=tuple(
             param.name for param in parameters[1:] if param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD

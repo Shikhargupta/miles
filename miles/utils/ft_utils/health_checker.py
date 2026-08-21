@@ -5,7 +5,9 @@ import argparse
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
-from typing import Any, NamedTuple
+from typing import Annotated, Any, NamedTuple
+
+from pydantic import Field
 
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.pydantic_utils import StrictBaseModel
@@ -14,9 +16,11 @@ from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
+MIN_HEALTH_CHECK_INTERVAL_SECONDS = 1.0
+
 
 class SimpleHealthCheckerConfig(StrictBaseModel):
-    interval: float
+    interval: Annotated[float, Field(ge=MIN_HEALTH_CHECK_INTERVAL_SECONDS)]
     timeout: float
     first_wait: float
     failure_threshold: int

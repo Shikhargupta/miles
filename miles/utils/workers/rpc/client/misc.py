@@ -55,11 +55,69 @@ class RpcTransport:
         self._boot_uuid_pin = boot_uuid_pin
 
     async def request(
-        self, method: str, path: str, *, seconds: float, response_model: type[_ResponseT], **kwargs: Any
+        self,
+        method: str,
+        path: str,
+        *,
+        seconds: float,
+        response_model: type[_ResponseT],
+        require_observed_boot_uuid: bool = False,
+        expected_boot_uuid: str | None = None,
+        **kwargs: Any,
     ) -> _ResponseT:
+        result, _ = await self._request(
+            method,
+            path,
+            seconds=seconds,
+            response_model=response_model,
+            require_observed_boot_uuid=require_observed_boot_uuid,
+            expected_boot_uuid=expected_boot_uuid,
+            **kwargs,
+        )
+        return result
+
+    async def request_with_boot_uuid(
+        self,
+        method: str,
+        path: str,
+        *,
+        seconds: float,
+        response_model: type[_ResponseT],
+        require_observed_boot_uuid: bool = False,
+        expected_boot_uuid: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[_ResponseT, str | None]:
+        return await self._request(
+            method,
+            path,
+            seconds=seconds,
+            response_model=response_model,
+            require_observed_boot_uuid=require_observed_boot_uuid,
+            expected_boot_uuid=expected_boot_uuid,
+            **kwargs,
+        )
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        seconds: float,
+        response_model: type[_ResponseT],
+        require_observed_boot_uuid: bool,
+        expected_boot_uuid: str | None,
+        **kwargs: Any,
+    ) -> tuple[_ResponseT, str | None]:
         headers = dict(kwargs.pop("headers", {}))
-        if self._boot_uuid_pin.expected is not None:
-            headers[EXPECTED_BOOT_UUID_HEADER] = self._boot_uuid_pin.expected
+        pinned_boot_uuid = expected_boot_uuid
+        if pinned_boot_uuid is None:
+            pinned_boot_uuid = (
+                self._boot_uuid_pin.observed if require_observed_boot_uuid else self._boot_uuid_pin.expected
+            )
+        if require_observed_boot_uuid and pinned_boot_uuid is None:
+            raise ServerRestartedError("rpc response cannot be acknowledged without an observed server boot uuid")
+        if pinned_boot_uuid is not None:
+            headers[EXPECTED_BOOT_UUID_HEADER] = pinned_boot_uuid
         response = await asyncio.wait_for(
             self._client.request(
                 method,
@@ -82,8 +140,9 @@ class RpcTransport:
                 status_code=response.status_code,
             )
 
+        response_boot_uuid = response.headers.get(BOOT_UUID_HEADER)
         self._boot_uuid_pin.verify(response)
-        return response_model.model_validate(response.json())
+        return response_model.model_validate(response.json()), response_boot_uuid
 
     @property
     def _client(self) -> httpx.AsyncClient:
@@ -97,10 +156,15 @@ class BootUuidPin:
         self._required = required
         self._worker_cls_name = worker_cls_name
         self._value: str | None = None
+        self._observed_value: str | None = None
 
     @property
     def expected(self) -> str | None:
         return self._value if self._required else None
+
+    @property
+    def observed(self) -> str | None:
+        return self._observed_value
 
     def needs_handshake(self) -> bool:
         return self._required and self._value is None
@@ -114,10 +178,11 @@ class BootUuidPin:
         self._value = value
 
     def verify(self, response: httpx.Response) -> None:
+        boot_uuid = response.headers.get(BOOT_UUID_HEADER)
+        if boot_uuid is not None:
+            self._observed_value = boot_uuid
         if not self._required:
             return
-
-        boot_uuid = response.headers.get(BOOT_UUID_HEADER)
         if boot_uuid is None:
             raise ServerRestartedError(f"{self._worker_cls_name} response is missing the {BOOT_UUID_HEADER} header")
         if self._value is None:

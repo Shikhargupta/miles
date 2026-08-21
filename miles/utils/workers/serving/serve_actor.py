@@ -11,6 +11,7 @@ import uvicorn
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 from miles.utils.workers.rpc.server.app import create_rpc_app
+from miles.utils.workers.serving.http_protocol import RPC_LISTEN_BACKLOG, _BoundedH11Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,13 @@ class ServeActor(NodeProbeMixin):
 
 def serve_until_the_server_stops(*, app: Any, port: int) -> None:
     try:
-        uvicorn.run(app, host=SERVE_HOST, port=port)
+        uvicorn.run(
+            app,
+            host=SERVE_HOST,
+            port=port,
+            http=_BoundedH11Protocol,
+            backlog=RPC_LISTEN_BACKLOG,
+        )
         logger.error(f"The rpc server on port {port} stopped serving, so the process it lives in exits with it")
     except BaseException:
         logger.error(f"The rpc server on port {port} crashed, so the process it lives in exits with it", exc_info=True)

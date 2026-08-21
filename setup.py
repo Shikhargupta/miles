@@ -56,7 +56,7 @@ setup(
         # sglang, and polars is a base requirement (used by the collector)
         "dashboard": [
             "fastapi>=0.135",
-            "uvicorn>=0.41",
+            "uvicorn>=0.41,<0.42",
             "prometheus_client>=0.24",
         ],
     },
