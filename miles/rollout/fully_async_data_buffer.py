@@ -1,7 +1,8 @@
 """Data buffer between fully-async rollout production and training consumption.
 
-``DataBuffer`` is the contract (put / get / get_metrics); ``DefaultDataBuffer``
-is the built-in implementation, replaceable via ``--custom-async-data-buffer-path``.
+``DataBuffer`` is the contract (put / get / get_metrics / wait_failed / aclose);
+``DefaultDataBuffer`` is the built-in implementation, replaceable via
+``--custom-async-data-buffer-path``.
 Every group-level decision lives here — what to keep, what to hand to
 ``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
 ``--rollout-sample-filter-path`` stays outside: it runs on the assembled batch.

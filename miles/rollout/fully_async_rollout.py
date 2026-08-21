@@ -1,10 +1,12 @@
 """Fully asynchronous rollout generation.
 
-A persistent background worker keeps up to ``rollout_batch_size`` prompt groups in
-flight at all times; each training step only drains already-completed groups from the
-data buffer (see ``fully_async_data_buffer.py``). Rollout production and training
-consumption run in parallel, so per-iteration wall time moves from
-``rollout_time + train_time`` toward ``max(rollout_time, train_time)``.
+A persistent background worker keeps one group-budget wave active and may retain one
+additional bounded wave while completed groups are publishing; active and publishing
+wrappers together never exceed twice the group budget. Each training step only drains
+already-completed groups from the data buffer (see ``fully_async_data_buffer.py``).
+Rollout production and training consumption run in parallel, so per-iteration wall
+time moves from ``rollout_time + train_time`` toward
+``max(rollout_time, train_time)``.
 
 Selected by ``train_async.py --fully-async``, which also requires the class-based
 rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``).
