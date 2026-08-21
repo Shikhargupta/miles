@@ -391,4 +391,10 @@ class TestParamInfoSnapshotCollectiveValidation:
         assert all(not thread.is_alive() for thread in threads)
         assert collective.broadcast_ranks == []
         assert set(errors) == {0, 1}
-        assert all("layer.a drifted from the param info snapshot" in str(error) for error in errors.values())
+        assert {type(error) for error in errors.values()} == {RuntimeError}
+        messages = {str(error) for error in errors.values()}
+        assert len(messages) == 1
+        assert (
+            "rank 0: layer.a drifted from the param info snapshot: live torch.float16/(3,) "
+            "vs recorded torch.float32/(4,)" in messages.pop()
+        )
