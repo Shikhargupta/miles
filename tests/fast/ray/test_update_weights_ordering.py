@@ -1,13 +1,19 @@
 import asyncio
+import contextlib
 from argparse import Namespace
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout.inference_controller import InferenceController, UpdatableEngines
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.workers.rpc.client import handle as rpc_handle_module
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
+from miles.utils.workers.rpc.server.app import create_rpc_app
 
 
 class _OrderRecordingInferenceController:
@@ -27,6 +33,54 @@ class _OrderRecordingInferenceController:
             return result
 
         return _method
+
+
+class _RpcWeightUpdateController:
+    def __init__(self, *, block_start: bool = False) -> None:
+        self.start_called = asyncio.Event()
+        self.start_release = asyncio.Event()
+        self.end_snapshots: list[dict[str, str]] = []
+        if not block_start:
+            self.start_release.set()
+
+    async def start_update_weights(self, model_id: str | None = None) -> UpdatableEngines:
+        self.start_called.set()
+        await self.start_release.wait()
+        return UpdatableEngines(
+            rollout_engines=[],
+            engine_gpu_counts=[],
+            engine_gpu_offsets=[],
+            snapshot_cell_id_to_hashes={"cell": "generation"},
+        )
+
+    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        self.end_snapshots.append(snapshot_cell_id_to_hashes)
+
+
+class _RpcWeightUpdateTrainer:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> int:
+        self.started.set()
+        await self.release.wait()
+        self.finished.set()
+        return 11
+
+
+@contextlib.asynccontextmanager
+async def _rpc_handle(worker: object, *, call_timeout_seconds: float = 3600.0) -> AsyncIterator[RpcWorkerHandle]:
+    app = create_rpc_app(worker)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+            yield RpcWorkerHandle(
+                type(worker),
+                server_url="http://testserver",
+                http_client=client,
+                call_timeout_seconds=call_timeout_seconds,
+            )
 
 
 def _assert_the_snapshot_is_handed_back_unchanged(controller: _OrderRecordingInferenceController) -> None:
@@ -168,8 +222,8 @@ async def test_the_script_hands_end_update_weights_the_snapshot_start_returned()
 
 
 @pytest.mark.asyncio
-async def test_cancelling_the_broadcast_closes_the_update_window_without_readying_cells():
-    """Cancelling a policy mid-broadcast releases its update window without accepting partial weights."""
+async def test_cancelling_the_broadcast_waits_for_completion_before_closing_the_update_window():
+    """Cancelling a policy waits for its in-flight broadcast before accepting the completed weights."""
     from miles.ray.placement_group import update_weights
 
     order: list[str] = []
@@ -192,15 +246,119 @@ async def test_cancelling_the_broadcast_closes_the_update_window_without_readyin
             inference_controller,
         )
     )
-    await broadcast_started.wait()
+    await asyncio.wait_for(broadcast_started.wait(), timeout=5)
 
     task.cancel()
+    await asyncio.sleep(0)
+    task_was_done_while_broadcast_was_blocked = task.done()
+    calls_while_broadcast_was_blocked = [name for name, _args, _kwargs in inference_controller.calls]
+
+    hold_broadcast.set()
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    assert not task_was_done_while_broadcast_was_blocked
+    assert calls_while_broadcast_was_blocked == ["start_update_weights", "trainer_update_weights"]
     assert order == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
-    [end_kwargs] = [kwargs for name, _args, kwargs in inference_controller.calls if name == "end_update_weights"]
-    assert end_kwargs == {"snapshot_cell_id_to_hashes": {}}
+    _assert_the_snapshot_is_handed_back_unchanged(inference_controller)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_an_in_flight_rpc_broadcast_drains_it_before_releasing_the_window():
+    """A caller cancellation cannot overtake the remote broadcast it already submitted."""
+    from miles.ray.placement_group import update_weights
+
+    controller = _RpcWeightUpdateController()
+    trainer = _RpcWeightUpdateTrainer()
+    async with _rpc_handle(controller) as controller_handle, _rpc_handle(trainer) as trainer_handle:
+        task = asyncio.create_task(
+            update_weights(
+                _orchestration_args(),
+                trainer_handle,
+                MagicMock(set_weight_version=AsyncMock()),
+                controller_handle,
+            )
+        )
+        await asyncio.wait_for(trainer.started.wait(), timeout=5)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task_was_done_while_remote_was_blocked = task.done()
+        snapshots_before_remote_finished = list(controller.end_snapshots)
+
+        trainer.release.set()
+        await asyncio.wait_for(trainer.finished.wait(), timeout=5)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert not task_was_done_while_remote_was_blocked
+    assert snapshots_before_remote_finished == []
+    assert controller.end_snapshots == [{"cell": "generation"}]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_an_in_flight_rpc_start_still_closes_the_window_it_opens():
+    """A start RPC abandoned by its caller cannot later detach an update window nobody closes."""
+    from miles.ray.placement_group import update_weights
+
+    controller = _RpcWeightUpdateController(block_start=True)
+    trainer = _RpcWeightUpdateTrainer()
+    trainer.release.set()
+    async with _rpc_handle(controller) as controller_handle, _rpc_handle(trainer) as trainer_handle:
+        task = asyncio.create_task(
+            update_weights(
+                _orchestration_args(),
+                trainer_handle,
+                MagicMock(set_weight_version=AsyncMock()),
+                controller_handle,
+            )
+        )
+        await asyncio.wait_for(controller.start_called.wait(), timeout=5)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        task_was_done_while_start_was_blocked = task.done()
+
+        controller.start_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert not task_was_done_while_start_was_blocked
+    assert controller.end_snapshots == [{"cell": "generation"}]
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_rpc_broadcast_drains_before_releasing_the_window(monkeypatch: pytest.MonkeyPatch):
+    """A client polling timeout cannot release the window while its remote broadcast is still running."""
+    from miles.ray import placement_group
+
+    monkeypatch.setattr(rpc_handle_module, "_IDLE_POLL_INTERVAL_SECONDS", 0.01)
+    controller = _RpcWeightUpdateController()
+    trainer = _RpcWeightUpdateTrainer()
+    async with _rpc_handle(controller) as controller_handle, _rpc_handle(
+        trainer, call_timeout_seconds=0.05
+    ) as trainer_handle:
+        task = asyncio.create_task(
+            placement_group.update_weights(
+                _orchestration_args(),
+                trainer_handle,
+                MagicMock(set_weight_version=AsyncMock()),
+                controller_handle,
+            )
+        )
+        await asyncio.wait_for(trainer.started.wait(), timeout=5)
+        await asyncio.sleep(0.1)
+        snapshots_while_remote_was_blocked = list(controller.end_snapshots)
+
+        trainer.release.set()
+        await asyncio.wait_for(trainer.finished.wait(), timeout=5)
+        with pytest.raises(TimeoutError, match="still pending"):
+            await task
+
+    assert snapshots_while_remote_was_blocked == []
+    assert controller.end_snapshots == [{}]
 
 
 @pytest.mark.asyncio

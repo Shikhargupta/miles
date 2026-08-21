@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import socket
-from typing import NamedTuple
+from typing import NamedTuple, TypeVar
 
 import ray
 from ray.util.placement_group import PlacementGroup, placement_group
@@ -41,6 +41,9 @@ from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 
 logger = logging.getLogger(__name__)
+
+_REMOTE_CALL_DRAIN_TIMEOUT_SECONDS: float = 3600.0
+_T = TypeVar("_T")
 
 
 @ray.remote(num_gpus=1)
@@ -290,13 +293,15 @@ async def update_weights(
             rollout_id=rollout_id
         )
 
-    info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
-    completed_snapshot: dict[str, str] = {}
-    try:
-        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
-        completed_snapshot = info.snapshot_cell_id_to_hashes
-    finally:
-        await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=completed_snapshot)
+    weight_update = asyncio.create_task(
+        _complete_weight_update(
+            actor_model=actor_model,
+            inference_controller=inference_controller,
+            rollout_id=rollout_id,
+            trainer_model_id=trainer_model_id,
+        )
+    )
+    weight_version = await _await_task_before_cancelling(weight_update)
 
     await _maybe_log_inference_engine_weight_checksums(
         args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
@@ -304,6 +309,72 @@ async def update_weights(
 
     if weight_version is not None:
         await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
+
+
+async def _complete_weight_update(
+    *,
+    actor_model,
+    inference_controller: BaseWorkerHandle,
+    rollout_id: int | None,
+    trainer_model_id: str | None,
+) -> int | None:
+    try:
+        info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
+    except TimeoutError:
+        await _wait_for_timed_out_remote_call(inference_controller)
+        await _end_weight_update(inference_controller, snapshot_cell_id_to_hashes={})
+        raise
+
+    completed_snapshot: dict[str, str] = {}
+    can_release_window = True
+    try:
+        try:
+            weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+        except TimeoutError:
+            can_release_window = False
+            await _wait_for_timed_out_remote_call(actor_model)
+            can_release_window = True
+            raise
+        completed_snapshot = info.snapshot_cell_id_to_hashes
+        return weight_version
+    finally:
+        if can_release_window:
+            await _end_weight_update(
+                inference_controller,
+                snapshot_cell_id_to_hashes=completed_snapshot,
+            )
+
+
+async def _end_weight_update(
+    inference_controller: BaseWorkerHandle, *, snapshot_cell_id_to_hashes: dict[str, str]
+) -> None:
+    try:
+        await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes)
+    except TimeoutError:
+        await _wait_for_timed_out_remote_call(inference_controller)
+        raise
+
+
+async def _wait_for_timed_out_remote_call(handle: BaseWorkerHandle) -> None:
+    try:
+        await handle.wait_idle(timeout=_REMOTE_CALL_DRAIN_TIMEOUT_SECONDS)
+    except NotImplementedError:
+        return
+
+
+async def _await_task_before_cancelling(task: asyncio.Task[_T]) -> _T:
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if cancellation is None:
+                cancellation = error
+
+    result = task.result()
+    if cancellation is not None:
+        raise cancellation
+    return result
 
 
 async def _maybe_log_inference_engine_weight_checksums(
