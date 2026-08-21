@@ -349,15 +349,18 @@ spec:
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/cluster-storage"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/miles"
               subPath: "myuser/miles"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
               subPath: "myuser/Megatron-LM"
-            - name: node-local
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
               mountPath: "/scratch"
           command:
             - python
@@ -378,8 +381,6 @@ spec:
               value: "mlx5_0,mlx5_1"
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
-            - name: "PYTHONPATH"
-              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           resources:
@@ -387,13 +388,17 @@ spec:
               cpu: "100m"
               memory: 256Mi
       volumes:
-        - name: shared-storage
+        - name: "cluster-storage"
           persistentVolumeClaim:
-            claimName: "miles-shared-nvme"
-        - name: node-local
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
           hostPath:
             path: "/mnt/local-nvme/miles-staging"
-            type: DirectoryOrCreate
+            type: "DirectoryOrCreate"
 
 ---
 # Source: miles-run/templates/orchestrator.yaml
@@ -443,15 +448,18 @@ spec:
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/cluster-storage"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/miles"
               subPath: "myuser/miles"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
               subPath: "myuser/Megatron-LM"
-            - name: node-local
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
               mountPath: "/scratch"
             - name: uninstall-manifest
               mountPath: "/etc/miles-uninstall"
@@ -483,8 +491,6 @@ spec:
               value: "mlx5_0,mlx5_1"
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
-            - name: "PYTHONPATH"
-              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           resources:
@@ -493,13 +499,17 @@ spec:
               cpu: "2"
               memory: 8Gi
       volumes:
-        - name: shared-storage
+        - name: "cluster-storage"
           persistentVolumeClaim:
-            claimName: "miles-shared-nvme"
-        - name: node-local
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
           hostPath:
             path: "/mnt/local-nvme/miles-staging"
-            type: DirectoryOrCreate
+            type: "DirectoryOrCreate"
         - name: uninstall-manifest
           configMap:
             name: "myrun-miles-run-uninstall-manifest"
@@ -552,15 +562,18 @@ spec:
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/cluster-storage"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/miles"
               subPath: "myuser/miles"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
               subPath: "myuser/Megatron-LM"
-            - name: node-local
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
               mountPath: "/scratch"
           command:
             - "<PYTHON>"
@@ -592,8 +605,6 @@ spec:
               value: "mlx5_0,mlx5_1"
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
-            - name: "PYTHONPATH"
-              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -602,13 +613,17 @@ spec:
           resources:
             {}
       volumes:
-        - name: shared-storage
+        - name: "cluster-storage"
           persistentVolumeClaim:
-            claimName: "miles-shared-nvme"
-        - name: node-local
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
           hostPath:
             path: "/mnt/local-nvme/miles-staging"
-            type: DirectoryOrCreate
+            type: "DirectoryOrCreate"
 ---
 # Source: miles-run/templates/static-workers.yaml
 apiVersion: apps/v1
@@ -658,15 +673,18 @@ spec:
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/cluster-storage"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/miles"
               subPath: "myuser/miles"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
               subPath: "myuser/Megatron-LM"
-            - name: node-local
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
               mountPath: "/scratch"
           command:
             - "<PYTHON>"
@@ -698,8 +716,6 @@ spec:
               value: "mlx5_0,mlx5_1"
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
-            - name: "PYTHONPATH"
-              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -708,13 +724,17 @@ spec:
           resources:
             {}
       volumes:
-        - name: shared-storage
+        - name: "cluster-storage"
           persistentVolumeClaim:
-            claimName: "miles-shared-nvme"
-        - name: node-local
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
           hostPath:
             path: "/mnt/local-nvme/miles-staging"
-            type: DirectoryOrCreate
+            type: "DirectoryOrCreate"
 ---
 # Source: miles-run/templates/static-workers.yaml
 apiVersion: apps/v1
@@ -763,15 +783,18 @@ spec:
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/cluster-storage"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/miles"
               subPath: "myuser/miles"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
               subPath: "myuser/Megatron-LM"
-            - name: node-local
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
               mountPath: "/scratch"
           command:
             - "<PYTHON>"
@@ -807,8 +830,6 @@ spec:
               value: "mlx5_0,mlx5_1"
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
-            - name: "PYTHONPATH"
-              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -819,13 +840,17 @@ spec:
           resources:
             {}
       volumes:
-        - name: shared-storage
+        - name: "cluster-storage"
           persistentVolumeClaim:
-            claimName: "miles-shared-nvme"
-        - name: node-local
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
           hostPath:
             path: "/mnt/local-nvme/miles-staging"
-            type: DirectoryOrCreate
+            type: "DirectoryOrCreate"
 ---
 # Source: miles-run/templates/static-workers.yaml
 apiVersion: apps/v1
@@ -874,15 +899,18 @@ spec:
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/cluster-storage"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/miles"
               subPath: "myuser/miles"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
               subPath: "myuser/Megatron-LM"
-            - name: node-local
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
               mountPath: "/scratch"
           command:
             - "<PYTHON>"
@@ -907,8 +935,6 @@ spec:
               value: "mlx5_0,mlx5_1"
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
-            - name: "PYTHONPATH"
-              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -917,13 +943,17 @@ spec:
           resources:
             {}
       volumes:
-        - name: shared-storage
+        - name: "cluster-storage"
           persistentVolumeClaim:
-            claimName: "miles-shared-nvme"
-        - name: node-local
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
           hostPath:
             path: "/mnt/local-nvme/miles-staging"
-            type: DirectoryOrCreate
+            type: "DirectoryOrCreate"
 ---
 # Source: miles-run/templates/static-workers.yaml
 apiVersion: apps/v1
@@ -973,15 +1003,18 @@ spec:
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/cluster-storage"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/miles"
               subPath: "myuser/miles"
-            - name: shared-storage
+            - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
               subPath: "myuser/Megatron-LM"
-            - name: node-local
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
               mountPath: "/scratch"
           command:
             - "<PYTHON>"
@@ -1013,8 +1046,6 @@ spec:
               value: "mlx5_0,mlx5_1"
             - name: "NCCL_SOCKET_IFNAME"
               value: "bond0"
-            - name: "PYTHONPATH"
-              value: "/root/miles:/root/Megatron-LM"
             - name: "PYTHONUNBUFFERED"
               value: "1"
           ports:
@@ -1023,13 +1054,17 @@ spec:
           resources:
             {}
       volumes:
-        - name: shared-storage
+        - name: "cluster-storage"
           persistentVolumeClaim:
-            claimName: "miles-shared-nvme"
-        - name: node-local
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
           hostPath:
             path: "/mnt/local-nvme/miles-staging"
-            type: DirectoryOrCreate
+            type: "DirectoryOrCreate"
 
 ---
 # Source: miles-run/templates/inference-engines.yaml
@@ -1081,18 +1116,21 @@ spec:
             image: "myregistry.example/myteam/miles:v0.9.3-cu128"
             imagePullPolicy: "IfNotPresent"
             volumeMounts:
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/cluster-storage"
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/root/miles"
                 subPath: "myuser/miles"
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/root/Megatron-LM"
                 subPath: "myuser/Megatron-LM"
-              - name: node-local
+              - name: "models"
+                mountPath: "/models"
+                readOnly: true
+              - name: "scratch"
                 mountPath: "/scratch"
               - name: dev-shm
-                mountPath: /dev/shm
+                mountPath: "/dev/shm"
             command:
               - "<PYTHON>"
               - "-m"
@@ -1166,8 +1204,6 @@ spec:
                 value: "all"
               - name: "NVSHMEM_DISABLE_NCCL"
                 value: "1"
-              - name: "PYTHONPATH"
-                value: "/root/miles:/root/Megatron-LM"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
               - name: "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
@@ -1219,17 +1255,21 @@ spec:
               limits:
                 nvidia.com/gpu: 0
         volumes:
-          - name: shared-storage
+          - name: "cluster-storage"
             persistentVolumeClaim:
-              claimName: "miles-shared-nvme"
-          - name: node-local
+              claimName: miles-shared-nvme
+          - name: "models"
+            hostPath:
+              path: "/gpfs/models"
+              type: "Directory"
+          - name: "scratch"
             hostPath:
               path: "/mnt/local-nvme/miles-staging"
-              type: DirectoryOrCreate
+              type: "DirectoryOrCreate"
           - name: dev-shm
             hostPath:
-              path: /dev/shm
-              type: Directory
+              path: "/dev/shm"
+              type: "Directory"
 ---
 # Source: miles-run/templates/inference-engines.yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -1280,18 +1320,21 @@ spec:
             image: "myregistry.example/myteam/miles:v0.9.3-cu128"
             imagePullPolicy: "IfNotPresent"
             volumeMounts:
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/cluster-storage"
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/root/miles"
                 subPath: "myuser/miles"
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/root/Megatron-LM"
                 subPath: "myuser/Megatron-LM"
-              - name: node-local
+              - name: "models"
+                mountPath: "/models"
+                readOnly: true
+              - name: "scratch"
                 mountPath: "/scratch"
               - name: dev-shm
-                mountPath: /dev/shm
+                mountPath: "/dev/shm"
             command:
               - "<PYTHON>"
               - "-m"
@@ -1359,8 +1402,6 @@ spec:
                 value: "all"
               - name: "NVSHMEM_DISABLE_NCCL"
                 value: "1"
-              - name: "PYTHONPATH"
-                value: "/root/miles:/root/Megatron-LM"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
               - name: "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
@@ -1410,17 +1451,21 @@ spec:
               limits:
                 nvidia.com/gpu: 0
         volumes:
-          - name: shared-storage
+          - name: "cluster-storage"
             persistentVolumeClaim:
-              claimName: "miles-shared-nvme"
-          - name: node-local
+              claimName: miles-shared-nvme
+          - name: "models"
+            hostPath:
+              path: "/gpfs/models"
+              type: "Directory"
+          - name: "scratch"
             hostPath:
               path: "/mnt/local-nvme/miles-staging"
-              type: DirectoryOrCreate
+              type: "DirectoryOrCreate"
           - name: dev-shm
             hostPath:
-              path: /dev/shm
-              type: Directory
+              path: "/dev/shm"
+              type: "Directory"
 
 ---
 # Source: miles-run/templates/trainer-engines.yaml
@@ -1470,18 +1515,21 @@ spec:
             image: "myregistry.example/myteam/miles:v0.9.3-cu128"
             imagePullPolicy: "IfNotPresent"
             volumeMounts:
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/cluster-storage"
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/root/miles"
                 subPath: "myuser/miles"
-              - name: shared-storage
+              - name: "cluster-storage"
                 mountPath: "/root/Megatron-LM"
                 subPath: "myuser/Megatron-LM"
-              - name: node-local
+              - name: "models"
+                mountPath: "/models"
+                readOnly: true
+              - name: "scratch"
                 mountPath: "/scratch"
               - name: dev-shm
-                mountPath: /dev/shm
+                mountPath: "/dev/shm"
             command:
               - "bash"
               - "-c"
@@ -1507,8 +1555,6 @@ spec:
                 value: "mlx5_0,mlx5_1"
               - name: "NCCL_SOCKET_IFNAME"
                 value: "bond0"
-              - name: "PYTHONPATH"
-                value: "/root/miles:/root/Megatron-LM"
               - name: "PYTHONUNBUFFERED"
                 value: "1"
             ports:
@@ -1520,14 +1566,18 @@ spec:
               limits:
                 nvidia.com/gpu: 8
         volumes:
-          - name: shared-storage
+          - name: "cluster-storage"
             persistentVolumeClaim:
-              claimName: "miles-shared-nvme"
-          - name: node-local
+              claimName: miles-shared-nvme
+          - name: "models"
+            hostPath:
+              path: "/gpfs/models"
+              type: "Directory"
+          - name: "scratch"
             hostPath:
               path: "/mnt/local-nvme/miles-staging"
-              type: DirectoryOrCreate
+              type: "DirectoryOrCreate"
           - name: dev-shm
             hostPath:
-              path: /dev/shm
-              type: Directory
+              path: "/dev/shm"
+              type: "Directory"
