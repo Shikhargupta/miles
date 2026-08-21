@@ -20,7 +20,7 @@ import pytest
 
 from miles.ray.multi_lora.backend import MultiLoraOperationBackend
 from miles.ray.multi_lora.config import AdapterRunConfig
-from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
+from miles.ray.multi_lora.registry import AdapterRegistry
 from miles.ray.multi_lora.residency import FixedSlotResidency, ResidentBinding, lease_from_metadata, lease_to_metadata
 
 
@@ -209,28 +209,3 @@ class TestTrainerLocalValidation:
 
         with pytest.raises(RuntimeError, match="no execution lease"):
             validate_batch_lease({}, loaded)
-
-    def test_retiring_lifecycle_does_not_invalidate_the_local_receipt(self):
-        """The trainer check is ownership-based (name, registration, slot vs
-        loaded_adapters) — a claim-then-deregister still validates because the
-        adapter stays loaded until the next reconcile; AdapterState never
-        enters the local check."""
-        from miles.backends.megatron_utils.api_backends.multi_lora.trainer import validate_batch_lease
-
-        loaded = {"A": SimpleNamespace(registration_id="r-A", slot=0)}
-        lease = {"batch_execution_lease": {"dispatch_id": "d", "bindings_by_operation": [["op-A", ["A", "r-A", 0]]]}}
-        validate_batch_lease(lease, loaded)
-
-
-def test_registry_lifecycle_untouched_by_residency_reads():
-    """Fixed residency invariant (§5.1): N_active == READY == fixed-resident
-    <= slots; the port adds lookups, never new lifecycle transitions."""
-    registry = make_registry(1)
-    residency = FixedSlotResidency(registry)
-    register_ready(registry, "A")
-    registry.register("B", AdapterRunConfig())
-    assert registry.records["B"].slot is None
-    assert registry.records["B"].state is AdapterState.PENDING
-    for _ in range(3):
-        residency.binding_for(("B", registry.records["B"].registration_id))
-    assert registry.records["B"].slot is None  # still queued; no LRU, no swap

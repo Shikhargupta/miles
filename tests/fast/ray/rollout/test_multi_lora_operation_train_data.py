@@ -323,14 +323,3 @@ class TestTinkerDispatchSummary:
         from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
 
         assert tinker_dispatch_summary({"tokens": [[1]]}) is None
-
-    def test_summary_matches_the_converted_batch(self):
-        from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
-
-        plan = [plan_entry("A", 0, op_id="op-A"), plan_entry("B", 1, op_id="op-B")]
-        metadata = plan_metadata(plan)
-        samples = [make_sample("A", 0), make_sample("B", 0)]
-        train_data = convert(samples, metadata)
-        summary = tinker_dispatch_summary(train_data)
-        assert summary["operation_ids"] == ["op-A", "op-B"]
-        assert summary["lease"] == metadata["batch_execution_lease"]

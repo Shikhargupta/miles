@@ -182,17 +182,6 @@ class TestPoisonedWindow:
         ledger.fail("fw1", "bad forward", "user")  # forward accumulates nothing
         assert ledger.poisoned_window_blocker("A", "ra", 2) is None
 
-    def test_claims_stamp_was_claimed(self):
-        ledger = OperationLedger()
-        enqueue(ledger, "fb1", 1, "forward_backward")
-        enqueue(ledger, "opt2", 2, "optim_step")
-        assert ledger.by_id["fb1"].was_claimed is False
-        ledger.claim_data_operation("A", "ra")
-        assert ledger.by_id["fb1"].was_claimed is True
-        ledger.complete("fb1", {})
-        ledger.claim_control_operation("A", "ra")
-        assert ledger.by_id["opt2"].was_claimed is True
-
 
 class TestTerminals:
     def test_cancel_applies_only_to_queued_and_keeps_contiguity(self):

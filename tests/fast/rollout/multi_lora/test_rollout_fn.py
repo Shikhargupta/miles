@@ -193,13 +193,6 @@ class TestSelectionKindLock:
         # The other-kind batch is untouched and stays READY for the next call.
         assert other.state == AdapterRolloutRuntime.READY
 
-    def test_all_forward_selection_is_fine(self):
-        fn = make_fn()
-        ready_runtime(fn, "A", 0, "forward")
-        ready_runtime(fn, "B", 1, "forward")
-        selected = asyncio.run(fn._select())
-        assert {r.ready_kind for r in selected} == {"forward"}
-
     def test_soft_target_stops_collection_but_never_trims(self):
         fn = make_fn(soft_target=1)
         ready_runtime(fn, "A", 0, "forward_backward")

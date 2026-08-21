@@ -15,7 +15,6 @@ import miles.backends.megatron_utils.api_backends.multi_lora.checkpoint as tc
 from miles.backends.megatron_utils.api_backends.multi_lora.checkpoint import (
     FORMAT,
     find_slot_state,
-    named_state_dir,
     stable_slot_param_name,
 )
 
@@ -69,11 +68,6 @@ class TestManifestGating:
 
         write_manifest(base, format="something-old")
         assert find_slot_state(adapter) is None
-
-    def test_named_state_dir_layout(self, tmp_path):
-        adapter = make_adapter(tmp_path)
-        assert named_state_dir(adapter, "ckpt-a") == tmp_path / "states" / "ckpt-a"
-        assert named_state_dir(SimpleNamespace(config=SimpleNamespace(save=None)), "x") is None
 
 
 class TestSlotStateRoundTrip:

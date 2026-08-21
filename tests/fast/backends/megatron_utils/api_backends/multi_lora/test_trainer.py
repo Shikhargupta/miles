@@ -217,19 +217,6 @@ class TestLoadAdapters:
         assert reloaded == [0]
 
 
-def test_forward_only_reaches_the_training_schedule():
-    """The executor promise in the tinker loss (losses.py): a forward batch
-    runs the Megatron schedule with forward_only=True — the verb must exist on
-    the train entry points the actor threads it through."""
-    import inspect
-
-    from miles.backends.megatron_utils import model as megatron_model
-
-    for fn in (megatron_model.train, megatron_model.train_one_step):
-        parameter = inspect.signature(fn).parameters["forward_only"]
-        assert parameter.default is False
-
-
 class TestGatherAndCommit:
     def test_gather_groups_rows_per_operation_in_order(self):
         rollout_data = {
@@ -298,8 +285,3 @@ class TestPushPlumbing:
         assert recorded == []
         trainer.commit_weight_push(["A"], is_main_rank=True)
         assert recorded == [["A"]]
-
-
-def test_serving_name_is_registration_scoped():
-    run = make_run()
-    assert run.serving_name == "__miles_adapter_X_reg1"

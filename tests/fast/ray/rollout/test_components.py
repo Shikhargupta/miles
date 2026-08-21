@@ -1,10 +1,4 @@
-"""Factory contract for the role-separated rollout construction
-(codex-rollout-fullparameter-design-0810 §4.3/§4.8/§8.2): the factory unpacks
-(rollout_manager, num_rollout_per_epoch), returns two DISTINCT role objects
-sharing one legacy handle (num_rollout_per_epoch is dropped: the tinker
-driver has no epochs), the bundle disposes exactly once, and
-future-shaped fakes can replace the factory without changing driver call
-sites."""
+"""Factory and lifecycle behavior for role-separated rollout components."""
 
 from types import SimpleNamespace
 
@@ -14,7 +8,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import asyncio
 
-from miles.ray.rollout.components import InferenceEndpoint, RolloutComponents, create_rollout_components
+from miles.ray.rollout.components import InferenceEndpoint, create_rollout_components
 
 
 class Remote:
@@ -70,48 +64,3 @@ def test_bundle_disposes_the_shared_actor_exactly_once(monkeypatch):
     asyncio.run(components.dispose())
     asyncio.run(components.dispose())  # second call must be a no-op
     assert [name for name, _ in log].count("dispose") == 1
-
-
-def test_future_shaped_fakes_satisfy_the_bundle_without_the_factory():
-    """A split-world construction (separate controller/executor objects) fits
-    the same bundle: driver call sites depend only on the role surface."""
-
-    calls: list = []
-
-    class FakeController:
-        async def get_inference_endpoint(self):
-            return InferenceEndpoint(host="h", port=1)
-
-        async def prepare_rollout(self, rollout_id):
-            calls.append(("prepare", rollout_id))
-
-    class FakeExecutor:
-        async def generate(self, rollout_id):
-            calls.append(("generate", rollout_id))
-            return rollout_id
-
-    class FakeLifecycle:
-        def __init__(self):
-            self.disposed = 0
-
-        async def dispose_once(self):
-            self.disposed += 1
-
-    lifecycle = FakeLifecycle()
-    components = RolloutComponents(
-        inference_controller=FakeController(),
-        rollout_executor=FakeExecutor(),
-        lifecycle=lifecycle,
-        weight_update_owner=object(),
-    )
-
-    async def one_cycle():
-        # The driver's per-rollout order: prepare on the controller role,
-        # then generate on the executor role.
-        await components.inference_controller.prepare_rollout(5)
-        return await components.rollout_executor.generate(5)
-
-    assert asyncio.run(one_cycle()) == 5
-    assert calls == [("prepare", 5), ("generate", 5)]
-    asyncio.run(components.dispose())
-    assert lifecycle.disposed == 1

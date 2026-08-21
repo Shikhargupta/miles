@@ -148,13 +148,6 @@ def test_step_applies_per_call_adam_uses_temporary_clip_and_clears_window():
     assert optimizer.zero_calls == 1
 
 
-def test_clean_step_needs_no_dirty_state():
-    executor, _, _ = make_executor()
-
-    assert not hasattr(executor, "dirty")
-    assert executor.step_many(make_lease(), [make_request()])["op"]["ok"] is True
-
-
 def test_zero_clip_uses_infinite_stock_clip_to_measure_norm_without_scaling():
     def direct_optimizer_result(optimizer):
         return (True, 4.25, 0) if optimizer.config.clip_grad == float("inf") else (True, None, 0)

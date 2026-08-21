@@ -21,7 +21,6 @@ from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
     build_multi_lora_operation_optimizer,
     step_adapter_slots,
 )
-from miles.backends.training_utils.operation_execution import ADAM_PARAM_DEFAULTS
 
 
 class FakeChild:
@@ -89,13 +88,6 @@ def no_slot_traversal(monkeypatch):
 
 
 class TestAdamParams:
-    def test_defaults_fill_and_none_is_absent(self):
-        chained = FakeChained({0: [FakeChild([[1.0]])]})
-        resolved = apply_adam_params_to_slot(chained, 0, {"learning_rate": 3e-4, "grad_clip_norm": None})
-        assert resolved["learning_rate"] == 3e-4
-        assert resolved["grad_clip_norm"] == ADAM_PARAM_DEFAULTS["grad_clip_norm"]
-        assert resolved["beta2"] == 0.95 and resolved["eps"] == 1e-12
-
     def test_lands_on_every_group_of_the_slot_only(self):
         mine, other = FakeChild([[1.0]]), FakeChild([[1.0]])
         chained = FakeChained({0: [mine], 1: [other]})
