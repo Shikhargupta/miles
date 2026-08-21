@@ -162,10 +162,10 @@ class RolloutManager:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        pack = dict(sample_indices=sample_indices, data_ref=data_ref)
         if dispatch is not None:
-            pack["tinker_dispatch"] = dispatch
-        return pack
+            return dict(sample_indices=sample_indices, data_ref=data_ref, tinker_dispatch=dispatch)
+        else:
+            return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(
         self,
