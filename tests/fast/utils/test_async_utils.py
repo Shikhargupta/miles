@@ -522,6 +522,26 @@ class TestWaitCancellingPendingOnFirstCompletion:
                 [asyncio.create_task(failing()), asyncio.create_task(slow())]
             )
 
+    async def test_primary_failure_precedes_a_cleanup_failure_from_an_earlier_task(self):
+        """Cancellation cleanup is attached without masking the failure that ended the run."""
+
+        async def cleanup_failure():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        async def primary_failure():
+            await asyncio.sleep(0.01)
+            raise ValueError("training failed")
+
+        with pytest.raises(ValueError, match="training failed") as exc_info:
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(cleanup_failure()), asyncio.create_task(primary_failure())]
+            )
+
+        assert any("RuntimeError: cleanup exploded" in note for note in exc_info.value.__notes__)
+
     async def test_the_cancelled_members_are_awaited_before_the_error_is_raised(self):
         """Raising before the cleanup lands would let a half-cancelled task outlive the caller."""
         cleaned_up = False
