@@ -86,7 +86,11 @@ def _router() -> CommandWorkerSpec:
 def run_files_under_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     # the shared root comes from the chart and points at the cluster's storage mount, which the
     # cpu lane neither has nor may create
-    monkeypatch.setattr(entrypoint.InfraInfo, "shared_root", staticmethod(lambda infra: str(tmp_path)))
+    monkeypatch.setattr(
+        entrypoint.InfraInfo,
+        "shared_root",
+        staticmethod(lambda _infra, *, namespace: str(tmp_path)),
+    )
 
 
 def launch_argv(
