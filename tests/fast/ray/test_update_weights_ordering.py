@@ -204,6 +204,33 @@ async def test_cancelling_the_broadcast_closes_the_update_window_without_readyin
 
 
 @pytest.mark.asyncio
+async def test_a_failed_broadcast_closes_the_update_window_without_readying_cells():
+    """A failed policy broadcast releases its update window without accepting partial weights."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _OrderRecordingInferenceController(order)
+
+    async def _fail_update_weights(*, info: object, rollout_id: int | None = None) -> int:
+        order.append("trainer_update_weights")
+        raise RuntimeError("broadcast failed")
+
+    actor_model = MagicMock(update_weights=AsyncMock(side_effect=_fail_update_weights))
+
+    with pytest.raises(RuntimeError, match="broadcast failed"):
+        await update_weights(
+            _orchestration_args(),
+            actor_model,
+            MagicMock(set_weight_version=AsyncMock()),
+            inference_controller,
+        )
+
+    assert order == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
+    [end_kwargs] = [kwargs for name, _args, kwargs in inference_controller.calls if name == "end_update_weights"]
+    assert end_kwargs == {"snapshot_cell_id_to_hashes": {}}
+
+
+@pytest.mark.asyncio
 async def test_the_window_is_scoped_to_the_policy_the_script_is_publishing():
     """Without the scope, one policy's trainer broadcasts its weights into another policy's engines."""
     from miles.ray.placement_group import update_weights
