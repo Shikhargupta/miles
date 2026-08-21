@@ -160,6 +160,14 @@ The buffer decouples the two loops. As long as it holds finished groups, the tra
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
 cannot hide it.
 
+In a multi-policy run, the built-in composite routes one complete
+`n_samples_per_prompt` subgroup to each policy. If one trajectory produces no sample
+for a policy, that policy's short subgroup is discarded instead of being combined with
+a later prompt group. Complete sibling subgroups remain eligible, and the next complete
+group for the missing policy wakes its waiting trainer. This per-policy discard does not
+invoke `--async-unused-samples-handler`, because retrying the shared prompt group would
+also duplicate the complete sibling policy's samples.
+
 ### Arguments: Buffer options
 
 Buffer capacity bounds how far generation can run ahead of training:
