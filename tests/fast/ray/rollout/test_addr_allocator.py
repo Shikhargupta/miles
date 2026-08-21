@@ -15,7 +15,6 @@ from miles.ray.rollout.addr_allocator import (
 
 @pytest.fixture
 def patch_ray_get(monkeypatch):
-    """Make allocator Ray calls return the fake engine's value directly."""
     import miles.ray.rollout.addr_allocator as mod
 
     monkeypatch.setattr(mod.ray, "get", lambda x: x)

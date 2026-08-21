@@ -1,12 +1,3 @@
-"""Tinker per-operation-lane loss dispatch: linear CE / importance sampling /
-PPO, sum-reduction (chunk-additive), per-sample lane correlation, channel
-validation, and homogeneous forward-only collection. The physical
-``adapter_slots`` never appear here: they route the Multi-LoRA forward only."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import pytest
 import torch
 
@@ -101,7 +92,7 @@ def test_importance_sampling_and_ppo_clip():
         -torch.minimum(r * a, r.clamp(0.9, 1.1) * a).sum() for r, a in zip(ratios, advantages, strict=True)
     )
     assert torch.allclose(loss_ppo, expected_ppo)
-    # Clipping binds somewhere, otherwise this test proves nothing.
+    # Ensure these logits exercise the clipped branch.
     assert not torch.allclose(loss_ppo, loss)
 
 

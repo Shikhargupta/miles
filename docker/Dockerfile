@@ -165,11 +165,6 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@74d68c5e4bedf2b6774f2c92ed0f81b7c8d91ed0 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-# radixark/Megatron-Bridge @bridge (the fork's default branch; carries #27: multi-LoRA
-# recompute and expert DDP routing). The branch is tracked deliberately so images follow
-# bridge development without a Dockerfile edit per merge. Caveat: buildkit caches this
-# layer on the instruction text alone, so a rebuild only picks up new bridge commits with
-# --no-cache (or an explicit cache-bust); a stale cache silently keeps the old revision.
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps

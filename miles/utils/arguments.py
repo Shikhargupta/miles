@@ -1833,14 +1833,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "as new operations. <= 0 disables (default: 600)",
             )
             parser.add_argument(
-                "--multi-lora-adapter",
-                nargs=2,
-                action="append",
-                type=str,
-                dest="multi_lora_adapters",
-                default=[],
-            )
-            parser.add_argument(
                 "--multi-lora-idle-poll-s",
                 type=float,
                 default=5.0,
@@ -1934,12 +1926,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Seconds a terminal-but-never-retrieved future result is retained before "
                 "the reaper evicts it to a fingerprint tombstone (a late retry then gets a "
                 "typed 410, never a silent re-execution). <= 0 disables (default: 3600)",
-            )
-            parser.add_argument(
-                "--multi-lora-disable-service-mode",
-                action="store_false",
-                dest="multi_lora_service_mode",
-                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
             )
             return parser
 

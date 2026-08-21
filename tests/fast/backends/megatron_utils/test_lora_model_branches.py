@@ -164,7 +164,7 @@ class TestSetupModelAndOptimizerLoraBranch:
         mock_get_model.assert_called_once()
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
-    @patch("miles.backends.megatron_utils.multi_lora.optimizer.build_multi_lora_operation_optimizer")
+    @patch("miles.backends.megatron_utils.api_backends.multi_lora.optimizer.build_multi_lora_operation_optimizer")
     @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
     @patch(f"{_MODEL_MODULE}._setup_lora_model_via_bridge")
     def test_multi_lora_operations_route_to_canonical_optimizer_builder(

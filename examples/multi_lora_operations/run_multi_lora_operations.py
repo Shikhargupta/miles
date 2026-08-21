@@ -1,16 +1,3 @@
-"""Multi-LoRA operation example (Qwen3-4B, disaggregated 4 train + 4 rollout GPUs).
-
-Serves the operation API for client-driven LoRA training: no datasets, no
-reward functions — clients enqueue forward_backward/optim_step operations and
-sample through the shared engines. The driver is ``train_multi_lora_operations.py``
-at the repo root.
-
-Usage:
-  python examples/multi_lora_operations/run_multi_lora_operations.py prepare   # download Qwen3-4B (once per node)
-  python examples/multi_lora_operations/run_multi_lora_operations.py serve     # service mode: idles for registrations (API on :8068)
-  python examples/multi_lora_operations/run_multi_lora_operations.py train     # pre-registers adapters/example.yaml, exits when it retires
-"""
-
 from dataclasses import dataclass
 
 import typer
@@ -19,11 +6,15 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
-_ADAPTER_DIR = f"{U.repo_base_dir}/examples/multi_lora_operations/adapters"
-
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
+    """Launch configuration for the Multi-LoRA operation backend example.
+
+    Full-parameter targets can reuse the protocol-neutral operation contract,
+    not the LoRA slot and adapter settings defined by this launcher.
+    """
+
     run_id: str = U.create_run_id()
 
     hf_checkpoint: str | None = None
@@ -37,17 +28,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_num_gpus: int = 4
     tp: int = 2
 
-    # LoRA slot pool: clients may register with rank <= lora_rank; alpha is fixed here.
-    lora_rank: int = 32
-    lora_alpha: int = 64
-    target_modules: str = "all-linear"
-    n_adapters: int = 4
-    adapters: str = "example"
+    # Deployment-wide LoRA slot constraints.
+    max_lora_rank: int = 32
+    backend_lora_alpha: int = 64
+    backend_target_modules: str = "all-linear"
+    max_adapters: int = 4
 
     # Soft coalescing target for one train call (whole client batches only).
-    rollout_batch_size: int = 32
-    n_samples_per_prompt: int = 1
-    global_batch_size: int = 32
+    backend_batch_size: int = 32
 
     api_port: int = 8068
     enable_wandb: bool = False
@@ -66,32 +54,28 @@ def prepare(args: ScriptArgs):
     U.exec_command_cpu(f"hf download Qwen/Qwen3-4B --local-dir {args.model_dir}/Qwen3-4B")
 
 
-def _serve(args: ScriptArgs, service: bool):
-    mode = "service" if service else "bounded"
+def _serve(args: ScriptArgs):
     print(
-        f"[run] Multi-LoRA operations ({mode}): " f"{args.actor_num_gpus} train + {args.rollout_num_gpus} rollout GPUs"
+        f"[run] Multi-LoRA operations (service): "
+        f"{args.actor_num_gpus} train + {args.rollout_num_gpus} rollout GPUs"
     )
 
     ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
     lora_args = (
-        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} "
-        f'--lora-dropout 0.0 --target-modules "{args.target_modules}" '
+        f"--lora-rank {args.max_lora_rank} --lora-alpha {args.backend_lora_alpha} "
+        f'--lora-dropout 0.0 --target-modules "{args.backend_target_modules}" '
     )
-    tinker_args = f"--tinker-backend --multi-lora-n-adapters {args.n_adapters} --multi-lora-idle-poll-s 5 "
-    if service:
-        tinker_args += f"--multi-lora-api-port {args.api_port} "
-    else:
-        for name in args.adapters.split(","):
-            tinker_args += f'--multi-lora-adapter "{name}" "{_ADAPTER_DIR}/{name}.yaml" '
-        tinker_args += "--multi-lora-disable-service-mode "
+    tinker_args = (
+        f"--tinker-backend --multi-lora-n-adapters {args.max_adapters} "
+        f"--multi-lora-idle-poll-s 5 --multi-lora-api-port {args.api_port} "
+    )
 
     # in_place pause + upsert push: adapters publish without unloading.
     sync_args = "--pause-generation-mode in_place "
 
     rollout_args = (
-        f"--rollout-batch-size {args.rollout_batch_size} "
-        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
-        f"--global-batch-size {args.global_batch_size} "
+        f"--rollout-batch-size {args.backend_batch_size} "
+        f"--n-samples-per-prompt 1 --global-batch-size {args.backend_batch_size} "
         "--num-rollout 1000000 "
     )
 
@@ -138,14 +122,7 @@ def _serve(args: ScriptArgs, service: bool):
 @U.dataclass_cli
 def serve(args: ScriptArgs):
     """Service mode: no adapters preloaded; register via the HTTP API while it idles."""
-    _serve(args, service=True)
-
-
-@app.command()
-@U.dataclass_cli
-def train(args: ScriptArgs):
-    """Bounded run: pre-register adapters/, exit when every registration retires."""
-    _serve(args, service=False)
+    _serve(args)
 
 
 @app.callback()

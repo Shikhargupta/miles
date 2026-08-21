@@ -300,9 +300,9 @@ its own Adam state and independently clocked scheduler. The trainer coalesces
 ready prompt-group slices or partial adapter batches and selectively upserts
 only changed adapters into SGLang.
 
-Set the slot capacity with `--multi-lora-n-adapters N`. A bounded run registers
-repeatable `--multi-lora-adapter NAME PATH` entries at startup; service mode can
-start with empty slots and register adapters through the controller HTTP API.
+Set the slot capacity with `--multi-lora-n-adapters N`. The operation backend
+starts as a long-running service with empty slots and registers adapters at
+runtime through the controller HTTP API.
 This path currently forces Megatron-Bridge LoRA and requires disaggregated NCCL
 broadcast, PP1, THD, Adam, and no train offload. Shared-outer expert adapters are
 unsupported, and MoE expert adapters cannot use FP8/FP4 experts.
@@ -412,5 +412,5 @@ proposed, it replaces the current dataset-driven driver.
 - `miles/rollout/session/core.py` attaches the single adapter to agentic session
   requests.
 - `miles/ray/multi_lora/`, `miles/rollout/multi_lora/`, and
-  `miles/backends/megatron_utils/multi_lora_*.py` implement the multi-adapter
+  `miles/backends/megatron_utils/api_backends/multi_lora/` implement the multi-adapter
   controller, routing, scheduling, optimization, and checkpoint path.

@@ -1,13 +1,3 @@
-"""Engine-admin transport for the Multi-LoRA operation backend
-(codex-rollout-fullparameter-design-0810 §4.6).
-
-The backend's only engine-facing need is registration-scoped request
-aborting; it goes through this narrow port so the engine lifecycle owner can
-change under it — the current adapter discovers workers straight off the
-SGLang router, a post-PR-#1842 adapter delegates to the InferenceController.
-Registry state, serving versions, and sampling-session authority stay in the
-operation backend: none of that ever moves behind this port."""
-
 import asyncio
 import logging
 from typing import Protocol

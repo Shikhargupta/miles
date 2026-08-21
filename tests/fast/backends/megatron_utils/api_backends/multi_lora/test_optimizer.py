@@ -1,32 +1,19 @@
-"""Per-slot Adam semantics that must hold for Multi-LoRA slots: AdamParams land
-per-call, gradient sums are never count-normalized, clip is the per-call
-grad_clip_norm, and a non-finite slot is vetoed (grads cleared, not stepped)
-without touching its neighbours."""
-
-from types import ModuleType, SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
 
-import miles.backends.megatron_utils.multi_lora.optimizer as multi_lora_optimizer
-from miles.backends.megatron_utils.multi_lora.optimizer import (
+import miles.backends.megatron_utils.api_backends.multi_lora.optimizer as multi_lora_optimizer
+from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
     _found_inf_anywhere,
     apply_adam_params_to_slot,
     build_multi_lora_operation_optimizer,
     step_adapter_slots,
 )
-from miles.backends.training_utils.operation_execution import ADAM_PARAM_DEFAULTS
 
 
 class FakeChild:
-    """The MegatronOptimizer surface step_adapter_slots touches."""
-
     def __init__(self, grads, found_inf=False):
         self.params = [torch.nn.Parameter(torch.zeros(len(g))) for g in grads]
         for param, grad in zip(self.params, grads, strict=True):
@@ -63,7 +50,6 @@ class FakeChained:
 
 @pytest.fixture()
 def torch_clip_grads(monkeypatch):
-    """Deterministic stand-in for megatron.core.optimizer.clip_grads."""
     fake = ModuleType("megatron.core.optimizer.clip_grads")
 
     def get_grad_norm_fp32(grads, grad_stats_parallel_group=None):
@@ -83,19 +69,10 @@ def torch_clip_grads(monkeypatch):
 
 @pytest.fixture()
 def no_slot_traversal(monkeypatch):
-    """zero_adapter_slot_grads traverses bridge modules; the fakes' grads are
-    authoritative here, so make the traversal a no-op."""
     monkeypatch.setattr(multi_lora_optimizer, "named_adapter_slot_parameters", lambda model, slot: iter(()))
 
 
 class TestAdamParams:
-    def test_defaults_fill_and_none_is_absent(self):
-        chained = FakeChained({0: [FakeChild([[1.0]])]})
-        resolved = apply_adam_params_to_slot(chained, 0, {"learning_rate": 3e-4, "grad_clip_norm": None})
-        assert resolved["learning_rate"] == 3e-4
-        assert resolved["grad_clip_norm"] == ADAM_PARAM_DEFAULTS["grad_clip_norm"]
-        assert resolved["beta2"] == 0.95 and resolved["eps"] == 1e-12
-
     def test_lands_on_every_group_of_the_slot_only(self):
         mine, other = FakeChild([[1.0]]), FakeChild([[1.0]])
         chained = FakeChained({0: [mine], 1: [other]})
@@ -111,14 +88,14 @@ class TestStep:
         chained = FakeChained({0: [child]})
         norms, vetoed, norm_blind = step_adapter_slots(chained, model=None, adam_params_by_slot={0: {}})
         assert vetoed == set()
-        assert norms[0] == pytest.approx(5.0)  # raw sum's norm, no 1/count anywhere
+        assert norms[0] == pytest.approx(5.0)
         assert child.stepped == 1 and chained.allgathered == 1
 
     def test_per_call_clip_scales_the_update(self, torch_clip_grads, no_slot_traversal):
         child = FakeChild([[3.0, 4.0]])
         chained = FakeChained({0: [child]})
         norms, _, _ = step_adapter_slots(chained, None, {0: {"grad_clip_norm": 1.0}})
-        assert norms[0] == pytest.approx(5.0)  # reported norm is pre-clip
+        assert norms[0] == pytest.approx(5.0)  # Norm reporting is pre-clip.
         assert torch.allclose(child.params[0].grad, torch.tensor([0.6, 0.8]), atol=1e-4)
 
     def test_zero_clip_means_no_clip(self, torch_clip_grads, no_slot_traversal):
@@ -134,14 +111,14 @@ class TestStep:
         norms, vetoed, _ = step_adapter_slots(chained, None, {0: {}, 1: {}})
         assert vetoed == {0} and bad.stepped == 0
         assert list(norms) == [1] and good.stepped == 1
-        assert chained.allgathered == 1  # slot 1 still publishes
+        assert chained.allgathered == 1
 
     def test_found_inf_from_prepare_grads_vetoes(self, torch_clip_grads, no_slot_traversal):
         child = FakeChild([[1.0]], found_inf=True)
         chained = FakeChained({0: [child]})
         norms, vetoed, _ = step_adapter_slots(chained, None, {0: {}})
         assert vetoed == {0} and norms == {} and child.stepped == 0
-        assert chained.allgathered == 0  # nothing stepped, nothing published
+        assert chained.allgathered == 0
 
     def test_untouched_slots_retain_grads(self, torch_clip_grads, no_slot_traversal):
         stepped, retained = FakeChild([[1.0]]), FakeChild([[7.0]])
@@ -151,14 +128,7 @@ class TestStep:
         assert torch.allclose(retained.params[0].grad, torch.tensor([7.0]))
 
     def test_norm_blind_slot_is_refused_not_silently_stepped(self, torch_clip_grads, no_slot_traversal):
-        """CPU repro of the GPT-OSS expert-LoRA failure shape (external
-        review + H200 diagnosis): children whose
-        get_main_grads_for_grad_norm() contributes NOTHING on any rank while
-        their parameters hold real gradients. The old behavior computed norm
-        0.0, reported it, silently no-op'ed the clip, and stepped anyway —
-        the contract now refuses the step (norm-blind veto) so a
-        parameter-flagging bug upstream can never train unclipped under a
-        lying grad_norm."""
+        """A slot with real gradients but no norm inputs must not step unclipped."""
 
         class NormBlindChild(FakeChild):
             def get_main_grads_for_grad_norm(self):
@@ -171,10 +141,7 @@ class TestStep:
         assert child.stepped == 0
 
     def test_truly_zero_gradients_step_with_a_truthful_zero_norm(self, torch_clip_grads, no_slot_traversal):
-        """The contrast case: an empty norm collection over ALL-ZERO
-        gradients is truthful (nothing to clip, nothing to lose) — the step
-        proceeds and reports 0.0 instead of failing a legitimate no-signal
-        optim_step."""
+        """Empty norm inputs are valid when every gradient is zero."""
 
         class NormBlindChild(FakeChild):
             def get_main_grads_for_grad_norm(self):

@@ -550,8 +550,7 @@ class TestMultiLoRAValidation:
         )
 
     def test_rejects_multi_lora_without_tinker_backend(self):
-        # The dataset-driven adapter-sample-level path was removed; multi-LoRA
-        # currently requires the Tinker adapter for the Multi-LoRA operation backend.
+        # The operation backend is currently the only supported Multi-LoRA path.
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
         args = parser.parse_args(

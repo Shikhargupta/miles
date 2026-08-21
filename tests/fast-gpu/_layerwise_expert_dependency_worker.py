@@ -1,5 +1,3 @@
-"""Distributed dependency-integration probe for Bridge expert LoRA and MCore LayerWise."""
-
 import os
 
 import pytest
