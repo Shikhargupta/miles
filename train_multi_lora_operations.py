@@ -38,8 +38,8 @@ def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
     return isinstance(task_error.as_instanceof_cause(), EmptyBatchTimeoutError)
 
 
-class ActorGroupWeightPublisher:
-    """Physical publish-barrier seam (codex-rollout-fullparameter-design-0810
+class ActorGroupWeightUpdater:
+    """Weight-update seam for the physical publish barrier (codex-rollout-fullparameter-design-0810
     §4.7): one parameterless call that lands whatever the training actors
     staged. It carries no tinker operation IDs, no lease, and no second
     binding list — the actor keeps sole authority over pending-push
@@ -49,7 +49,7 @@ class ActorGroupWeightPublisher:
     def __init__(self, actor_model) -> None:
         self._actor_model = actor_model
 
-    async def publish_staged_weights(self) -> None:
+    async def update_weights(self) -> None:
         await self._actor_model.update_weights()
 
 
@@ -94,7 +94,7 @@ async def train_data_batch(actor_model, controller, rollout_id: int, rollout_dat
         )
 
 
-async def run_control_phase(actor_model, controller, weight_publisher) -> None:
+async def run_control_phase(actor_model, controller, weight_updater) -> None:
     """Claim → execute → complete, with the publish barrier in the middle.
 
     The claim carries one BatchExecutionLease for the whole control batch
@@ -122,7 +122,7 @@ async def run_control_phase(actor_model, controller, weight_publisher) -> None:
 
         # Push staged weights (publishes and load_state re-publishes); a no-op
         # when nothing is staged. Serving versions bump as the push commits.
-        await weight_publisher.publish_staged_weights()
+        await weight_updater.update_weights()
 
         if deferred:
             # The barrier held: these weights are now live, so the operations may
@@ -170,7 +170,7 @@ async def main(args):
     # owner into the training actors; the driver never reaches through the
     # controller role for it.
     actor_model, _ = await create_training_models(args, pgs, rollout_components.weight_update_owner)
-    weight_publisher = ActorGroupWeightPublisher(actor_model)
+    weight_updater = ActorGroupWeightUpdater(actor_model)
 
     # CLI-registered adapters; loaded and marked READY by the first reconcile.
     for name, path in args.multi_lora_adapters:
@@ -200,7 +200,7 @@ async def main(args):
         # load bound registrations and open their READY gates.
         await actor_model.reconcile_tinker_adapters()
 
-        await run_control_phase(actor_model, controller, weight_publisher)
+        await run_control_phase(actor_model, controller, weight_updater)
 
         post_control = await controller.snapshot.remote()
         if not post_control["ready"]:
