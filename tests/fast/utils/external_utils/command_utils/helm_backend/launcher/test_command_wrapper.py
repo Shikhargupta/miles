@@ -103,7 +103,10 @@ class TestUninstallIfPresent:
             Helm,
             "run_raw",
             lambda *_arguments: subprocess.CompletedProcess(
-                [], returncode=1, stdout="", stderr='Error: uninstall: Release not loaded: miles-run-a: release: not found'
+                [],
+                returncode=1,
+                stdout="",
+                stderr="Error: uninstall: Release not loaded: miles-run-a: release: not found",
             ),
         )
 
