@@ -169,8 +169,8 @@ def test_policy_loss_only_backpropagates_through_current_policy(monkeypatch, use
     assert advantage_source.grad is None
 
 
-def test_ppo_kl_uses_double_precision_without_changing_policy_loss_or_gradient(monkeypatch):
-    """Signed KL accumulation stays below the gate without changing the training path."""
+def test_ppo_kl_uses_double_accumulation_and_preserves_metric_dtype(monkeypatch):
+    """Signed KL uses precise accumulation without changing its schema or training path."""
     args = _make_args(use_rollout_logprobs=False)
     num_tokens = 512
     stored_ppo_kl = torch.empty(num_tokens, dtype=torch.float32)
@@ -220,7 +220,9 @@ def test_ppo_kl_uses_double_precision_without_changing_policy_loss_or_gradient(m
 
     assert stored_ppo_kl.mean().abs() >= 1e-9
     assert stored_ppo_kl.double().mean().abs() < 1e-9
-    torch.testing.assert_close(metrics["ppo_kl"], stored_ppo_kl.double().mean(), rtol=0, atol=0)
+    expected_ppo_kl = stored_ppo_kl.double().mean().to(stored_ppo_kl.dtype)
+    torch.testing.assert_close(metrics["ppo_kl"], expected_ppo_kl, rtol=0, atol=0)
+    assert metrics["ppo_kl"].dtype == stored_ppo_kl.dtype
     assert torch.equal(loss, reference_loss)
     assert torch.equal(current_logits.grad, reference_logits.grad)
 

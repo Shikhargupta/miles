@@ -84,8 +84,9 @@ legitimately not hold.
 | Weight update | Sets `check_weight_update_equal`, comparing trainer and engine weights after a sync. Skipped automatically under either `--debug-*-only` | `--ci-disable-weight-update-checker` |
 
 `train/ppo_kl` is a signed diagnostic over stored float32 log probabilities. Its
-reduction accumulates in float64 after the policy loss is computed; the training loss and
-gradient stay in their original dtype, and the `1e-9` checker threshold is unchanged.
+reduction accumulates in float64 after the policy loss is computed, then publishes in
+the original float32 dtype. The training loss and gradient stay in their original dtype,
+and the `1e-9` checker threshold is unchanged.
 
 Three more take values rather than switching off:
 
