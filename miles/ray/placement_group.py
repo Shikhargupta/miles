@@ -432,7 +432,9 @@ async def _await_task_before_cancelling(task: asyncio.Task[_T]) -> _T:
     except Exception as error:
         if cancellation is None:
             raise
-        raise NonRetryableError("The drained weight update failed after caller cancellation; refusing to retry") from error
+        raise NonRetryableError(
+            "The drained weight update failed after caller cancellation; refusing to retry"
+        ) from error
     if cancellation is not None:
         raise cancellation
     return result
