@@ -36,9 +36,7 @@ def test_a_healthy_replacement_generation_rejoins_without_a_missed_down_sample()
     log = state.EventLog()
     old_cells = [cell("c0", healthy=True, workers_hash="old"), cell("c1", healthy=True)]
     replacement_cells = [cell("c0", healthy=True, workers_hash="new"), cell("c1", healthy=True)]
-    log.note_injection_attempt(
-        cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True
-    )
+    log.note_injection_attempt(cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True)
 
     log.observe(old_cells)
     assert names(views.compute_genuinely_alive(log.events, old_cells)) == {"c1"}
@@ -51,13 +49,9 @@ def test_a_recovered_generation_can_be_injected_again() -> None:
     log = state.EventLog()
     old_cells = [cell("c0", healthy=True, workers_hash="old"), cell("c1", healthy=True)]
     replacement_cells = [cell("c0", healthy=True, workers_hash="new"), cell("c1", healthy=True)]
-    log.note_injection_attempt(
-        cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True
-    )
+    log.note_injection_attempt(cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True)
     log.observe(replacement_cells)
-    log.note_injection_attempt(
-        cell_name="c0", workers_hash="new", form_name="sigkill", succeeded=True
-    )
+    log.note_injection_attempt(cell_name="c0", workers_hash="new", form_name="sigkill", succeeded=True)
 
     log.observe(replacement_cells)
     assert names(views.compute_genuinely_alive(log.events, replacement_cells)) == {"c1"}
@@ -68,9 +62,7 @@ def test_an_unhealthy_replacement_generation_stays_excluded() -> None:
     log = state.EventLog()
     old_cells = [cell("c0", healthy=True, workers_hash="old"), cell("c1", healthy=True)]
     replacement_cells = [cell("c0", healthy=False, workers_hash="new"), cell("c1", healthy=True)]
-    log.note_injection_attempt(
-        cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True
-    )
+    log.note_injection_attempt(cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True)
 
     log.observe(old_cells)
     log.observe(replacement_cells)
@@ -195,9 +187,7 @@ def test_a_new_nonserving_generation_does_not_count_as_recovered() -> None:
     log.observe([staged("rollout-engine-0", RUNNING_NOT_SERVING, workers_hash="new")])
 
     assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 0
-    assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {
-        "rollout-engine-0": 1
-    }
+    assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {"rollout-engine-0": 1}
 
 
 def test_a_replacement_that_never_reaches_the_router_is_not_a_recovery() -> None:

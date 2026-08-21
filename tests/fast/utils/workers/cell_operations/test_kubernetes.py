@@ -303,9 +303,7 @@ class TestInjectFault:
     def test_worker_selection_does_not_reread_after_the_generation_precondition(self):
         """A replacement between legacy split reads must not redirect the fault to the new worker."""
         old_info = _info(cell_id="engine-0", workers=("engine-0-old",))
-        new_info = old_info.model_copy(
-            update={"worker_names": ["engine-0-new"], "workers_hash": "new-generation"}
-        )
+        new_info = old_info.model_copy(update={"worker_names": ["engine-0-new"], "workers_hash": "new-generation"})
         operations = _operations({"engine-0": old_info})
         original_cell_info = operations._provider.cell_info
 

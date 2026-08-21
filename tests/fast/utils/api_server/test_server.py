@@ -496,9 +496,7 @@ class TestInjectFault:
         )
 
         assert resp.status_code == 200
-        assert rollout_handler.injected == [
-            ("rollout-engine-0", "pseudo-hash-1", FailureMode.SIGKILL, 1)
-        ]
+        assert rollout_handler.injected == [("rollout-engine-0", "pseudo-hash-1", FailureMode.SIGKILL, 1)]
 
     @pytest.mark.asyncio
     async def test_a_handler_without_injection_support_answers_bad_request(
@@ -529,9 +527,7 @@ class TestInjectFault:
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
-        assert rollout_handler.injected == [
-            ("rollout-engine-0", "pseudo-hash-1", FailureMode.EXIT, 0)
-        ]
+        assert rollout_handler.injected == [("rollout-engine-0", "pseudo-hash-1", FailureMode.EXIT, 0)]
 
     @pytest.mark.asyncio
     async def test_inject_fault_rejects_missing_or_unknown_mode(

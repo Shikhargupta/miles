@@ -105,8 +105,7 @@ def test_loop_injects_a_replacement_when_the_down_snapshot_was_missed() -> None:
         return mock_response(
             {
                 "items": [
-                    cell(name, healthy=True, workers_hash=f"generation-{generations[name]}")
-                    for name in cell_names
+                    cell(name, healthy=True, workers_hash=f"generation-{generations[name]}") for name in cell_names
                 ]
             }
         )
