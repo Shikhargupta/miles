@@ -217,9 +217,8 @@ def _assert_no_declared_critic(raw: "_RawMegatronConfig") -> None:
 
 
 def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
-    megatron_config = resolve_megatron_config(args)
     ans = copy.deepcopy(args)
-    ans.trainer_model_id = trainer.model_id if megatron_config.is_multi_policy else None
+    ans.trainer_model_id = trainer.model_id
 
     for key, value in trainer.overrides.items():
         assert hasattr(ans, key), (
@@ -230,10 +229,10 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
 
     _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
 
-    if megatron_config.is_multi_policy:
-        ans.save = _compute_trainer_checkpoint_dir(base_dir=args.save, trainer_id=trainer.trainer_id)
-        ans.load = _compute_trainer_checkpoint_dir(base_dir=args.load, trainer_id=trainer.trainer_id)
-        ans.save_hf = _compute_trainer_checkpoint_dir(base_dir=args.save_hf, trainer_id=trainer.trainer_id)
+    if trainer.model_id is not None:
+        ans.save = _compute_trainer_checkpoint_dir(base_dir=ans.save, trainer_id=trainer.trainer_id)
+        ans.load = _compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
+        ans.save_hf = _compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
 
     if args.megatron_config is not None:
         resolve_args_checkpoint_load(ans)

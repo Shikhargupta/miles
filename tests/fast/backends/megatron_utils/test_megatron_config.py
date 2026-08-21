@@ -472,15 +472,43 @@ class TestTrainerCheckpointDirs:
 
         assert saves == ["/ckpt/run/trainers/a-second", "/ckpt/run/trainers/b-actor"]
 
-    def test_a_single_policy_run_keeps_the_paths_it_was_given(self, tmp_path):
-        """Existing checkpoints and existing resume commands must keep working byte for byte."""
-        load = _write_megatron_checkpoint(tmp_path)
+    def test_an_explicitly_named_policy_gets_its_own_checkpoint_dir(self, tmp_path):
+        """A split trainer must not share its checkpoint paths with another policy's release."""
+        old = tmp_path / "old"
+        trainer_dir = old / "trainers" / "a-actor"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
         path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
-        args = _make_args(path, save="/ckpt/run", load=load)
+        args = _make_args(path, save="/ckpt/run", load=str(old), save_hf="/ckpt/hf")
 
         model = _model_args(args, model_id="a")
 
-        assert (model.save, model.load) == ("/ckpt/run", load)
+        assert (model.save, model.load, model.save_hf) == (
+            "/ckpt/run/trainers/a-actor",
+            str(trainer_dir),
+            "/ckpt/hf/trainers/a-actor",
+        )
+
+    def test_a_named_critic_derives_its_dir_from_the_critic_checkpoint(self, tmp_path):
+        """A named critic must namespace its own checkpoint base rather than the policy's base."""
+        old = tmp_path / "critic-old"
+        trainer_dir = old / "trainers" / "alpha-critic"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "alpha"}]}, tmp_path)
+        args = _make_args(
+            path,
+            use_critic=True,
+            save="/ckpt/actor",
+            load="/old/actor",
+            critic_save="/ckpt/critic",
+            critic_load=str(old),
+        )
+        [_, critic] = resolve_megatron_config(args).trainers
+
+        model = compute_trainer_args(args, critic)
+
+        assert (model.save, model.load) == ("/ckpt/critic/trainers/alpha-critic", str(trainer_dir))
 
     def test_an_unset_checkpoint_dir_stays_unset(self, tmp_path):
         """A run without --save must not grow a derived path out of None."""
@@ -572,11 +600,18 @@ class TestPerPolicyDerivedDefaults:
 
 
 class TestMultiPolicyIds:
-    def test_a_single_policy_run_carries_no_trainer_model_id(self, tmp_path):
-        """None is the single-policy key everywhere downstream, so the overlay must not invent an id."""
+    def test_an_explicitly_named_policy_keeps_its_trainer_model_id(self, tmp_path):
+        """A split trainer keeps its policy identity even when its release carries no neighbouring policy."""
         path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
 
-        assert _model_args(_make_args(path), model_id="a").trainer_model_id is None
+        assert _model_args(_make_args(path), model_id="a").trainer_model_id == "a"
+
+    def test_a_run_without_a_megatron_config_carries_no_trainer_model_id(self):
+        """The unnamed legacy actor keeps using the unnamespaced single-policy key."""
+        args = _make_args()
+        [trainer] = resolve_megatron_config(args).trainers
+
+        assert compute_trainer_args(args, trainer).trainer_model_id is None
 
     def test_each_policy_of_a_multi_policy_run_carries_its_own_id(self, tmp_path):
         """Metrics, routers and checkpoints are all namespaced by this value."""
