@@ -7,6 +7,7 @@ import pytest
 import tests.e2e.deploy
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_deterministic as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import compute_freeze_plan_path
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import (
     HotRestartMode,
     compute_checkpoint_dir,
@@ -74,6 +75,14 @@ class TestTiming:
     def test_the_gradient_floor_sits_above_the_window_the_take_over_can_redo(self):
         """A floor the redone steps alone could fill would pass a run that trained nothing past them."""
         assert _first_saved_rollout_id(scenario.NO_CHECKPOINT) < scenario.MIN_TRAINED_ROLLOUTS <= scenario.NUM_ROLLOUTS
+
+    def test_starting_over_accounts_for_every_republished_update(self):
+        """With no checkpoint, versions for every surviving event include both updates done before takeover."""
+        records = (HotRestartRecord(index=0, saved_iteration_at_trigger=None, frozen_rollout_id=1),)
+
+        expected = scenario._compute_expected_weight_version_deltas(records=records, num_rollouts=6)
+
+        assert all(list(by_rollout.values()) == [2, 2, 2, 2, 2, 2] for by_rollout in expected.values())
 
 
 class TestBuildArgs:

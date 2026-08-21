@@ -23,6 +23,7 @@ def compare_metrics(
     atol: float,
     key_prefixes: list[str],
     exclude_keys: list[str],
+    expected_deltas: dict[str, dict[int | None, float]] | None = None,
 ) -> None:
     baseline_events = _read_metric_events(Path(baseline_dir))
     target_events = _read_metric_events(Path(target_dir))
@@ -38,9 +39,23 @@ def compare_metrics(
 
     if not issues:
         for step_idx, (b_event, t_event) in enumerate(zip(baseline_events, target_events, strict=True)):
-            _print_step_comparison_table(step_idx, b_event, t_event, key_prefixes, exclude_keys=exclude_keys)
+            _print_step_comparison_table(
+                step_idx,
+                b_event,
+                t_event,
+                key_prefixes,
+                exclude_keys=exclude_keys,
+                expected_deltas=expected_deltas,
+            )
             issues += _check_step_metrics(
-                step_idx, b_event, t_event, key_prefixes, rtol, atol=atol, exclude_keys=exclude_keys
+                step_idx,
+                b_event,
+                t_event,
+                key_prefixes,
+                rtol,
+                atol=atol,
+                exclude_keys=exclude_keys,
+                expected_deltas=expected_deltas,
             )
 
     issues += _check_required_keys_exist(baseline_events)
@@ -151,6 +166,7 @@ def _check_step_metrics(
     *,
     atol: float,
     exclude_keys: list[str] | None = None,
+    expected_deltas: dict[str, dict[int | None, float]] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     for key in baseline_event.metrics:
@@ -163,8 +179,15 @@ def _check_step_metrics(
             issues.append(f"Step {step_idx}: metric '{key}' present in baseline but missing in target")
             continue
 
+        expected_delta = (expected_deltas or {}).get(key, {}).get(baseline_event.rollout_id, 0.0)
         issues += _check_single_metric(
-            step_idx, key, baseline_event.metrics[key], target_event.metrics[key], rtol, atol=atol
+            step_idx,
+            key,
+            baseline_event.metrics[key],
+            target_event.metrics[key],
+            rtol,
+            atol=atol,
+            expected_delta=expected_delta,
         )
     return issues
 
@@ -176,6 +199,8 @@ def _check_single_metric(
     target_val: object,
     rtol: float,
     atol: float,
+    *,
+    expected_delta: float = 0.0,
 ) -> list[str]:
     if not isinstance(baseline_val, (int, float)) or not isinstance(target_val, (int, float)):
         return []
@@ -187,18 +212,19 @@ def _check_single_metric(
             return [f"Step {step_idx}, metric '{key}': inf mismatch (baseline={baseline_val}, target={target_val})"]
         return []
 
-    if baseline_val == 0.0 and target_val == 0.0:
+    if baseline_val == 0.0 and target_val == 0.0 and expected_delta == 0.0:
         return []
 
-    abs_diff = abs(baseline_val - target_val)
-    if abs_diff <= atol:
+    actual_delta = target_val - baseline_val
+    abs_error = abs(actual_delta - expected_delta)
+    if abs_error <= atol:
         return []
 
-    rel_diff = abs_diff / max(abs(baseline_val), abs(target_val), 1e-12)
+    rel_diff = abs_error / max(abs(baseline_val), abs(target_val), abs(actual_delta), abs(expected_delta), 1e-12)
     if rel_diff > rtol:
         return [
             f"Step {step_idx}, metric '{key}': baseline={baseline_val}, target={target_val}, "
-            f"rel_diff={rel_diff:.6f} > rtol={rtol}"
+            f"actual_delta={actual_delta}, expected_delta={expected_delta}, rel_diff={rel_diff:.6f} > rtol={rtol}"
         ]
     return []
 
@@ -210,6 +236,7 @@ def _print_step_comparison_table(
     key_prefixes: list[str],
     *,
     exclude_keys: list[str] | None = None,
+    expected_deltas: dict[str, dict[int | None, float]] | None = None,
 ) -> None:
     rows: list[dict[str, str]] = []
     for key in sorted(baseline_event.metrics):
@@ -220,16 +247,19 @@ def _print_step_comparison_table(
         if not isinstance(b_val, (int, float)) or t_val is None or not isinstance(t_val, (int, float)):
             continue
         excluded = "(excluded)" if exclude_keys and key in exclude_keys else ""
-        abs_diff = abs(b_val - t_val)
-        denom = max(abs(b_val), abs(t_val), 1e-12)
-        rel_diff = abs_diff / denom
+        actual_delta = t_val - b_val
+        expected_delta = (expected_deltas or {}).get(key, {}).get(baseline_event.rollout_id, 0.0)
+        abs_error = abs(actual_delta - expected_delta)
+        denom = max(abs(b_val), abs(t_val), abs(actual_delta), abs(expected_delta), 1e-12)
+        rel_diff = abs_error / denom
         rows.append(
             {
                 "metric": key,
                 "baseline": f"{b_val:.6e}",
                 "target": f"{t_val:.6e}",
-                "abs_diff": f"{abs_diff:.2e}",
-                "rel_diff": f"{rel_diff:.4%}{excluded}",
+                "actual_delta": f"{actual_delta:.2e}",
+                "expected_delta": f"{expected_delta:.2e}",
+                "rel_error": f"{rel_diff:.4%}{excluded}",
             }
         )
 

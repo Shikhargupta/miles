@@ -123,6 +123,18 @@ class TestCheckSingleMetric:
         assert len(issues) == 1
         assert "rel_diff" in issues[0]
 
+    def test_an_expected_nonzero_delta_is_compared_exactly(self) -> None:
+        """A monotonic counter may advance by a scenario-proven delta without being dropped from comparison."""
+        assert _check_single_metric(0, "k", 5.0, 7.0, rtol=0.0, atol=0.0, expected_delta=2.0) == []
+
+    def test_a_wrong_nonzero_delta_reports_the_actual_and_expected_values(self) -> None:
+        """An expected delta is a strict contract, not a tolerance that accepts larger counter drift."""
+        issues = _check_single_metric(3, "k", 5.0, 8.0, rtol=0.0, atol=0.0, expected_delta=2.0)
+
+        assert len(issues) == 1
+        assert "actual_delta=3.0" in issues[0]
+        assert "expected_delta=2.0" in issues[0]
+
 
 class TestCheckEventsLineUp:
     def test_two_sides_describing_different_rollouts_are_reported(self) -> None:

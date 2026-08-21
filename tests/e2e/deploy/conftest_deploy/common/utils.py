@@ -41,10 +41,18 @@ def _compute_unconfigured_reason(config: command_utils.ExecuteTrainConfig) -> st
 
 
 def compare_deterministic_sides(
-    *, baseline_dir: str, target_dir: str, expected_engine_count: int, min_trained_rollouts: int
+    *,
+    baseline_dir: str,
+    target_dir: str,
+    expected_engine_count: int,
+    min_trained_rollouts: int,
+    expected_metric_deltas: dict[str, dict[int | None, float]] | None = None,
 ) -> None:
     comparisons.compare_deterministic_sides(
-        baseline_dir=baseline_dir, target_dir=target_dir, min_trained_rollouts=min_trained_rollouts
+        baseline_dir=baseline_dir,
+        target_dir=target_dir,
+        min_trained_rollouts=min_trained_rollouts,
+        expected_metric_deltas=expected_metric_deltas,
     )
 
     for side, side_dir in ((BASELINE_SIDE, baseline_dir), (TARGET_SIDE, target_dir)):

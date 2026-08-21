@@ -35,7 +35,11 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+    TRAIN_STEP_METRIC_KEY,
+    HotRestartEvidence,
+    HotRestartRecord,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
     arm_the_first_freeze,
     compute_freeze_plan_path,
@@ -62,6 +66,9 @@ GLOBAL_BATCH_SIZE_FLAG: str = "--global-batch-size"
 ROLLOUT_BATCH_SIZE_FLAG: str = "--rollout-batch-size"
 SAMPLES_PER_PROMPT_FLAG: str = "--n-samples-per-prompt"
 ASYNC_SAVE_FLAG: str = "--async-save"
+_WEIGHT_VERSION_METRIC_KEYS: tuple[str, ...] = tuple(
+    f"rollout/weight_version/{statistic}" for statistic in ("mean", "median", "max", "min")
+)
 
 _MODE: FTTestMode = FTTestMode(
     model_name=DENSE_MODEL_NAME,
@@ -340,9 +347,32 @@ def _compare(restart_mode: HotRestartMode, dump_dir: str, mode: FTTestMode) -> N
         target_dir=target_dir,
         expected_engine_count=mode.rollout_num_engines,
         min_trained_rollouts=MIN_TRAINED_ROLLOUTS,
+        expected_metric_deltas=_compute_expected_weight_version_deltas(
+            records=evidence.records, num_rollouts=NUM_ROLLOUTS
+        ),
     )
 
     print(f"Hot restart {restart_mode.name} comparison test PASSED")
+
+
+def _compute_expected_weight_version_deltas(
+    *, records: tuple[HotRestartRecord, ...], num_rollouts: int
+) -> dict[str, dict[int | None, float]]:
+    delta_by_rollout = {
+        rollout_id: float(
+            sum(
+                record.frozen_rollout_id - restore_iteration
+                for record in records
+                if rollout_id > (restore_iteration := _restore_iteration(record))
+            )
+        )
+        for rollout_id in range(num_rollouts)
+    }
+    return {key: delta_by_rollout.copy() for key in _WEIGHT_VERSION_METRIC_KEYS}
+
+
+def _restore_iteration(record: HotRestartRecord) -> int:
+    return record.saved_iteration_at_trigger if record.saved_iteration_at_trigger is not None else -1
 
 
 # ================================= app wiring =================================

@@ -39,9 +39,12 @@ def recorded_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, 
     return calls
 
 
-def _compare() -> None:
+def _compare(*, expected_metric_deltas: dict[str, dict[int | None, float]] | None = None) -> None:
     comparisons.compare_deterministic_sides(
-        baseline_dir=_BASELINE_DIR, target_dir=_TARGET_DIR, min_trained_rollouts=_MIN_TRAINED_ROLLOUTS
+        baseline_dir=_BASELINE_DIR,
+        target_dir=_TARGET_DIR,
+        min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+        expected_metric_deltas=expected_metric_deltas,
     )
 
 
@@ -60,8 +63,19 @@ class TestCompareDeterministicSides:
                 atol=0.0,
                 key_prefixes=list(comparisons.COMPARED_METRIC_PREFIXES),
                 exclude_keys=[],
+                expected_deltas={},
             )
         ]
+
+    def test_scenario_proven_metric_deltas_are_forwarded_without_dropping_the_keys(
+        self, recorded_calls: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        """A counter exception remains an exact comparison whose expected delta comes from the scenario."""
+        expected = {"rollout/weight_version/max": {0: 2.0}}
+
+        _compare(expected_metric_deltas=expected)
+
+        assert recorded_calls["compare_metrics"][0]["kwargs"]["expected_deltas"] == expected
 
     def test_dumps_are_compared_at_zero_relative_difference_with_the_input_tensor_patterns(
         self, recorded_calls: dict[str, list[dict[str, Any]]]

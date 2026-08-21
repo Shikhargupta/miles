@@ -7,7 +7,7 @@ import pytest
 import tests.e2e.deploy
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_deterministic as scenario
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence, HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import compute_freeze_plan_path
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import (
     HotRestartMode,
@@ -138,6 +138,20 @@ class TestTiming:
 
         with pytest.raises(AssertionError, match="never reasoned about"):
             scenario.assert_the_freeze_schedule_leaves_a_window_the_run_can_redo(wrong)
+
+
+class TestWeightVersionAccounting:
+    def test_each_checkpointed_redo_advances_every_later_weight_version_once(self):
+        """A live engine's version stays monotonic while each one-step checkpoint rollback republishes once."""
+        records = (
+            HotRestartRecord(index=0, saved_iteration_at_trigger=1, frozen_rollout_id=2),
+            HotRestartRecord(index=1, saved_iteration_at_trigger=3, frozen_rollout_id=4),
+        )
+
+        expected = scenario._compute_expected_weight_version_deltas(records=records, num_rollouts=6)
+
+        assert set(expected) == set(scenario._WEIGHT_VERSION_METRIC_KEYS)
+        assert all(list(by_rollout.values()) == [0, 0, 1, 1, 2, 2] for by_rollout in expected.values())
 
 
 class TestBuildArgs:

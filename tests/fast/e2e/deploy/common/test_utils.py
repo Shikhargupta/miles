@@ -108,12 +108,13 @@ def recorded_calls(monkeypatch) -> dict[str, list[dict[str, Any]]]:
     return calls
 
 
-def _compare() -> None:
+def _compare(*, expected_metric_deltas: dict[str, dict[int | None, float]] | None = None) -> None:
     utils.compare_deterministic_sides(
         baseline_dir=_BASELINE_DIR,
         target_dir=_TARGET_DIR,
         expected_engine_count=_EXPECTED_ENGINE_COUNT,
         min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+        expected_metric_deltas=expected_metric_deltas,
     )
 
 
@@ -123,8 +124,21 @@ class TestCompareDeterministicSides:
         _compare()
 
         assert recorded_calls["compare_deterministic_sides"] == [
-            dict(baseline_dir=_BASELINE_DIR, target_dir=_TARGET_DIR, min_trained_rollouts=_MIN_TRAINED_ROLLOUTS)
+            dict(
+                baseline_dir=_BASELINE_DIR,
+                target_dir=_TARGET_DIR,
+                min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+                expected_metric_deltas=None,
+            )
         ]
+
+    def test_a_deploy_scenario_can_keep_a_proven_nonzero_metric_delta_in_the_exact_comparison(self, recorded_calls):
+        """The deploy wrapper forwards semantic counter deltas instead of omitting those metrics."""
+        expected = {"rollout/weight_version/max": {0: 2.0}}
+
+        _compare(expected_metric_deltas=expected)
+
+        assert recorded_calls["compare_deterministic_sides"][0]["expected_metric_deltas"] == expected
 
     def test_both_sides_are_required_to_have_served_the_engines_the_run_declared(self, recorded_calls):
         """This is what the unsplit comparison cannot check: a split run losing an engine deployment."""

@@ -83,7 +83,11 @@ Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
    - no_checkpoint: record carries no saved iteration; NO .trash_* (the run's --load resolves to
      --ref-load, which holds no snapshot to restore); steps 0..1 appear exactly twice, nothing
      thrice; the run still saves after the restart
-5. Compare: bitwise as in scenario_split_deterministic, engine checksums included, no exemption
+5. Compare every metric exactly as in scenario_split_deterministic. Ordinary metrics require a zero
+   target-minus-baseline delta. The four rollout weight-version statistics require the exact cumulative number
+   of updates redone after each recorded restore point, because the trainer and engines survive and their
+   publication version remains monotonic. No metric key is dropped; dumps and engine checksums still compare
+   bitwise.
 
 checkpointed lands every take-over on a non-save step, so unsaved steps are rolled back and
 redone; no_checkpoint has nothing to resume from and starts over at rollout 0.
