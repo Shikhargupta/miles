@@ -1,8 +1,4 @@
-from miles.utils.external_utils.command_utils.base_backend import (
-    CommandUtilConfig,
-    ExecuteTrainConfig,
-    default_config,
-)
+from miles.utils.external_utils.command_utils.base_backend import CommandUtilConfig, ExecuteTrainConfig, default_config
 from miles.utils.external_utils.command_utils.common import (
     GENERATION_HARDWARE,
     NUM_GPUS_OF_HARDWARE,
