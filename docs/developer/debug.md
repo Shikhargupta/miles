@@ -83,6 +83,10 @@ legitimately not hold.
 | Log-probs | At rollout 0, trainer `rollout/log_probs` matches `rollout/ref_log_probs` within `1e-8` (`5e-3` under R3, whose reference does not replay routing); trainer versus engine log-probs within `0.03`; rollout entropy in `(0, 0.7)`. Under `--true-on-policy-mode` the two must be exactly equal | `--ci-disable-logprobs-checker` |
 | Weight update | Sets `check_weight_update_equal`, comparing trainer and engine weights after a sync. Skipped automatically under either `--debug-*-only` | `--ci-disable-weight-update-checker` |
 
+`train/ppo_kl` is a signed diagnostic over stored float32 log probabilities. Its
+reduction accumulates in float64 after the policy loss is computed; the training loss and
+gradient stay in their original dtype, and the `1e-9` checker threshold is unchanged.
+
 Three more take values rather than switching off:
 
 **Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>` asserts

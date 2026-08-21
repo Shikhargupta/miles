@@ -298,7 +298,7 @@ def policy_loss_function(
 
     pg_loss = pg_loss_reducer(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
-    ppo_kl = sum_of_sample_mean(ppo_kl)
+    ppo_kl = sum_of_sample_mean(ppo_kl.double())
 
     entropy_loss = pg_loss.new_zeros(())
     loss = pg_loss
