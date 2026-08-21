@@ -1,6 +1,11 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from tests.e2e.ft.conftest_ft.fault_injection.state import (
+    ObservedCellState,
+    cell_is_alive,
+    compute_observed_cell_state,
+)
 
 from miles.ray.train.cell_monitor import compute_cell_status, create_trainer_cell_health_checker
 from miles.ray.train.cell_state import StateAllocatedAlive, StateAllocatedErrored, StateAllocatedUninitialized
@@ -8,11 +13,6 @@ from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
-from tests.e2e.ft.conftest_ft.fault_injection.state import (
-    ObservedCellState,
-    cell_is_alive,
-    compute_observed_cell_state,
-)
 
 
 def _make_worker_handle_mock() -> MagicMock:
