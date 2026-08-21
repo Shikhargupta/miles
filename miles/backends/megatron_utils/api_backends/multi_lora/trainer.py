@@ -16,9 +16,13 @@ import ray
 import torch
 import torch.distributed as dist
 
-from miles.backends.megatron_utils.multi_lora.checkpoint import load_slot_state, named_state_dir, save_slot_state
-from miles.backends.megatron_utils.multi_lora.executor import MultiLoraParameterExecutor
-from miles.backends.megatron_utils.multi_lora.optimizer import (
+from miles.backends.megatron_utils.api_backends.multi_lora.checkpoint import (
+    load_slot_state,
+    named_state_dir,
+    save_slot_state,
+)
+from miles.backends.megatron_utils.api_backends.multi_lora.executor import MultiLoraParameterExecutor
+from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
     reload_adapter_slot_model_params,
     zero_adapter_slot_grads,
 )

@@ -411,5 +411,5 @@ proposed, it replaces the current dataset-driven driver.
 - `miles/rollout/session/core.py` attaches the single adapter to agentic session
   requests.
 - `miles/ray/multi_lora/`, `miles/rollout/multi_lora/`, and
-  `miles/backends/megatron_utils/multi_lora_*.py` implement the multi-adapter
+  `miles/backends/megatron_utils/api_backends/multi_lora/` implement the multi-adapter
   controller, routing, scheduling, optimization, and checkpoint path.

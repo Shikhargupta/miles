@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import miles.backends.megatron_utils.multi_lora.executor as executor_module
-import miles.backends.megatron_utils.multi_lora.trainer as trainer
+import miles.backends.megatron_utils.api_backends.multi_lora.executor as executor_module
+import miles.backends.megatron_utils.api_backends.multi_lora.trainer as trainer
 from miles.ray.multi_lora.config import AdapterRun, AdapterRunConfig
 
 

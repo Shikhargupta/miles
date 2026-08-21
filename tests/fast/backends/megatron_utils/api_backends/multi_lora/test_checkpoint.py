@@ -11,8 +11,8 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 import pytest
 import torch
 
-import miles.backends.megatron_utils.multi_lora.checkpoint as tc
-from miles.backends.megatron_utils.multi_lora.checkpoint import (
+import miles.backends.megatron_utils.api_backends.multi_lora.checkpoint as tc
+from miles.backends.megatron_utils.api_backends.multi_lora.checkpoint import (
     FORMAT,
     find_slot_state,
     named_state_dir,

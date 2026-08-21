@@ -34,7 +34,7 @@ import pytest
 import torch
 from tests.fast.backends.training_utils.loss.loss_test_utils import make_args, make_inputs, make_parallel_state
 
-from miles.backends.megatron_utils.multi_lora.trainer import _gather_logprobs
+from miles.backends.megatron_utils.api_backends.multi_lora.trainer import _gather_logprobs
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
 from miles.backends.training_utils.loss_hub.losses import tinker_loss_function
 from miles.ray.multi_lora.backend import MultiLoraOperationBackend

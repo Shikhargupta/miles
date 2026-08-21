@@ -14,8 +14,8 @@ import sys
 import pytest
 import torch
 
-import miles.backends.megatron_utils.multi_lora.optimizer as multi_lora_optimizer
-from miles.backends.megatron_utils.multi_lora.optimizer import (
+import miles.backends.megatron_utils.api_backends.multi_lora.optimizer as multi_lora_optimizer
+from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
     _found_inf_anywhere,
     apply_adam_params_to_slot,
     build_multi_lora_operation_optimizer,

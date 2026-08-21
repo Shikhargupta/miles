@@ -475,7 +475,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # The batch lease is validated BEFORE any gradient mutation: every
         # binding must still match a locally loaded adapter exactly.
         if rollout_data.get("batch_kind") == "tinker":
-            from miles.backends.megatron_utils.multi_lora.trainer import validate_batch_lease
+            from miles.backends.megatron_utils.api_backends.multi_lora.trainer import validate_batch_lease
 
             validate_batch_lease(rollout_data, self.loaded_adapters)
             rollout_data["tinker_logprob_collector"] = {}
@@ -624,7 +624,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("ref")
 
         if train_step_outcome == TrainStepOutcome.NORMAL and rollout_data.get("batch_kind") == "tinker":
-            from miles.backends.megatron_utils.multi_lora.trainer import commit_batch
+            from miles.backends.megatron_utils.api_backends.multi_lora.trainer import commit_batch
 
             commit_batch(rollout_data, self._multi_lora_pending_push)
 
@@ -640,7 +640,7 @@ class MegatronTrainRayActor(TrainRayActor):
         save_weights_for_sampler, save_state, load_state) on this rank. Every
         rank receives the identical list plus the control batch's execution
         lease; results are keyed by operation_id."""
-        from miles.backends.megatron_utils.multi_lora.trainer import execute_controls
+        from miles.backends.megatron_utils.api_backends.multi_lora.trainer import execute_controls
 
         return execute_controls(
             self.args,
@@ -660,7 +660,7 @@ class MegatronTrainRayActor(TrainRayActor):
         slots: load bound registrations, retire deregistered ones)."""
         if not is_tinker_enabled(self.args):
             return
-        from miles.backends.megatron_utils.multi_lora.trainer import reconcile_adapters
+        from miles.backends.megatron_utils.api_backends.multi_lora.trainer import reconcile_adapters
 
         reconcile_adapters(
             self.args,
@@ -769,7 +769,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         version_update_names: list[str] = []
         if is_tinker_enabled(self.args):
-            from miles.backends.megatron_utils.multi_lora.trainer import select_adapters_to_push
+            from miles.backends.megatron_utils.api_backends.multi_lora.trainer import select_adapters_to_push
 
             self.weight_updater.multi_lora_adapters, version_update_names = select_adapters_to_push(
                 self.loaded_adapters, self._multi_lora_pending_push, has_new_engines
@@ -790,7 +790,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
             if is_tinker_enabled(self.args):
-                from miles.backends.megatron_utils.multi_lora.trainer import commit_weight_push
+                from miles.backends.megatron_utils.api_backends.multi_lora.trainer import commit_weight_push
 
                 self._multi_lora_pending_push.clear()
                 commit_weight_push(version_update_names, self._is_first_replica_megatron_main_rank)

@@ -192,7 +192,9 @@ def setup_model_and_optimizer(
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif uses_multi_lora_operation_executor(args):
-        from miles.backends.megatron_utils.multi_lora.optimizer import build_multi_lora_operation_optimizer
+        from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
+            build_multi_lora_operation_optimizer,
+        )
 
         optimizer = build_multi_lora_operation_optimizer(args, config, model)
     else:

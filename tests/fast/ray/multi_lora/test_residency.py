@@ -194,7 +194,7 @@ class TestBatchLease:
 
 class TestTrainerLocalValidation:
     def test_lease_must_match_locally_loaded_adapters(self):
-        from miles.backends.megatron_utils.multi_lora.trainer import validate_batch_lease
+        from miles.backends.megatron_utils.api_backends.multi_lora.trainer import validate_batch_lease
 
         loaded = {"A": SimpleNamespace(registration_id="r-A", slot=0)}
         good = {"batch_execution_lease": {"dispatch_id": "d", "bindings_by_operation": [["op-A", ["A", "r-A", 0]]]}}
@@ -215,7 +215,7 @@ class TestTrainerLocalValidation:
         loaded_adapters) — a claim-then-deregister still validates because the
         adapter stays loaded until the next reconcile; AdapterState never
         enters the local check."""
-        from miles.backends.megatron_utils.multi_lora.trainer import validate_batch_lease
+        from miles.backends.megatron_utils.api_backends.multi_lora.trainer import validate_batch_lease
 
         loaded = {"A": SimpleNamespace(registration_id="r-A", slot=0)}
         lease = {"batch_execution_lease": {"dispatch_id": "d", "bindings_by_operation": [["op-A", ["A", "r-A", 0]]]}}

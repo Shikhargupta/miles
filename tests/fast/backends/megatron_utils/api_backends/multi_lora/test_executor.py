@@ -10,8 +10,8 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 from types import SimpleNamespace
 
-import miles.backends.megatron_utils.multi_lora.executor as executor_module
-from miles.backends.megatron_utils.multi_lora.executor import MultiLoraParameterExecutor
+import miles.backends.megatron_utils.api_backends.multi_lora.executor as executor_module
+from miles.backends.megatron_utils.api_backends.multi_lora.executor import MultiLoraParameterExecutor
 from miles.backends.training_utils.operation_execution import StepRequest
 from miles.ray.multi_lora.residency import ResidentBinding
 from miles.utils.operation_contract import BatchExecutionLease

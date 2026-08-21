@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from miles.backends.megatron_utils.multi_lora.optimizer import step_adapter_slots, zero_adapter_slot_grads
+from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import step_adapter_slots, zero_adapter_slot_grads
 from miles.backends.training_utils.operation_execution import StepRequest
 from miles.ray.multi_lora.residency import ResidentBinding
 from miles.utils.operation_contract import BatchExecutionLease

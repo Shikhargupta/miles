@@ -19,7 +19,10 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
-from miles.backends.megatron_utils.multi_lora.checkpoint import _slot_children, named_adapter_slot_parameters
+from miles.backends.megatron_utils.api_backends.multi_lora.checkpoint import (
+    _slot_children,
+    named_adapter_slot_parameters,
+)
 from miles.backends.training_utils.operation_execution import resolve_adam_params
 
 logger = logging.getLogger(__name__)

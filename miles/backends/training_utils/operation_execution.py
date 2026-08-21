@@ -5,10 +5,10 @@ The client owns the optimizer boundary. These helpers contain no Tinker wire
 types and no Multi-LoRA state: no AdapterRegistry, no SlotPool, no
 AdapterRun, no slot numbers (the dependency rule of §3.7). The OPTIMIZER-
 boundary Multi-LoRA pieces live behind the ``ParameterExecutor`` port
-(miles/backends/megatron_utils/multi_lora/executor.py); the trainer-side
+(miles/backends/megatron_utils/api_backends/multi_lora/executor.py); the trainer-side
 DATA-batch path does not have an equivalent port yet — lease validation,
 logprob gathering, and batch commit are Multi-LoRA-owned in
-``megatron_utils/actor.py`` + ``multi_lora/trainer.py``, so a future
+``megatron_utils/actor.py`` + ``api_backends/multi_lora/trainer.py``, so a future
 full-parameter executor reuses the operation/result semantics but still needs
 a small trainer-side data-hook extraction (external review 0811: narrow the
 claim rather than pre-build the hook).
