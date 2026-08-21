@@ -33,7 +33,12 @@ def _args() -> ScriptArgs:
         skip_saving=True,
         use_fault_tolerance=False,
         extra_args=(
-            "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
+            # tid2eid is a frozen hash-routing table; training never updates or ships it.
+            "--ci-test "
+            "--check-weight-update-allow-quant-error "
+            "--check-weight-update-skip-list tid2eid "
+            "--ci-disable-logprobs-checker "
+            "--num-rollout 2 "
         ),
     )
 
