@@ -289,6 +289,9 @@ Engine checksum (real-rollout modes only): one InferenceEngineWeightChecksumEven
   update_weights, carrying every engine's checksum
   _compare, per phase: baseline and target pushed identical weights per (rollout, engine)
   inference_engine_weight_checksum_consistency: all engines of one rollout agree
+  the synchronous driver snapshots events once with the checkpoint, then refreshes
+    that snapshot after the same rollout's update_weights succeeds; a failed publication keeps
+    the early recovery point, and a rollout with no checkpoint creates no event snapshot
 
 Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src = cell 0,
   alive back to N); no standalone shrink - one _refresh_cells absorbs the stop+start pair

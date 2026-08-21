@@ -4,7 +4,12 @@ from typing import Any
 import pytest
 
 import train as train_driver
-from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
+from tests.fast.fixtures.driver_fakes import (
+    FakeInferenceController,
+    FakeRemoteMethod,
+    FakeRolloutExecutor,
+    FakeTrainingModel,
+)
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -62,6 +67,13 @@ def _install_driver_fakes(
     monkeypatch.setattr(train_driver, "update_weights", update_weights)
     monkeypatch.setattr(train_driver, "remove_rollout_data_refs", lambda *_args, **_kwargs: None)
     return components
+
+
+def _record_event_snapshots(rollout_executor: FakeRolloutExecutor, events: list[str]) -> None:
+    async def snapshot_events(rollout_id: int) -> None:
+        events.append(f"event_snapshot:{rollout_id}")
+
+    rollout_executor.snapshot_events = FakeRemoteMethod(snapshot_events)
 
 
 class TestEvalOnlyRun:
@@ -129,3 +141,74 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
+
+
+class TestCheckpointAuditSnapshot:
+    async def test_a_saved_rollout_snapshots_post_update_audit_events(self, monkeypatch: pytest.MonkeyPatch):
+        """A restorable checkpoint includes the checksum emitted by its successful weight publication."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, save_interval=1)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        _record_event_snapshots(components.rollout_executor, events)
+
+        await train_driver.train(args)
+
+        assert events.index("actor_save:0") < events.index("update_weights:0") < events.index("event_snapshot:0")
+
+    async def test_a_failed_weight_publication_keeps_only_the_early_checkpoint_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A failed publication cannot overwrite the checkpoint with audit events from an incomplete rollout."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, save_interval=1)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        _record_event_snapshots(components.rollout_executor, events)
+
+        async def fail_rollout_update(
+            _args: Any,
+            _model: Any,
+            _executor: Any,
+            _inference_controller: Any,
+            *,
+            rollout_id: int | None = None,
+        ) -> None:
+            if rollout_id == 0:
+                raise RuntimeError("weight publication failed")
+
+        monkeypatch.setattr(train_driver, "update_weights", fail_rollout_update)
+
+        with pytest.raises(RuntimeError, match="weight publication failed"):
+            await train_driver.train(args)
+
+        assert "executor_save:0" in events
+        assert "event_snapshot:0" not in events
+
+    async def test_a_failed_post_update_snapshot_is_not_suppressed(self, monkeypatch: pytest.MonkeyPatch):
+        """A failed audit refresh is a failed checkpointed rollout, not a silently incomplete success."""
+        events: list[str] = []
+        args = _make_args(num_rollout=2, save_interval=1)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        async def fail_snapshot(rollout_id: int) -> None:
+            events.append(f"event_snapshot:{rollout_id}")
+            raise RuntimeError("event snapshot failed")
+
+        components.rollout_executor.snapshot_events = FakeRemoteMethod(fail_snapshot)
+
+        with pytest.raises(RuntimeError, match="event snapshot failed"):
+            await train_driver.train(args)
+
+        assert events.index("update_weights:0") < events.index("event_snapshot:0")
+        assert "prepare_rollout:1" not in events
+        assert not [event for event in events if event.endswith("_dispose")]
+
+    async def test_a_rollout_without_a_checkpoint_does_not_snapshot_events(self, monkeypatch: pytest.MonkeyPatch):
+        """A rollout that wrote no checkpoint must not invent a restorable audit snapshot directory."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, save_interval=None)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        _record_event_snapshots(components.rollout_executor, events)
+
+        await train_driver.train(args)
+
+        assert "event_snapshot:0" not in events

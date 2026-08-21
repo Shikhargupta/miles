@@ -405,6 +405,25 @@ class TestCheckpointing:
 
         assert recorder.snapshots == [(args, 9)]
 
+    async def test_post_update_snapshot_overwrites_the_event_log_for_the_rollout_id(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """The driver can refresh one saved rollout after weight publication emits its audit checksum."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        recorder = _RecordingEventLoggerCheckpoint()
+        monkeypatch.setattr(rexec, "event_logger_checkpoint", recorder)
+        args = _make_test_args(rollout_global_dataset=False)
+
+        executor = await _make_executor(args)
+
+        executor.snapshot_events(rollout_id=9)
+
+        assert recorder.snapshots == [(args, 9)]
+
 
 @pytest.mark.asyncio
 class TestEval:

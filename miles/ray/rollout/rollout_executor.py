@@ -288,6 +288,9 @@ class RolloutExecutor:
             self.generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
+    def snapshot_events(self, rollout_id: int) -> None:
+        event_logger_checkpoint.snapshot(self.args, rollout_id)
+
     def load(self, rollout_id: int | None = None) -> None:
         self.data_source.load(rollout_id)
         if self.use_experimental_refactor:

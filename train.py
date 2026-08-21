@@ -110,9 +110,10 @@ async def train(args):
         remove_rollout_data_refs(args, rollout_data_pack)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
-        if external_save or should_run_periodic_action(
+        checkpoint_saved = external_save or should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
-        ):
+        )
+        if checkpoint_saved:
             await save(rollout_id, force_sync=external_save)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
@@ -121,6 +122,8 @@ async def train(args):
         if args.offload_rollout:
             await inference_controller.onload_weights()
         await update_weights(args, actor_model, rollout_executor, inference_controller, rollout_id=rollout_id)
+        if checkpoint_saved:
+            await rollout_executor.snapshot_events(rollout_id)
         if args.offload_rollout:
             await inference_controller.onload_kv()
 
