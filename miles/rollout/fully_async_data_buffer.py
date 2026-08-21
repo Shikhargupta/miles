@@ -245,9 +245,9 @@ class DefaultMultiDataBuffer(DataBuffer):
         self._group_size = input.args.n_samples_per_prompt
 
     async def put(self, input: DataBufferInput) -> None:
-        assert len(input.group) == self._group_size, (
-            f"a generated prompt group must carry {self._group_size} trajectories, got {len(input.group)}"
-        )
+        assert (
+            len(input.group) == self._group_size
+        ), f"a generated prompt group must carry {self._group_size} trajectories, got {len(input.group)}"
         # TODO: a full inner blocks the one producer for every policy; give each policy its own dispatcher
         for trainer_model_id, entry in _split_by_trainer_model_id(input).items():
             inner = self._inner_of(trainer_model_id)
