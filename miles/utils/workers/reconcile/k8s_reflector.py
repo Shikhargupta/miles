@@ -84,6 +84,16 @@ class KubernetesReflector:
                     cursor.resource_version = None
                     return
 
+                if raw_event.pod_validation_error is not None:
+                    if raw_event.resource_version is None:
+                        raise _UnreadableFrameError(f"a malformed pod frame has no cursor: {raw_event=}")
+                    logger.error(
+                        f"KubernetesReflector skipping a malformed pod watch event {raw_event.type=} "
+                        f"{raw_event.resource_version=}: {raw_event.pod_validation_error}"
+                    )
+                    cursor.resource_version = raw_event.resource_version
+                    continue
+
                 try:
                     event = _to_source_event(raw_event)
                 except Exception as exception:

@@ -147,10 +147,17 @@ class TestPodParsing:
         """BOOKMARK and ERROR frames carry a bare version and a Status, and parsing them as pods would fail."""
         assert PodWatchEvent.from_frame(event_type=event_type, obj=dict(code=410, reason="Expired")).pod is None
 
-    def test_a_pod_frame_miles_cannot_read_is_refused(self) -> None:
-        """A pod the apiserver sent that does not validate is a contract break, not a pod to skip quietly."""
-        with pytest.raises(ValidationError):
-            PodWatchEvent.from_frame(event_type="ADDED", obj=SimpleNamespace(metadata=None))
+    def test_a_pod_frame_miles_cannot_read_preserves_its_cursor_and_error(self) -> None:
+        """A malformed pod payload keeps its readable envelope so the reflector can skip past it explicitly."""
+        obj = make_wire_pod()
+        obj.status.container_statuses = [SimpleNamespace(name="main", state=None)]
+
+        event = PodWatchEvent.from_frame(event_type="ADDED", obj=obj)
+
+        assert event.pod is None
+        assert event.resource_version == "7"
+        assert event.pod_validation_error is not None
+        assert "restart_count" in event.pod_validation_error
 
 
 class TestCursorRejection:

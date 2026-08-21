@@ -34,15 +34,25 @@ class PodWatchEvent(FrozenStrictBaseModel):
     pod: Pod | None
     resource_version: str | None
     rejects_cursor: bool
+    pod_validation_error: str | None = None
 
     @classmethod
     def from_frame(cls, *, event_type: str, obj: Any) -> PodWatchEvent:
         frame = WatchFrame.model_validate(obj)
+        pod: Pod | None = None
+        pod_validation_error: str | None = None
+        if event_type in POD_EVENT_TYPES:
+            try:
+                pod = Pod.model_validate(obj)
+            except ValidationError as exception:
+                pod_validation_error = str(exception)
+
         return cls(
             type=event_type,
-            pod=Pod.model_validate(obj) if event_type in POD_EVENT_TYPES else None,
+            pod=pod,
             resource_version=frame.metadata.resource_version,
             rejects_cursor=event_type == EVENT_TYPE_ERROR and _frame_rejects_cursor(frame),
+            pod_validation_error=pod_validation_error,
         )
 
 
