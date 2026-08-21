@@ -70,3 +70,15 @@ class TestTheHandlesOfACell:
         provider = _RecordingProvider("inference-engine-00000-00000", worker_class=None)
 
         assert provider.get_handles_of_worker_infos(provider._infos) == {}
+
+
+class TestStopCells:
+    async def test_an_address_only_provider_refuses_replacement_explicitly(self):
+        """A backend that cannot replace workers must fail terminally instead of guessing at cleanup."""
+        provider = _RecordingProvider("inference-engine-0-0")
+
+        with pytest.raises(NotImplementedError, match="does not support conditional cell replacement"):
+            await provider.stop_cells(
+                cell_ids=["inference-engine-0"],
+                expected_workers_hashes={"inference-engine-0": "hash-old"},
+            )

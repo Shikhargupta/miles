@@ -34,6 +34,14 @@ class BaseWorkerProvider(abc.ABC):
     @abc.abstractmethod
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]: ...
 
+    async def stop_cells(
+        self,
+        *,
+        cell_ids: list[str],
+        expected_workers_hashes: dict[str, str] | None = None,
+    ) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support conditional cell replacement")
+
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not observe cells")
 

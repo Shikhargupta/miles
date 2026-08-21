@@ -30,7 +30,7 @@ class _FakeManagerHandle:
     get_worker_addrs: _FakeRemoteMethod
 
 
-async def _resolved(value: dict[str, HostAndPort]) -> dict[str, HostAndPort]:
+async def _resolved(value: Any) -> Any:
     return value
 
 
@@ -65,6 +65,39 @@ class TestRayWorkerProviderGetAddrs:
         provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
 
         assert await provider.get_addrs(worker_name="engine-0-0") == addrs
+
+
+@dataclass
+class _FakeStopCellsMethod:
+    calls: list[tuple[list[str], dict[str, str] | None]] = field(default_factory=list)
+
+    def remote(
+        self,
+        cell_ids: list[str],
+        *,
+        expected_workers_hashes: dict[str, str] | None = None,
+    ) -> Any:
+        self.calls.append((cell_ids, expected_workers_hashes))
+        return _resolved(None)
+
+
+@dataclass
+class _StoppingManagerHandle:
+    stop_cells: _FakeStopCellsMethod
+
+
+class TestRayWorkerProviderStopCells:
+    async def test_the_expected_generation_reaches_the_manager(self):
+        """The membership lock needs the snapshot hash to exclude a replacement atomically."""
+        handle = _StoppingManagerHandle(stop_cells=_FakeStopCellsMethod())
+        provider = RayWorkerProvider(worker_manager_handle=handle)
+
+        await provider.stop_cells(
+            cell_ids=["engine-0"],
+            expected_workers_hashes={"engine-0": "hash-old"},
+        )
+
+        assert handle.stop_cells.calls == [(["engine-0"], {"engine-0": "hash-old"})]
 
 
 @dataclass

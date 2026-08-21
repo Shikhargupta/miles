@@ -27,8 +27,16 @@ class RayWorkerProvider(BaseWorkerProvider):
 
     # TEMPORARY: this layer is not meant to serve a suspend the inference controller drives, deliberately
     # violated until the weight-update fault tolerance work removes the need
-    async def stop_cells(self, *, cell_ids: list[str]) -> None:
-        await self._worker_manager_handle.stop_cells.remote(cell_ids)
+    async def stop_cells(
+        self,
+        *,
+        cell_ids: list[str],
+        expected_workers_hashes: dict[str, str] | None = None,
+    ) -> None:
+        await self._worker_manager_handle.stop_cells.remote(
+            cell_ids,
+            expected_workers_hashes=expected_workers_hashes,
+        )
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         refs = [self._worker_manager_handle.get_worker_infos.remote(cell_id) for cell_id in cell_ids]

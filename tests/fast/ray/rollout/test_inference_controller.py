@@ -172,7 +172,7 @@ class _FakeWorkerProvider(BaseWorkerProvider):
         self.watched_pool_ids: list[str] | None = None
         self.initialized = False
         self.stop_watch_calls = 0
-        self.stop_calls: list[list[str]] = []
+        self.stop_calls: list[tuple[list[str], dict[str, str] | None]] = []
         self.stop_error = stop_error
 
     async def init(self) -> None:
@@ -184,8 +184,13 @@ class _FakeWorkerProvider(BaseWorkerProvider):
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [[] for _ in cell_ids]
 
-    async def stop_cells(self, *, cell_ids: list[str]) -> None:
-        self.stop_calls.append(cell_ids)
+    async def stop_cells(
+        self,
+        *,
+        cell_ids: list[str],
+        expected_workers_hashes: dict[str, str] | None = None,
+    ) -> None:
+        self.stop_calls.append((cell_ids, expected_workers_hashes))
         if self.stop_error is not None:
             raise self.stop_error
 
@@ -648,7 +653,9 @@ class TestUpdateWeightsLockWindow:
 
         await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
-        assert provider.stop_calls == [["engine-0", "engine-1"]]
+        assert provider.stop_calls == [
+            (["engine-0", "engine-1"], {"engine-0": "hash-a", "engine-1": "hash-b"})
+        ]
         assert not controller.context_lock.locked
 
     @pytest.mark.asyncio
@@ -669,7 +676,7 @@ class TestUpdateWeightsLockWindow:
 
         await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
-        assert provider.stop_calls == [["engine-0"]]
+        assert provider.stop_calls == [(["engine-0"], {"engine-0": "hash-old-0"})]
         assert srv.server_cells["engine-1"].meta.workers_hash == "hash-new-1"
         assert not controller.context_lock.locked
 
@@ -688,7 +695,7 @@ class TestUpdateWeightsLockWindow:
         with pytest.raises(RuntimeError, match="stop outcome unknown"):
             await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
-        assert provider.stop_calls == [["engine-0"]]
+        assert provider.stop_calls == [(["engine-0"], {"engine-0": "hash-a"})]
         assert not controller.context_lock.locked
 
 

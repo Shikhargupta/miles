@@ -1090,6 +1090,29 @@ class TestStartAndStopCells:
 
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].workers_hash != before
 
+    async def test_a_conditional_stop_preserves_a_replacement_generation(self, fake_ray_cluster: FakeRayCluster):
+        """A stop for an old snapshot must not kill the new process generation that reused its cell id."""
+        manager = await _launch([_make_spec("engine")])
+        old_hash = manager.get_cell_infos(pool_ids=["engine"])["engine-0"].workers_hash
+        await manager.stop_cells(["engine-0"])
+        await manager.start_cells(["engine-0"])
+        replacement = manager.get_cell_infos(pool_ids=["engine"])["engine-0"]
+
+        await manager.stop_cells(["engine-0"], expected_workers_hashes={"engine-0": old_hash})
+
+        current = manager.get_cell_infos(pool_ids=["engine"])["engine-0"]
+        assert current.alive
+        assert current.workers_hash == replacement.workers_hash
+
+    async def test_a_conditional_stop_removes_the_matching_generation(self, fake_ray_cluster: FakeRayCluster):
+        """A participant that still matches the failed snapshot must be stopped before retry."""
+        manager = await _launch([_make_spec("engine")])
+        workers_hash = manager.get_cell_infos(pool_ids=["engine"])["engine-0"].workers_hash
+
+        await manager.stop_cells(["engine-0"], expected_workers_hashes={"engine-0": workers_hash})
+
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+
     async def test_a_restarted_cell_runs_its_command_again(self, fake_ray_cluster: FakeRayCluster):
         """Resume must relaunch the subprocess, not merely re-register the old actors."""
         manager = await _launch([_make_spec("engine")])

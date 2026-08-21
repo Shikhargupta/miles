@@ -95,9 +95,21 @@ class RayWorkerManager:
                 await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
                 raise
 
-    async def stop_cells(self, cell_ids: list[str]) -> None:
+    async def stop_cells(
+        self,
+        cell_ids: list[str],
+        *,
+        expected_workers_hashes: dict[str, str] | None = None,
+    ) -> None:
         async with self._membership_lock:
-            await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
+            cells = [self._find_cell(cell_id) for cell_id in cell_ids]
+            if expected_workers_hashes is not None:
+                cells = [
+                    cell
+                    for cell in cells
+                    if expected_workers_hashes.get(cell.cell_id) == cell.get_info().workers_hash
+                ]
+            await asyncio.gather(*[cell.stop() for cell in cells])
 
     async def shutdown(self) -> None:
         async with self._membership_lock:
