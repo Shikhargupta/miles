@@ -258,7 +258,7 @@ async def test_cancelling_the_broadcast_waits_for_completion_before_closing_the_
         await task
 
     assert not task_was_done_while_broadcast_was_blocked
-    assert calls_while_broadcast_was_blocked == ["start_update_weights", "trainer_update_weights"]
+    assert calls_while_broadcast_was_blocked == ["start_update_weights"]
     assert order == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
     _assert_the_snapshot_is_handed_back_unchanged(inference_controller)
 
