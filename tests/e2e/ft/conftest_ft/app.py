@@ -259,7 +259,9 @@ def create_comparison_app_and_run_ci(
     return app, run_ci
 
 
-def _resolve_config_for_side(side: str, *, config_for_side: ConfigForSideFn | None) -> command_utils.ExecuteTrainConfig:
+def _resolve_config_for_side(
+    side: str, *, config_for_side: ConfigForSideFn | None
+) -> command_utils.ExecuteTrainConfig:
     config = command_utils.default_config()
     return config_for_side(side, config) if config_for_side is not None else config
 

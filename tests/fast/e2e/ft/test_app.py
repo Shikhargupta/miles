@@ -58,9 +58,7 @@ def test_each_comparison_side_can_transform_its_config_before_the_context_and_la
     )
 
     @contextlib.contextmanager
-    def target_context(
-        _mode: FTTestMode, _dump_dir: str, config: command_utils.ExecuteTrainConfig
-    ) -> Iterator[None]:
+    def target_context(_mode: FTTestMode, _dump_dir: str, config: command_utils.ExecuteTrainConfig) -> Iterator[None]:
         contexts.append(config)
         yield
 
