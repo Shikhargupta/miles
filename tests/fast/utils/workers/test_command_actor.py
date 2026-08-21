@@ -1,5 +1,7 @@
 import os
+import shlex
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -193,11 +195,11 @@ class TestKillSubprocess:
 
 
 class TestInjectFault:
-    def test_a_sigkill_reaches_only_the_direct_child(self, monkeypatch: pytest.MonkeyPatch):
-        """Signalling the group would also crash whatever the engine spawned, which is a wider fault than asked for."""
+    def test_a_sigkill_reaches_the_worker_process_group(self, monkeypatch: pytest.MonkeyPatch):
+        """Crashing a worker must include every subprocess that belongs to that worker."""
         killed: list[int] = []
-        monkeypatch.setattr(process_utils, "kill_process", lambda process: killed.append(process.pid))
-        monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_to_signal_the_group)
+        monkeypatch.setattr(process_utils, "kill_process", _refuse_to_kill)
+        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: killed.append(process.pid))
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
 
@@ -205,10 +207,29 @@ class TestInjectFault:
 
         assert killed == [4321]
 
+    def test_a_sigkill_does_not_leave_a_spawned_engine_process_behind(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A worker crash must not orphan an engine child that can retain its GPU allocation."""
+        fake_exit = _FakeExit(monkeypatch)
+        child_pid_path = tmp_path / "child-pid"
+        actor = CommandActor()
+        actor.run(cmd=f"sleep 300 & printf '%s' \"$!\" > {shlex.quote(str(child_pid_path))}; wait", envs={})
+        _wait_for_path(child_pid_path)
+        child_pid = int(child_pid_path.read_text())
+
+        try:
+            actor.inject_fault("sigkill")
+
+            fake_exit.wait()
+            _wait_for_process_exit(child_pid)
+        finally:
+            process_utils.kill_process_tree(actor._process)
+
     @pytest.mark.parametrize("mode", ["exit", "segfault", "deadlock"])
     def test_every_other_failure_mode_is_rejected(self, monkeypatch: pytest.MonkeyPatch, mode: str):
         """A process exits, segfaults and deadlocks from the inside; no signal an outsider sends reproduces that."""
-        monkeypatch.setattr(process_utils, "kill_process", _refuse_to_kill)
+        monkeypatch.setattr(process_utils, "kill_process_tree", _refuse_to_kill)
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
 
@@ -226,7 +247,7 @@ class TestInjectFault:
     def test_the_actor_process_survives_the_injection(self, monkeypatch: pytest.MonkeyPatch):
         """Production loses the engine, not its supervisor, so crashing the actor would be the wrong fault."""
         monkeypatch.setattr(fault_injector, "inject_fault", _refuse_to_inject)
-        monkeypatch.setattr(process_utils, "kill_process", lambda process: None)
+        monkeypatch.setattr(process_utils, "kill_process_tree", lambda process: None)
         actor = CommandActor()
         actor._process = _FakeProcess(pid=4321)
 
@@ -253,5 +274,19 @@ def _refuse_to_kill(process) -> None:
     raise AssertionError(f"no kill was expected, but pid {process.pid} was killed")
 
 
-def _refuse_to_signal_the_group(process) -> None:
-    raise AssertionError(f"the process group of pid {process.pid} must not be signalled")
+def _wait_for_path(path: Path) -> None:
+    deadline = time.monotonic() + 10
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert path.exists()
+
+
+def _wait_for_process_exit(pid: int) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"process {pid} survived the worker fault")
