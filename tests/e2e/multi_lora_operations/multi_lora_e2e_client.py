@@ -183,15 +183,12 @@ def sidecar_manifest(name: str) -> str:
     return f"{SAVE_ROOT}/adapters/{name}/slot_state/manifest.pt"
 
 
-# ---------------------------------------------------------------------------
-# phase A: the original 7 phases (register .. deregister), at DP=2
-# ---------------------------------------------------------------------------
+# Adapter lifecycle at DP=2.
 
 
 def phase_a(ops: Ops) -> None:
     from miles.ray.multi_lora.identity import serving_lora_name  # noqa: PLC0415
 
-    # ---------------- phase 1: register ----------------
     reg = http("POST", "/adapter_runs", {"name": NAME, "config": {"rank": 8}})
     slot_bound = reg.get("slot") is not None
     state = wait_state(NAME, "READY", timeout_s=600)
@@ -203,7 +200,6 @@ def phase_a(ops: Ops) -> None:
         f"slot={reg.get('slot')} state={state} rid={registration_id[:8]}",
     )
 
-    # ---------------- phase 2: forward_backward x3 (+ odd counts: DP padding) ----------------
     fb_shapes = [
         [(24, 16), (20, 12), (28, 16)],  # 3 samples: count not divisible by DP=2
         [(16, 8), (32, 24)],
@@ -223,11 +219,9 @@ def phase_a(ops: Ops) -> None:
     view = ops.run("forward_backward", fb_payload([(22, 14)], base_token=7000))
     check_fb_result(view, [(22, 14)], "phase2-fb-odd1")
 
-    # ---------------- phase 3: optim_step ----------------
     view = ops.run("optim_step", dict(adam_params=dict(learning_rate=1e-4)))
     check_optim(view, "phase3-optim_step")
 
-    # ---------------- phase 4: save_weights_for_sampler + sample ----------------
     view = ops.run("save_weights_for_sampler", {})
     result = view.get("result") or {}
     serving_version = result.get("serving_version")
@@ -252,7 +246,6 @@ def phase_a(ops: Ops) -> None:
     except urllib.error.HTTPError as e:
         report("phase4-sample", False, f"HTTP {e.code}: {e.read().decode()[:500]}")
 
-    # ---------------- phase 5: save_state ----------------
     view = ops.run("save_state", dict(tag="e2e-t0"))
     result = view.get("result") or {}
     state_path = result.get("path")
@@ -264,7 +257,6 @@ def phase_a(ops: Ops) -> None:
         f"state={view['state']} path={state_path} manifest={manifest_ok} step={result.get('step')} error={view.get('error')}",
     )
 
-    # ---------------- phase 6: load_state + fb/optim still work ----------------
     view = ops.run("load_state", dict(path=state_path))
     result = view.get("result") or {}
     ok = view["state"] == "SUCCEEDED" and result.get("step") == 1
@@ -280,7 +272,6 @@ def phase_a(ops: Ops) -> None:
     view = ops.run("optim_step", dict(adam_params=dict(learning_rate=1e-4)))
     check_optim(view, "phase6-optim-post-restore")
 
-    # ---------------- phase 7: deregister ----------------
     http("DELETE", f"/adapter_runs/{NAME}")
     deadline = time.monotonic() + 300
     final_state, snapshot = None, None
@@ -297,7 +288,6 @@ def phase_a(ops: Ops) -> None:
 
     sidecar_ok = os.path.exists(sidecar_manifest(NAME))
 
-    # a fb enqueued AFTER deregister must be rejected as a user error
     rejected = False
     reject_detail = "enqueue unexpectedly accepted"
     try:
@@ -312,7 +302,6 @@ def phase_a(ops: Ops) -> None:
         f"final_state={final_state} slot_free={slot_free} sidecar={sidecar_ok} post-dereg-enqueue-rejected={rejected} ({reject_detail})",
     )
 
-    # second adapter registers cleanly into the freed pool
     reg_b = http("POST", "/adapter_runs", {"name": "e2e_b", "config": {"rank": 8}})
     state_b = wait_state("e2e_b", "READY", timeout_s=600)
     http("DELETE", "/adapter_runs/e2e_b")
@@ -321,13 +310,10 @@ def phase_a(ops: Ops) -> None:
         reg_b.get("slot") is not None and state_b == "READY",
         f"slot={reg_b.get('slot')} state={state_b}",
     )
-    # drain: leave the pool empty for the next phase
     wait_state("e2e_b", "COMPLETED", timeout_s=300)
 
 
-# ---------------------------------------------------------------------------
-# phase B: forward operations (logprob-only; no dirty pin; empty optim_step)
-# ---------------------------------------------------------------------------
+# Forward-only operations and empty optimizer steps.
 
 
 def phase_b(ops: Ops) -> None:
@@ -338,7 +324,6 @@ def phase_b(ops: Ops) -> None:
     shapes = [(24, 16), (20, 12)]
     payload = fb_payload(shapes, base_token=9000)
 
-    # forward: SUCCEEDED with per-sample logprobs, and no loss/metrics plane
     view = ops.run("forward", dict(samples=payload["samples"]), name=name)
     result = view.get("result") or {}
     fwd_logprobs = result.get("logprobs")
@@ -388,9 +373,7 @@ def phase_b(ops: Ops) -> None:
     report("phaseB-deregister", True, "COMPLETED")
 
 
-# ---------------------------------------------------------------------------
-# phase C: slot-state ownership fence at DP=2
-# ---------------------------------------------------------------------------
+# Slot-state ownership at DP=2.
 
 
 def _rank_swapped_copy(state_path: str, dest: str) -> str:
@@ -414,7 +397,6 @@ def _rank_swapped_copy(state_path: str, dest: str) -> str:
 def phase_c(ops: Ops) -> None:
     import torch  # noqa: PLC0415
 
-    # seed a slot-0 state: register into the empty pool, train one step, save
     reg = register(ops, "e2e_c")
     report("phaseC-register-slot0", reg["slot"] == 0, f"slot={reg['slot']}")
     ops.run("forward_backward", fb_payload([(24, 16), (20, 12)], base_token=11000), name="e2e_c")
@@ -445,7 +427,6 @@ def phase_c(ops: Ops) -> None:
     )
     deregister(ops, "e2e_c")
 
-    # occupy slot 0 with a bystander, land the restore target on slot 1
     reg1 = register(ops, "e2e_c1")
     reg2 = register(ops, "e2e_c2")
     report("phaseC-slot-arrangement", reg1["slot"] == 0 and reg2["slot"] == 1, f"c1={reg1['slot']} c2={reg2['slot']}")
@@ -501,7 +482,6 @@ def phase_c(ops: Ops) -> None:
     view = ops.run("optim_step", dict(adam_params=dict(learning_rate=1e-4)), name="e2e_c2")
     check_optim(view, "phaseC-post-refusal-train")
 
-    # same-slot restore: the slot-0 tenant takes the slot-0 state
     view = ops.run("load_state", dict(path=state_path), name="e2e_c1")
     restored = view["state"] == "SUCCEEDED" and (view.get("result") or {}).get("step") == 1
     step = ops.step_of("e2e_c1")
@@ -540,9 +520,7 @@ def phase_c(ops: Ops) -> None:
     deregister(ops, "e2e_c2")
 
 
-# ---------------------------------------------------------------------------
-# phase D: sidecar auto-resume preserves step, weights, and fp32 masters
-# ---------------------------------------------------------------------------
+# Sidecar resume preserves step, weights, and FP32 masters.
 
 
 def _payload_tensors_equal(a, b, where: str = "") -> str | None:

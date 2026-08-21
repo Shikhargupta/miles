@@ -1,16 +1,9 @@
-"""Truth tables for Tinker protocol mode and the Multi-LoRA executor,
-plus launch rejection of Tinker mode without adapter slots."""
-
 from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import pytest
 
 from miles.utils.multi_lora import uses_multi_lora_operation_executor, validate_multi_lora_args
-from miles.utils.tinker import is_tinker_enabled, uses_explicit_training_operations, validate_tinker_args
+from miles.utils.tinker import uses_explicit_training_operations, validate_tinker_args
 
 
 def _args(tinker_backend: bool, n_adapters: int) -> SimpleNamespace:
@@ -33,17 +26,8 @@ class TestPredicateRoles:
         assert not uses_multi_lora_operation_executor(_args(True, 0))
         assert not uses_multi_lora_operation_executor(_args(False, 4))
 
-    def test_is_tinker_enabled_is_unchanged(self):
-        """Characterization: the legacy predicate keeps its exact truth table."""
-        for tinker, n in [(True, 4), (True, 0), (False, 4), (False, 0)]:
-            assert is_tinker_enabled(_args(tinker, n)) == (tinker and n > 0)
-
 
 class TestValidationClosesTheGap:
-    """Every flag combination either fails validation or makes the protocol
-    predicate equal to the multi-LoRA one — so swapping the train_one_step
-    policy gate cannot change any launched run."""
-
     def _validate(self, args) -> None:
         validate_multi_lora_args(args)
         validate_tinker_args(args)

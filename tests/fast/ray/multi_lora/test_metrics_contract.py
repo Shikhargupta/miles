@@ -1,11 +1,3 @@
-"""Operation result metrics: backend-recomputed loss in the tinker SDK's
-``name:reduction`` format, and the contract test proving the real SDK
-combiner merges our chunked metrics exactly (D12)."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import math
 
 import pytest
@@ -36,6 +28,7 @@ class TestMetricsValues:
         metrics = operation_result_metrics(payload, [[-1.0, -9.0]])
         assert metrics["loss:sum"] == pytest.approx(1.0)
         assert metrics["unmasked_tokens:sum"] == 1.0
+        assert metrics["loss_weight:sum"] == pytest.approx(1.0)
 
     def test_importance_sampling_and_ppo_clip(self):
         base = {
@@ -112,9 +105,8 @@ def test_sdk_combiner_merges_our_chunked_metrics():
 
 
 class TestLossWeightSum:
-    """The SFT per-token denominator (codex-0817-sft-fix §7): a teacher-forced
-    datum excludes its prompt via loss_weights=0 while loss_mask stays 1, so
-    ``unmasked_tokens:sum`` over-counts. CE additionally reports
+    """A teacher-forced datum excludes its prompt via loss_weights=0 while
+    loss_mask stays 1, so ``unmasked_tokens:sum`` over-counts. CE reports
     ``loss_weight:sum`` = Σ weight·mask; the old key keeps its meaning."""
 
     def test_prompt_masked_sft_gets_the_completion_denominator(self):
@@ -129,10 +121,6 @@ class TestLossWeightSum:
         metrics = operation_result_metrics(ce_payload([[0.0, 0.5, 0.0, 2.0]]), [[-0.5] * 4])
         assert metrics["loss:sum"] == pytest.approx(1.25)
         assert metrics["loss_weight:sum"] == pytest.approx(2.5)
-
-    def test_mask_gates_the_weight_sum_like_the_loss(self):
-        metrics = operation_result_metrics(ce_payload([[1.0, 1.0]], masks=[[1, 0]]), [[-1.0, -9.0]])
-        assert metrics["loss_weight:sum"] == pytest.approx(1.0)
 
     def test_all_zero_weight_chunk_still_reports_the_key(self):
         # The SDK combiner drops a merged metric when ANY chunk lacks the key:

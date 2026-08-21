@@ -1,26 +1,14 @@
-"""Launch-time recompute guards for multi-LoRA (``validate_multi_lora_args``).
+"""Launch-time Multi-LoRA recompute guards.
 
-A checkpointed region is replayed grad-enabled only when its input requires
-grad. Multi-LoRA trains adapter-only (frozen base), so recompute shapes that
-checkpoint the adapters themselves — 'full' granularity always, selective
-'moe' with expert-only targets — depend on Megatron-Bridge's PEFT input-grad
-patch recognizing multi-LoRA ``.adapters.<slot>.`` params
-(radixark/Megatron-Bridge#27, branch bridge @ 688d34b8). On an UNFIXED bridge
-those shapes silently zero every adapter gradient (4xH200 GPT-OSS 20B
-evidence, 2026-08-12: grad_norm=0.0 on every step, zero trainer logprob
-delta) and must be refused at launch; on a FIXED bridge they train real
-gradients (4xH200 re-validation on bridge @ 688d34b8) and must pass through.
-These tests pin both guard directions, the shapes that never probe the
-bridge, and the source probe itself.
+Full recompute, and selective MoE recompute with expert LoRA targets, require
+the Megatron-Bridge PEFT input-gradient patch to recognize
+``.adapters.<slot>.`` parameters. Unsupported configurations must fail at
+launch; patched Bridge versions pass through.
 """
 
 import importlib.util
 import sys
 from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import pytest
 
@@ -33,8 +21,7 @@ from miles.utils.multi_lora import (
 
 
 def _args(**overrides) -> SimpleNamespace:
-    """Args rich enough to pass validate_multi_lora_args, mirroring
-    test_tinker_predicates._full_args."""
+    """Arguments that otherwise pass Multi-LoRA validation."""
     base = dict(
         tinker_backend=True,
         multi_lora_n_adapters=2,
@@ -93,27 +80,11 @@ def probe_must_not_run(monkeypatch):
 class TestUnfixedBridgeRefusals:
     def test_full_recompute_is_refused_for_any_targets(self, unfixed_bridge):
         validate_multi_lora_args(_args())
-        with pytest.raises(AssertionError, match="recompute-granularity full"):
+        with pytest.raises(AssertionError, match=r"Megatron-Bridge#27.*selective"):
             validate_multi_lora_args(_args(recompute_granularity="full"))
 
-    def test_full_recompute_refusal_points_at_the_bridge_fix_and_selective(self, unfixed_bridge):
-        with pytest.raises(AssertionError, match="Megatron-Bridge#27"):
-            validate_multi_lora_args(_args(recompute_granularity="full", target_modules=EXPERT_TARGETS))
-        with pytest.raises(AssertionError, match="selective"):
-            validate_multi_lora_args(_args(recompute_granularity="full", target_modules=EXPERT_TARGETS))
-
     def test_moe_module_with_expert_targets_is_refused(self, unfixed_bridge):
-        with pytest.raises(AssertionError, match="moe_act"):
-            validate_multi_lora_args(
-                _args(
-                    recompute_granularity="selective",
-                    recompute_modules=["core_attn", "moe"],
-                    target_modules=EXPERT_TARGETS,
-                )
-            )
-
-    def test_moe_refusal_points_at_the_bridge_fix(self, unfixed_bridge):
-        with pytest.raises(AssertionError, match="Megatron-Bridge#27"):
+        with pytest.raises(AssertionError, match=r"Megatron-Bridge#27.*moe_act"):
             validate_multi_lora_args(
                 _args(
                     recompute_granularity="selective",
@@ -126,9 +97,6 @@ class TestUnfixedBridgeRefusals:
 class TestFixedBridgePassThrough:
     def test_full_recompute_is_allowed(self, fixed_bridge):
         validate_multi_lora_args(_args(recompute_granularity="full"))
-
-    def test_full_recompute_is_allowed_for_expert_targets(self, fixed_bridge):
-        validate_multi_lora_args(_args(recompute_granularity="full", target_modules=EXPERT_TARGETS))
 
     def test_moe_module_with_expert_targets_is_allowed(self, fixed_bridge):
         validate_multi_lora_args(

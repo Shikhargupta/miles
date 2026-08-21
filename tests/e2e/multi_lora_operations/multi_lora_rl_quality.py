@@ -1,31 +1,5 @@
 #!/usr/bin/env python3
-"""4-adapter RL training-quality client for the Multi-LoRA operation backend.
-
-Client-driven GRPO on GSM8K against a live service: four adapters run
-concurrent, fully independent RL loops (disjoint data shards, different
-ranks/learning rates), 50 optimizer steps each. With --enable-thinking and a
-tight max_new_tokens budget the base policy mostly truncates mid-reasoning,
-so the initial reward is low and growth is learnable (fitting the reasoning
-into the budget). Per step and per adapter:
-
-  sample (router, adapter's serving name, return_logprob)
-    -> score client-side (math grader, reward 1/0)
-    -> grouped advantages (per-prompt mean baseline, std-normalized,
-       sample-mean token scaling)
-    -> forward_backward(loss_fn=importance_sampling, per-token advantages,
-       rollout_log_probs from sampling)
-    -> optim_step (per-adapter lr, grad_clip_norm 1.0)
-    -> save_weights_for_sampler (publish barrier keeps the loop on-policy)
-
-Everything is recorded to one CSV per adapter (reward mean/std, loss:sum,
-grad_norm, train-vs-rollout logprob abs-diff, serving version, wall time) plus
-a final JSON summary with first/last-10 reward means, least-squares slopes,
-step clocks, and serving versions — the training-quality acceptance evidence.
-
-Registration goes over the controller HTTP API; operations go through the
-controller Ray actor (as in multi_lora_e2e_client.py). Run on the head node with
-PYTHONPATH including the miles tree.
-"""
+"""Run four concurrent client-driven GRPO loops against the Multi-LoRA backend."""
 
 import argparse
 import csv
@@ -44,7 +18,7 @@ import ray
 API = "http://127.0.0.1:8068"
 
 DEFAULT_SPECS = [
-    # name, lora rank, learning rate, gsm8k shard (disjoint quarter of train)
+    # Each adapter uses a disjoint quarter of the GSM8K training split.
     dict(name="rl_a", rank=8, lr=1e-5, shard=0),
     dict(name="rl_b", rank=16, lr=2e-5, shard=1),
     dict(name="rl_c", rank=16, lr=4e-5, shard=2),

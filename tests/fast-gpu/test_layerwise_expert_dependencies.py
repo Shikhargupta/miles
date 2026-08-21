@@ -1,5 +1,3 @@
-"""Image-level contract between Bridge #27 and Megatron-LM #82."""
-
 from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(est_time=90, suite="stage-b-2-gpu-h200", labels=["lora"])

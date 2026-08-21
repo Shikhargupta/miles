@@ -1,13 +1,3 @@
-"""MultiLoraParameterExecutor outcome contract: bindings resolve ONLY from
-the batch lease and are validated against the locally loaded adapters; every
-outcome says whether the gradient window was physically consumed; duplicate
-physical step targets refuse deterministically instead of silently dropping
-an operation (external review)."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 from types import SimpleNamespace
 
 import miles.backends.megatron_utils.api_backends.multi_lora.executor as executor_module
@@ -54,16 +44,14 @@ class TestStepMany:
         assert outcomes["op-B"]["gradient_window_consumed"] is True
 
     def test_stale_binding_refusal_does_not_claim_consumption(self):
-        executor = make_executor()  # loaded slot 0 under registration r-A
+        executor = make_executor()
         lease = lease_of(("op-A", binding("A", "stale-registration", 0)))
         outcomes = executor.step_many(lease, [step("op-A")])
         assert outcomes["op-A"]["ok"] is False and outcomes["op-A"]["category"] == "server"
         assert not outcomes["op-A"].get("gradient_window_consumed")
 
     def test_duplicate_physical_step_targets_never_silently_drop_an_operation(self, monkeypatch):
-        """External review: two operation IDs bound to ONE physical slot used
-        to rekey through operation_by_slot and silently overwrite each other.
-        Both must receive explicit outcomes, and neither may mutate."""
+        """Every duplicate target is refused explicitly before optimizer mutation."""
         stepped = []
         monkeypatch.setattr(
             executor_module,
@@ -78,7 +66,7 @@ class TestStepMany:
         for op_id in ("op-1", "op-2"):
             assert outcomes[op_id]["ok"] is False and outcomes[op_id]["category"] == "server"
             assert not outcomes[op_id].get("gradient_window_consumed")
-        assert stepped == []  # the duplicated slot never reached the optimizer
+        assert stepped == []
 
 
 class TestDiscardMany:

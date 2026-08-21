@@ -1,12 +1,5 @@
-"""Factory and lifecycle behavior for role-separated rollout components."""
-
-from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import asyncio
+from types import SimpleNamespace
 
 from miles.ray.rollout.components import InferenceEndpoint, create_rollout_components
 
@@ -51,8 +44,6 @@ def test_factory_builds_two_role_views_over_one_legacy_handle(monkeypatch):
     assert endpoint == InferenceEndpoint(host="10.0.0.7", port=30001)
     assert endpoint.base_url == "http://10.0.0.7:30001"
 
-    # prepare_rollout is part of the controller port (PR #1842 boundary);
-    # the legacy adapter accepts the call as a no-op.
     asyncio.run(components.inference_controller.prepare_rollout(3))
     assert asyncio.run(components.rollout_executor.generate(3)) == {"batch": 1}
     assert ("generate", (3,)) in log
@@ -62,5 +53,5 @@ def test_bundle_disposes_the_shared_actor_exactly_once(monkeypatch):
     log: list = []
     components, _ = build(monkeypatch, log)
     asyncio.run(components.dispose())
-    asyncio.run(components.dispose())  # second call must be a no-op
+    asyncio.run(components.dispose())
     assert [name for name, _ in log].count("dispose") == 1

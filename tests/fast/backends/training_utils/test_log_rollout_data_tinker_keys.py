@@ -1,14 +1,5 @@
-"""log_rollout_data over a tinker shard: every key the tinker conversion
-emits must be either logged or skipped — never the 'Unsupported type' crash
-(the batch_execution_lease dict took DP=2 GPU acceptance down before this
-regression test existed)."""
-
 from argparse import Namespace
 from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import torch
 
@@ -26,8 +17,6 @@ def test_every_tinker_conversion_key_is_handled(monkeypatch):
     monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(log_utils, "gather_log_data", lambda *a, **k: None)
 
-    # The full key set a tinker selection ships to the trainer (conversion +
-    # shard packaging + actor-side side channels).
     rollout_data = {
         "tokens": [torch.tensor([1, 2, 3])],
         "total_lengths": [3],
@@ -57,6 +46,7 @@ def test_every_tinker_conversion_key_is_handled(monkeypatch):
         "n_adapters": 2,
     }
 
+    # Every conversion key must be accepted without raising.
     log_utils.log_rollout_data(
         0,
         Namespace(
@@ -69,4 +59,4 @@ def test_every_tinker_conversion_key_is_handled(monkeypatch):
             log_correct_samples=False,
         ),
         rollout_data,
-    )  # must not raise
+    )

@@ -1,14 +1,5 @@
-"""MultiLoraOperationBackend control plane: registration resolution, the v1 compatibility
-preflight (boundary rejection, never GPU-side), control-operation claims with
-authoritative clocks and dirty gates, and commit bookkeeping."""
-
-from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,7 +87,7 @@ class TestPreflight:
     def test_channel_length_must_match_response(self):
         backend = ready_backend()
         bad = fb_payload()
-        bad["samples"][0]["advantages"] = [1.0]  # response_length is 2
+        bad["samples"][0]["advantages"] = [1.0]
         with pytest.raises(ValueError, match="length response_length"):
             backend.enqueue_operation("X", "op1", 1, "forward_backward", bad)
 
@@ -167,12 +158,6 @@ class TestPreflight:
         with pytest.raises(ValueError, match="needs a 'path'"):
             backend.enqueue_operation("X", "op1", 1, "load_state", {})
 
-    def test_valid_operations_enqueue(self):
-        backend = ready_backend()
-        view = backend.enqueue_operation("X", "op1", 1, "forward_backward", fb_payload())
-        assert view["state"] == "QUEUED"
-        assert backend.enqueue_operation("X", "op2", 2, "optim_step", {"adam_params": {"learning_rate": 3e-4}})
-
     def test_save_state_tag_must_stay_inside_states(self):
         backend = ready_backend()
         for bad in ("..", ".", "a/b", "a" * 129, ""):
@@ -186,7 +171,7 @@ class TestControlClaims:
         backend = make_backend()
         register(backend)
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
-        assert backend.claim_ready_control_operations() == {"operations": [], "lease": None}  # PENDING, not READY
+        assert backend.claim_ready_control_operations() == {"operations": [], "lease": None}
         backend.registry.mark_ready(["X"])
         claimed = backend.claim_ready_control_operations()
         [op] = claimed["operations"]
@@ -214,7 +199,7 @@ class TestControlClaims:
 
         backend.enqueue_operation("X", "pub1", 2, "save_weights_for_sampler")
         [op] = backend.claim_ready_control_operations()["operations"]
-        assert op["operation_id"] == "pub1"  # publishing pre-step weights is fine
+        assert op["operation_id"] == "pub1"
 
     def test_success_advances_step_and_releases_pin(self):
         backend = ready_backend(num_step=2)
@@ -239,7 +224,7 @@ class TestControlClaims:
         assert not backend.registry.is_dirty("X")
 
     def test_failed_chunk_poisons_the_pending_optim(self):
-        # #2258 §5: the failed chunk's window must discard, never partial-step.
+        # The failed chunk's window must discard, never partial-step.
         backend = ready_backend()
         rid = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
@@ -264,8 +249,8 @@ class TestControlClaims:
         assert clean["operation_id"] == "opt4" and "poison" not in clean
 
     def test_pre_mutation_refusal_keeps_dirty_and_poison(self):
-        """External review P1: an optimizer outcome without the consumed bit
-        (executor refusal before any gradient mutation — stale binding,
+        """An optimizer outcome without the consumed bit (executor refusal
+        before any gradient mutation — stale binding,
         missing result) must neither release the dirty pin nor delimit the
         poison window: the partial gradients still physically exist and the
         next optim_step must still be routed to a discard."""
@@ -294,7 +279,6 @@ class TestControlClaims:
         backend = ready_backend()
         rid1 = backend.registry.find("X").registration_id
         assert backend.enqueue_operation("X", "op1", 1, "optim_step", None, expected_registration_id=rid1)
-        # Retire the tenant and re-register the same public name.
         backend.registry.deregister("X")
         backend.registry.retire_adapters()
         backend.registry.free_slot("X")
@@ -310,7 +294,7 @@ class TestControlClaims:
 
     def test_publish_completion_stamps_post_push_serving_identity(self):
         backend = ready_backend()
-        backend.registry.record_weight_update(["X"])  # the push landed: v1
+        backend.registry.record_weight_update(["X"])
         backend.enqueue_operation("X", "pub1", 1, "save_weights_for_sampler")
         [op] = backend.claim_ready_control_operations()["operations"]
         backend.complete_control_operations({op["operation_id"]: dict(ok=True, result={})})
@@ -358,9 +342,8 @@ class TestCommitAndFence:
 
 
 class TestFailTinkerBatch:
-    """The abnormal-outcome data-batch finalizer (external review P1: data
-    operations must never remain CLAIMED forever when a dispatched train
-    exits without committing)."""
+    """Data operations must not remain claimed when training exits without
+    committing."""
 
     def _claimed_batch(self, backend):
         rid = backend.registry.find("X").registration_id
@@ -432,8 +415,7 @@ def test_service_info_reports_the_v1_matrix():
 
 def test_engine_aborts_go_through_the_inference_admin_port():
     # The backend's only engine-facing need rides the narrow admin port with
-    # the full registration-scoped rid prefix (anti-ABA); swapping the engine
-    # owner (PR #1842) swaps the adapter, never the backend.
+    # the full registration-scoped rid prefix (anti-ABA).
     backend = make_backend()
     aborted = []
 

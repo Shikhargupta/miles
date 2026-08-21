@@ -1,11 +1,3 @@
-"""Operation ledger invariants: strict per-registration EXECUTION order under
-out-of-order ARRIVAL (gap-buffered ordinals), fingerprinted idempotency,
-cancel/fence/ack semantics, and backpressure."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import pytest
 
 from miles.ray.multi_lora.operations import OperationBackpressure, OperationLedger
@@ -22,7 +14,7 @@ class TestArrivalBuffering:
         ledger = OperationLedger()
         enqueue(ledger, "op2", 2)
         enqueue(ledger, "op3", 3)
-        assert ledger.claim_data_operation("A", "ra") is None  # gap below head
+        assert ledger.claim_data_operation("A", "ra") is None
         enqueue(ledger, "op1", 1)
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op1"
         ledger.complete("op1", {})
@@ -99,7 +91,7 @@ class TestSerialization:
         claimed = ledger.claim_data_operation("A", "ra")
         assert claimed["operation_id"] == "fb"
         assert ledger.claim_control_operation("A", "ra") is None
-        assert ledger.claim_data_operation("A", "ra") is None  # fb still open
+        assert ledger.claim_data_operation("A", "ra") is None
         ledger.complete("fb", {})
         assert ledger.claim_control_operation("A", "ra")["operation_id"] == "optim"
 
@@ -128,8 +120,7 @@ class TestSerialization:
 
 
 class TestPoisonedWindow:
-    """#2258 §5: a failed forward_backward chunk poisons its whole gradient
-    window; the window resets only at an optim_step that actually executed."""
+    """A failed forward-backward poisons its window until an optimizer operation consumes it."""
 
     def fail_fb(self, ledger, op_id, ordinal, category="user"):
         enqueue(ledger, op_id, ordinal, "forward_backward")
@@ -159,7 +150,7 @@ class TestPoisonedWindow:
         # Terminal alone is not enough: only the executor's confirmation that
         # the gradients were consumed (step/discard/veto) makes a delimiter.
         assert ledger.poisoned_window_blocker("A", "ra", 4) is not None
-        ledger.mark_window_consumed("opt2")  # executed: it cleared the grads
+        ledger.mark_window_consumed("opt2")
         self.complete_fb(ledger, "fb3", 3)
         assert ledger.poisoned_window_blocker("A", "ra", 4) is None
 
@@ -167,11 +158,11 @@ class TestPoisonedWindow:
         ledger = OperationLedger()
         self.fail_fb(ledger, "fb1", 1)
         enqueue(ledger, "opt2", 2, "optim_step")
-        ledger.cancel("opt2")  # never executed: the partial gradients survive it
+        ledger.cancel("opt2")
         assert ledger.poisoned_window_blocker("A", "ra", 3) is not None
 
         enqueue(ledger, "fb3", 3, "forward_backward")
-        ledger.cancel("fb3")  # a cancelled fb is a non-success terminal: it poisons too
+        ledger.cancel("fb3")
         blocker = ledger.poisoned_window_blocker("A", "ra", 4)
         assert blocker is not None and "ordinal 3" in blocker
 
@@ -179,7 +170,7 @@ class TestPoisonedWindow:
         ledger = OperationLedger()
         enqueue(ledger, "fw1", 1, "forward")
         ledger.claim_data_operation("A", "ra")
-        ledger.fail("fw1", "bad forward", "user")  # forward accumulates nothing
+        ledger.fail("fw1", "bad forward", "user")
         assert ledger.poisoned_window_blocker("A", "ra", 2) is None
 
 
@@ -194,7 +185,6 @@ class TestTerminals:
             ledger.cancel("op1")
         ledger.complete("op1", {})
         enqueue(ledger, "op3", 3)
-        # the cancelled ordinal 2 still counts as arrived+terminal.
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op3"
 
     def test_fail_records_error_and_category(self):
@@ -229,7 +219,7 @@ class TestBackpressureAndRetention:
         enqueue(ledger, "op2", 2)
         enqueue(ledger, "op3", 3)
         assert ledger.claim_data_operation("A", "ra") is None
-        enqueue(ledger, "op1", 1)  # admitted despite the cap
+        enqueue(ledger, "op1", 1)
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op1"
         # A beyond-the-tail arrival is NOT a gap filler: still backpressured.
         with pytest.raises(OperationBackpressure):
@@ -255,7 +245,6 @@ class TestBackpressureAndRetention:
             enqueue(ledger, "op2", 2)
         ledger.ack("op1")
         enqueue(ledger, "op2", 2)
-        # acked ordinal 1 still counts for contiguity.
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op2"
 
     def test_ack_drops_only_terminal_records(self):
@@ -267,7 +256,7 @@ class TestBackpressureAndRetention:
         ledger.complete("op1", {})
         ledger.ack("op1")
         assert ledger.get("op1") is None
-        ledger.ack("op1")  # idempotent
+        ledger.ack("op1")
 
 
 class TestFencing:
@@ -293,8 +282,6 @@ class TestFencing:
 
 
 class Clock:
-    """Injectable monotonic clock: gap-timeout tests never sleep."""
-
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now
 
@@ -303,11 +290,7 @@ class Clock:
 
 
 class TestGapTimeout:
-    """A never-arriving ordinal (the 0.24.1 SDK consumes a seq_id, then fails
-    BEFORE HTTP: non-finite JSON serialization, an immediately-cancelled
-    future) must not stall the registration forever — but liveness must never
-    relax the fence: nothing skips the hole, no kind is guessed, and the
-    missing ordinal's identity can never execute."""
+    """A missing ordinal times out without permitting skips, guessed kinds, or late replay."""
 
     def gapped(self, timeout=10.0):
         clock = Clock()
@@ -315,7 +298,7 @@ class TestGapTimeout:
         enqueue(ledger, "fb1", 1)
         ledger.claim_data_operation("A", "ra")
         ledger.complete("fb1", {})
-        enqueue(ledger, "opt3", 3, "optim_step")  # ordinal 2 never arrives
+        enqueue(ledger, "opt3", 3, "optim_step")
         ledger.sweep_gap_timeouts()  # first observation arms the stall clock
         return ledger, clock
 
@@ -325,7 +308,7 @@ class TestGapTimeout:
         [stall] = ledger.gap_stalls()
         assert stall["missing_ordinal"] == 2 and stall["blocked_operations"] == 1
         assert stall["stalled_for"] == pytest.approx(4.0)
-        assert ledger.sweep_gap_timeouts() == []  # below the timeout
+        assert ledger.sweep_gap_timeouts() == []
         assert ledger.get("opt3")["state"] == "QUEUED"
 
     def test_legit_out_of_order_fill_beats_the_timeout(self):
@@ -363,7 +346,7 @@ class TestGapTimeout:
         ledger.claim_data_operation("A", "ra")
         ledger.complete("fb1", {})
         enqueue(ledger, "fb3", 3)
-        enqueue(ledger, "fb5", 5)  # holes at 2 AND 4
+        enqueue(ledger, "fb5", 5)
         ledger.sweep_gap_timeouts()
         clock.now += 11
         [event] = ledger.sweep_gap_timeouts()
@@ -385,15 +368,13 @@ class TestGapTimeout:
         assert ledger.poisoned_window_blocker("A", "ra", 4) is None
 
     def test_gap_failed_forward_backward_still_poisons_its_window(self):
-        # When the blocked operation itself was a forward_backward (an arrived
-        # sibling chunk of the missing one), its typed failure IS the poison
-        # evidence — gap expiry keeps #2258 §5 window safety intact.
+        # A typed forward-backward failure still poisons the gradient window.
         clock = Clock()
         ledger = OperationLedger(gap_timeout=10.0, time_fn=clock)
         enqueue(ledger, "fb1", 1)
         ledger.claim_data_operation("A", "ra")
         ledger.complete("fb1", {})
-        enqueue(ledger, "fb3", 3)  # sibling chunk; chunk at ordinal 2 never arrives
+        enqueue(ledger, "fb3", 3)
         ledger.sweep_gap_timeouts()
         clock.now += 11
         [event] = ledger.sweep_gap_timeouts()
@@ -413,15 +394,15 @@ class TestGapTimeout:
     def test_a_new_hole_restarts_the_stall_clock(self):
         ledger, clock = self.gapped()
         clock.now += 9
-        enqueue(ledger, "fb2", 2)  # fill in time; run the tail
+        enqueue(ledger, "fb2", 2)
         for op_id in ("fb2", "opt3"):
             if op_id == "fb2":
                 ledger.claim_data_operation("A", "ra")
             else:
                 ledger.claim_control_operation("A", "ra")
             ledger.complete(op_id, {})
-        enqueue(ledger, "fb5", 5)  # NEW hole at 4
-        assert ledger.sweep_gap_timeouts() == []  # its clock starts now, not at the old stall
+        enqueue(ledger, "fb5", 5)
+        assert ledger.sweep_gap_timeouts() == []
         clock.now += 9
         assert ledger.sweep_gap_timeouts() == []
         clock.now += 2

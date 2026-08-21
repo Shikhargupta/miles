@@ -1,11 +1,3 @@
-"""Driver wiring: the control phase's claim → execute → publish barrier →
-deferred completion order, the tinker arg defaults, and the serving identity
-stamped onto completed publishes."""
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
-
 import asyncio
 from types import SimpleNamespace
 
@@ -13,8 +5,6 @@ from train_multi_lora_operations import ActorGroupWeightUpdater, run_control_pha
 
 
 class Remote:
-    """Async .remote(...) recorder returning a scripted value."""
-
     def __init__(self, log, name, value=None):
         self._log, self._name, self._value = log, name, value
 
@@ -61,7 +51,7 @@ def test_control_phase_completes_deferred_publishes_only_after_the_push():
     # comes strictly AFTER the deferred completions.
     assert order == ["claim", "execute", "complete", "update_weights", "complete", "release"]
     first_complete = log[2][1][0]
-    assert set(first_complete) == {"opt1"}  # deferred ops are NOT completed pre-push
+    assert set(first_complete) == {"opt1"}
     deferred_complete = log[4][1][0]
     # Deferred completions carry the ORIGINAL execution results (a load_state
     # keeps its restored step; the backend sets the step clock from it).
@@ -91,7 +81,6 @@ def test_immediate_only_batch_releases_at_its_completion_boundary():
 
     actor_model = SimpleNamespace(execute_tinker_controls=execute, update_weights=update_weights)
     asyncio.run(run_control_phase(actor_model, controller, ActorGroupWeightUpdater(actor_model)))
-    # Immediate controls release after controller completion, before the push.
     assert [name for name, _ in log] == ["claim", "execute", "complete", "release", "update_weights"]
 
 
@@ -132,7 +121,6 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
     assert load_function(args.rollout_function_path) is MultiLoraOperationBatchFn
     assert load_function(args.data_source_path) is TinkerNullDataSource
 
-    # Explicit user choices are honored.
     args.rollout_function_path = "my.custom.Fn"
     args.data_source_path = "my.custom.Source"
     validate_tinker_args(args)
@@ -140,14 +128,11 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
     assert args.data_source_path == "my.custom.Source"
 
     off = SimpleNamespace(tinker_backend=False)
-    validate_tinker_args(off)  # no-op without the flag
+    validate_tinker_args(off)
 
 
 class TestDataBatchFinalizer:
-    """train_data_batch: a NORMAL train commits rank-side; every other exit
-    (abnormal TrainStepOutcome, raised train error) must fail the batch's
-    CLAIMED operations typed server and release the lease — never leave the
-    SDK futures CLAIMED forever (external review P1)."""
+    """Every non-normal train exit finalizes claimed operations and releases the lease."""
 
     def _pack(self):
         lease = {

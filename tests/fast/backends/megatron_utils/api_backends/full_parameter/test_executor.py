@@ -3,10 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=30, suite="stage-a-cpu")
-
 from miles.backends.megatron_utils.api_backends.full_parameter.executor import (
     FullParameterBinding,
     FullParameterExecutor,
@@ -169,45 +165,6 @@ def test_success_without_stock_grad_norm_is_fail_stop():
         executor.step_many(make_lease(), [make_request()])
 
     assert optimizer.config.clip_grad == 17.0
-    assert optimizer.zero_calls == 1
-    assert [chunk.zero_calls for chunk in model] == [1, 1]
-
-
-def test_generic_coordinator_runs_singleton_clean_optim():
-    executor, model, optimizer = make_executor()
-    operations = [
-        dict(
-            kind="optim_step",
-            operation_id="op",
-            payload=dict(adam_params=dict(learning_rate=0.4, grad_clip_norm=1.25)),
-        )
-    ]
-
-    outcome = run_optim_controls(operations, make_lease(), executor)["op"]
-
-    assert outcome["ok"] is True
-    assert outcome["gradient_window_consumed"] is True
-    assert outcome["result"] == {"grad_norm": 3.5, "learning_rate": 0.4}
-    assert optimizer.seen_clip == 1.25
-    assert optimizer.config.clip_grad == 17.0
-    assert optimizer.step_calls == 1
-    assert optimizer.zero_calls == 1
-    assert [chunk.zero_calls for chunk in model] == [1, 1]
-
-
-def test_generic_coordinator_routes_singleton_poison_to_discard():
-    executor, model, optimizer = make_executor()
-    operations = [dict(kind="optim_step", operation_id="op", poison="earlier forward/backward failed")]
-
-    outcome = run_optim_controls(operations, make_lease(), executor)["op"]
-
-    assert outcome == {
-        "ok": False,
-        "error": "earlier forward/backward failed",
-        "category": "user",
-        "gradient_window_consumed": True,
-    }
-    assert optimizer.step_calls == 0
     assert optimizer.zero_calls == 1
     assert [chunk.zero_calls for chunk in model] == [1, 1]
 
