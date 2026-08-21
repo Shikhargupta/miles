@@ -163,9 +163,7 @@ def _validate_param_info_snapshot(
     )
     errors: list[str] = [error for rank_errors in all_errors if rank_errors is not None for error in rank_errors]
     if errors:
-        raise RuntimeError(
-            "Param info snapshot validation failed before weight collectives:\n" + "\n".join(errors)
-        )
+        raise RuntimeError("Param info snapshot validation failed before weight collectives:\n" + "\n".join(errors))
 
 
 def _get_megatron_local_param_info_buckets(
