@@ -1,15 +1,3 @@
-"""Driver for client-driven Multi-LoRA training operations.
-
-One loop, two phases. The CONTROL phase claims data-less operations
-(optim_step, save_weights_for_sampler, save_state, load_state) — at most one
-per adapter, in strict per-registration order — executes them on every
-training rank, pushes any staged weights, and only then completes deferred
-publishes (the publish barrier: a save_weights_for_sampler result is visible
-strictly after its weights are live on the engines). The DATA phase runs
-generate/train over whole client batches; an empty-queue timeout is a yield
-back to the control phase, not an error.
-"""
-
 import asyncio
 import logging
 
@@ -37,13 +25,6 @@ def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
 
 
 class ActorGroupWeightUpdater:
-    """Weight-update seam for the physical publish barrier (codex-rollout-fullparameter-design-0810
-    §4.7): one parameterless call that lands whatever the training actors
-    staged. It carries no tinker operation IDs, no lease, and no second
-    binding list — the actor keeps sole authority over pending-push
-    coalescing, the has_new_engines trigger, and the resident push-set
-    selection. PR #1842 integration swaps only what sits behind this call."""
-
     def __init__(self, actor_model) -> None:
         self._actor_model = actor_model
 
@@ -52,19 +33,6 @@ class ActorGroupWeightUpdater:
 
 
 async def train_data_batch(actor_model, controller, rollout_id: int, rollout_data) -> None:
-    """Dispatch one claimed data batch to the trainer and finalize it on
-    abnormal outcomes.
-
-    A NORMAL train commits rank-side (``commit_batch`` completes the batch's
-    operations with their logprobs and releases the lease). Every other exit —
-    a non-NORMAL ``TrainStepOutcome`` (e.g. DISCARDED_SHOULD_RETRY) or a
-    raised train error — used to leave the operations CLAIMED forever and the
-    lease unreleased: the SDK future never resolved. The finalizer terminal-
-    fails the still-CLAIMED operations typed server and releases the lease;
-    the FAILED forward_backwards stay in the ledger as poison evidence, so
-    the window's possibly-partial gradients are discarded by the next
-    optim_step. Retry ownership is explicit: the client resubmits as NEW
-    operations."""
     from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 
     dispatch = rollout_data.get("tinker_dispatch") or {}
@@ -93,16 +61,6 @@ async def train_data_batch(actor_model, controller, rollout_id: int, rollout_dat
 
 
 async def run_control_phase(actor_model, controller, weight_updater) -> None:
-    """Claim → execute → complete, with the publish barrier in the middle.
-
-    The claim carries one BatchExecutionLease for the whole control batch
-    (the single binding truth the trainer validates before mutating). Its
-    lifecycle follows the operations' completion boundary: an immediate-only
-    batch releases after its completions land; a batch with deferred
-    publish/load operations holds the lease through the physical publish
-    barrier and releases only after their terminal completion. Failure paths
-    release in ``finally`` — a no-op under fixed residency, so nothing can
-    leak either way."""
     claimed = await controller.claim_ready_control_operations.remote()
     operations, lease = claimed["operations"], claimed["lease"]
     released = lease is None
@@ -123,10 +81,6 @@ async def run_control_phase(actor_model, controller, weight_updater) -> None:
         await weight_updater.update_weights()
 
         if deferred:
-            # The barrier held: these weights are now live, so the operations may
-            # complete with their original execution results (a deferred load_state
-            # carries its restored step; the backend stamps a publish's
-            # authoritative serving identity).
             await controller.complete_control_operations.remote(
                 {
                     op_id: {key: value for key, value in results[op_id].items() if key != "deferred"}
@@ -149,9 +103,6 @@ async def main(args):
     pgs = create_placement_groups(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
-    # Role-separated bundle over the (currently combined) rollout plane, not a
-    # single rollout engine: inference_controller owns the router/engines; the
-    # rollout_executor runs operation batches. PR #1842 swaps construction only.
     rollout_components = create_rollout_components(args, pgs["rollout"])
     inference_controller = rollout_components.inference_controller
     rollout_executor = rollout_components.rollout_executor
@@ -164,30 +115,23 @@ async def main(args):
     api_port = await multi_lora_controller.api_port.remote()
     logger.info(f"Tinker control API listening on http://{host}:{api_port} (head node)")
 
-    # As in train_async.py, actor_model is the actor RayTrainGroup. The factory's
-    # opaque weight-update owner is wired into its training actors; the driver
-    # never reaches through the inference-controller role for it.
+    # As in train_async.py, actor_model is the actor RayTrainGroup, with the weight-update owner wired in.
     actor_model, _ = await create_training_models(args, pgs, rollout_components.weight_update_owner)
     weight_updater = ActorGroupWeightUpdater(actor_model)
 
-    # The trainer exists and the driver loop is about to run: flip readiness
-    # so /api/v1/healthz stops answering 503 (liveness /health was up earlier,
-    # but a probe must never see "ok" while trainer init can still fail).
+    # The trainer is up: flip readiness so /api/v1/healthz stops answering 503.
     await multi_lora_controller.set_trainer_ready.remote()
 
     rollout_id = 0
     while True:
-        # The Multi-LoRA controller handle is the actor's only owning
-        # reference (it is not detached): rebinding it — e.g. to the weak
-        # ray.get_actor handle — would let Ray reap the controller mid-run.
+        # This handle is the controller's only owning reference; rebinding it would let Ray reap the actor.
         snapshot = await multi_lora_controller.snapshot.remote()
         if not (snapshot["pending"] or snapshot["ready"] or snapshot["retiring"] or snapshot["cleanup"]):
             logger.info(f"No adapters; sleeping for {args.multi_lora_idle_poll_s}s...")
             await asyncio.sleep(args.multi_lora_idle_poll_s)
             continue
 
-        # Residency first: retire deregistered adapters (final states), then
-        # load bound registrations and open their READY gates.
+        # Residency first: retire deregistered adapters, then load bound registrations.
         await actor_model.reconcile_tinker_adapters()
 
         await run_control_phase(actor_model, multi_lora_controller, weight_updater)
@@ -196,9 +140,7 @@ async def main(args):
         if not post_control["ready"]:
             continue
 
-        # Per-rollout engine preparation (the PR #1842 controller boundary):
-        # a no-op behind today's combined manager, the real health/prepare
-        # step once the split controller lands.
+        # Per-rollout engine preparation; a no-op behind today's combined manager.
         await inference_controller.prepare_rollout(rollout_id)
         try:
             rollout_data = await rollout_executor.generate(rollout_id)
