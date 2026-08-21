@@ -264,3 +264,45 @@ def test_distributed_atomic_group_cannot_span_expert_and_non_expert(direct_modul
 
     with pytest.raises(AssertionError, match="module.a"):
         updater._get_weight_transfer_update_units(is_expert=False)
+
+
+def _iterator_with_recorded_snapshot(direct_module, monkeypatch) -> tuple[object, list[int]]:
+    calls: list[int] = []
+
+    def fake_buckets(args, model, model_name):
+        calls.append(1)
+        return [[_param("layer.a", 4)]]
+
+    monkeypatch.setattr(direct_module, "_get_megatron_local_param_info_buckets", fake_buckets)
+    monkeypatch.setattr(direct_module, "_get_megatron_full_params", lambda args, infos, weights: [torch.zeros(4)])
+    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+
+    iterator = direct_module.HfWeightIteratorDirect(Namespace(), [], "model", None)
+    monkeypatch.setattr(iterator, "_convert_to_hf_named_tensors", lambda params, infos: [("layer.a", torch.zeros(4))])
+    return iterator, calls
+
+
+def test_the_param_info_snapshot_is_not_taken_while_constructing(direct_module, monkeypatch):
+    """Constructing runs before the checkpoint load settles every dtype, and every point after that load is already inside the trainer's offload sleep, where this collective cannot allocate."""
+    _iterator, calls = _iterator_with_recorded_snapshot(direct_module, monkeypatch)
+
+    assert calls == []
+
+
+def test_the_param_info_snapshot_is_taken_when_the_first_chunk_is_asked_for(direct_module, monkeypatch):
+    """The first weight update is the one moment both constraints hold at once: the load has finished and the trainer is awake."""
+    iterator, calls = _iterator_with_recorded_snapshot(direct_module, monkeypatch)
+
+    list(iterator.get_hf_weight_chunks({"layer.a": torch.zeros(4)}))
+
+    assert calls == [1]
+
+
+def test_the_param_info_snapshot_is_reused_by_later_updates(direct_module, monkeypatch):
+    """Recomputing it per update would put an all_gather_object on every weight sync."""
+    iterator, calls = _iterator_with_recorded_snapshot(direct_module, monkeypatch)
+
+    for _ in range(3):
+        list(iterator.get_hf_weight_chunks({"layer.a": torch.zeros(4)}))
+
+    assert calls == [1]

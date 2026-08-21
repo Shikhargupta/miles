@@ -26,9 +26,7 @@ from .hf_weight_iterator_base import HfWeightIteratorBase
 class HfWeightIteratorDirect(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(
-            self.args, self.model, self.model_name
-        )
+        self._param_info_buckets: list[list[ParamInfo]] | None = None
 
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
         rank = dist.get_rank()
@@ -40,7 +38,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
             return
 
         for megatron_local_param_infos in tqdm(
-            self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
+            self._resolve_param_info_buckets(), disable=rank != 0, desc="Update weights"
         ):
             megatron_full_params = _get_megatron_full_params(
                 self.args, megatron_local_param_infos, megatron_local_weights
@@ -48,6 +46,11 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
             hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, megatron_local_param_infos)
             yield hf_named_tensors
             del megatron_full_params
+
+    def _resolve_param_info_buckets(self) -> list[list[ParamInfo]]:
+        if self._param_info_buckets is None:
+            self._param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model, self.model_name)
+        return self._param_info_buckets
 
     def _convert_to_hf_named_tensors(self, megatron_full_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
         hf_named_tensors = []
