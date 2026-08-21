@@ -291,8 +291,12 @@ async def update_weights(
         )
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
-    weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
-    await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+    completed_snapshot: dict[str, str] = {}
+    try:
+        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+        completed_snapshot = info.snapshot_cell_id_to_hashes
+    finally:
+        await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=completed_snapshot)
 
     await _maybe_log_inference_engine_weight_checksums(
         args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
