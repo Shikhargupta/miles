@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1209,6 +1210,15 @@ class TestWaitUntilUpdateWeightsReady:
 
         with pytest.raises(NonRetryableError, match="No trainer cell can become ready"):
             await group.wait_until_update_weights_ready()
+
+    async def test_uninitialized_replacements_without_a_live_source_fail_immediately(self):
+        """A replacement cannot initialize or receive a checkpoint after every live trainer is gone."""
+        from miles.utils.retry_utils import NonRetryableError
+
+        group = self._make_group(cells=[MagicMock(is_alive=False, is_uninitialized=True)])
+
+        with pytest.raises(NonRetryableError, match="No trainer cell can become ready"):
+            await asyncio.wait_for(group.wait_until_update_weights_ready(), timeout=0.1)
 
 
 class TestInitForwardsModelFlags:

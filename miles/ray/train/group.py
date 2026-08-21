@@ -387,9 +387,7 @@ class TrainerController:
         async def _check(_remaining: float) -> None:
             if any(cell.is_alive for cell in self._cells):
                 return
-            if not self._is_recoverable():
-                raise NonRetryableError("No trainer cell can become ready for a weight update")
-            raise TimeoutError("No trainer cell is ready for a weight update")
+            raise NonRetryableError("No trainer cell can become ready for a weight update")
 
         await retry_until_deadline(
             _check,

@@ -51,10 +51,9 @@ def compute_cell_status(state: CellState, health_checker_status: TriState) -> Ce
 
         case StateAllocatedUninitialized():
             return CellStatus(
-                phase="Running",
+                phase="Pending",
                 conditions=[
                     CellCondition.allocated(TriState.TRUE),
-                    CellCondition.healthy(TriState.TRUE),
                 ],
             )
 

@@ -8,6 +8,11 @@ from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
+from tests.e2e.ft.conftest_ft.fault_injection.state import (
+    ObservedCellState,
+    cell_is_alive,
+    compute_observed_cell_state,
+)
 
 
 def _make_worker_handle_mock() -> MagicMock:
@@ -63,14 +68,17 @@ class TestComputeCellStatusAlive:
 
 class TestComputeCellStatusOtherStates:
     @pytest.mark.parametrize("health_status", [TriState.TRUE, TriState.FALSE, TriState.UNKNOWN])
-    def test_uninitialized_ignores_health_checker(self, health_status: TriState):
+    def test_uninitialized_is_pending_and_not_an_injectable_replica(self, health_status: TriState):
+        """A replacement is not a spare working trainer until its controller finishes initialization."""
         state = StateAllocatedUninitialized(worker_handles=[_make_worker_handle_mock()])
 
         result = compute_cell_status(state, health_status)
 
-        assert result.phase == "Running"
-        healthy = _find_condition(result, "Healthy")
-        assert healthy.status == TriState.TRUE
+        assert result.phase == "Pending"
+        assert [condition.type for condition in result.conditions] == ["Allocated"]
+        cell = {"metadata": {"name": "trainer-0"}, "status": result.model_dump(mode="json")}
+        assert not cell_is_alive(cell)
+        assert compute_observed_cell_state(cell) is ObservedCellState.PENDING
 
     @pytest.mark.parametrize("health_status", [TriState.TRUE, TriState.FALSE, TriState.UNKNOWN])
     def test_errored_always_reports_unhealthy(self, health_status: TriState):
@@ -92,11 +100,10 @@ class TestComputeCellStatusForEveryTrainerState:
             StateAllocatedErrored(worker_handles=[], indep_dp_info=_make_indep_dp_info()),
         ],
     )
-    def test_a_trainer_cell_is_always_running_and_allocated(self, state):
-        """Trainer cells are never pending or stopped, so the FT controller must never see them lose their slots."""
+    def test_a_trainer_cell_is_always_allocated(self, state):
+        """A trainer replacement keeps its slot while its readiness phase changes."""
         result = compute_cell_status(state, TriState.FALSE)
 
-        assert result.phase == "Running"
         assert _find_condition(result, "Allocated").status == TriState.TRUE
 
 
