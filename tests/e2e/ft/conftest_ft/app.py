@@ -31,6 +31,7 @@ _DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
 _DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
 
 BuildArgsFn = Callable[[FTTestMode, str, bool], str]
+ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
 TargetSideContextFn = Callable[
     [FTTestMode, str, command_utils.ExecuteTrainConfig], contextlib.AbstractContextManager[None]
 ]
@@ -75,6 +76,7 @@ def run_pipeline(
     mode: str | None,
     enable_dumper: bool = True,
     target_side_context: TargetSideContextFn | None = None,
+    config_for_side: ConfigForSideFn | None = None,
     run_side: RunSideFn = run_one_release,
     resolve_mode_fn: ResolveModeFn = resolve_mode,
 ) -> None:
@@ -93,7 +95,7 @@ def run_pipeline(
                 (TARGET_SIDE, build_target_args),
             ):
                 side_dump = f"{dump_dir}/{_dump_subdir(side, phase)}"
-                config = command_utils.default_config()
+                config = _resolve_config_for_side(side, config_for_side=config_for_side)
                 context = (
                     target_side_context(ft_mode, side_dump, config)
                     if side == TARGET_SIDE and target_side_context is not None
@@ -125,6 +127,7 @@ def create_comparison_app_and_run_ci(
     compare_fn: Callable[[str, FTTestMode], None],
     phases: list[str] | None = None,
     target_side_context: TargetSideContextFn | None = None,
+    config_for_side: ConfigForSideFn | None = None,
     run_side: RunSideFn = run_one_release,
     resolve_mode_fn: ResolveModeFn = resolve_mode,
 ) -> tuple[typer.Typer, Callable[[str | None], None]]:
@@ -156,7 +159,7 @@ def create_comparison_app_and_run_ci(
         args = build_fn(ft_mode, full_dump_dir, enable_dumper)
         prepare(ft_mode)
 
-        config = command_utils.default_config()
+        config = _resolve_config_for_side(side, config_for_side=config_for_side)
         context = (
             target_side_context(ft_mode, full_dump_dir, config)
             if side == TARGET_SIDE and target_side_context is not None
@@ -218,6 +221,7 @@ def create_comparison_app_and_run_ci(
             mode=mode,
             enable_dumper=enable_dumper,
             target_side_context=target_side_context,
+            config_for_side=config_for_side,
             run_side=run_side,
             resolve_mode_fn=resolve_mode_fn,
         )
@@ -247,11 +251,17 @@ def create_comparison_app_and_run_ci(
             phases=phases,
             mode=mode,
             target_side_context=target_side_context,
+            config_for_side=config_for_side,
             run_side=run_side,
             resolve_mode_fn=resolve_mode_fn,
         )
 
     return app, run_ci
+
+
+def _resolve_config_for_side(side: str, *, config_for_side: ConfigForSideFn | None) -> command_utils.ExecuteTrainConfig:
+    config = command_utils.default_config()
+    return config_for_side(side, config) if config_for_side is not None else config
 
 
 def create_non_comparison_app(

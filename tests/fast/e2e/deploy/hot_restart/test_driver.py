@@ -1,3 +1,4 @@
+import signal
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
     ScheduledFreeze,
     compute_freeze_plan,
+    driving_hot_restarts,
     relaunch_with_hot_restart,
 )
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
@@ -384,9 +386,72 @@ class TestHotRestartDriverVerdict:
         with pytest.raises(AssertionError, match="the hot restart driver failed"):
             driver.assert_every_restart_happened()
 
+    def test_an_intermediate_launch_replaced_by_the_next_take_over_is_not_a_failure(self, tmp_path):
+        """SIGTERM is the expected local verdict of a launch whose orchestrator the schedule replaces."""
+        driver = _driver(tmp_path, relaunch=_raise_sigterm)
+        driver.records.extend(
+            [
+                HotRestartRecord(index=0, saved_iteration_at_trigger=1, frozen_rollout_id=2),
+                HotRestartRecord(index=1, saved_iteration_at_trigger=3, frozen_rollout_id=4),
+            ]
+        )
+
+        driver._relaunch(4)
+
+        driver.assert_every_restart_happened()
+
+    def test_a_final_launch_killed_by_sigterm_is_still_a_failure(self, tmp_path):
+        """Nothing replaces the final orchestrator, so its SIGTERM remains the target run's real verdict."""
+        driver = _driver(tmp_path, relaunch=_raise_sigterm)
+
+        driver._relaunch(None)
+
+        with pytest.raises(AssertionError, match="the hot restart driver failed"):
+            driver.assert_every_restart_happened()
+
 
 def _raise_boom(_frozen_rollout_id: int | None) -> None:
     raise RuntimeError("boom")
+
+
+def _raise_sigterm(_frozen_rollout_id: int | None) -> None:
+    raise SystemExit(128 + signal.SIGTERM)
+
+
+class TestDrivingHotRestarts:
+    def test_sigterm_before_any_take_over_is_still_the_run_verdict(self, tmp_path, monkeypatch):
+        """No scheduled replacement explains SIGTERM before the driver has triggered its first take-over."""
+        driver = _driver(tmp_path)
+        monkeypatch.setattr(driver_module.ClusterObserver, "observe_once_or_warn", lambda _self: None)
+
+        with pytest.raises(SystemExit) as error:
+            with driving_hot_restarts(driver, dump_dir=str(tmp_path)):
+                raise SystemExit(128 + signal.SIGTERM)
+
+        assert error.value.code == 128 + signal.SIGTERM
+
+    def test_the_previous_launch_exit_does_not_stop_the_remaining_take_overs(self, tmp_path, monkeypatch):
+        """A launch-level SIGTERM must not end a target side whose schedule still has a second take-over."""
+        armed: list[int | None] = []
+        driver = _driver(tmp_path, relaunch=armed.append)
+        _install_progress(
+            monkeypatch,
+            [
+                RunProgress(last_saved_iteration=1, last_finished_rollout_id=2),
+                RunProgress(last_saved_iteration=3, last_finished_rollout_id=4),
+            ],
+        )
+
+        with driving_hot_restarts(driver, dump_dir=str(tmp_path)):
+            deadline = time.monotonic() + _DRIVE_TIMEOUT_SECONDS
+            while not driver.records and time.monotonic() < deadline:
+                time.sleep(_DRIVE_POLL_SECONDS)
+            raise SystemExit(128 + signal.SIGTERM)
+
+        _join_relaunches(driver)
+
+        assert armed == [4, None]
+        driver.assert_every_restart_happened()
 
 
 class TestWatchingPastTheLastTakeOver:
