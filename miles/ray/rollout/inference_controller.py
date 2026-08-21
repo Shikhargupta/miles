@@ -214,6 +214,17 @@ class InferenceController:
             ]
         )
 
+    @releases_lock
+    async def abort_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        cell_ids = sorted(
+            cell_id
+            for srv in self.servers.values()
+            for cell_id, cell in srv.server_cells.items()
+            if snapshot_cell_id_to_hashes.get(cell_id) == cell.meta.workers_hash
+        )
+        if cell_ids:
+            await self._engine_provider.stop_cells(cell_ids=cell_ids)
+
     @requires_lock
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS

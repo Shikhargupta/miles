@@ -40,6 +40,7 @@ class _RpcWeightUpdateController:
         self.start_called = asyncio.Event()
         self.start_release = asyncio.Event()
         self.end_snapshots: list[dict[str, str]] = []
+        self.abort_snapshots: list[dict[str, str]] = []
         if not block_start:
             self.start_release.set()
 
@@ -55,6 +56,9 @@ class _RpcWeightUpdateController:
 
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
         self.end_snapshots.append(snapshot_cell_id_to_hashes)
+
+    async def abort_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        self.abort_snapshots.append(snapshot_cell_id_to_hashes)
 
 
 class _RpcWeightUpdateTrainer:
@@ -76,10 +80,12 @@ class _RetryWindowController:
         order: list[str],
         *,
         end_errors: list[Exception] | None = None,
+        abort_errors: list[Exception] | None = None,
         wait_for_heal: bool = False,
     ) -> None:
         self._order = order
         self._end_errors = list(end_errors or [])
+        self._abort_errors = list(abort_errors or [])
         self._generation = 0
         self._wait_for_heal = wait_for_heal
         self.context_lock = ContextLock("InferenceController")
@@ -102,6 +108,16 @@ class _RetryWindowController:
         self._order.append(f"end:{snapshot_cell_id_to_hashes}")
         if self._end_errors:
             error = self._end_errors.pop(0)
+            self.context_lock.reattach()
+            self.context_lock.release()
+            raise error
+        self.context_lock.reattach()
+        self.context_lock.release()
+
+    async def abort_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        self._order.append(f"abort:{snapshot_cell_id_to_hashes}")
+        if self._abort_errors:
+            error = self._abort_errors.pop(0)
             self.context_lock.reattach()
             self.context_lock.release()
             raise error
@@ -384,8 +400,8 @@ async def test_cancelling_an_in_flight_rpc_start_still_closes_the_window_it_open
 
 
 @pytest.mark.asyncio
-async def test_a_timed_out_rpc_broadcast_drains_before_releasing_the_window(monkeypatch: pytest.MonkeyPatch):
-    """A client polling timeout cannot release the window while its remote broadcast is still running."""
+async def test_a_timed_out_rpc_broadcast_drains_before_replacing_the_participants(monkeypatch: pytest.MonkeyPatch):
+    """A client polling timeout cannot replace engines while its remote broadcast is still running."""
     from miles.ray import placement_group
 
     monkeypatch.setattr(rpc_handle_module, "_IDLE_POLL_INTERVAL_SECONDS", 0.01)
@@ -405,7 +421,7 @@ async def test_a_timed_out_rpc_broadcast_drains_before_releasing_the_window(monk
         )
         await asyncio.wait_for(trainer.started.wait(), timeout=5)
         await asyncio.sleep(0.1)
-        snapshots_while_remote_was_blocked = list(controller.end_snapshots)
+        snapshots_while_remote_was_blocked = list(controller.abort_snapshots)
 
         trainer.release.set()
         await asyncio.wait_for(trainer.finished.wait(), timeout=5)
@@ -413,12 +429,13 @@ async def test_a_timed_out_rpc_broadcast_drains_before_releasing_the_window(monk
             await task
 
     assert snapshots_while_remote_was_blocked == []
-    assert controller.end_snapshots == [{}]
+    assert controller.abort_snapshots == [{"cell": "generation"}]
+    assert controller.end_snapshots == []
 
 
 @pytest.mark.asyncio
-async def test_a_failed_broadcast_closes_the_update_window_without_readying_cells(monkeypatch: pytest.MonkeyPatch):
-    """A failed policy broadcast releases its update window without accepting partial weights."""
+async def test_a_failed_broadcast_replaces_the_snapshot_without_readying_cells(monkeypatch: pytest.MonkeyPatch):
+    """A failed policy broadcast replaces its engines without accepting partial weights."""
     from miles.ray import placement_group
 
     monkeypatch.setattr(placement_group, "_WEIGHT_UPDATE_RETRY_MAX_ATTEMPTS", 1)
@@ -439,9 +456,78 @@ async def test_a_failed_broadcast_closes_the_update_window_without_readying_cell
             inference_controller,
         )
 
-    assert order == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
-    [end_kwargs] = [kwargs for name, _args, kwargs in inference_controller.calls if name == "end_update_weights"]
-    assert end_kwargs == {"snapshot_cell_id_to_hashes": {}}
+    assert order == ["start_update_weights", "trainer_update_weights", "abort_update_weights"]
+    [abort_kwargs] = [kwargs for name, _args, kwargs in inference_controller.calls if name == "abort_update_weights"]
+    assert (
+        abort_kwargs["snapshot_cell_id_to_hashes"]
+        is inference_controller.results["start_update_weights"].snapshot_cell_id_to_hashes
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_broadcast_replaces_every_snapshot_participant_before_retrying():
+    """A partial broadcast cannot leave any participant serving a mixture of old and new weights."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _RetryWindowController(order)
+    broadcast_count = 0
+
+    async def _broadcast(*, info: UpdatableEngines, rollout_id: int | None = None) -> int:
+        nonlocal broadcast_count
+        broadcast_count += 1
+        [generation] = info.snapshot_cell_id_to_hashes.values()
+        order.append(f"broadcast:{generation}")
+        if broadcast_count == 1:
+            raise RuntimeError("one engine died after its peers accepted partial weights")
+        return 11
+
+    await update_weights(
+        _orchestration_args(),
+        MagicMock(
+            update_weights=AsyncMock(side_effect=_broadcast),
+            wait_until_update_weights_ready=AsyncMock(side_effect=lambda: order.append("wait:trainer")),
+        ),
+        MagicMock(set_weight_version=AsyncMock()),
+        inference_controller,
+    )
+
+    assert order == [
+        "start:generation-1",
+        "broadcast:generation-1",
+        "abort:{'cell': 'generation-1'}",
+        "wait:trainer",
+        "wait:rollout",
+        "start:generation-2",
+        "broadcast:generation-2",
+        "end:{'cell': 'generation-2'}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_participant_replacement_never_starts_a_second_window():
+    """A retry is unsafe until every process that may hold partial weights is confirmed stopped."""
+    from miles.ray import placement_group
+    from miles.utils.retry_utils import NonRetryableError
+
+    order: list[str] = []
+    inference_controller = _RetryWindowController(
+        order,
+        abort_errors=[RuntimeError("could not confirm old worker exit")],
+    )
+
+    with pytest.raises(NonRetryableError, match="did not close cleanly"):
+        await placement_group.update_weights(
+            _orchestration_args(),
+            MagicMock(update_weights=AsyncMock(side_effect=RuntimeError("partial broadcast"))),
+            MagicMock(set_weight_version=AsyncMock()),
+            inference_controller,
+        )
+
+    assert order == [
+        "start:generation-1",
+        "abort:{'cell': 'generation-1'}",
+    ]
 
 
 @pytest.mark.asyncio
@@ -487,7 +573,7 @@ async def test_a_failed_broadcast_releases_the_window_before_retrying_with_a_fre
     assert order == [
         "start:generation-1",
         "broadcast:generation-1",
-        "end:{}",
+        "abort:{'cell': 'generation-1'}",
         "heal",
         "wait:trainer",
         "wait:rollout",
@@ -543,7 +629,7 @@ async def test_cancelling_a_retried_broadcast_drains_it_before_closing_its_fresh
     assert order_while_retry_was_blocked == [
         "start:generation-1",
         "broadcast:generation-1",
-        "end:{}",
+        "abort:{'cell': 'generation-1'}",
         "wait:trainer",
         "wait:rollout",
         "start:generation-2",
@@ -580,24 +666,24 @@ async def test_a_second_failed_broadcast_closes_its_fresh_window_before_giving_u
     assert order == [
         "start:generation-1",
         "broadcast:generation-1",
-        "end:{}",
+        "abort:{'cell': 'generation-1'}",
         "wait:trainer",
         "wait:rollout",
         "start:generation-2",
         "broadcast:generation-2",
-        "end:{}",
+        "abort:{'cell': 'generation-2'}",
     ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("end_error", [RuntimeError("end failed"), TimeoutError("end timed out")])
-async def test_an_ambiguous_window_close_never_starts_a_second_attempt(end_error: Exception):
-    """A failed close leaves the detached lock ambiguous, so retrying could deadlock on the next start."""
+@pytest.mark.parametrize("abort_error", [RuntimeError("stop failed"), TimeoutError("stop timed out")])
+async def test_an_ambiguous_participant_replacement_never_starts_a_second_attempt(abort_error: Exception):
+    """An unconfirmed participant stop makes another window unsafe."""
     from miles.ray import placement_group
     from miles.utils.retry_utils import NonRetryableError
 
     order: list[str] = []
-    inference_controller = _RetryWindowController(order, end_errors=[end_error])
+    inference_controller = _RetryWindowController(order, abort_errors=[abort_error])
 
     with pytest.raises(NonRetryableError, match="did not close cleanly"):
         await asyncio.wait_for(
@@ -612,8 +698,8 @@ async def test_an_ambiguous_window_close_never_starts_a_second_attempt(end_error
 
     assert order == [
         "start:generation-1",
-        "end:{}",
-        *(["wait_idle:inference"] if isinstance(end_error, TimeoutError) else []),
+        "abort:{'cell': 'generation-1'}",
+        *(["wait_idle:inference"] if isinstance(abort_error, TimeoutError) else []),
     ]
 
 
@@ -641,7 +727,7 @@ async def test_a_terminal_trainer_failure_is_detected_before_opening_a_second_wi
             timeout=1,
         )
 
-    assert order == ["start:generation-1", "end:{}"]
+    assert order == ["start:generation-1", "abort:{'cell': 'generation-1'}"]
     actor_model.wait_until_update_weights_ready.assert_awaited_once()
 
 
@@ -679,7 +765,7 @@ async def test_a_drained_failure_after_cancellation_never_starts_a_second_window
         await asyncio.wait_for(task, timeout=1)
 
     assert isinstance(error.value.__cause__, placement_group._RetryableWeightUpdateError)
-    assert order == ["start:generation-1", "end:{}"]
+    assert order == ["start:generation-1", "abort:{'cell': 'generation-1'}"]
 
 
 @pytest.mark.asyncio

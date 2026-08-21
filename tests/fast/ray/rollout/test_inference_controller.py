@@ -160,12 +160,20 @@ class _RecordingEvalFleet:
 
 
 class _FakeWorkerProvider(BaseWorkerProvider):
-    def __init__(self, cell_infos: list[CellInfo], *, pool_ids: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        cell_infos: list[CellInfo],
+        *,
+        pool_ids: list[str] | None = None,
+        stop_error: Exception | None = None,
+    ) -> None:
         self._cell_infos = cell_infos
         self._pools = pool_ids or []
         self.watched_pool_ids: list[str] | None = None
         self.initialized = False
         self.stop_watch_calls = 0
+        self.stop_calls: list[list[str]] = []
+        self.stop_error = stop_error
 
     async def init(self) -> None:
         self.initialized = True
@@ -175,6 +183,11 @@ class _FakeWorkerProvider(BaseWorkerProvider):
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [[] for _ in cell_ids]
+
+    async def stop_cells(self, *, cell_ids: list[str]) -> None:
+        self.stop_calls.append(cell_ids)
+        if self.stop_error is not None:
+            raise self.stop_error
 
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         assert self.initialized, "the controller must init the provider before observing its cells"
@@ -616,6 +629,66 @@ class TestUpdateWeightsLockWindow:
         """Ordinary controller methods release the lock when they return."""
         controller = _make_controller({})
         await controller.prepare_eval()
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_abort_stops_every_snapshot_participant_before_releasing_the_window(self):
+        """No process that may contain partially written weights can survive a failed broadcast."""
+        provider = _FakeWorkerProvider([])
+        srv = _RecordingServer(
+            {
+                "engine-0": _FakeUpdatableCell("hash-a"),
+                "engine-1": _FakeUpdatableCell("hash-b"),
+            },
+            model_name="actor",
+            update_weights=True,
+        )
+        controller = _make_controller({"actor": srv}, engine_provider=provider)
+        info = await controller.start_update_weights()
+
+        await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert provider.stop_calls == [["engine-0", "engine-1"]]
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_abort_preserves_replacements_that_reuse_a_snapshot_cell_id(self):
+        """A replacement generation must not be stopped for an older generation's failed broadcast."""
+        provider = _FakeWorkerProvider([])
+        srv = _RecordingServer(
+            {
+                "engine-0": _FakeUpdatableCell("hash-old-0"),
+                "engine-1": _FakeUpdatableCell("hash-old-1"),
+            },
+            model_name="actor",
+            update_weights=True,
+        )
+        controller = _make_controller({"actor": srv}, engine_provider=provider)
+        info = await controller.start_update_weights()
+        srv.server_cells["engine-1"] = _FakeUpdatableCell("hash-new-1")
+
+        await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert provider.stop_calls == [["engine-0"]]
+        assert srv.server_cells["engine-1"].meta.workers_hash == "hash-new-1"
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_abort_failure_releases_the_window_only_after_reporting_the_ambiguity(self):
+        """An unconfirmed stop is terminal even though the detached controller lock must not leak."""
+        provider = _FakeWorkerProvider([], stop_error=RuntimeError("stop outcome unknown"))
+        srv = _RecordingServer(
+            {"engine-0": _FakeUpdatableCell("hash-a")},
+            model_name="actor",
+            update_weights=True,
+        )
+        controller = _make_controller({"actor": srv}, engine_provider=provider)
+        info = await controller.start_update_weights()
+
+        with pytest.raises(RuntimeError, match="stop outcome unknown"):
+            await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert provider.stop_calls == [["engine-0"]]
         assert not controller.context_lock.locked
 
 

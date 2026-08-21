@@ -365,33 +365,30 @@ async def _complete_weight_update(
         await _end_weight_update(inference_controller, snapshot_cell_id_to_hashes={})
         raise
 
-    completed_snapshot: dict[str, str] = {}
-    can_release_window = True
-    broadcast_error: Exception | None = None
-    weight_version: int | None = None
     try:
-        try:
-            weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
-        except TimeoutError as error:
-            can_release_window = False
-            await _wait_for_timed_out_remote_call(actor_model)
-            can_release_window = True
-            broadcast_error = error
-        except Exception as error:
-            broadcast_error = error
-        else:
-            completed_snapshot = info.snapshot_cell_id_to_hashes
-    finally:
-        if can_release_window:
-            await _end_weight_update(
-                inference_controller,
-                snapshot_cell_id_to_hashes=completed_snapshot,
-            )
-    if broadcast_error is not None:
-        message = f"The trainer broadcast failed after its window closed: {broadcast_error}"
-        if isinstance(broadcast_error, TimeoutError):
-            raise _RetryableWeightUpdateTimeoutError(message) from broadcast_error
-        raise _RetryableWeightUpdateError(message) from broadcast_error
+        weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    except TimeoutError as error:
+        await _wait_for_timed_out_remote_call(actor_model)
+        await _abort_weight_update(
+            inference_controller,
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+        )
+        raise _RetryableWeightUpdateTimeoutError(
+            f"The trainer broadcast failed after its participants were replaced: {error}"
+        ) from error
+    except Exception as error:
+        await _abort_weight_update(
+            inference_controller,
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+        )
+        raise _RetryableWeightUpdateError(
+            f"The trainer broadcast failed after its participants were replaced: {error}"
+        ) from error
+
+    await _end_weight_update(
+        inference_controller,
+        snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+    )
     return weight_version
 
 
@@ -400,6 +397,16 @@ async def _end_weight_update(
 ) -> None:
     try:
         await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes)
+    except TimeoutError:
+        await _wait_for_timed_out_remote_call(inference_controller)
+        raise
+
+
+async def _abort_weight_update(
+    inference_controller: BaseWorkerHandle, *, snapshot_cell_id_to_hashes: dict[str, str]
+) -> None:
+    try:
+        await inference_controller.abort_update_weights(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes)
     except TimeoutError:
         await _wait_for_timed_out_remote_call(inference_controller)
         raise
