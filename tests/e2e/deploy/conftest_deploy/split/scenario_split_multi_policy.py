@@ -1,5 +1,6 @@
 import dataclasses
 import math
+import os
 
 import typer
 
@@ -10,6 +11,7 @@ from examples.infra_features.split_deployment.run_solver_verifier_gsm8k_split im
 from examples.multi_policy.run_solver_verifier_gsm8k import (
     LEADER_MODEL_ID,
     MODEL_IDS,
+    TRAIN_EXTRA_ENV_VARS,
     ScriptArgs,
     compute_events_dir,
     compute_megatron_config,
@@ -137,6 +139,7 @@ def _compute_dump_dir(config: ExecuteTrainConfig) -> str:
 def _run_ci_where_a_run_can_be_deployed() -> None:
     config = command_utils.default_config(ScriptArgs)
     assert_the_cluster_can_deploy_runs(config)
+    os.environ.update(TRAIN_EXTRA_ENV_VARS)
     _run(config)
 
 
