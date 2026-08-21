@@ -61,6 +61,12 @@ class TestSaveInferenceEngineWeightChecksumArguments:
     def _parse(self, extra: list[str]) -> argparse.Namespace:
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
+        parser.set_defaults(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            context_parallel_size=1,
+            world_size=1,
+        )
         return parser.parse_args([*extra, *REQUIRED_ARGS])
 
     def test_the_checksum_flag_is_disabled_by_default(self) -> None:
