@@ -105,9 +105,7 @@ class RayWorkerManager:
             cells = [self._find_cell(cell_id) for cell_id in cell_ids]
             if expected_workers_hashes is not None:
                 cells = [
-                    cell
-                    for cell in cells
-                    if expected_workers_hashes.get(cell.cell_id) == cell.get_info().workers_hash
+                    cell for cell in cells if expected_workers_hashes.get(cell.cell_id) == cell.get_info().workers_hash
                 ]
             await asyncio.gather(*[cell.stop() for cell in cells])
 

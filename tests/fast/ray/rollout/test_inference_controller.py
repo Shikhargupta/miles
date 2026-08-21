@@ -653,9 +653,7 @@ class TestUpdateWeightsLockWindow:
 
         await controller.abort_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
-        assert provider.stop_calls == [
-            (["engine-0", "engine-1"], {"engine-0": "hash-a", "engine-1": "hash-b"})
-        ]
+        assert provider.stop_calls == [(["engine-0", "engine-1"], {"engine-0": "hash-a", "engine-1": "hash-b"})]
         assert not controller.context_lock.locked
 
     @pytest.mark.asyncio
