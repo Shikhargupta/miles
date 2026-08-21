@@ -12,6 +12,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.pod_manipulation import (
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
+from miles.utils.ft_utils.api_server.models import WORKERS_HASH_LABEL
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 
@@ -52,7 +53,11 @@ class InjectFaultForm(BaseFaultForm):
     def inject(self, cell: dict, rng: random.Random) -> None:
         resp = requests.post(
             f"{self._base_url}/api/v1/cells/{cell['metadata']['name']}/inject-fault",
-            json={"mode": self._failure_mode.value, "sub_index": 0},
+            json={
+                "mode": self._failure_mode.value,
+                "sub_index": 0,
+                "workers_hash": cell["metadata"]["labels"][WORKERS_HASH_LABEL],
+            },
             timeout=5,
         )
         resp.raise_for_status()

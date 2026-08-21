@@ -490,6 +490,20 @@ def _worker_infos(provider, cell_id="engine-00000"):
     return asyncio.run(scenario())
 
 
+def _worker_infos_if_generation(provider, *, expected_workers_hash: str, cell_id="engine-00000"):
+    async def scenario():
+        stop = await _watch(provider, [])
+        try:
+            return provider.get_worker_infos_if_generation(
+                cell_id=cell_id,
+                expected_workers_hash=expected_workers_hash,
+            )
+        finally:
+            await stop()
+
+    return asyncio.run(scenario())
+
+
 def _worker_handle(provider, cell_id="engine-00000"):
     async def scenario():
         stop = await _watch(provider, [])
@@ -503,6 +517,28 @@ def _worker_handle(provider, cell_id="engine-00000"):
 
 
 class TestGetWorkerInfos:
+    def test_a_matching_generation_returns_workers_from_the_same_pod_snapshot(self):
+        """Generation preconditions and worker selection must derive from one immutable observation."""
+        api = FakePodApi(pods=[make_pod(name="engine-0-0", pod_ip="10.1.2.3")])
+        provider = _trainer_provider(api)
+        expected_workers_hash = _cell_info(provider).workers_hash
+
+        infos = _worker_infos_if_generation(provider, expected_workers_hash=expected_workers_hash)
+
+        assert infos is not None
+        assert [info.name for info in infos] == ["engine-0-0"]
+
+    def test_a_stale_generation_returns_no_workers(self):
+        """A stale mutation precondition must not expose any replacement worker handle to the caller."""
+        api = FakePodApi(pods=[make_pod(name="engine-0-0", pod_ip="10.1.2.3")])
+
+        infos = _worker_infos_if_generation(
+            _trainer_provider(api),
+            expected_workers_hash="stale-generation",
+        )
+
+        assert infos is None
+
     def test_orders_the_workers_by_the_rank_label(self):
         """A trainer cell reads rank 0 as its master, so an arbitrary pod order would misconfigure it."""
         api = FakePodApi(

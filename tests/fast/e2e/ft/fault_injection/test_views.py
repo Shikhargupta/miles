@@ -166,6 +166,40 @@ def test_a_missed_suspended_sample_still_counts_as_a_recovery() -> None:
     assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 1
 
 
+def test_a_new_serving_generation_counts_as_recovered_when_the_down_snapshot_was_missed() -> None:
+    """Generation replacement proves healing even when no pending or suspended poll was observed."""
+    log = state.EventLog()
+    log.observe([staged("rollout-engine-0", SERVING, workers_hash="old")])
+    log.note_injection_attempt(
+        cell_name="rollout-engine-0",
+        workers_hash="old",
+        form_name="inject_fault:sigkill",
+        succeeded=True,
+    )
+    log.observe([staged("rollout-engine-0", SERVING, workers_hash="new")])
+
+    assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 1
+    assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {}
+
+
+def test_a_new_nonserving_generation_does_not_count_as_recovered() -> None:
+    """A replacement generation still owes recovery until it is actually serving."""
+    log = state.EventLog()
+    log.observe([staged("rollout-engine-0", SERVING, workers_hash="old")])
+    log.note_injection_attempt(
+        cell_name="rollout-engine-0",
+        workers_hash="old",
+        form_name="inject_fault:sigkill",
+        succeeded=True,
+    )
+    log.observe([staged("rollout-engine-0", RUNNING_NOT_SERVING, workers_hash="new")])
+
+    assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 0
+    assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {
+        "rollout-engine-0": 1
+    }
+
+
 def test_a_replacement_that_never_reaches_the_router_is_not_a_recovery() -> None:
     """Regression: a relaunched engine stuck at PendingWeights also reads Running, and must not pass."""
     log = log_of([SERVING, PENDING, RUNNING_NOT_SERVING], inject_before={1: 1})

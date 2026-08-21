@@ -1435,8 +1435,14 @@ class TestInjectFault:
         """A multi-node engine is crashed by crashing one of its node ranks."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+        injected = await manager.inject_fault(
+            "engine-00000",
+            expected_workers_hash=manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].workers_hash,
+            mode="sigkill",
+            worker_in_cell_index=1,
+        )
 
+        assert injected
         calls = fake_ray_cluster.calls_of("inject_fault")
         assert [call.args for call in calls] == [("sigkill",)]
         assert calls[0].handle is fake_ray_cluster.handles[1]
@@ -1446,33 +1452,70 @@ class TestInjectFault:
         manager = await _launch([_make_spec("engine")])
         fake_ray_cluster.handles[0].failing_methods["inject_fault"] = RuntimeError("actor died")
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+        await manager.inject_fault(
+            "engine-00000",
+            expected_workers_hash=manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].workers_hash,
+            mode="sigkill",
+            worker_in_cell_index=0,
+        )
+
+    async def test_a_replaced_generation_is_not_injected(self, fake_ray_cluster: FakeRayCluster):
+        """A stale GET must not crash the same logical cell after its workers were replaced."""
+        manager = await _launch([_make_spec("engine")])
+
+        injected = await manager.inject_fault(
+            "engine-00000",
+            expected_workers_hash="stale-generation",
+            mode="sigkill",
+            worker_in_cell_index=0,
+        )
+
+        assert not injected
+        assert fake_ray_cluster.calls_of("inject_fault") == []
 
     async def test_injecting_into_a_suspended_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A suspended cell has no worker to crash."""
         manager = await _launch([_make_spec("engine")])
         await manager.stop_cells(["engine-00000"])
+        workers_hash = manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].workers_hash
 
         with pytest.raises(RuntimeError, match="not alive"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+            await manager.inject_fault(
+                "engine-00000",
+                expected_workers_hash=workers_hash,
+                mode="sigkill",
+                worker_in_cell_index=0,
+            )
 
     async def test_a_worker_index_beyond_the_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Injecting into a neighbouring cell by accident would corrupt the test's premise."""
         manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=1)])
 
         with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+            await manager.inject_fault(
+                "engine-00000",
+                expected_workers_hash=manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].workers_hash,
+                mode="sigkill",
+                worker_in_cell_index=1,
+            )
 
     async def test_a_negative_worker_index_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Negative indexing would silently select the last worker instead of failing."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
 
         with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=-1)
+            await manager.inject_fault(
+                "engine-00000",
+                expected_workers_hash=manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].workers_hash,
+                mode="sigkill",
+                worker_in_cell_index=-1,
+            )
 
     async def test_an_unknown_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A typo must not silently inject nothing."""
         manager = await _launch([_make_spec("engine")])
 
         with pytest.raises(AssertionError):
-            manager.inject_fault("engine-00007", mode="sigkill", worker_in_cell_index=0)
+            await manager.inject_fault(
+                "engine-00007", expected_workers_hash="unknown", mode="sigkill", worker_in_cell_index=0
+            )

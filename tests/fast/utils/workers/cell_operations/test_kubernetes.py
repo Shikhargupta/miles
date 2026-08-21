@@ -43,6 +43,17 @@ class FakeProvider:
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [self._worker_infos_of_cell(cell_id) for cell_id in cell_ids]
 
+    def get_worker_infos_if_generation(
+        self,
+        *,
+        cell_id: str,
+        expected_workers_hash: str,
+    ) -> list[WorkerInfo] | None:
+        info = self._infos.get(cell_id)
+        if info is None or info.workers_hash != expected_workers_hash:
+            return None
+        return self._worker_infos_of_cell(cell_id)
+
     def get_handles_of_worker_infos(self, infos: list[WorkerInfo]) -> dict[str, FakeHandle]:
         return {
             info.name: FakeHandle(info.name, calls=self.injections, effect=self._handle_effect)
@@ -189,7 +200,11 @@ class TestInjectFault:
         """A multi-pod cell is crashed by crashing one named rank, not whichever rank came first."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
+        asyncio.run(
+            operations.inject_fault(
+                cell_id="engine-0", expected_workers_hash="h", mode=FailureMode.SIGKILL, sub_index=1
+            )
+        )
 
         assert operations._provider.injections == [("engine-0-1", "sigkill")]
 
@@ -197,7 +212,11 @@ class TestInjectFault:
         """The caller chose the failure mode, so the worker must not be crashed some other way."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SEGFAULT, sub_index=0))
+        asyncio.run(
+            operations.inject_fault(
+                cell_id="engine-0", expected_workers_hash="h", mode=FailureMode.SEGFAULT, sub_index=0
+            )
+        )
 
         assert operations._provider.injections == [("engine-0-0", "segfault")]
 
@@ -207,7 +226,11 @@ class TestInjectFault:
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="unreachable"
         )
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+        asyncio.run(
+            operations.inject_fault(
+                cell_id="engine-0", expected_workers_hash="h", mode=FailureMode.SIGKILL, sub_index=0
+            )
+        )
 
         assert operations._provider.injections == [("engine-0-0", "sigkill")]
 
@@ -218,7 +241,11 @@ class TestInjectFault:
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="never_answers"
         )
 
-        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+        asyncio.run(
+            operations.inject_fault(
+                cell_id="engine-0", expected_workers_hash="h", mode=FailureMode.SIGKILL, sub_index=0
+            )
+        )
 
         assert operations._provider.injections == [("engine-0-0", "sigkill")]
 
@@ -227,14 +254,22 @@ class TestInjectFault:
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
 
         with pytest.raises(AssertionError, match="out of range"):
-            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
+            asyncio.run(
+                operations.inject_fault(
+                    cell_id="engine-0", expected_workers_hash="h", mode=FailureMode.SIGKILL, sub_index=1
+                )
+            )
 
     def test_a_negative_sub_index_is_rejected(self):
         """Negative indexing would silently select the last worker instead of failing."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
 
         with pytest.raises(AssertionError, match="out of range"):
-            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=-1))
+            asyncio.run(
+                operations.inject_fault(
+                    cell_id="engine-0", expected_workers_hash="h", mode=FailureMode.SIGKILL, sub_index=-1
+                )
+            )
 
     def test_a_worker_that_is_not_served_over_rpc_is_rejected(self):
         """There is no call to make, and succeeding here would report a crash that never happened."""
@@ -243,7 +278,54 @@ class TestInjectFault:
         )
 
         with pytest.raises(AssertionError, match="not served over rpc"):
-            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+            asyncio.run(
+                operations.inject_fault(
+                    cell_id="engine-0", expected_workers_hash="h", mode=FailureMode.SIGKILL, sub_index=0
+                )
+            )
+
+    def test_a_replaced_generation_is_rejected_before_any_worker_is_called(self):
+        """A stale API observation must not crash a same-name replacement pod."""
+        operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
+
+        with pytest.raises(RuntimeError, match="no longer has workers generation"):
+            asyncio.run(
+                operations.inject_fault(
+                    cell_id="engine-0",
+                    expected_workers_hash="stale",
+                    mode=FailureMode.SIGKILL,
+                    sub_index=0,
+                )
+            )
+
+        assert operations._provider.injections == []
+
+    def test_worker_selection_does_not_reread_after_the_generation_precondition(self):
+        """A replacement between legacy split reads must not redirect the fault to the new worker."""
+        old_info = _info(cell_id="engine-0", workers=("engine-0-old",))
+        new_info = old_info.model_copy(
+            update={"worker_names": ["engine-0-new"], "workers_hash": "new-generation"}
+        )
+        operations = _operations({"engine-0": old_info})
+        original_cell_info = operations._provider.cell_info
+
+        def replace_after_returning_old_info(cell_id: str) -> CellInfo | None:
+            info = original_cell_info(cell_id)
+            operations._provider._infos[cell_id] = new_info
+            return info
+
+        operations._provider.cell_info = replace_after_returning_old_info
+
+        asyncio.run(
+            operations.inject_fault(
+                cell_id="engine-0",
+                expected_workers_hash="h",
+                mode=FailureMode.SIGKILL,
+                sub_index=0,
+            )
+        )
+
+        assert operations._provider.injections == [("engine-0-old", "sigkill")]
 
 
 async def _stop_watching() -> None:

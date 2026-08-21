@@ -65,3 +65,26 @@ def test_an_injector_that_outlives_the_join_fails_instead_of_racing_the_log() ->
         finally:
             released.set()
             handle._worker.join(timeout_seconds=30)
+
+
+def test_an_invalid_observation_on_the_daemon_thread_fails_stop_and_join() -> None:
+    """Missing generation identity must reach the scenario gate instead of silently ending polling."""
+    handle = entrypoint.FaultInjectorHandle(
+        base_url="http://control",
+        seed=0,
+        mean_interval_seconds_of_cell_type=intervals(("rollout",), 1e9),
+        cell_fault_forms=api_server_fault_forms(),
+    )
+    incomplete = staged("rollout-engine-0", SERVING)
+    del incomplete["metadata"]["labels"]["miles.io/workers-hash"]
+
+    with patch.object(core, "requests") as mock_requests:
+        mock_requests.get.side_effect = lambda url, timeout: mock_response({"items": [incomplete]})
+        handle.start()
+        for _ in range(500):
+            if not handle._worker.is_running:
+                break
+            threading.Event().wait(timeout=0.01)
+        assert not handle._worker.is_running
+        with pytest.raises(KeyError, match="miles.io/workers-hash"):
+            handle.stop_and_join()

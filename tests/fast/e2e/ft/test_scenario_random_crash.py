@@ -61,16 +61,16 @@ def _note_form_attempts(
         )
 
 
-def _note_rollout_injection(log: state.EventLog) -> None:
+def _note_rollout_injection(log: state.EventLog, *, workers_hash: str = "generation-0") -> None:
     log.note_injection_attempt(
         cell_name=_ROLLOUT_CELL_NAME,
-        workers_hash="generation-0",
+        workers_hash=workers_hash,
         form_name="inject_fault:sigkill",
         succeeded=True,
     )
 
 
-def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
+def _rollout_cell(cell_state: state.ObservedCellState, *, workers_hash: str = "generation-0") -> dict:
     phase = "Pending" if cell_state is state.ObservedCellState.PENDING else "Running"
     conditions = (
         []
@@ -83,7 +83,7 @@ def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
     return {
         "metadata": {
             "name": _ROLLOUT_CELL_NAME,
-            "labels": {"miles.io/cell-type": "rollout", "miles.io/workers-hash": "generation-0"},
+            "labels": {"miles.io/cell-type": "rollout", "miles.io/workers-hash": workers_hash},
         },
         "status": {"phase": phase, "conditions": conditions},
     }
@@ -151,6 +151,18 @@ class TestAssertHealing:
 
         with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
             assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
+
+    def test_rollout_soak_accepts_replacement_generations_when_down_polls_were_missed(self, tmp_path: Path) -> None:
+        """The final witness must share the live-set rule that a new serving generation proves recovery."""
+        injector = _injector(cell_types=("rollout",))
+        log = injector.event_log
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING, workers_hash="generation-0")])
+        _note_rollout_injection(log, workers_hash="generation-0")
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING, workers_hash="generation-1")])
+        _note_rollout_injection(log, workers_hash="generation-1")
+        log.observe([_rollout_cell(state.ObservedCellState.SERVING, workers_hash="generation-2")])
+
+        assert_healing(("rollout",), injector=injector, event_dir=tmp_path / "events", context="soak")
 
 
 def _mean_intervals(*ft_components: str) -> dict[str, float]:

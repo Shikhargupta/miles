@@ -14,7 +14,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.cell_operations.base import BaseCellOperations, CellGenerationMismatchError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,18 @@ def _create_api_app(registry: _CellRegistry) -> FastAPI:
     async def inject_fault(name: str, body: FaultInjection) -> _OkResponse:
         handler = await _resolve(name)
         try:
-            await handler.inject_fault(name, mode=body.mode, sub_index=body.sub_index)
+            await handler.inject_fault(
+                name,
+                expected_workers_hash=body.workers_hash,
+                mode=body.mode,
+                sub_index=body.sub_index,
+            )
+        except CellGenerationMismatchError as err:
+            raise _K8sError(
+                status_code=409,
+                reason="Conflict",
+                message=str(err),
+            ) from err
         except NotImplementedError as err:
             raise _K8sError(
                 status_code=400,

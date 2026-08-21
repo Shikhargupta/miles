@@ -100,7 +100,12 @@ async def test_every_other_operation_goes_straight_through() -> None:
     await asyncio.wait_for(fixture.operations.cell_infos(pool_ids=["engine-0"]), timeout=5.0)
     await asyncio.wait_for(fixture.operations.resume(cell_id="engine-0-2"), timeout=5.0)
     await asyncio.wait_for(
-        fixture.operations.inject_fault(cell_id="engine-0-2", mode=FailureMode.SIGKILL, sub_index=0),
+        fixture.operations.inject_fault(
+            cell_id="engine-0-2",
+            expected_workers_hash="generation-0",
+            mode=FailureMode.SIGKILL,
+            sub_index=0,
+        ),
         timeout=5.0,
     )
 

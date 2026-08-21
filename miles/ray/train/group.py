@@ -22,7 +22,7 @@ from miles.utils.audit_utils.event_logger.models import (
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.data import RolloutDataPack, remove_train_output_refs
-from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.ft_utils.api_server.models import CellStatus, CellStatusSnapshot
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
 from miles.utils.init_once import InitOnce, init_once
@@ -431,6 +431,12 @@ class TrainerController:
 
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
+
+    async def get_cell_status_snapshots(self) -> dict[str, CellStatusSnapshot]:
+        return {
+            cell_id: CellStatusSnapshot(workers_hash=cell.workers_hash, status=cell.cell_status())
+            for cell_id, cell in list(self._cells_by_id.items())
+        }
 
     # ------------------------ utils to forward calls to cells ------------------------
 

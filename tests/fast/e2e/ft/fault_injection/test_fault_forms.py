@@ -66,7 +66,12 @@ def test_an_inject_fault_form_posts_the_failure_mode_it_was_built_for(monkeypatc
     form = next(one for one in forms if one.name == f"inject_fault:{FailureMode.SEGFAULT.value}")
     form.inject(typed_cell("actor-0", "actor"), random.Random(0))
 
-    assert posted == [("http://control/api/v1/cells/actor-0/inject-fault", {"mode": "segfault", "sub_index": 0})]
+    assert posted == [
+        (
+            "http://control/api/v1/cells/actor-0/inject-fault",
+            {"mode": "segfault", "sub_index": 0, "workers_hash": "generation-0"},
+        )
+    ]
 
 
 def test_the_delete_pod_form_never_reaches_the_api_server(monkeypatch) -> None:

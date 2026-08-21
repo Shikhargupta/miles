@@ -140,6 +140,7 @@ class _CellRecovery:
 @dataclasses.dataclass(frozen=True)
 class _CellEvent:
     kind: Literal["injected", "observed"]
+    workers_hash: str
     state: ObservedCellState | None = None
 
 
@@ -148,10 +149,14 @@ def _compute_cell_events(events: list[Event], *, harmed_only: bool = True) -> di
     for event in events:
         if isinstance(event, InjectionEvent):
             if event.succeeded and (event.harmed or not harmed_only):
-                cell_events_of_name.setdefault(event.cell_name, []).append(_CellEvent(kind="injected"))
+                cell_events_of_name.setdefault(event.cell_name, []).append(
+                    _CellEvent(kind="injected", workers_hash=event.workers_hash)
+                )
             continue
         for name, info in event.cell_infos.items():
-            cell_events_of_name.setdefault(name, []).append(_CellEvent(kind="observed", state=info.state))
+            cell_events_of_name.setdefault(name, []).append(
+                _CellEvent(kind="observed", workers_hash=info.workers_hash, state=info.state)
+            )
     return cell_events_of_name
 
 
@@ -191,19 +196,28 @@ class _RecoveryStage(enum.Enum):
 def _compute_recovery_tally(events: list[_CellEvent]) -> _RecoveryTally:
     num_outstanding = 0
     num_completed = 0
+    injected_workers_hash: str | None = None
     stage = _RecoveryStage.AWAITING_RELAUNCH
     for event in events:
         if event.kind == "injected":
             num_outstanding += 1
+            injected_workers_hash = event.workers_hash
             stage = _RecoveryStage.AWAITING_RELAUNCH
             continue
         if num_outstanding == 0:
             continue
-        if stage is _RecoveryStage.AWAITING_RELAUNCH and event.state in _RELAUNCH_STATES:
+        generation_replaced = event.workers_hash != injected_workers_hash
+        if generation_replaced and event.state is ObservedCellState.SERVING:
+            num_completed += num_outstanding
+            num_outstanding = 0
+            injected_workers_hash = None
+            stage = _RecoveryStage.AWAITING_RELAUNCH
+        elif stage is _RecoveryStage.AWAITING_RELAUNCH and event.state in _RELAUNCH_STATES:
             stage = _RecoveryStage.AWAITING_SERVING
         elif stage is _RecoveryStage.AWAITING_SERVING and event.state is ObservedCellState.SERVING:
             num_completed += num_outstanding
             num_outstanding = 0
+            injected_workers_hash = None
             stage = _RecoveryStage.AWAITING_RELAUNCH
     return _RecoveryTally(num_completed=num_completed, num_unfinished=num_outstanding)
 

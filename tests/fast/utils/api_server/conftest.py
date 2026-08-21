@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from miles.utils.ft_utils.api_server.handles import _CellHandler
-from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellSpec, CellStatus, CellStatusSnapshot
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
 from miles.utils.test_utils.fault_injector import FailureMode
@@ -42,7 +42,7 @@ class MockHandler(_CellHandler):
     def __init__(self, cell_type: str) -> None:
         self._cell_type = cell_type
         self.cells: dict[str, MockCellState] = {}
-        self.injected: list[tuple[str, FailureMode, int]] = []
+        self.injected: list[tuple[str, str, FailureMode, int]] = []
         self.supports_inject_fault = False
         self.inject_fault_error: Exception | None = None
 
@@ -97,12 +97,19 @@ class MockHandler(_CellHandler):
             {"type": "Healthy", "status": "True"},
         ]
 
-    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+    async def inject_fault(
+        self,
+        cell_id: str,
+        *,
+        expected_workers_hash: str,
+        mode: FailureMode,
+        sub_index: int,
+    ) -> None:
         if not self.supports_inject_fault:
             raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
         if self.inject_fault_error is not None:
             raise self.inject_fault_error
-        self.injected.append((cell_id, mode, sub_index))
+        self.injected.append((cell_id, expected_workers_hash, mode, sub_index))
 
 
 class MockGatedHandler(MockHandler):
@@ -147,13 +154,29 @@ class MockRemoteCall:
 
 
 class MockInferenceController:
-    def __init__(self, statuses: dict[str, CellStatus] | None = None) -> None:
+    def __init__(
+        self,
+        statuses: dict[str, CellStatus] | None = None,
+        *,
+        workers_hashes: dict[str, str] | None = None,
+    ) -> None:
         self._statuses = dict(statuses or {})
+        self._workers_hashes = dict(workers_hashes or {})
         self.status_calls: int = 0
 
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
         self.status_calls += 1
         return dict(self._statuses)
+
+    async def get_cell_status_snapshots(self) -> dict[str, CellStatusSnapshot]:
+        self.status_calls += 1
+        return {
+            cell_id: CellStatusSnapshot(
+                workers_hash=self._workers_hashes.get(cell_id, "pseudo-hash-0"),
+                status=status,
+            )
+            for cell_id, status in self._statuses.items()
+        }
 
     def observe_cell(self, cell_id: str, status: CellStatus) -> None:
         self._statuses[cell_id] = status
@@ -223,12 +246,14 @@ class MockTrainerCell:
         *,
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
+        workers_hash: str = "pseudo-hash-0",
     ) -> None:
         self._phase = phase
         self._conditions = conditions or [
             {"type": "Allocated", "status": "True"},
             {"type": "Healthy", "status": "True"},
         ]
+        self.workers_hash = workers_hash
 
     @property
     def phase(self) -> str:

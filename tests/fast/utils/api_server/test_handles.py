@@ -121,9 +121,23 @@ class TestActorCellHandler:
         manager.injected = []
         manager.inject_fault = MockRemoteCall(None, effect=lambda *a, **kw: manager.injected.append((a, kw)))
 
-        await handler.inject_fault(ACTOR_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
+        await handler.inject_fault(
+            ACTOR_CELL_ID,
+            expected_workers_hash="pseudo-hash-0",
+            mode=FailureMode.SIGKILL,
+            sub_index=1,
+        )
 
-        assert manager.injected == [((ACTOR_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1})]
+        assert manager.injected == [
+            (
+                (ACTOR_CELL_ID,),
+                {
+                    "expected_workers_hash": "pseudo-hash-0",
+                    "mode": "sigkill",
+                    "worker_in_cell_index": 1,
+                },
+            )
+        ]
 
 
 ENGINE_CELL_ID = "inference-engine-0-0-0"
@@ -172,6 +186,53 @@ class TestRolloutCellHandler:
             ("Allocated", TriState.TRUE),
             ("Healthy", TriState.TRUE),
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_status_from_an_old_generation_is_not_combined_with_new_workers(self) -> None:
+        """Separate reads must not publish a healthy new generation with an old controller verdict."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        controller = MockInferenceController(
+            {ENGINE_CELL_ID: _running_status(TriState.TRUE)},
+            workers_hashes={ENGINE_CELL_ID: "old-generation"},
+        )
+        handler = _CellHandler(
+            cell_type="rollout",
+            operations=RayCellOperations(
+                worker_manager_handle=manager,
+                resolve_inference_controller=lambda: MockStopCellController(manager),
+            ),
+            controllers=[controller],
+            pool_ids=_pool_ids_of(manager),
+        )
+
+        with pytest.raises(RuntimeError, match="changed workers generation"):
+            await handler.get_cell(ENGINE_CELL_ID)
+
+    @pytest.mark.asyncio
+    async def test_the_published_generation_comes_from_the_process_provider(self) -> None:
+        """The API label must expose the real current workers identity rather than a fixture or controller default."""
+        summaries = make_cell_summaries(ENGINE_CELL_ID)
+        summaries[ENGINE_CELL_ID] = summaries[ENGINE_CELL_ID].model_copy(
+            update={"workers_hash": "provider-generation"}
+        )
+        manager = MockWorkerManager(summaries)
+        controller = MockInferenceController(
+            {ENGINE_CELL_ID: _running_status(TriState.TRUE)},
+            workers_hashes={ENGINE_CELL_ID: "provider-generation"},
+        )
+        handler = _CellHandler(
+            cell_type="rollout",
+            operations=RayCellOperations(
+                worker_manager_handle=manager,
+                resolve_inference_controller=lambda: MockStopCellController(manager),
+            ),
+            controllers=[controller],
+            pool_ids=_pool_ids_of(manager),
+        )
+
+        cell = await handler.get_cell(ENGINE_CELL_ID)
+
+        assert cell.metadata.labels["miles.io/workers-hash"] == "provider-generation"
 
     @pytest.mark.asyncio
     async def test_a_failing_probe_is_reported_unhealthy(self) -> None:
@@ -409,8 +470,20 @@ class TestRolloutCellHandlerInjectFault:
             pool_ids=_pool_ids_of(manager),
         )
 
-        await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
+        await handler.inject_fault(
+            ENGINE_CELL_ID,
+            expected_workers_hash="pseudo-hash-0",
+            mode=FailureMode.SIGKILL,
+            sub_index=1,
+        )
 
         assert manager.inject_fault.calls == [
-            ((ENGINE_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1}),
+            (
+                (ENGINE_CELL_ID,),
+                {
+                    "expected_workers_hash": "pseudo-hash-0",
+                    "mode": "sigkill",
+                    "worker_in_cell_index": 1,
+                },
+            ),
         ]

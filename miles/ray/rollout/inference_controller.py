@@ -24,7 +24,7 @@ from miles.utils.context_lock import (
     requires_lock,
     with_lock,
 )
-from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.ft_utils.api_server.models import CellStatus, CellStatusSnapshot
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SimpleTicker
@@ -294,6 +294,14 @@ class InferenceController:
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {
             cell_id: cell.cell_status()
+            for srv in list(self.servers.values())
+            for cell_id, cell in list(srv.server_cells.items())
+        }
+
+    @lock_exempt
+    async def get_cell_status_snapshots(self) -> dict[str, CellStatusSnapshot]:
+        return {
+            cell_id: CellStatusSnapshot(workers_hash=cell.meta.workers_hash, status=cell.cell_status())
             for srv in list(self.servers.values())
             for cell_id, cell in list(srv.server_cells.items())
         }

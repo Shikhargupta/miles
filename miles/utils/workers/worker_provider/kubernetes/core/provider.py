@@ -45,6 +45,18 @@ class KubernetesWorkerProvider(BaseWorkerProvider):
             for cell_id in cell_ids
         ]
 
+    def get_worker_infos_if_generation(
+        self,
+        *,
+        cell_id: str,
+        expected_workers_hash: str,
+    ) -> list[WorkerInfo] | None:
+        pods = self._pods_of_cell(cell_id)
+        cell_info = cell_view.compute_cell_info(cell_id, pods=pods, run=self._run)
+        if cell_info is None or cell_info.workers_hash != expected_workers_hash:
+            return None
+        return cell_view.compute_worker_infos(cell_id, pods=pods, run=self._run)
+
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         def notify_cell(cell_id: str) -> Awaitable[None]:
             info = self.cell_info(cell_id)

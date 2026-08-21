@@ -70,6 +70,17 @@ class TestPollingWorker:
 
         worker.assert_not_running(message="worker should be gone")
 
+    def test_a_target_exception_is_rethrown_by_the_joining_caller(self) -> None:
+        """A daemon target failure must fail the scenario instead of disappearing on its worker thread."""
+        worker = PollingWorker(
+            name=_WORKER_NAME,
+            run=lambda stop_event: (_ for _ in ()).throw(KeyError("missing generation")),
+        )
+        worker.start()
+
+        with pytest.raises(KeyError, match="missing generation"):
+            worker.stop_and_join(timeout_seconds=_JOIN_TIMEOUT_SECONDS)
+
 
 class TestPollUntilStopped:
     def test_it_keeps_ticking_until_the_stop_event_is_set(self) -> None:

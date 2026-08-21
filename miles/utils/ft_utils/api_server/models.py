@@ -60,6 +60,11 @@ class CellStatus(StrictBaseModel):
     conditions: list[CellCondition]
 
 
+class CellStatusSnapshot(StrictBaseModel):
+    workers_hash: str
+    status: CellStatus
+
+
 class CellSpec(StrictBaseModel):
     suspend: bool = False
 
@@ -93,6 +98,7 @@ class CellPatch(StrictBaseModel):
 
 class FaultInjection(StrictBaseModel):
     mode: FailureMode
+    workers_hash: str
     sub_index: int = 0
 
 

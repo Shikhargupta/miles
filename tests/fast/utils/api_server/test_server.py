@@ -17,6 +17,7 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.base import CellGenerationMismatchError
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 from .conftest import (
@@ -490,11 +491,14 @@ class TestInjectFault:
         rollout_handler.add("rollout-engine-0")
 
         resp = await async_client.post(
-            "/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "sigkill", "sub_index": 1}
+            "/api/v1/cells/rollout-engine-0/inject-fault",
+            json={"mode": "sigkill", "sub_index": 1, "workers_hash": "pseudo-hash-1"},
         )
 
         assert resp.status_code == 200
-        assert rollout_handler.injected == [("rollout-engine-0", FailureMode.SIGKILL, 1)]
+        assert rollout_handler.injected == [
+            ("rollout-engine-0", "pseudo-hash-1", FailureMode.SIGKILL, 1)
+        ]
 
     @pytest.mark.asyncio
     async def test_a_handler_without_injection_support_answers_bad_request(
@@ -503,7 +507,10 @@ class TestInjectFault:
         """Not every kind of cell can be crashed on demand."""
         actor_handler.add("actor-0")
 
-        resp = await async_client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill"})
+        resp = await async_client.post(
+            "/api/v1/cells/actor-0/inject-fault",
+            json={"mode": "sigkill", "workers_hash": "pseudo-hash-1"},
+        )
 
         assert resp.status_code == 400
 
@@ -515,11 +522,16 @@ class TestInjectFault:
         rollout_handler.supports_inject_fault = True
         rollout_handler.add("rollout-engine-0")
 
-        resp = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "exit"})
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/inject-fault",
+            json={"mode": "exit", "workers_hash": "pseudo-hash-1"},
+        )
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
-        assert rollout_handler.injected == [("rollout-engine-0", FailureMode.EXIT, 0)]
+        assert rollout_handler.injected == [
+            ("rollout-engine-0", "pseudo-hash-1", FailureMode.EXIT, 0)
+        ]
 
     @pytest.mark.asyncio
     async def test_inject_fault_rejects_missing_or_unknown_mode(
@@ -545,7 +557,8 @@ class TestInjectFault:
         rollout_handler.add("rollout-engine-0")
 
         resp = await async_client.post(
-            "/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "sigkill", "sub_index": 1}
+            "/api/v1/cells/rollout-engine-0/inject-fault",
+            json={"mode": "sigkill", "sub_index": 1, "workers_hash": "pseudo-hash-1"},
         )
 
         assert resp.status_code == 500
@@ -557,6 +570,24 @@ class TestInjectFault:
             "reason": "InternalError",
             "code": 500,
         }
+
+    @pytest.mark.asyncio
+    async def test_a_replaced_generation_returns_conflict_without_reporting_success(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A stale observation must be retried instead of crashing a same-name replacement."""
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.inject_fault_error = CellGenerationMismatchError("generation changed")
+        rollout_handler.add("rollout-engine-0")
+
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/inject-fault",
+            json={"mode": "sigkill", "workers_hash": "stale"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["reason"] == "Conflict"
+        assert rollout_handler.injected == []
 
 
 class TestStartAndWaitThread:
@@ -630,7 +661,8 @@ class TestRequestValidation:
             "/api/v1/cells/actor-0", json={"spec": {"suspend": True, "gracePeriod": 5}}
         )
         inject_resp = await async_client.post(
-            "/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "sigkill", "subIndex": 1}
+            "/api/v1/cells/rollout-engine-0/inject-fault",
+            json={"mode": "sigkill", "subIndex": 1, "workers_hash": "pseudo-hash-1"},
         )
 
         assert (patch_resp.status_code, inject_resp.status_code) == (422, 422)

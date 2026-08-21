@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.cell_operations.base import BaseCellOperations, CellGenerationMismatchError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
@@ -39,10 +39,24 @@ class KubernetesCellOperations(BaseCellOperations):
             "a deleted cell comes back when its workload recreates it, so resume has no moment to return at"
         )
 
-    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
+    async def inject_fault(
+        self,
+        *,
+        cell_id: str,
+        expected_workers_hash: str,
+        mode: FailureMode,
+        sub_index: int,
+    ) -> None:
         await self._ensure_watching()
 
-        (infos,) = self._provider.get_worker_infos(cell_ids=[cell_id])
+        infos = self._provider.get_worker_infos_if_generation(
+            cell_id=cell_id,
+            expected_workers_hash=expected_workers_hash,
+        )
+        if infos is None:
+            raise CellGenerationMismatchError(
+                f"Cell {cell_id} no longer has workers generation {expected_workers_hash}"
+            )
         assert (
             0 <= sub_index < len(infos)
         ), f"sub_index {sub_index} is out of range for cell {cell_id}, which has {len(infos)} workers"
