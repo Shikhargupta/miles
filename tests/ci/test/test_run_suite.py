@@ -390,6 +390,28 @@ class TestWorkflowScopeSeam:
             assert "github.event.action != 'closed'" in job_header
 
 
+class TestDockerBuildWorkflowTooling:
+    _SETUP_UV_SHA = "d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86"
+    _TYPER_VERSION = "0.27.1"
+    _UV_VERSION = "0.12.5"
+
+    @staticmethod
+    def _workflow(name: str) -> str:
+        return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / name).read_text()
+
+    @pytest.mark.parametrize("name, expected_invocations", [("pr-test.yml", 1), ("docker-build.yml", 2)])
+    def test_docker_builders_install_pinned_tooling(self, name: str, expected_invocations: int) -> None:
+        """Credentialed Docker builders must not execute drifting installer code or resolve mutable tools."""
+        workflow = self._workflow(name)
+
+        assert "astral.sh/uv/install.sh" not in workflow
+        assert "command -v uv" not in workflow
+        assert workflow.count(f"uses: astral-sh/setup-uv@{self._SETUP_UV_SHA}") == 1
+        assert workflow.count(f'version: "{self._UV_VERSION}"') == 1
+        typer_specs = re.findall(r"--with (typer(?:==[^\s\\]+)?)", workflow)
+        assert typer_specs == [f"typer=={self._TYPER_VERSION}"] * expected_invocations
+
+
 class TestRocmWorkflowScopeSeam:
     @staticmethod
     def _workflow() -> str:
