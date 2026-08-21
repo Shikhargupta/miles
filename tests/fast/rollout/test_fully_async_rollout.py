@@ -368,8 +368,8 @@ async def test_a_cancelled_inner_dispatch_fails_the_driver(monkeypatch):
         assert closed.value.__cause__ is error
 
 
-async def test_worker_publishes_a_disjoint_route_while_an_earlier_route_is_blocked(monkeypatch):
-    """A blocked publish preserves overlapping-policy FIFO without blocking an independent policy."""
+async def test_worker_leaves_custom_publish_ordering_to_the_buffer(monkeypatch):
+    """The worker forwards completed groups concurrently and leaves a custom buffer to order its own puts."""
     first_started = asyncio.Event()
     first_release = asyncio.Event()
     disjoint_started = asyncio.Event()
@@ -419,13 +419,140 @@ async def test_worker_publishes_a_disjoint_route_while_an_earlier_route_is_block
     try:
         await asyncio.wait_for(first_started.wait(), timeout=0.1)
         await asyncio.wait_for(disjoint_started.wait(), timeout=0.1)
-        await asyncio.sleep(0.01)
-        assert not overlapping_started.is_set()
+        await asyncio.wait_for(overlapping_started.wait(), timeout=0.1)
 
         first_release.set()
-        await asyncio.wait_for(overlapping_started.wait(), timeout=0.1)
     finally:
         await fn.aclose()
+
+
+async def _exercise_worker_publish_route(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    third_model_ids: tuple[str, ...],
+) -> None:
+    second_generation_release = asyncio.Event()
+    third_generation_started = asyncio.Event()
+    third_generation_release = asyncio.Event()
+    second_publish_started = asyncio.Event()
+    third_publish_started = asyncio.Event()
+
+    args = make_args(
+        rollout_batch_size=1,
+        async_data_buffer_capacity_factor=1.0,
+        megatron_config=encode_megatron_config("solver", "verifier"),
+    )
+
+    class _ObservedMultiBuffer(data_buffer.DefaultMultiDataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            group_index = data_buffer.first_sample(input.group).group_index
+            if group_index == 2:
+                second_publish_started.set()
+            elif group_index == 3:
+                third_publish_started.set()
+            await super().put(input)
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        group_index = data_buffer.first_sample(group).group_index
+        for _ in group:
+            sample_done_callback()
+        if group_index == 2:
+            await second_generation_release.wait()
+            return make_multi_policy_group(group_index, "solver")
+        if group_index == 3:
+            third_generation_started.set()
+            await third_generation_release.wait()
+            return make_multi_policy_group(group_index, *third_model_ids)
+        if group_index > 3:
+            await asyncio.Event().wait()
+        return make_multi_policy_group(group_index, "solver")
+
+    data_source = FakeDataSource(scripted=[make_group(index) for index in (1, 2, 3)])
+    fn = make_fn(monkeypatch, args, data_source, generate=generate)
+    buffer = _ObservedMultiBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group: None)
+    )
+    solver_inner = buffer._inners["solver"]
+    await solver_inner.put(data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver")))
+    fn._output = buffer
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    verifier = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+    try:
+        await asyncio.wait_for(third_generation_started.wait(), timeout=0.1)
+        second_generation_release.set()
+        await asyncio.wait_for(second_publish_started.wait(), timeout=0.1)
+        third_generation_release.set()
+        await asyncio.wait_for(third_publish_started.wait(), timeout=0.1)
+
+        verifier_entry = await asyncio.wait_for(verifier, timeout=0.1)
+        assert data_buffer.first_sample(verifier_entry.group).group_index == 3
+
+        expected_solver_indices = [0, 1, 2, 3] if "solver" in third_model_ids else [0, 1, 2]
+        solver_entries = [await asyncio.wait_for(solver_inner.get(), timeout=0.1) for _ in expected_solver_indices]
+        assert [
+            data_buffer.first_sample(entry.group).group_index for entry in solver_entries
+        ] == expected_solver_indices
+    finally:
+        second_generation_release.set()
+        third_generation_release.set()
+        if not verifier.done():
+            verifier.cancel()
+        await asyncio.gather(verifier, return_exceptions=True)
+        await fn.aclose()
+
+
+async def test_worker_publishes_an_overlapping_route_before_a_blocked_shared_route(monkeypatch):
+    """A blocked solver-only route cannot hide a later verifier sibling that has separate route credit."""
+    await _exercise_worker_publish_route(monkeypatch, third_model_ids=("solver", "verifier"))
+
+
+async def test_worker_publishes_a_disjoint_signature_before_a_blocked_solver_route(monkeypatch):
+    """A verifier-only route remains the working control while a solver-only route is blocked."""
+    await _exercise_worker_publish_route(monkeypatch, third_model_ids=("verifier",))
+
+
+async def test_later_verifier_publish_is_not_contaminated_by_a_blocked_solver_tail(monkeypatch):
+    """A shared route and its verifier successor progress while an earlier solver-only route is blocked."""
+    args = make_args(
+        rollout_batch_size=1,
+        async_data_buffer_capacity_factor=1.0,
+        megatron_config=encode_megatron_config("solver", "verifier"),
+    )
+    fn = make_fn(monkeypatch, args, FakeDataSource())
+    buffer = data_buffer.DefaultMultiDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group: None)
+    )
+    solver_inner = buffer._inners["solver"]
+    await solver_inner.put(data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver")))
+    await put_group(buffer, make_multi_policy_group(1, "solver"))
+    fn._output = buffer
+    second = fn._submit_publish(
+        data_buffer.DataBufferInput(prompt_group=make_group(2), group=make_multi_policy_group(2, "solver"))
+    )
+    shared = fn._submit_publish(
+        data_buffer.DataBufferInput(
+            prompt_group=make_group(3),
+            group=make_multi_policy_group(3, "solver", "verifier"),
+        )
+    )
+    verifier_only = fn._submit_publish(
+        data_buffer.DataBufferInput(prompt_group=make_group(4), group=make_multi_policy_group(4, "verifier"))
+    )
+    try:
+        verifier_entries = [
+            await asyncio.wait_for(buffer.get(trainer_model_id="verifier"), timeout=0.1) for _ in range(2)
+        ]
+        assert [data_buffer.first_sample(entry.group).group_index for entry in verifier_entries] == [3, 4]
+
+        solver_entries = [await asyncio.wait_for(solver_inner.get(), timeout=0.1) for _ in range(4)]
+        assert [data_buffer.first_sample(entry.group).group_index for entry in solver_entries] == [0, 1, 2, 3]
+        await asyncio.wait_for(asyncio.gather(second, shared, verifier_only), timeout=0.1)
+    finally:
+        for task in (second, shared, verifier_only):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(second, shared, verifier_only, return_exceptions=True)
+        await buffer.aclose()
 
 
 async def test_sample_backfill_does_not_exceed_the_shared_publish_budget(monkeypatch):
@@ -477,6 +604,60 @@ async def test_sample_backfill_does_not_exceed_the_shared_publish_budget(monkeyp
         assert data_source.num_get_calls == 2
     finally:
         await fn.aclose()
+
+
+async def test_worker_backpressures_policy_tickets_when_concurrency_exceeds_the_batch(monkeypatch):
+    """A larger sample-concurrency budget waits on policy tickets instead of overflowing the dispatch lane."""
+    releases = {group_index: asyncio.Event() for group_index in range(1, 5)}
+    publish_started = {group_index: asyncio.Event() for group_index in range(1, 5)}
+    close_release = asyncio.Event()
+    args = make_args(
+        rollout_batch_size=1,
+        async_max_concurrent_samples=8,
+        async_data_buffer_capacity_factor=1.0,
+        megatron_config=encode_megatron_config("solver", "verifier"),
+    )
+
+    class _ObservedMultiBuffer(data_buffer.DefaultMultiDataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            publish_started[data_buffer.first_sample(input.group).group_index].set()
+            await super().put(input)
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        group_index = data_buffer.first_sample(group).group_index
+        if group_index > 4:
+            await close_release.wait()
+            return make_multi_policy_group(group_index, "solver")
+        await releases[group_index].wait()
+        for _ in group:
+            sample_done_callback()
+        return make_multi_policy_group(group_index, "solver")
+
+    fn = make_fn(
+        monkeypatch,
+        args,
+        FakeDataSource(scripted=[make_group(group_index) for group_index in range(1, 5)]),
+        generate=generate,
+    )
+    buffer = _ObservedMultiBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group: None)
+    )
+    await buffer._inners["solver"].put(
+        data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver"))
+    )
+    fn._output = buffer
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    try:
+        for group_index in range(1, 5):
+            releases[group_index].set()
+            await asyncio.wait_for(publish_started[group_index].wait(), timeout=0.1)
+        await asyncio.sleep(0.01)
+        assert not fn._worker.done()
+    finally:
+        close_release.set()
+        for release in releases.values():
+            release.set()
+        await asyncio.gather(fn.aclose(), return_exceptions=True)
 
 
 @pytest.mark.parametrize("group_budget", [1, 2])
@@ -570,14 +751,20 @@ async def test_sample_backfill_bounds_group_wrappers_during_rm_and_publish_stall
         await fn.aclose()
 
 
-async def test_publish_order_ignores_an_incomplete_policy_subgroup(monkeypatch):
-    """A short subgroup is validated by the buffer but cannot add an ordering dependency for a complete sibling."""
-    verifier_started = asyncio.Event()
-    solver_release = asyncio.Event()
+async def test_custom_buffer_owns_concurrent_publish_ordering(monkeypatch):
+    """The worker forwards whole groups concurrently without imposing built-in policy routing on a custom buffer."""
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+    second_started = asyncio.Event()
 
     class _RecordingBuffer(data_buffer.DataBuffer):
         async def put(self, input: data_buffer.DataBufferInput) -> None:
-            verifier_started.set()
+            group_index = data_buffer.first_sample(input.group).group_index
+            if group_index == 1:
+                first_started.set()
+                await first_release.wait()
+            elif group_index == 2:
+                second_started.set()
 
         async def get(self, **context) -> data_buffer.DataBufferInput:
             await asyncio.Event().wait()
@@ -586,21 +773,20 @@ async def test_publish_order_ignores_an_incomplete_policy_subgroup(monkeypatch):
         def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
             return {}
 
+    def reject_policy_introspection(*args, **kwargs):
+        raise AssertionError("custom buffer input must not be inspected by the rollout worker")
+
+    monkeypatch.setattr(fully_async, "complete_trainer_model_ids", reject_policy_introspection, raising=False)
     fn = make_fn(monkeypatch, make_args(), FakeDataSource())
     fn._output = _RecordingBuffer()
-    solver_tail = asyncio.create_task(solver_release.wait())
-    fn._publish_tails["solver"] = solver_tail
-    group = make_multi_policy_group(2, "solver", "verifier")
-    group[1] = [sample for sample in group[1] if sample.trainer_model_id == "verifier"]
-    publish = fn._submit_publish(data_buffer.DataBufferInput(prompt_group=make_group(2), group=group))
+    first = fn._submit_publish(data_buffer.DataBufferInput(prompt_group=make_group(1), group=make_group(1)))
+    await asyncio.wait_for(first_started.wait(), timeout=0.1)
+    second = fn._submit_publish(data_buffer.DataBufferInput(prompt_group=make_group(2), group=make_group(2)))
     try:
-        await asyncio.wait_for(verifier_started.wait(), timeout=0.1)
-        assert fn._publish_tails["solver"] is solver_tail
-        assert fn._publish_tails["verifier"] is publish
+        await asyncio.wait_for(second_started.wait(), timeout=0.1)
     finally:
-        solver_release.set()
-        publish.cancel()
-        await asyncio.gather(solver_tail, publish, return_exceptions=True)
+        first_release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
 
 
 async def test_a_cancelled_publish_is_a_terminal_worker_failure(monkeypatch):
@@ -633,6 +819,55 @@ async def test_a_cancelled_publish_is_a_terminal_worker_failure(monkeypatch):
         with pytest.raises(RuntimeError, match="rollout publish.*cancelled") as closed:
             await fn.aclose()
         assert closed.value.__cause__ is error
+
+
+async def test_aclose_preserves_a_publish_failure_ready_before_worker_resume(monkeypatch):
+    """Teardown must surface a ready publish failure even before the worker collects its result."""
+    error = RuntimeError("publish failed before worker resume")
+    failed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    publish_started = asyncio.Event()
+    worker_saw_done = asyncio.Event()
+    keep_worker_paused = asyncio.Event()
+    real_wait = asyncio.wait
+
+    class _FailingPublishBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            publish_started.set()
+            await failed
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+    fn = make_fn(
+        monkeypatch,
+        make_args(rollout_batch_size=1, rollout_submission_granularity="group"),
+        FakeDataSource(),
+    )
+
+    async def _pause_after_publish_finishes(tasks, **kwargs):
+        done, pending = await real_wait(tasks, **kwargs)
+        if any(task in fn._publishing and task.done() for task in done):
+            worker_saw_done.set()
+            await keep_worker_paused.wait()
+        return done, pending
+
+    monkeypatch.setattr(asyncio, "wait", _pause_after_publish_finishes)
+    fn._output = _FailingPublishBuffer()
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    await asyncio.wait_for(publish_started.wait(), timeout=0.1)
+    failed.set_exception(error)
+    await asyncio.wait_for(worker_saw_done.wait(), timeout=0.1)
+
+    with pytest.raises(RuntimeError, match="publish failed before worker resume") as closed:
+        await fn.aclose()
+    assert closed.value is error
+    assert fn._worker.done()
+    assert not fn._active
+    assert not fn._publishing
 
 
 async def test_aclose_cancels_the_worker_and_its_active_generation(monkeypatch):
@@ -1161,6 +1396,121 @@ class TestPerPolicyQueues:
                     task.cancel()
             await asyncio.gather(waiting_put, waiting_verifier, return_exceptions=True)
 
+    async def test_lane_capacity_preserves_fifo_for_a_later_overlapping_route(self):
+        """A shared policy cannot bypass an earlier group while another target lane waits for space."""
+        buffer, _ = make_multi_buffer("solver", "verifier", max_groups=1, rollout_batch_size=1)
+        solver_inner = buffer._inners["solver"]
+        await solver_inner.put(
+            data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver"))
+        )
+        await put_group(buffer, make_multi_policy_group(1, "solver"))
+        fillers = [
+            asyncio.create_task(put_group(buffer, make_multi_policy_group(index, "solver"))) for index in range(2, 7)
+        ]
+        earlier: asyncio.Task[None] | None = None
+        later: asyncio.Task[None] | None = None
+        verifier: asyncio.Task[data_buffer.DataBufferInput] | None = None
+        try:
+            for _ in range(100):
+                if len(buffer._dispatch_queues["solver"]) == buffer._dispatch_queue_capacity:
+                    break
+                await asyncio.sleep(0)
+            assert len(buffer._dispatch_queues["solver"]) == buffer._dispatch_queue_capacity
+            earlier = asyncio.create_task(put_group(buffer, make_multi_policy_group(7, "solver", "verifier")))
+            await asyncio.sleep(0.01)
+            later = asyncio.create_task(put_group(buffer, make_multi_policy_group(8, "verifier")))
+            verifier = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+            await asyncio.sleep(0.01)
+            assert not earlier.done()
+            assert not later.done()
+            assert not verifier.done()
+
+            for task in fillers:
+                task.cancel()
+            await asyncio.gather(*fillers, return_exceptions=True)
+            first = await asyncio.wait_for(verifier, timeout=0.1)
+            assert data_buffer.first_sample(first.group).group_index == 7
+            second = await asyncio.wait_for(buffer.get(trainer_model_id="verifier"), timeout=0.1)
+            assert data_buffer.first_sample(second.group).group_index == 8
+            await asyncio.wait_for(earlier, timeout=0.1)
+            await asyncio.wait_for(later, timeout=0.1)
+        finally:
+            for task in (*fillers, earlier, later, verifier):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *fillers,
+                *(task for task in (earlier, later, verifier) if task is not None),
+                return_exceptions=True,
+            )
+
+    async def test_lane_capacity_does_not_block_a_later_disjoint_route(self):
+        """A group waiting for policy lane space leaves an unrelated policy independently dispatchable."""
+        buffer, _ = make_multi_buffer("solver", "verifier", "reviewer", max_groups=1, rollout_batch_size=1)
+        solver_inner = buffer._inners["solver"]
+        await solver_inner.put(
+            data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver"))
+        )
+        await put_group(buffer, make_multi_policy_group(1, "solver"))
+        fillers = [
+            asyncio.create_task(put_group(buffer, make_multi_policy_group(index, "solver")))
+            for index in range(2, buffer._dispatch_queue_capacity + 3)
+        ]
+        earlier: asyncio.Task[None] | None = None
+        later: asyncio.Task[None] | None = None
+        try:
+            for _ in range(100):
+                if len(buffer._dispatch_queues["solver"]) == buffer._dispatch_queue_capacity:
+                    break
+                await asyncio.sleep(0)
+            assert len(buffer._dispatch_queues["solver"]) == buffer._dispatch_queue_capacity
+            earlier = asyncio.create_task(put_group(buffer, make_multi_policy_group(20, "solver", "verifier")))
+            await asyncio.sleep(0.01)
+            later = asyncio.create_task(put_group(buffer, make_multi_policy_group(21, "reviewer")))
+
+            await asyncio.wait_for(later, timeout=0.1)
+            reviewer = await asyncio.wait_for(buffer.get(trainer_model_id="reviewer"), timeout=0.1)
+            assert data_buffer.first_sample(reviewer.group).group_index == 21
+            assert not earlier.done()
+        finally:
+            for task in (*fillers, earlier, later):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *fillers,
+                *(task for task in (earlier, later) if task is not None),
+                return_exceptions=True,
+            )
+
+    async def test_cancelling_a_waiting_route_does_not_poison_later_policy_order(self):
+        """A cancelled pre-admission group is skipped while the next shared route remains ordered and complete."""
+        buffer, _ = make_multi_buffer("solver", "verifier", max_groups=1, rollout_batch_size=1)
+        solver_inner = buffer._inners["solver"]
+        await solver_inner.put(
+            data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver"))
+        )
+        await put_group(buffer, make_multi_policy_group(1, "solver"))
+        cancelled = asyncio.create_task(put_group(buffer, make_multi_policy_group(2, "solver")))
+        later = asyncio.create_task(put_group(buffer, make_multi_policy_group(3, "solver", "verifier")))
+        try:
+            await asyncio.sleep(0.01)
+            assert not cancelled.done()
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+
+            verifier = await asyncio.wait_for(buffer.get(trainer_model_id="verifier"), timeout=0.1)
+            assert data_buffer.first_sample(verifier.group).group_index == 3
+
+            solver_entries = [await asyncio.wait_for(solver_inner.get(), timeout=0.1) for _ in range(3)]
+            assert [data_buffer.first_sample(entry.group).group_index for entry in solver_entries] == [0, 1, 3]
+            await asyncio.wait_for(later, timeout=0.1)
+        finally:
+            for task in (cancelled, later):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(cancelled, later, return_exceptions=True)
+
     async def test_a_custom_inner_failure_poisons_the_composite_without_replaying_siblings(self):
         """An asynchronous admission failure is terminal and already admitted siblings remain exactly once."""
         buffer, _ = make_multi_buffer("solver", "verifier")
@@ -1234,6 +1584,78 @@ class TestPerPolicyQueues:
             assert close_failed.value is error
         assert sorted(closed) == ["solver", "verifier"]
 
+    async def test_aclose_preserves_an_inner_failure_ready_before_dispatcher_resume(self):
+        """Composite teardown must surface a ready inner failure before cancelling its dispatcher."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        error = RuntimeError("inner failed before dispatcher resume")
+        failed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        put_started = asyncio.Event()
+
+        class _FailingInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                put_started.set()
+                await failed
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+        buffer._inners["verifier"] = _FailingInner()
+        await put_group(buffer, make_multi_policy_group(1, "verifier", "verifier"))
+        await asyncio.wait_for(put_started.wait(), timeout=0.1)
+        failed_waiter = asyncio.create_task(buffer.wait_failed())
+        close_task: asyncio.Task[None]
+        async with buffer._condition:
+            close_task = asyncio.create_task(buffer.aclose())
+            for _ in range(100):
+                if buffer._closing:
+                    break
+                await asyncio.sleep(0)
+            assert buffer._closing
+            failed.set_exception(error)
+            await asyncio.sleep(0)
+
+        with pytest.raises(RuntimeError, match="inner failed before dispatcher resume") as waited:
+            await failed_waiter
+        with pytest.raises(RuntimeError, match="inner failed before dispatcher resume") as closed:
+            await close_task
+        assert waited.value is error
+        assert closed.value is error
+        assert all(task.done() for task in buffer._dispatch_tasks.values())
+
+    async def test_aclose_preserves_an_inner_cancellation_cleanup_failure(self):
+        """A pending inner that fails during owner cancellation remains the terminal close cause."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        error = RuntimeError("inner cancellation cleanup failed")
+        put_started = asyncio.Event()
+
+        class _CleanupFailingInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                put_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    raise error from None
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+        buffer._inners["verifier"] = _CleanupFailingInner()
+        await put_group(buffer, make_multi_policy_group(1, "verifier", "verifier"))
+        await asyncio.wait_for(put_started.wait(), timeout=0.1)
+
+        with pytest.raises(RuntimeError, match="inner cancellation cleanup failed") as closed:
+            await buffer.aclose()
+        assert closed.value is error
+        assert all(task.done() for task in buffer._dispatch_tasks.values())
+
     async def test_a_custom_inner_background_failure_is_supervised(self):
         """Every custom inner failure channel is watched even when its puts succeed."""
         buffer, _ = make_multi_buffer("solver", "verifier")
@@ -1267,6 +1689,99 @@ class TestPerPolicyQueues:
             await buffer.aclose()
         assert close_failed.value is error
         assert closed.is_set()
+
+    async def test_aclose_preserves_a_ready_background_failure_before_watcher_resume(self):
+        """Closing a composite cannot replace a ready custom failure with its generic close sentinel."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        error = RuntimeError("background failed before watcher resume")
+        failed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        watcher_started = asyncio.Event()
+
+        class _FailingWatcherInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                return None
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+            async def wait_failed(self) -> None:
+                watcher_started.set()
+                await failed
+
+        buffer._inners["verifier"] = _FailingWatcherInner()
+        await put_group(buffer, make_multi_policy_group(1, "verifier", "verifier"))
+        await asyncio.wait_for(watcher_started.wait(), timeout=0.1)
+        failed_waiter = asyncio.create_task(buffer.wait_failed())
+        close_task: asyncio.Task[None]
+        async with buffer._condition:
+            close_task = asyncio.create_task(buffer.aclose())
+            for _ in range(100):
+                if buffer._closing:
+                    break
+                await asyncio.sleep(0)
+            assert buffer._closing
+            failed.set_exception(error)
+            await asyncio.sleep(0)
+
+        with pytest.raises(RuntimeError, match="background failed before watcher resume") as waited:
+            await failed_waiter
+        with pytest.raises(RuntimeError, match="background failed before watcher resume") as closed:
+            await close_task
+        assert waited.value is error
+        assert closed.value is error
+        assert all(task.done() for task in buffer._failure_tasks.values())
+
+    async def test_aclose_rejects_a_ready_background_watcher_return(self, monkeypatch: pytest.MonkeyPatch):
+        """A custom failure watcher that returned before outer resume remains a terminal contract error."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        returned: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        watcher_child_done = asyncio.Event()
+        watcher_started = asyncio.Event()
+        original_shield = asyncio.shield
+
+        async def gated_shield(awaitable: asyncio.Future[None]) -> None:
+            if isinstance(awaitable, asyncio.Task) and awaitable.get_coro().cr_code.co_name == "_wait_inner_failure":
+                await original_shield(awaitable)
+                watcher_child_done.set()
+                await asyncio.Event().wait()
+            else:
+                await original_shield(awaitable)
+
+        monkeypatch.setattr(asyncio, "shield", gated_shield)
+
+        class _ReturningWatcherInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                return None
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+            async def wait_failed(self) -> None:
+                watcher_started.set()
+                await returned
+
+        buffer._inners["verifier"] = _ReturningWatcherInner()
+        await put_group(buffer, make_multi_policy_group(1, "verifier", "verifier"))
+        await asyncio.wait_for(watcher_started.wait(), timeout=0.1)
+        returned.set_result(None)
+        await asyncio.wait_for(watcher_child_done.wait(), timeout=0.1)
+        failed_waiter = asyncio.create_task(buffer.wait_failed())
+        close_task = asyncio.create_task(buffer.aclose())
+
+        with pytest.raises(RuntimeError, match="failure watcher.*returned normally") as waited:
+            await failed_waiter
+        with pytest.raises(RuntimeError, match="failure watcher.*returned normally") as closed:
+            await close_task
+        assert waited.value is closed.value
+        assert all(task.done() for task in buffer._failure_tasks.values())
 
     async def test_an_inner_cancelled_error_is_latched_as_a_terminal_failure(self):
         """Only composite teardown may cancel a dispatcher; an inner cancellation is a run failure."""
