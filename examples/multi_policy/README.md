@@ -17,6 +17,8 @@ python examples/multi_policy/run_solver_verifier_gsm8k.py
 ## Failure Propagation
 
 The first policy task to finish ends the run and cancels the other policy tasks. If that
-task failed, its exception remains the run's primary error; failures raised while the
-other tasks clean up are logged and attached to the primary exception as traceback notes.
-If the first task finished normally, a cleanup failure still fails the run.
+task failed, its exception remains the run's primary error. Failures raised while the
+other tasks clean up are logged; runtimes with `BaseException.add_note` also attach their
+tracebacks to the primary exception as notes. Python 3.10 has no `add_note`, so the log is
+the secondary failure record there. If the first task finished normally, a cleanup failure
+still fails the run.
