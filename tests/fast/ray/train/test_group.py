@@ -1186,6 +1186,31 @@ class TestUpdateWeightsReturnsTheVersion:
         group._execute_first_alive.assert_awaited_once()
 
 
+class TestWaitUntilUpdateWeightsReady:
+    def _make_group(self, *, cells: list[MagicMock]) -> TrainerController:
+        group = TrainerController.__new__(TrainerController)
+        for index, cell in enumerate(cells):
+            cell.cell_index = index
+        group._cells_by_id = {str(index): cell for index, cell in enumerate(cells)}
+        group._pool_id = "trainer-engine-actor"
+        return group
+
+    async def test_a_surviving_cell_is_ready_to_supply_the_next_fresh_snapshot(self):
+        """One live trainer is sufficient because each broadcast selects the first live cell."""
+        group = self._make_group(cells=[MagicMock(is_alive=False), MagicMock(is_alive=True)])
+
+        await group.wait_until_update_weights_ready()
+
+    async def test_an_all_terminal_pool_fails_without_waiting_for_another_window(self):
+        """A pool with neither live nor healing cells cannot become a safe retry source."""
+        from miles.utils.retry_utils import NonRetryableError
+
+        group = self._make_group(cells=[MagicMock(is_alive=False, is_uninitialized=False)])
+
+        with pytest.raises(NonRetryableError, match="No trainer cell can become ready"):
+            await group.wait_until_update_weights_ready()
+
+
 class TestInitForwardsModelFlags:
     async def test_every_worker_learns_its_role_and_which_extra_models_to_build(self):
         """These flags decide which models a worker allocates, so dropping one silently changes the objective."""

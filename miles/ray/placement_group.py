@@ -35,7 +35,7 @@ from miles.utils.hot_restart import (
     wait_trainers_idle,
     wait_until_worker_not_initialized,
 )
-from miles.utils.retry_utils import retry
+from miles.utils.retry_utils import NonRetryableError, retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionOrchestrationExecutor
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -46,6 +46,14 @@ logger = logging.getLogger(__name__)
 _REMOTE_CALL_DRAIN_TIMEOUT_SECONDS: float = 3600.0
 _WEIGHT_UPDATE_RETRY_MAX_ATTEMPTS: int = 30
 _T = TypeVar("_T")
+
+
+class _RetryableWeightUpdateError(RuntimeError):
+    pass
+
+
+class _RetryableWeightUpdateTimeoutError(TimeoutError):
+    pass
 
 
 @ray.remote(num_gpus=1)
@@ -323,18 +331,24 @@ async def _run_weight_update_attempt(
     trainer_model_id: str | None,
     wait_for_recovery: bool,
 ) -> int | None:
-    if wait_for_recovery:
-        await inference_controller.wait_expected_num_cells()
+    try:
+        if wait_for_recovery:
+            await actor_model.wait_until_update_weights_ready()
+            await inference_controller.wait_expected_num_cells()
 
-    weight_update = asyncio.create_task(
-        _complete_weight_update(
-            actor_model=actor_model,
-            inference_controller=inference_controller,
-            rollout_id=rollout_id,
-            trainer_model_id=trainer_model_id,
+        weight_update = asyncio.create_task(
+            _complete_weight_update(
+                actor_model=actor_model,
+                inference_controller=inference_controller,
+                rollout_id=rollout_id,
+                trainer_model_id=trainer_model_id,
+            )
         )
-    )
-    return await _await_task_before_cancelling(weight_update)
+        return await _await_task_before_cancelling(weight_update)
+    except (_RetryableWeightUpdateError, _RetryableWeightUpdateTimeoutError, NonRetryableError):
+        raise
+    except Exception as error:
+        raise NonRetryableError("The weight-update window did not close cleanly; refusing to retry") from error
 
 
 async def _complete_weight_update(
@@ -353,22 +367,32 @@ async def _complete_weight_update(
 
     completed_snapshot: dict[str, str] = {}
     can_release_window = True
+    broadcast_error: Exception | None = None
+    weight_version: int | None = None
     try:
         try:
             weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
-        except TimeoutError:
+        except TimeoutError as error:
             can_release_window = False
             await _wait_for_timed_out_remote_call(actor_model)
             can_release_window = True
-            raise
-        completed_snapshot = info.snapshot_cell_id_to_hashes
-        return weight_version
+            broadcast_error = error
+        except Exception as error:
+            broadcast_error = error
+        else:
+            completed_snapshot = info.snapshot_cell_id_to_hashes
     finally:
         if can_release_window:
             await _end_weight_update(
                 inference_controller,
                 snapshot_cell_id_to_hashes=completed_snapshot,
             )
+    if broadcast_error is not None:
+        message = f"The trainer broadcast failed after its window closed: {broadcast_error}"
+        if isinstance(broadcast_error, TimeoutError):
+            raise _RetryableWeightUpdateTimeoutError(message) from broadcast_error
+        raise _RetryableWeightUpdateError(message) from broadcast_error
+    return weight_version
 
 
 async def _end_weight_update(
@@ -396,8 +420,19 @@ async def _await_task_before_cancelling(task: asyncio.Task[_T]) -> _T:
         except asyncio.CancelledError as error:
             if cancellation is None:
                 cancellation = error
+        except Exception as error:
+            if cancellation is None:
+                raise
+            raise NonRetryableError(
+                "The drained weight update failed after caller cancellation; refusing to retry"
+            ) from error
 
-    result = task.result()
+    try:
+        result = task.result()
+    except Exception as error:
+        if cancellation is None:
+            raise
+        raise NonRetryableError("The drained weight update failed after caller cancellation; refusing to retry") from error
     if cancellation is not None:
         raise cancellation
     return result

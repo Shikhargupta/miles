@@ -71,8 +71,15 @@ class _RpcWeightUpdateTrainer:
 
 
 class _RetryWindowController:
-    def __init__(self, order: list[str], *, wait_for_heal: bool = False) -> None:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        end_errors: list[Exception] | None = None,
+        wait_for_heal: bool = False,
+    ) -> None:
         self._order = order
+        self._end_errors = list(end_errors or [])
         self._generation = 0
         self._wait_for_heal = wait_for_heal
         self.context_lock = ContextLock("InferenceController")
@@ -92,8 +99,13 @@ class _RetryWindowController:
         )
 
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
-        self.context_lock.reattach()
         self._order.append(f"end:{snapshot_cell_id_to_hashes}")
+        if self._end_errors:
+            error = self._end_errors.pop(0)
+            self.context_lock.reattach()
+            self.context_lock.release()
+            raise error
+        self.context_lock.reattach()
         self.context_lock.release()
 
     async def heal_dead_cell(self) -> None:
@@ -105,6 +117,9 @@ class _RetryWindowController:
         self._order.append("wait:rollout")
         if self._wait_for_heal:
             await self.heal_finished.wait()
+
+    async def wait_idle(self, *, timeout: float) -> None:
+        self._order.append("wait_idle:inference")
 
 
 @contextlib.asynccontextmanager
@@ -452,7 +467,13 @@ async def test_a_failed_broadcast_releases_the_window_before_retrying_with_a_fre
         assert inference_controller.heal_finished.is_set()
         return 11
 
-    actor_model = MagicMock(update_weights=AsyncMock(side_effect=_broadcast))
+    async def _wait_trainer() -> None:
+        order.append("wait:trainer")
+
+    actor_model = MagicMock(
+        update_weights=AsyncMock(side_effect=_broadcast),
+        wait_until_update_weights_ready=AsyncMock(side_effect=_wait_trainer),
+    )
 
     await update_weights(
         _orchestration_args(),
@@ -468,6 +489,7 @@ async def test_a_failed_broadcast_releases_the_window_before_retrying_with_a_fre
         "broadcast:generation-1",
         "end:{}",
         "heal",
+        "wait:trainer",
         "wait:rollout",
         "start:generation-2",
         "broadcast:generation-2",
@@ -500,7 +522,10 @@ async def test_cancelling_a_retried_broadcast_drains_it_before_closing_its_fresh
     task = asyncio.create_task(
         update_weights(
             _orchestration_args(),
-            MagicMock(update_weights=AsyncMock(side_effect=_broadcast)),
+            MagicMock(
+                update_weights=AsyncMock(side_effect=_broadcast),
+                wait_until_update_weights_ready=AsyncMock(side_effect=lambda: order.append("wait:trainer")),
+            ),
             MagicMock(set_weight_version=AsyncMock()),
             inference_controller,
         )
@@ -519,6 +544,7 @@ async def test_cancelling_a_retried_broadcast_drains_it_before_closing_its_fresh
         "start:generation-1",
         "broadcast:generation-1",
         "end:{}",
+        "wait:trainer",
         "wait:rollout",
         "start:generation-2",
         "broadcast:generation-2",
@@ -543,7 +569,10 @@ async def test_a_second_failed_broadcast_closes_its_fresh_window_before_giving_u
     with pytest.raises(RuntimeError, match="generation-2"):
         await placement_group.update_weights(
             _orchestration_args(),
-            MagicMock(update_weights=AsyncMock(side_effect=_broadcast)),
+            MagicMock(
+                update_weights=AsyncMock(side_effect=_broadcast),
+                wait_until_update_weights_ready=AsyncMock(side_effect=lambda: order.append("wait:trainer")),
+            ),
             MagicMock(set_weight_version=AsyncMock()),
             inference_controller,
         )
@@ -552,11 +581,105 @@ async def test_a_second_failed_broadcast_closes_its_fresh_window_before_giving_u
         "start:generation-1",
         "broadcast:generation-1",
         "end:{}",
+        "wait:trainer",
         "wait:rollout",
         "start:generation-2",
         "broadcast:generation-2",
         "end:{}",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end_error", [RuntimeError("end failed"), TimeoutError("end timed out")])
+async def test_an_ambiguous_window_close_never_starts_a_second_attempt(end_error: Exception):
+    """A failed close leaves the detached lock ambiguous, so retrying could deadlock on the next start."""
+    from miles.ray import placement_group
+    from miles.utils.retry_utils import NonRetryableError
+
+    order: list[str] = []
+    inference_controller = _RetryWindowController(order, end_errors=[end_error])
+
+    with pytest.raises(NonRetryableError, match="did not close cleanly"):
+        await asyncio.wait_for(
+            placement_group.update_weights(
+                _orchestration_args(),
+                MagicMock(update_weights=AsyncMock(side_effect=RuntimeError("broadcast failed"))),
+                MagicMock(set_weight_version=AsyncMock()),
+                inference_controller,
+            ),
+            timeout=1,
+        )
+
+    assert order == [
+        "start:generation-1",
+        "end:{}",
+        *(["wait_idle:inference"] if isinstance(end_error, TimeoutError) else []),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_trainer_failure_is_detected_before_opening_a_second_window():
+    """A replacement readiness failure is terminal locally and cannot consume another engine snapshot."""
+    from miles.ray import placement_group
+    from miles.utils.retry_utils import NonRetryableError
+
+    order: list[str] = []
+    inference_controller = _RetryWindowController(order)
+    actor_model = MagicMock(
+        update_weights=AsyncMock(side_effect=RuntimeError("dead trainer")),
+        wait_until_update_weights_ready=AsyncMock(side_effect=RuntimeError("remote terminal failure")),
+    )
+
+    with pytest.raises(NonRetryableError, match="did not close cleanly"):
+        await asyncio.wait_for(
+            placement_group.update_weights(
+                _orchestration_args(),
+                actor_model,
+                MagicMock(set_weight_version=AsyncMock()),
+                inference_controller,
+            ),
+            timeout=1,
+        )
+
+    assert order == ["start:generation-1", "end:{}"]
+    actor_model.wait_until_update_weights_ready.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_drained_failure_after_cancellation_never_starts_a_second_window():
+    """A failed drained child preserves its failure as non-retryable after the caller cancels."""
+    from miles.ray import placement_group
+    from miles.utils.retry_utils import NonRetryableError
+
+    order: list[str] = []
+    inference_controller = _RetryWindowController(order)
+    broadcast_started = asyncio.Event()
+    broadcast_release = asyncio.Event()
+
+    async def _broadcast(*, info: UpdatableEngines, rollout_id: int | None = None) -> int:
+        broadcast_started.set()
+        await broadcast_release.wait()
+        raise RuntimeError("drained broadcast failed")
+
+    task = asyncio.create_task(
+        placement_group.update_weights(
+            _orchestration_args(),
+            MagicMock(update_weights=AsyncMock(side_effect=_broadcast)),
+            MagicMock(set_weight_version=AsyncMock()),
+            inference_controller,
+        )
+    )
+    await asyncio.wait_for(broadcast_started.wait(), timeout=1)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    broadcast_release.set()
+
+    with pytest.raises(NonRetryableError, match="failed after caller cancellation") as error:
+        await asyncio.wait_for(task, timeout=1)
+
+    assert isinstance(error.value.__cause__, placement_group._RetryableWeightUpdateError)
+    assert order == ["start:generation-1", "end:{}"]
 
 
 @pytest.mark.asyncio

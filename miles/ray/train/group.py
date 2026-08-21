@@ -383,6 +383,23 @@ class TrainerController:
         weight_versions = await self._execute_first_alive("update_weights", info=info)
         return weight_versions[0]
 
+    async def wait_until_update_weights_ready(self, timeout: float = _CELLS_READY_TIMEOUT_SECONDS) -> None:
+        async def _check(_remaining: float) -> None:
+            if any(cell.is_alive for cell in self._cells):
+                return
+            if not self._is_recoverable():
+                raise NonRetryableError("No trainer cell can become ready for a weight update")
+            raise TimeoutError("No trainer cell is ready for a weight update")
+
+        await retry_until_deadline(
+            _check,
+            total_seconds=timeout,
+            retry_on=TimeoutError,
+            initial_delay=1.0,
+            max_delay=5.0,
+            log_fields=dict(tag="ft", spec=self._pool_id),
+        )
+
     async def get_deployment_identity(self) -> DeploymentIdentity:
         return self._deployment_identity
 
