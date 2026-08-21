@@ -11,7 +11,6 @@ from miles.utils import train_metric_utils
 from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.replay_base import routing_replay_manager
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
@@ -501,6 +500,7 @@ def log_train_step(
     role: str = "actor",
     extra_metrics: dict[str, float] | None = None,
     should_log: bool | None = None,
+    r3_mismatch_fraction: float | None = None,
 ) -> dict[str, float]:
     """Log training metrics for one step.
 
@@ -516,6 +516,7 @@ def log_train_step(
         role: Role name (e.g., "actor", "critic").
         extra_metrics: Optional extra metrics to log (e.g., learning rates, MTP loss).
         should_log: Optional override for logging condition. If None, uses rank == 0.
+        r3_mismatch_fraction: Optional pre-aggregated routing-replay mismatch fraction.
 
     Returns:
         The formatted log_dict (for CI tests or other uses).
@@ -533,11 +534,8 @@ def log_train_step(
         for key, val in extra_metrics.items():
             log_dict_out[f"train/{role_tag}{key}"] = val
 
-    if routing_replay_manager.enable_check_replay_result:
-        # log_train_step runs on one rank only, so no collective here: the counts are
-        # this rank's, and every rank runs the same layers.
-        mismatched, checked = routing_replay_manager.pop_check_stats()
-        log_dict_out[f"ci/{role_tag}r3_mismatch_fraction"] = mismatched / checked if checked else 0.0
+    if r3_mismatch_fraction is not None:
+        log_dict_out[f"ci/{role_tag}r3_mismatch_fraction"] = r3_mismatch_fraction
 
     log_dict_out["train/step"] = accumulated_step_id
 

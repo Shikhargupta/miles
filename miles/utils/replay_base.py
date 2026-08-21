@@ -4,11 +4,21 @@ import os
 import torch
 import torch.distributed as dist
 
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+
 logger = logging.getLogger(__name__)
 
 
 def _get_rank():
     return dist.get_rank() if dist.is_initialized() else 0
+
+
+def reduce_check_stats(stats: tuple[int, int], group: dist.ProcessGroup) -> tuple[int, int]:
+    """Sum replay-check counters across a rank-symmetric Gloo group."""
+    values = torch.tensor(stats, dtype=torch.long)
+    GeneralPGUtil.create(group).all_reduce(values, group, op=dist.ReduceOp.SUM)
+    mismatched, checked = values.tolist()
+    return int(mismatched), int(checked)
 
 
 class Replay:
@@ -68,7 +78,7 @@ class BaseReplayManager:
         self.mismatched_tokens = 0
 
     def pop_check_stats(self) -> tuple[int, int]:
-        """Mismatched and checked token counts since the last call, then reset."""
+        """Mismatched and total checker-row counts since the last call, then reset."""
         stats = (self.mismatched_tokens, self.checked_tokens)
         self.mismatched_tokens = 0
         self.checked_tokens = 0
@@ -200,13 +210,14 @@ class BaseReplayManager:
         is_mismatch = (overlap < required) & ~is_padding
 
         mismatch_count = is_mismatch.sum().item()
-        self.checked_tokens += int((~is_padding).sum().item())
+        checked_count = orig_flat.shape[0]
+        self.checked_tokens += checked_count
         self.mismatched_tokens += mismatch_count
         if mismatch_count == 0:
             return
 
         threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_max_mismatch_fraction))
-        mismatch_threshold = threshold * orig_flat.shape[0]
+        mismatch_threshold = threshold * checked_count
         mismatch_indices = is_mismatch.nonzero(as_tuple=False).squeeze(1)
         for idx in mismatch_indices[:10]:
             i = idx.item()
