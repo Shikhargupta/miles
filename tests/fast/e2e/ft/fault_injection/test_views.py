@@ -47,7 +47,6 @@ def test_a_healthy_replacement_generation_rejoins_without_a_missed_down_sample()
 def test_a_recovered_generation_can_be_injected_again() -> None:
     """The same logical cell may be faulted again after a replacement changes its workers identity."""
     log = state.EventLog()
-    old_cells = [cell("c0", healthy=True, workers_hash="old"), cell("c1", healthy=True)]
     replacement_cells = [cell("c0", healthy=True, workers_hash="new"), cell("c1", healthy=True)]
     log.note_injection_attempt(cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True)
     log.observe(replacement_cells)
