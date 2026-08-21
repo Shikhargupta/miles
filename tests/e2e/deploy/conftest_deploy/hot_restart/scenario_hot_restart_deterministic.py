@@ -357,9 +357,9 @@ def _compare(restart_mode: HotRestartMode, dump_dir: str, mode: FTTestMode) -> N
 
 def _compute_expected_weight_version_deltas(
     *, records: tuple[HotRestartRecord, ...], num_rollouts: int
-) -> dict[str, dict[int | None, float]]:
-    delta_by_rollout = {
-        rollout_id: float(
+) -> dict[str, list[float]]:
+    delta_by_occurrence = [
+        float(
             sum(
                 record.frozen_rollout_id - restore_iteration
                 for record in records
@@ -367,8 +367,8 @@ def _compute_expected_weight_version_deltas(
             )
         )
         for rollout_id in range(num_rollouts)
-    }
-    return {key: delta_by_rollout.copy() for key in _WEIGHT_VERSION_METRIC_KEYS}
+    ]
+    return {key: delta_by_occurrence.copy() for key in _WEIGHT_VERSION_METRIC_KEYS}
 
 
 def _restore_iteration(record: HotRestartRecord) -> int:

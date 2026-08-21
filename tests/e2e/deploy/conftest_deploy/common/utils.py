@@ -46,7 +46,7 @@ def compare_deterministic_sides(
     target_dir: str,
     expected_engine_count: int,
     min_trained_rollouts: int,
-    expected_metric_deltas: dict[str, dict[int | None, float]] | None = None,
+    expected_metric_deltas: dict[str, list[float]] | None = None,
 ) -> None:
     comparisons.compare_deterministic_sides(
         baseline_dir=baseline_dir,

@@ -28,7 +28,7 @@ def compare_deterministic_sides(
     baseline_dir: str,
     target_dir: str,
     min_trained_rollouts: int,
-    expected_metric_deltas: dict[str, dict[int | None, float]] | None = None,
+    expected_metric_deltas: dict[str, list[float]] | None = None,
 ) -> None:
     for side_dir in (baseline_dir, target_dir):
         assert_reconfigure_events(Path(side_dir) / EVENTS_DIRNAME, expected=[])

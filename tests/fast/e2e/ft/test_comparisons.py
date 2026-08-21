@@ -39,7 +39,7 @@ def recorded_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, 
     return calls
 
 
-def _compare(*, expected_metric_deltas: dict[str, dict[int | None, float]] | None = None) -> None:
+def _compare(*, expected_metric_deltas: dict[str, list[float]] | None = None) -> None:
     comparisons.compare_deterministic_sides(
         baseline_dir=_BASELINE_DIR,
         target_dir=_TARGET_DIR,
@@ -71,7 +71,7 @@ class TestCompareDeterministicSides:
         self, recorded_calls: dict[str, list[dict[str, Any]]]
     ) -> None:
         """A counter exception remains an exact comparison whose expected delta comes from the scenario."""
-        expected = {"rollout/weight_version/max": {0: 2.0}}
+        expected = {"rollout/weight_version/max": [2.0]}
 
         _compare(expected_metric_deltas=expected)
 

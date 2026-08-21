@@ -82,7 +82,7 @@ class TestTiming:
 
         expected = scenario._compute_expected_weight_version_deltas(records=records, num_rollouts=6)
 
-        assert all(list(by_rollout.values()) == [2, 2, 2, 2, 2, 2] for by_rollout in expected.values())
+        assert all(by_occurrence == [2, 2, 2, 2, 2, 2] for by_occurrence in expected.values())
 
 
 class TestBuildArgs:

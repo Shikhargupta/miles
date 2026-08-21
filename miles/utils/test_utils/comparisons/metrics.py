@@ -23,7 +23,7 @@ def compare_metrics(
     atol: float,
     key_prefixes: list[str],
     exclude_keys: list[str],
-    expected_deltas: dict[str, dict[int | None, float]] | None = None,
+    expected_deltas: dict[str, list[float]] | None = None,
 ) -> None:
     baseline_events = _read_metric_events(Path(baseline_dir))
     target_events = _read_metric_events(Path(target_dir))
@@ -36,16 +36,23 @@ def compare_metrics(
     issues: list[str] = []
     issues += _check_event_counts(baseline_events, target_events, baseline_dir, target_dir)
     issues += _check_events_line_up(baseline_events, target_events)
+    issues += _check_expected_delta_sequence_lengths(baseline_events, target_events, expected_deltas or {})
 
     if not issues:
+        next_occurrence_by_key: dict[str, int] = defaultdict(int)
         for step_idx, (b_event, t_event) in enumerate(zip(baseline_events, target_events, strict=True)):
+            expected_deltas_for_step = _take_expected_deltas_for_step(
+                b_event,
+                expected_deltas=expected_deltas or {},
+                next_occurrence_by_key=next_occurrence_by_key,
+            )
             _print_step_comparison_table(
                 step_idx,
                 b_event,
                 t_event,
                 key_prefixes,
                 exclude_keys=exclude_keys,
-                expected_deltas=expected_deltas,
+                expected_deltas=expected_deltas_for_step,
             )
             issues += _check_step_metrics(
                 step_idx,
@@ -55,7 +62,7 @@ def compare_metrics(
                 rtol,
                 atol=atol,
                 exclude_keys=exclude_keys,
-                expected_deltas=expected_deltas,
+                expected_deltas=expected_deltas_for_step,
             )
 
     issues += _check_required_keys_exist(baseline_events)
@@ -157,6 +164,40 @@ def _check_event_counts(
     return issues
 
 
+def _check_expected_delta_sequence_lengths(
+    baseline: list[MetricEvent],
+    target: list[MetricEvent],
+    expected_deltas: dict[str, list[float]],
+) -> list[str]:
+    issues: list[str] = []
+    for key, sequence in expected_deltas.items():
+        for side, events in (("baseline", baseline), ("target", target)):
+            occurrences = sum(key in event.metrics for event in events)
+            if occurrences != len(sequence):
+                issues.append(
+                    f"Metric '{key}' expected delta sequence has {len(sequence)} entries, but {side} has "
+                    f"{occurrences} occurrence(s)"
+                )
+    return issues
+
+
+def _take_expected_deltas_for_step(
+    event: MetricEvent,
+    *,
+    expected_deltas: dict[str, list[float]],
+    next_occurrence_by_key: dict[str, int],
+) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for key in event.metrics:
+        if key not in expected_deltas:
+            continue
+
+        occurrence = next_occurrence_by_key[key]
+        result[key] = expected_deltas[key][occurrence]
+        next_occurrence_by_key[key] += 1
+    return result
+
+
 def _check_step_metrics(
     step_idx: int,
     baseline_event: MetricEvent,
@@ -166,7 +207,7 @@ def _check_step_metrics(
     *,
     atol: float,
     exclude_keys: list[str] | None = None,
-    expected_deltas: dict[str, dict[int | None, float]] | None = None,
+    expected_deltas: dict[str, float] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     for key in baseline_event.metrics:
@@ -179,7 +220,7 @@ def _check_step_metrics(
             issues.append(f"Step {step_idx}: metric '{key}' present in baseline but missing in target")
             continue
 
-        expected_delta = (expected_deltas or {}).get(key, {}).get(baseline_event.rollout_id, 0.0)
+        expected_delta = (expected_deltas or {}).get(key, 0.0)
         issues += _check_single_metric(
             step_idx,
             key,
@@ -236,7 +277,7 @@ def _print_step_comparison_table(
     key_prefixes: list[str],
     *,
     exclude_keys: list[str] | None = None,
-    expected_deltas: dict[str, dict[int | None, float]] | None = None,
+    expected_deltas: dict[str, float] | None = None,
 ) -> None:
     rows: list[dict[str, str]] = []
     for key in sorted(baseline_event.metrics):
@@ -248,7 +289,7 @@ def _print_step_comparison_table(
             continue
         excluded = "(excluded)" if exclude_keys and key in exclude_keys else ""
         actual_delta = t_val - b_val
-        expected_delta = (expected_deltas or {}).get(key, {}).get(baseline_event.rollout_id, 0.0)
+        expected_delta = (expected_deltas or {}).get(key, 0.0)
         abs_error = abs(actual_delta - expected_delta)
         denom = max(abs(b_val), abs(t_val), abs(actual_delta), abs(expected_delta), 1e-12)
         rel_diff = abs_error / denom

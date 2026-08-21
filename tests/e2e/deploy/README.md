@@ -86,7 +86,9 @@ Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
 5. Compare every metric exactly as in scenario_split_deterministic. Ordinary metrics require a zero
    target-minus-baseline delta. The four rollout weight-version statistics require the exact cumulative number
    of updates redone after each recorded restore point, because the trainer and engines survive and their
-   publication version remains monotonic. No metric key is dropped; dumps and engine checksums still compare
+   publication version remains monotonic. Each formula is consumed by that metric key's ordered occurrences in
+   the already aligned event stream; the sequence length must exactly equal the occurrence count because tracker
+   MetricEvents do not carry a rollout id. No metric key is dropped; dumps and engine checksums still compare
    bitwise.
 
 checkpointed lands every take-over on a non-save step, so unsaved steps are rolled back and

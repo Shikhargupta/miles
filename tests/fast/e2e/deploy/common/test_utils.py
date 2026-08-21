@@ -108,7 +108,7 @@ def recorded_calls(monkeypatch) -> dict[str, list[dict[str, Any]]]:
     return calls
 
 
-def _compare(*, expected_metric_deltas: dict[str, dict[int | None, float]] | None = None) -> None:
+def _compare(*, expected_metric_deltas: dict[str, list[float]] | None = None) -> None:
     utils.compare_deterministic_sides(
         baseline_dir=_BASELINE_DIR,
         target_dir=_TARGET_DIR,
@@ -134,7 +134,7 @@ class TestCompareDeterministicSides:
 
     def test_a_deploy_scenario_can_keep_a_proven_nonzero_metric_delta_in_the_exact_comparison(self, recorded_calls):
         """The deploy wrapper forwards semantic counter deltas instead of omitting those metrics."""
-        expected = {"rollout/weight_version/max": {0: 2.0}}
+        expected = {"rollout/weight_version/max": [2.0]}
 
         _compare(expected_metric_deltas=expected)
 
