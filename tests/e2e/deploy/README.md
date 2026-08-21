@@ -72,7 +72,9 @@ Modes: checkpointed  - --save-interval 2 (saves after 1, 3, 5), 2 restarts: rest
 Entries: test_hot_restart_checkpointed.py, test_hot_restart_no_checkpoint.py
 
 1. Relaunch the same command + --hot-restart orchestration,rollout_executor per the mode
-2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps)
+2. Assert workloads: only orchestrator + rollout-executor rolled (pod uid / restartCount / stamps);
+   compare canonical PodTemplate fingerprints for every workload because a controller may advance the generation of
+   an unchanged custom resource
 3. Assert process: one trainer rpc boot uuid throughout, answering the take-over's fresh client
 4. Assert redo, measured off the logs, per mode:
    - checkpointed: one .trash_* per restart; resume point == the pinned save (the snapshot

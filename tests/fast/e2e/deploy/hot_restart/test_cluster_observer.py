@@ -59,7 +59,7 @@ class TestParsePodFacts:
 
 class TestParseWorkloadFacts:
     def test_the_generation_and_the_stamp_of_each_statefulset_are_read(self):
-        """A rolled workload is one whose pod template changed, which its generation records."""
+        """A StatefulSet records both its generation and the canonical content of its pod template."""
         payload = {
             "items": [
                 {
@@ -70,10 +70,22 @@ class TestParseWorkloadFacts:
             ]
         }
 
-        assert parse_workload_facts(payload, kind=STATEFUL_SET_KIND) == (
-            workload_fact(ORCHESTRATOR, generation=2, restart_at="t1"),
-            workload_fact(TRAINER),
+        orchestrator, trainer = parse_workload_facts(payload, kind=STATEFUL_SET_KIND)
+
+        assert (
+            orchestrator.kind,
+            orchestrator.name,
+            orchestrator.generation,
+            orchestrator.restart_at,
+        ) == (STATEFUL_SET_KIND, ORCHESTRATOR, 2, "t1")
+        assert (trainer.kind, trainer.name, trainer.generation, trainer.restart_at) == (
+            STATEFUL_SET_KIND,
+            TRAINER,
+            1,
+            None,
         )
+        assert len(orchestrator.pod_template_fingerprint) == 64
+        assert orchestrator.pod_template_fingerprint != trainer.pod_template_fingerprint
 
     def test_a_leaderworkerset_carries_its_stamp_on_the_template_of_its_group(self):
         """The trainer cells and the engines of a run are leaderworkersets, not statefulsets."""
@@ -90,9 +102,40 @@ class TestParseWorkloadFacts:
             ]
         }
 
-        assert parse_workload_facts(payload, kind=LEADER_WORKER_SET_KIND) == (
-            workload_fact(ENGINE_POOL, kind=LEADER_WORKER_SET_KIND, generation=3, restart_at="t1"),
+        [engine_pool] = parse_workload_facts(payload, kind=LEADER_WORKER_SET_KIND)
+
+        assert (engine_pool.kind, engine_pool.name, engine_pool.generation, engine_pool.restart_at) == (
+            LEADER_WORKER_SET_KIND,
+            ENGINE_POOL,
+            3,
+            "t1",
         )
+        assert len(engine_pool.pod_template_fingerprint) == 64
+
+    def test_equivalent_template_key_orders_have_the_same_fingerprint(self):
+        """Kubernetes may return object keys in another order without changing the pod template."""
+        first = {
+            "items": [
+                {
+                    "metadata": {"name": TRAINER, "generation": 1},
+                    "spec": {"template": {"metadata": {"labels": {"a": "1", "b": "2"}}, "spec": {}}},
+                }
+            ]
+        }
+        second = {
+            "items": [
+                {
+                    "metadata": {"generation": 2, "name": TRAINER},
+                    "spec": {"template": {"spec": {}, "metadata": {"labels": {"b": "2", "a": "1"}}}},
+                }
+            ]
+        }
+
+        [before] = parse_workload_facts(first, kind=STATEFUL_SET_KIND)
+        [after] = parse_workload_facts(second, kind=STATEFUL_SET_KIND)
+
+        assert before.generation != after.generation
+        assert before.pod_template_fingerprint == after.pod_template_fingerprint
 
     def test_an_object_stamped_twice_over_is_refused(self):
         """One stamp per replaced object is what makes counting the stamps count the take-overs."""

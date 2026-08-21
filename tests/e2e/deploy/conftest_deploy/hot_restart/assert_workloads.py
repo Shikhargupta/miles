@@ -112,15 +112,15 @@ def _compute_workloads_whose_pods_were_replaced(snapshots: Sequence[ClusterSnaps
 
 
 def _compute_workloads_whose_template_changed(snapshots: Sequence[ClusterSnapshot]) -> set[str]:
-    generations_of_workload: dict[str, set[int]] = {}
+    fingerprints_of_workload: dict[str, set[str]] = {}
     stamps_of_workload = _compute_restart_stamps_of_workload(snapshots)
     for snapshot in snapshots:
         for workload in snapshot.workloads:
-            generations_of_workload.setdefault(workload.name, set()).add(workload.generation)
+            fingerprints_of_workload.setdefault(workload.name, set()).add(workload.pod_template_fingerprint)
     return {
         name
-        for name, generations in generations_of_workload.items()
-        if len(generations) > 1 or len(stamps_of_workload.get(name, set())) > 1
+        for name, fingerprints in fingerprints_of_workload.items()
+        if len(fingerprints) > 1 or len(stamps_of_workload.get(name, set())) > 1
     }
 
 

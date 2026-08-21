@@ -205,14 +205,25 @@ class TestComputeWorkloadsWhoseTemplateChanged:
 
         assert _compute_workloads_whose_template_changed([snapshot, snapshot]) == set()
 
-    def test_only_the_workloads_whose_generation_moved_are_reported(self):
-        """A hot restart stamps two pod templates, and the generation is how kubernetes records that."""
+    def test_only_the_workloads_whose_template_fingerprint_changed_are_reported(self):
+        """A template change is caught even when a workload controller leaves generation unchanged."""
         before = cluster_snapshot(pods=[], workloads=[workload_fact(ORCHESTRATOR), workload_fact(TRAINER)])
         after = cluster_snapshot(
-            pods=[], workloads=[workload_fact(ORCHESTRATOR, generation=2), workload_fact(TRAINER)]
+            pods=[],
+            workloads=[
+                workload_fact(ORCHESTRATOR, pod_template_fingerprint="template-b"),
+                workload_fact(TRAINER),
+            ],
         )
 
         assert _compute_workloads_whose_template_changed([before, after]) == {ORCHESTRATOR}
+
+    def test_a_generation_change_without_a_template_change_is_ignored(self):
+        """A LeaderWorkerSet controller may advance generation while preserving its pod templates."""
+        before = cluster_snapshot(pods=[], workloads=[workload_fact(TRAINER)])
+        after = cluster_snapshot(pods=[], workloads=[workload_fact(TRAINER, generation=2)])
+
+        assert _compute_workloads_whose_template_changed([before, after]) == set()
 
     def test_a_workload_restamped_between_two_observations_of_one_generation_is_reported(self):
         """An observation may miss the generation moving, but the stamp it carries is written to survive."""

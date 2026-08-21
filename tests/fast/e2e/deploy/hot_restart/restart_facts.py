@@ -22,7 +22,13 @@ def restart_snapshot(
     return ClusterSnapshot(
         pods=tuple(PodFact(name=name, uid=uid, restart_count=0) for name, uid in sorted(uid_of_pod.items())),
         workloads=tuple(
-            WorkloadFact(kind=STATEFUL_SET_KIND, name=name, generation=1 if stamp is None else 2, restart_at=stamp)
+            WorkloadFact(
+                kind=STATEFUL_SET_KIND,
+                name=name,
+                generation=1 if stamp is None else 2,
+                pod_template_fingerprint="template-base" if stamp is None else f"template-{stamp}",
+                restart_at=stamp,
+            )
             for name, stamp in sorted(stamp_of_workload.items())
         ),
         trainer_boot_uuid=boot_uuid,

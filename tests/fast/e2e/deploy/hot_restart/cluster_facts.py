@@ -33,6 +33,17 @@ def pod_fact(name: str, *, uid: str, restart_count: int = 0) -> PodFact:
 
 
 def workload_fact(
-    name: str, *, kind: str = STATEFUL_SET_KIND, generation: int = 1, restart_at: str | None = None
+    name: str,
+    *,
+    kind: str = STATEFUL_SET_KIND,
+    generation: int = 1,
+    pod_template_fingerprint: str = "template-a",
+    restart_at: str | None = None,
 ) -> WorkloadFact:
-    return WorkloadFact(kind=kind, name=name, generation=generation, restart_at=restart_at)
+    return WorkloadFact(
+        kind=kind,
+        name=name,
+        generation=generation,
+        pod_template_fingerprint=pod_template_fingerprint,
+        restart_at=restart_at,
+    )

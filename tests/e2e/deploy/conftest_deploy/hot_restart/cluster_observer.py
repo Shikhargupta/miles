@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import threading
@@ -46,6 +47,7 @@ class WorkloadFact(FrozenStrictBaseModel):
     kind: str
     name: str
     generation: int
+    pod_template_fingerprint: str
     restart_at: str | None
 
 
@@ -212,6 +214,7 @@ def parse_workload_facts(payload: dict, *, kind: str) -> tuple[WorkloadFact, ...
             kind=kind,
             name=item["metadata"]["name"],
             generation=int(item["metadata"]["generation"]),
+            pod_template_fingerprint=_compute_pod_template_fingerprint(item),
             restart_at=_read_restart_at(item),
         )
         for item in payload["items"]
@@ -228,17 +231,10 @@ def _read_objects(*, kind: str, release: str, namespace: str) -> dict | None:
 
 
 def _read_restart_at(item: dict) -> str | None:
-    spec = item.get("spec", {})
-    leader_worker_template = spec.get("leaderWorkerTemplate", {})
-    templates = [
-        spec.get("template"),
-        leader_worker_template.get("leaderTemplate"),
-        leader_worker_template.get("workerTemplate"),
-    ]
+    templates = _read_pod_templates(item)
     stamps = {
         stamp
         for template in templates
-        if template is not None
         if (stamp := template.get("metadata", {}).get("annotations", {}).get(RESTART_AT_ANNOTATION)) is not None
     }
     assert len(stamps) <= 1, (
@@ -246,3 +242,24 @@ def _read_restart_at(item: dict) -> str | None:
         f"and a hot restart writes one stamp per object"
     )
     return next(iter(stamps), None)
+
+
+def _compute_pod_template_fingerprint(item: dict) -> str:
+    text = json.dumps(_read_pod_templates(item), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _read_pod_templates(item: dict) -> tuple[dict, ...]:
+    spec = item.get("spec", {})
+    leader_worker_template = spec.get("leaderWorkerTemplate", {})
+    templates = [
+        spec.get("template"),
+        leader_worker_template.get("leaderTemplate"),
+        leader_worker_template.get("workerTemplate"),
+    ]
+    present = tuple(template for template in templates if template is not None)
+    assert present, (
+        f"{item['metadata']['name']} has no StatefulSet or LeaderWorkerSet pod template, so a hot restart cannot "
+        f"tell whether that workload was rewritten"
+    )
+    return present
