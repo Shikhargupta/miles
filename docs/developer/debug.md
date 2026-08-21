@@ -88,6 +88,11 @@ reduction accumulates in float64 after the policy loss is computed, then publish
 the original float32 dtype. The training loss and gradient stay in their original dtype,
 and the `1e-9` checker threshold is unchanged.
 
+Stored actor log probabilities and training log probabilities invoke Megatron's fused
+vocabulary-parallel cross entropy through the same grad-enabled forward contract. The
+stored result is detached immediately, so this alignment does not retain an inference
+autograd graph or change the training loss and gradient path.
+
 Three more take values rather than switching off:
 
 **Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>` asserts
