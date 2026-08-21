@@ -47,6 +47,7 @@ run:
     colocatePairing: 'miles-run-260101-000000-000-all-colocate-pairing'
     mooncakeMaster: 'miles-run-260101-000000-000-all-mooncake-master'
     orchestrator: 'miles-run-260101-000000-000-all-orchestrator'
+    platformReader: 'miles-run-260101-000000-000-all-platform-reader'
     uninstall: 'miles-run-260101-000000-000-all-uninstall'
     uninstallManifest: 'miles-run-260101-98cf6da492ec-uninstall-manifest'
   orchestrator:
