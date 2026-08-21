@@ -99,9 +99,7 @@ def _upper_layer_imports(path: Path) -> list[str]:
             found.extend(alias.name for alias in node.names if _is_upper_layer_module(alias.name))
         elif isinstance(node, ast.ImportFrom):
             if node.module == "miles.ray.wiring":
-                found.extend(
-                    alias.name for alias in node.names if alias.name not in BACKEND_NEUTRAL_WIRING_NAMES
-                )
+                found.extend(alias.name for alias in node.names if alias.name not in BACKEND_NEUTRAL_WIRING_NAMES)
             else:
                 if node.module is not None and node.level == 0 and _is_upper_layer_module(node.module):
                     found.append(node.module)
