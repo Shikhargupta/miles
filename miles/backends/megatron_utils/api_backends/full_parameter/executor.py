@@ -1,11 +1,5 @@
-"""Whole-model optimizer execution for explicit training operations.
-
-This module is deliberately small.  Tinker (or another protocol adapter)
-normalizes operations before they reach this boundary; the executor owns only
-the physical full-parameter optimizer target.  Unlike Multi-LoRA there is no
-slot, residency cache, or dirty-window state here.  A dispatch lease must
-contain exactly one operation bound to the one whole-model target.
-"""
+"""Execute protocol-neutral operations against one whole-model optimizer.
+Each dispatch lease contains exactly one operation for the target."""
 
 from __future__ import annotations
 
@@ -22,11 +16,8 @@ from miles.utils.operation_contract import BatchExecutionLease
 
 @dataclass(frozen=True)
 class FullParameterBinding:
-    """Opaque immutable binding for one executor-owned whole-model target.
-
-    ``target_id`` is deployment identity, not a fake adapter slot.  One
-    executor still accepts exactly one target and one operation per lease.
-    """
+    """Immutable binding for one executor-owned whole-model target.
+    ``target_id`` identifies the deployment rather than an adapter slot."""
 
     target_id: str
 
@@ -40,14 +31,8 @@ def _server_error(message: str, *, consumed: bool = False) -> dict:
 
 @dataclass
 class FullParameterExecutor:
-    """Execute controls against one stock Megatron whole-model optimizer.
-
-    Full-parameter gradients form one physical window, so controls cannot be
-    coalesced: the lease and request batch must each name exactly one matching
-    operation.  Validation happens before any optimizer, model-buffer, or
-    gradient mutation.  A clean ``optim_step`` is valid; no local ``dirty``
-    flag is consulted or maintained.
-    """
+    """Execute one operation at a time against a stock Megatron optimizer.
+    Validate the request and singleton lease before mutating model state."""
 
     model_chunks: Sequence[Any]
     optimizer: Any
@@ -103,10 +88,8 @@ class FullParameterExecutor:
         previous_clip = config.clip_grad
         try:
             self._apply_adam_to_param_groups(adam)
-            # Direct FP32/mixed-precision MCore optimizers only compute and
-            # return grad_norm inside their clip branch.  Infinity preserves
-            # the protocol's ``0 = no clipping`` semantics while still asking
-            # the stock optimizer to measure the norm.
+            # MCore measures grad_norm only in its clip branch; infinity keeps
+            # ``0 = no clipping`` while still requesting the measurement.
             config.clip_grad = adam["grad_clip_norm"] if adam["grad_clip_norm"] > 0.0 else float("inf")
             nonfinite_veto = self._has_nonfinite_gradient_norm()
             if not nonfinite_veto:
@@ -122,9 +105,8 @@ class FullParameterExecutor:
                 if raw_grad_norm is not None:
                     grad_norm = float(raw_grad_norm)
         except BaseException as exc:
-            # Once execution begins, an arbitrary failure may follow a partial
-            # physical update.  Keep it fatal instead of turning it into a
-            # recoverable per-operation result.
+            # Execution failures may follow a partial physical update, so keep
+            # them fatal rather than returning a recoverable operation result.
             primary_error = exc
             primary_traceback = exc.__traceback__
         finally:
@@ -234,14 +216,8 @@ class FullParameterExecutor:
             group["weight_decay"] = adam["weight_decay"]
 
     def _has_nonfinite_gradient_norm(self) -> bool:
-        """Conservatively veto NaN/Inf before stock BF16 optimizers mutate.
-
-        MCore's BF16 optimizer has no loss scaler, and its stock ``step`` does
-        not reject a NaN norm.  Scan both DDP/model gradients and optimizer
-        parameters, then reduce a float32 squared norm over every trainer rank.
-        Duplicate replicas only make this check more conservative; they cannot
-        turn a non-finite global norm into a finite one.
-        """
+        """Veto NaN/Inf before the stock BF16 optimizer mutates parameters.
+        Scan all visible gradients and reduce their squared norm across ranks."""
 
         gradients: list[torch.Tensor] = []
         seen: set[int] = set()

@@ -1,9 +1,3 @@
-"""Registration/status HTTP surface over a Multi-LoRA operation backend.
-Operations flow through the controller's Ray methods; this is the adapter-run
-control surface that a protocol frontend can colocate with.
-Binds loopback by default — the backend executes client-referenced work and
-must never face an untrusted network directly."""
-
 import asyncio
 from dataclasses import asdict
 from pathlib import Path
@@ -21,9 +15,6 @@ _NAMES_QUERY = Query(default_factory=list)
 
 
 class PublicRunConfig(BaseModel):
-    """Client-settable registration fields; alpha is deliberately absent
-    (deployment-configured via --lora-alpha)."""
-
     rank: int | None = None
     save: str | None = None
     num_step: int | None = None
@@ -59,9 +50,6 @@ class AdapterRunControlServer:
 
     @property
     def advertised_host(self) -> str:
-        """The host the API is actually reachable at: the bind host, or the
-        node IP when bound to all interfaces (a loopback bind must never
-        advertise the node IP — that URL would not reach the socket)."""
         if self.host in ("0.0.0.0", "::", ""):
             from miles.utils.misc import get_current_node_ip
 

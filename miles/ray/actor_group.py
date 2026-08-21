@@ -134,9 +134,6 @@ class RayTrainGroup:
         await self._broadcast("reconcile_tinker_adapters")
 
     async def execute_tinker_controls(self, operations: list[dict], lease_metadata: dict) -> dict:
-        """Run claimed control operations on every rank (identical list and
-        batch lease, fixed order — the collectives require it); results agree,
-        take rank 0's."""
         results = await self._broadcast("execute_tinker_controls", operations, lease_metadata)
         return results[0]
 

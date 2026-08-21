@@ -642,9 +642,6 @@ class SGLangEngine(RayActor):
         return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
-        # Never abort in-flight requests on a version bump (#2589 made the
-        # multi-LoRA tenant-isolation behavior unconditional): the bump is
-        # metadata-only for every deployment shape.
         return self._make_request(
             "update_weight_version",
             {"new_version": weight_version, "abort_all_requests": False},

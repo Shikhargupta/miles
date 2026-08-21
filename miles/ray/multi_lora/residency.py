@@ -1,24 +1,3 @@
-"""Fixed-residency concrete of the trainer-residency port
-(codex-rollout-fullparameter-design-0810 §5.3).
-
-``FixedSlotResidency`` only snapshots and validates the registration -> slot
-mappings that fixed residency already established at registration time. It
-never binds, unbinds, changes READY, selects victims, saves checkpoints, or
-moves state — tenancy changes stay on the driver-sequenced
-register/deregister path. Gates:
-
-- ``binding_for`` (the claim gate) requires the EXACT registration to be
-  READY with a bound slot; PENDING, unbound, RETIRING, CLEANUP, and
-  wrong-registration lookups all return None without mutating anything.
-- ``acquire_batch``/``validate`` (the dispatch gates) require the exact
-  registration to still OWN its slot — READY or RETIRING: a registration that
-  turned RETIRING after its operation was claimed must still complete
-  in-flight work (READY gates claims, not execution); only cleanup/reassign
-  invalidates the receipt.
-- ``release_batch`` is a no-op lifecycle hook: nothing was reserved, so no
-  failure path can leak residency state.
-"""
-
 import logging
 import uuid
 from dataclasses import dataclass

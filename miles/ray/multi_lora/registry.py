@@ -1,10 +1,5 @@
-"""Controller-owned run lifecycle for the Multi-LoRA operation backend: one record per
-name, walking PENDING -> READY -> RETIRING -> CLEANUP -> COMPLETED under
-fixed slot residency. READY means the trainer loaded the slot and client
-operations may execute; serving existence is a separate axis (a run serves
-only after save_weights_for_sampler bumps ``serving_version`` past 0).
-Serving identity is ``(name, registration_id)``, so same-name re-registration
-can never alias a previous tenant."""
+"""Controller-owned Multi-LoRA run lifecycle under fixed slot residency.
+Serving identity includes the registration ID to prevent same-name aliasing."""
 
 import logging
 import re
@@ -52,9 +47,6 @@ class AdapterRecord:
     step: int = 0
     # Baseline step for the relative num_step bound (supports state resume).
     start_step: int = 0
-    # Published weight revision of THIS registration; 0 = never published.
-    # The KV-cache namespace carries (name, registration_id, serving_version),
-    # so restarting at 0 for a new tenant cannot alias a predecessor's cache.
     serving_version: int = 0
     state: AdapterState = AdapterState.PENDING
     registration_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -107,10 +99,6 @@ class AdapterRegistry:
         return {"name": name, "slot": record.slot}
 
     def bootstrap_pending(self) -> list[str]:
-        """Bind queued unbound PENDING records to freed slots in arrival order
-        (FIFO: ``records`` keeps registration order, and re-registration
-        re-inserts at the tail). The next reconcile loads them, and mark_ready
-        promotes them."""
         bound = []
         for name, record in self.in_state(AdapterState.PENDING).items():
             if record.slot is not None:
@@ -124,8 +112,6 @@ class AdapterRegistry:
         return bound
 
     def mark_ready(self, names: list[str]) -> None:
-        """The trainer finished loading these slots: client operations may
-        now execute. Readiness never depends on a serving publish."""
         for name in names:
             record = self.find(name)
             if record is not None and record.state is AdapterState.PENDING and record.slot is not None:
@@ -173,11 +159,6 @@ class AdapterRegistry:
                 record.serving_version += 1
 
     def on_step_committed(self, name: str, registration_id: str, step: int) -> None:
-        """Hook: the gradient-window tracker committed an optim step for this
-        EXACT registration. Mirror the clock onto the record, release the
-        dirty-gradient pin, and apply the optional client-set num_step bound.
-        The tracker owns the step authority; this record copy only feeds the
-        Multi-LoRA lifecycle and its views."""
         record = self.find(name)
         if record is None or record.registration_id != registration_id:
             return
@@ -201,9 +182,6 @@ class AdapterRegistry:
     # ---------------------- gradient-state pins ----------------------
 
     def mark_accumulated(self, names: list[str]) -> None:
-        """A forward_backward landed: the slot holds unstepped gradients that
-        no checkpoint carries — pin its state as immovable until an optim_step
-        consumes them (or a veto clears them)."""
         for name in names:
             record = self.find(name)
             if record is not None:

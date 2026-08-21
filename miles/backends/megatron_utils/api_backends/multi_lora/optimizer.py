@@ -1,15 +1,3 @@
-"""Per-slot decoupled Adam optimizers for the Multi-LoRA operation backend,
-chained under Megatron's LayerWiseDistributedOptimizer; requires plain DDP
-all-reduce (use_distributed_optimizer OFF) so cross-call gradient retention
-stays idempotent.
-
-Explicit-operation semantics are load-bearing here: a slot's gradient is the raw SUM of
-its clients' per-token weighted losses across every forward_backward since the
-last optim_step — never normalized by batch or call count (the client's
-loss_weights own the scale) — and each optim_step carries its own AdamParams,
-so no scheduler ever writes to these param groups between operations.
-"""
-
 import logging
 import math
 from argparse import Namespace
@@ -43,9 +31,6 @@ def _adam_init_state_fn(opt, config=None):
 
 @contextmanager
 def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
-    """Temporarily freeze every trainable param outside ``slot_params`` so the
-    stock param-group builder sees exactly one slot (the Muon construction
-    pattern from megatron's ``get_megatron_muon_optimizer``)."""
     slot_ids = {id(p) for p in slot_params}
     frozen = []
     for model_chunk in model_chunks:
@@ -61,13 +46,9 @@ def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
 
 
 def build_multi_lora_operation_optimizer(args: Namespace, config, model_chunks: Sequence):
-    """Build one Float16-wrapped Adam per adapter slot under a
-    LayerWiseDistributedOptimizer (ChainedOptimizer); each child's param groups
-    are tagged with ``miles_multi_lora_slot`` and narrowed to this rank's shard."""
     assert not config.use_distributed_optimizer, (
         "tinker per-slot optimizers require use_distributed_optimizer=False: "
-        "gradient retention relies on all-reduce idempotency, and LayerWise "
-        "sharding replaces byte-level ZeRO"
+        "gradient retention uses all-reduce; LayerWise provides sharding"
     )
     assert not config.fp16, "tinker per-slot optimizers require bf16 (no dynamic loss scaler)"
     assert (config.optimizer or "").lower() == "adam", (
@@ -130,15 +111,11 @@ def build_multi_lora_operation_optimizer(args: Namespace, config, model_chunks: 
 
 
 def reload_adapter_slot_model_params(optimizer, slot: int) -> None:
-    """Refresh fp32 masters for ONE slot only — a global reload would quantize
-    every other resident slot's masters through bf16."""
     for child in _slot_children(optimizer, slot):
         child.reload_model_params()
 
 
 def zero_adapter_slot_grads(model, slot: int) -> None:
-    """Zero one slot's gradients everywhere they live: the DDP ``main_grad``
-    buffer views and any lingering ``grad``/``main_param.grad`` references."""
     for param in adapter_slot_parameters(model, slot):
         if (main_grad := getattr(param, "main_grad", None)) is not None:
             main_grad.zero_()
@@ -157,8 +134,6 @@ def _found_inf_anywhere(found_inf: bool) -> bool:
 
 
 def _norm_source_flags_anywhere(has_norm_source: bool, has_grads: bool) -> tuple[bool, bool]:
-    """Global (any-rank) view of the two structural facts the norm-source veto
-    compares; all-reduced so the decision is unanimous across ranks."""
     if not dist.is_initialized():
         return has_norm_source, has_grads
     flags = torch.tensor(
@@ -169,10 +144,6 @@ def _norm_source_flags_anywhere(has_norm_source: bool, has_grads: bool) -> tuple
 
 
 def apply_adam_params_to_slot(optimizer, slot: int, adam_params: dict | None) -> dict:
-    """Write one optim_step's AdamParams onto the slot's param groups; returns
-    the resolved values (SDK defaults come from the parameterization-neutral
-    resolver). Tinker slots install no scheduler, so nothing overwrites these
-    between operations."""
     resolved = resolve_adam_params(adam_params)
     for child in _slot_children(optimizer, slot):
         for group in child.param_groups:
@@ -188,18 +159,6 @@ def step_adapter_slots(
     model,
     adam_params_by_slot: dict[int, dict | None],
 ) -> tuple[dict[int, float], set[int], set[int]]:
-    """Step exactly the slots in ``adam_params_by_slot`` (slot -> that
-    operation's AdamParams), retaining all other slots' gradients. Returns
-    (grad norms, vetoed slots, norm-blind slots): a found-inf/NaN slot is not
-    stepped, its grads are cleared, and the caller must fail — not commit or
-    publish — it; a norm-blind slot (nonzero gradients somewhere, but NO rank
-    contributed a norm source — a parameter-flagging bug upstream) is treated
-    the same way, because its computed norm is a lie and stepping would apply
-    the update with the clip silently bypassed.
-
-    The gradient sum is never count-normalized (the client's loss_weights own
-    the scale) and the clip is the per-call ``grad_clip_norm`` (0.0 = none).
-    """
     from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32, get_grad_norm_fp32
 
     grad_norms: dict[int, float] = {}
@@ -234,12 +193,6 @@ def step_adapter_slots(
             zero_adapter_slot_grads(model, slot)
             continue
 
-        # Structural norm-source check: nonzero gradients on SOME rank with
-        # an empty norm collection on EVERY rank means the per-parameter
-        # filters (tensor_model_parallel/shared flags) excluded the whole
-        # slot — the 0.0 above is a lie and the clip would silently no-op.
-        # A single rank's empty list is NORMAL (duplicated params count on
-        # one rank only), so both facts are all-reduced before deciding.
         has_norm_source, has_grads = _norm_source_flags_anywhere(
             bool(grads_for_norm),
             any(param.grad is not None and bool((param.grad != 0).any().item()) for param in slot_params),

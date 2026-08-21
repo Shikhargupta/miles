@@ -157,10 +157,6 @@ class RolloutManager:
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
         sample_indices = data.get("sample_indices")
-        # Driver-visible dispatch identity (computed before the DP split so it
-        # never depends on shard layout): the tinker driver's abnormal-outcome
-        # finalizer fails these operations and releases this lease without
-        # fetching the batch back from the object store.
         dispatch = tinker_dispatch_summary(data)
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)

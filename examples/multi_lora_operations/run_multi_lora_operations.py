@@ -1,16 +1,3 @@
-"""Multi-LoRA operation example (Qwen3-4B, disaggregated 4 train + 4 rollout GPUs).
-
-Serves the operation API for client-driven LoRA training: no datasets, no
-reward functions — clients enqueue forward_backward/optim_step operations and
-sample through the shared engines. The driver is ``train_multi_lora_operations.py``
-at the repo root.
-
-Usage:
-  python examples/multi_lora_operations/run_multi_lora_operations.py prepare   # download Qwen3-4B (once per node)
-  python examples/multi_lora_operations/run_multi_lora_operations.py serve     # service mode: idles for registrations (API on :8068)
-  python examples/multi_lora_operations/run_multi_lora_operations.py train     # pre-registers adapters/example.yaml, exits when it retires
-"""
-
 from dataclasses import dataclass
 
 import typer

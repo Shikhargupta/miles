@@ -1,10 +1,3 @@
-"""Registration config and read-only run views for the Multi-LoRA operation backend.
-
-A client-driven training run has no dataset, reward, or server-side
-batch shape. The public registration surface takes only ``rank`` (and
-optional ``save``/``num_step``/``metadata``); ``alpha`` is server-resolved
-from ``--lora-alpha`` and never client-settable."""
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,16 +31,12 @@ class AdapterRun:
 
     @property
     def serving_name(self) -> str:
-        """Engine-side LoRA name: registration-scoped, so a re-registered name
-        never aliases the previous tenant's served weights (anti-ABA)."""
         from miles.ray.multi_lora.identity import serving_lora_name
 
         return serving_lora_name(self.name, self.registration_id)
 
 
 def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
-    """Parse a single adapter.yaml (CLI registration). The public fields only:
-    alpha is deployment-configured and rejected if present."""
     import yaml
 
     with open(path) as f:

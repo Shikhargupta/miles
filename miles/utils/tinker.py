@@ -1,11 +1,3 @@
-"""Tinker protocol-mode predicates and launch-time defaults.
-
-The concrete execution target is currently Multi-LoRA.  Tinker names the
-client protocol boundary; the optimizer-operation contracts and executors are
-defined independently.
-"""
-
-
 def uses_explicit_training_operations(args) -> bool:
     """Whether the Tinker protocol drives explicit training operations."""
     return bool(getattr(args, "tinker_backend", False))

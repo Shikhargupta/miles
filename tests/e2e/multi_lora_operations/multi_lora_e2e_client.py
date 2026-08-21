@@ -1,41 +1,4 @@
 #!/usr/bin/env python3
-"""GPU E2E client for the Multi-LoRA operation backend.
-
-Phase A (the original 7 phases) drives one adapter ("e2e_a") through the full
-operation lifecycle against a live service: register -> forward_backward x3
-(+ one odd-count fb: DP zero-weight padding must never leak rows) ->
-optim_step -> save_weights_for_sampler (+ router sampling) -> save_state ->
-load_state -> post-restore fb/optim -> deregister (+ post-deregister
-rejection).
-
-Phase B exercises `forward` operations: logprobs match a forward_backward of
-the identical payload, no dirty pin is taken (save_state right after a
-forward must not hit the unstepped-gradients gate), and an optim_step with
-nothing accumulated steps with grad_norm == 0 (the backend contract: nothing
-gates an empty step).
-
-Phase C exercises the slot-state ownership fence at DP>1. LayerWise DP
-sharding is real (each rank owns a disjoint half of the slot's params), and
-the fence contract is signature equality: a restore is allowed exactly when
-the state's per-rank ownership signature matches the destination slot's. On
-this deployment slot 0 and slot 1 signatures COINCIDE (28-layer Qwen3:
-every numel-class block is divisible by 4 in the DP-2 ping-pong), so a
-cross-slot restore must succeed bitwise-correctly; a state whose shards
-carry a genuinely different per-rank ownership (rank-swapped shards of the
-same save) must be REFUSED as a clean user-category failure with the
-trainer staying healthy — and a sidecar with a foreign signature must fall
-back to a fresh init at re-registration instead of crashing reconcile.
-
-Phase D exercises sidecar auto-resume: deregister writes the final state,
-re-registering the same name restores it — same step clock, bitwise-equal
-weights AND optimizer fp32 masters (no re-quantization through bf16), and
-identical forward logprobs for a fixed probe.
-
-Registration goes over the controller HTTP API; operations go through the
-controller Ray actor (operation enqueue/get/ack are not HTTP-exposed yet).
-Run on the head node: PYTHONPATH must include /personal/miles.
-"""
-
 import argparse
 import json
 import math

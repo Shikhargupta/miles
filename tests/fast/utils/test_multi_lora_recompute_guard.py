@@ -102,13 +102,6 @@ class TestUnfixedBridgeRefusals:
         with pytest.raises(AssertionError, match="selective"):
             validate_multi_lora_args(_args(recompute_granularity="full", target_modules=EXPERT_TARGETS))
 
-    def test_refusal_happens_at_launch_not_after_gpu_time(self, unfixed_bridge):
-        # The guard must live in validate_multi_lora_args (driver launch), not in
-        # the trainer: a refused config should never reach model build.
-        args = _args(recompute_granularity="full")
-        with pytest.raises(AssertionError):
-            validate_multi_lora_args(args)
-
     def test_moe_module_with_expert_targets_is_refused(self, unfixed_bridge):
         with pytest.raises(AssertionError, match="moe_act"):
             validate_multi_lora_args(

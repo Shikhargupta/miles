@@ -470,10 +470,6 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutcome:
-        # Tinker batches collect per-datum logprobs for the operation result
-        # plane; the loss fills this shared side channel during the forward.
-        # The batch lease is validated BEFORE any gradient mutation: every
-        # binding must still match a locally loaded adapter exactly.
         if rollout_data.get("batch_kind") == "tinker":
             from miles.backends.megatron_utils.api_backends.multi_lora.trainer import validate_batch_lease
 
@@ -505,8 +501,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
         with inverse_timer("train_wait"), timer("train"):
-            # Tinker batches carry client-supplied logprobs/advantages; the
-            # ref/old-policy passes and advantage computation are RL machinery.
             if self.args.compute_advantages_and_returns and rollout_data.get("batch_kind") != "tinker":
                 if "ref" in self.weights_backuper.backup_tags:
                     self._set_replay_stage("fallthrough")
@@ -592,8 +586,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     witness_info=witness_info,
                     attempt=attempt,
                     ft_test_action_executor=self._ft_test_action_executor,
-                    # Tinker forward operations are logprob-only: the schedule
-                    # must not run backward (no grads, no grad collectives).
                     forward_only=bool(rollout_data.get("tinker_forward_only")),
                 )
 
@@ -636,10 +628,6 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @timer
     def execute_tinker_controls(self, operations: list[dict], lease_metadata: dict) -> dict:
-        """Run a claimed set of data-less tinker operations (optim_step,
-        save_weights_for_sampler, save_state, load_state) on this rank. Every
-        rank receives the identical list plus the control batch's execution
-        lease; results are keyed by operation_id."""
         from miles.backends.megatron_utils.api_backends.multi_lora.trainer import execute_controls
 
         return execute_controls(
@@ -656,8 +644,6 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @timer
     def reconcile_tinker_adapters(self) -> None:
-        """Converge residency to the tinker controller's registry (fixed
-        slots: load bound registrations, retire deregistered ones)."""
         if not is_tinker_enabled(self.args):
             return
         from miles.backends.megatron_utils.api_backends.multi_lora.trainer import reconcile_adapters
@@ -683,8 +669,6 @@ class MegatronTrainRayActor(TrainRayActor):
             maybe_finalize_async_save(blocking=True)
 
         if is_tinker_enabled(self.args):
-            # Tinker checkpoints move only through save_state operations and
-            # retirement final states; there is no interval save.
             return
 
         save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
@@ -775,9 +759,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.loaded_adapters, self._multi_lora_pending_push, has_new_engines
             )
             if not self.weight_updater.multi_lora_adapters:
-                # Nothing staged (publishes are explicit and none is pending):
-                # the base model is frozen under multi-LoRA, so pausing and
-                # flushing every engine here would stall serving for a no-op.
                 if process_groups_are_temporary:
                     destroy_process_groups()
                 return

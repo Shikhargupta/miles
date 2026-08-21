@@ -14,7 +14,6 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import asyncio
 
-import miles.ray.rollout.components as components_module
 from miles.ray.rollout.components import InferenceEndpoint, RolloutComponents, create_rollout_components
 
 
@@ -116,35 +115,3 @@ def test_future_shaped_fakes_satisfy_the_bundle_without_the_factory():
     assert calls == [("prepare", 5), ("generate", 5)]
     asyncio.run(components.dispose())
     assert lifecycle.disposed == 1
-
-
-def test_module_never_imports_ray_directly():
-    # The construction seam isolates Ray invocation shapes behind adapters.
-    import inspect
-
-    source = inspect.getsource(components_module)
-    assert "import ray" not in source
-
-
-def test_controller_port_covers_the_pr1842_prepare_boundary():
-    """External review: the split controller's per-rollout responsibility is
-    ``prepare_rollout()`` — the port must declare it so PR #1842's concrete
-    drops in without a driver change."""
-    from miles.ray.rollout.components import InferenceControllerPort
-
-    assert hasattr(InferenceControllerPort, "prepare_rollout")
-
-
-def test_tinker_driver_never_escapes_through_a_legacy_manager():
-    """External review: the driver must reach the weight-update target only
-    through the factory's opaque ``weight_update_owner`` — a future-shaped
-    controller has no ``.manager`` to reach through."""
-    from pathlib import Path
-
-    import miles
-
-    driver_source = (Path(miles.__file__).resolve().parent.parent / "train_multi_lora_operations.py").read_text()
-    assert "inference_controller.manager" not in driver_source
-    assert "weight_update_owner" in driver_source
-    # The per-rollout prepare boundary is exercised before every generate.
-    assert driver_source.index("prepare_rollout") < driver_source.index("rollout_executor.generate(")

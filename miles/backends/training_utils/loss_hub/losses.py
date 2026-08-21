@@ -511,21 +511,6 @@ def tinker_loss_function(
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Client-directed per-operation losses for tinker batches.
-
-    Every sample dispatches on its operation's ``loss_spec`` from the
-    BatchPlan, keyed by the sample's batch-local ``operation lane`` (never by
-    trainer slot — ``adapter_slots`` only routes the Multi-LoRA forward):
-    linear cross-entropy ``Σ(-logp·w)``, importance sampling ``-Σ(ratio·A)``,
-    or the PPO clipped surrogate. Reduction is a plain token sum — chunk
-    additive, so K accumulated forward_backward operations produce the same
-    gradient as one, and the client's ``loss_weights`` own the scale (no
-    1/count normalization ever applies to tinker operations).
-
-    Selections are homogeneous: a batch is either all forward_backward or all
-    forward (``tinker_forward_only``). A forward batch only fills the logprob
-    collector — backward never runs, so no gradient can reach its adapters.
-    """
     specs_by_lane = batch["tinker_loss_by_lane"]
     operation_lanes = batch["tinker_operation_lanes"]
     response_lengths = batch["response_lengths"]
@@ -551,10 +536,6 @@ def tinker_loss_function(
             raise ValueError(f"tinker loss '{loss_fn}' needs per-token '{key}'")
         return values[i]
 
-    # Operation result plane: per-datum target logprobs, keyed by (lane, row)
-    # so one selection's operations never collide — even two operations that
-    # execute on the same physical target stay distinct. CP shards gather to
-    # the full response; a checkpointed loss recompute overwrites idempotently.
     collector = batch.get("tinker_logprob_collector")
     if collector is not None:
         sample_indices = batch["sample_indices"]
@@ -565,8 +546,6 @@ def tinker_loss_function(
             collector[(operation_lanes[i], sample_indices[i])] = full.detach().float().cpu().tolist()
 
     if batch.get("tinker_forward_only"):
-        # Logprobs are the whole result; the dummy scalar is never backwarded
-        # (the executor runs this batch with forward_only=True).
         loss = 0 * logits.sum()
         return loss, {"loss": loss.clone().detach()}
 
@@ -595,8 +574,6 @@ def tinker_loss_function(
 
     if loss is None:
         raise ValueError("tinker backward batch produced no loss terms; selections must be homogeneous")
-    # Every rank's loss must depend on its local logits (CP shards may hold no
-    # response tokens), or backward's collectives diverge.
     loss = loss + 0 * logits.sum()
 
     return loss, {"loss": loss.clone().detach()}

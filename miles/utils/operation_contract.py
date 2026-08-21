@@ -1,10 +1,3 @@
-"""Protocol-neutral contracts for client-driven training operations.
-
-The operation layer binds logical operation IDs to opaque physical targets.
-It does not know whether a target is an adapter slot, a full model, or a
-future residency policy.
-"""
-
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 

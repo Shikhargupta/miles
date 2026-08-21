@@ -1,27 +1,3 @@
-"""Per-registration ledger for the Multi-LoRA operation backend.
-
-Clients push protocol-neutral operations; data-bearing kinds ride the rollout
-selection path through the queue child rollout fn, data-less kinds execute in
-the driver's control phase. One registration is strictly serialized: an
-operation is claimable only when every earlier operation reached a terminal
-state, which carries the client's per-model ordering end to end.
-
-Arrival may be OUT OF ORDER (the tinker SDK deliberately posts the first
-chunk of a large forward_backward last): operations buffer by ordinal and a
-gap below the head blocks claims until it fills. Ordinals are consecutive
-integers starting at 1 per registration.
-NOTE(frontend): when a tinker HTTP frontend lands, this arrival
-reorder/gap-buffer moves there ((model_id, seq_id) reordering); the backend
-then reverts to strictly-increasing arrival.
-
-Retries are fingerprinted: re-enqueueing a known operation_id with an
-identical (kind, payload) returns the original operation; a different
-fingerprint is a conflict error, never silently swallowed.
-
-All mutations run inside the controller actor between awaits, so ledger
-methods are synchronous and atomic by construction.
-"""
-
 import hashlib
 import json
 import logging
@@ -103,13 +79,7 @@ class Operation:
     error: str | None = None
     # "user" (bad request / cancelled by lifecycle) or "server" (execution failure).
     error_category: str | None = None
-    # True once an executor claimed it: distinguishes an optim_step that ran
-    # (and consumed/cleared its gradient window) from one that never executed.
     was_claimed: bool = False
-    # True only when the executor reported that this optim_step physically
-    # consumed the gradient window (step, discard, or veto that zeroed the
-    # grads on every rank). A claimed-then-refused optim_step stays False —
-    # it never touched the gradients and must not delimit the poison window.
     window_consumed: bool = False
 
     @property
@@ -167,19 +137,11 @@ class _RegistrationQueue:
         return k
 
     def fills_blocking_gap(self, ordinal: int) -> bool:
-        """True when this ordinal is the lowest missing one AND operations are
-        already buffered above it. Refusing such an arrival would deadlock the
-        queue: the buffered tail is unclaimable until the gap fills, so no
-        capacity ever frees for the retry. It must bypass the pending cap;
-        the overshoot is bounded by the hole count, each below an admitted
-        operation."""
         if not self.operations or ordinal >= self.operations[-1].ordinal:
             return False
         return ordinal == self.contiguous_arrived() + 1
 
     def first_open(self) -> Operation | None:
-        """The lowest-ordinal non-terminal operation, only when no arrival
-        gap sits below it (strict execution order despite unordered arrival)."""
         for op in self.operations:
             if not op.terminal:
                 return op if op.ordinal <= self.contiguous_arrived() else None
@@ -192,11 +154,6 @@ class _RegistrationQueue:
         return sum(1 for op in self.operations if op.terminal)
 
     def gap_stall(self, now: float) -> tuple[int, float] | None:
-        """``(missing_ordinal, stalled_for)`` when open operations are buffered
-        above an arrival hole and nothing is runnable; None otherwise. The
-        clock starts at the first observation of a given hole — transient gaps
-        (the SDK legitimately posts the first chunk of a large forward_backward
-        LAST) clear it long before any sane timeout."""
         if self.fenced or self.first_open() is not None or self.open_count() == 0:
             self._stall_missing = self._stall_since = None
             return None
@@ -218,10 +175,6 @@ class OperationLedger:
     ) -> None:
         self.max_pending = max_pending
         self.max_unacked_results = max_unacked_results
-        # Seconds a queue may stall on a never-arriving ordinal before the
-        # blocked operations terminal-fail typed and the hole is sealed
-        # (sweep_gap_timeouts); <= 0 or None disables enforcement, the stall
-        # stays observable either way (gap_stalls).
         self.gap_timeout = gap_timeout
         self._time = time_fn
         self.queues: dict[Tenant, _RegistrationQueue] = {}
@@ -262,8 +215,6 @@ class OperationLedger:
                 f"ordinal {ordinal} already taken by operation '{holder.operation_id}'; "
                 "per-registration ordinals are unique and consecutive"
             )
-        # A hole-filler below already-buffered ordinals is always admitted:
-        # backpressure on it could never clear (permanent gap deadlock).
         if queue.open_count() >= self.max_pending and not queue.fills_blocking_gap(ordinal):
             raise OperationBackpressure(f"registration '{name}' has {self.max_pending} operations pending")
         if queue.unacked_terminal_count() >= self.max_unacked_results:
@@ -287,9 +238,6 @@ class OperationLedger:
     # ------------------------------ claims ------------------------------
 
     def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
-        """Claim the registration's next operation when it is data-bearing.
-        Strict serialization: nothing is claimable while an earlier operation
-        is open or missing, so an optim_step never overtakes its batches."""
         queue = self.queues.get((name, registration_id))
         if queue is None:
             return None
@@ -301,8 +249,6 @@ class OperationLedger:
         return op.claimed_view()
 
     def claimable_control_tenants(self) -> list[Tenant]:
-        """Registrations whose next open operation is a control kind (the
-        caller filters by adapter state/slot residency before claiming)."""
         tenants = []
         for tenant, queue in self.queues.items():
             op = queue.first_open()
@@ -326,27 +272,12 @@ class OperationLedger:
         return op.claimed_view()
 
     def poisoned_window_blocker(self, name: str, registration_id: str, ordinal: int) -> str | None:
-        """The gradient-window poison scan (issue #2258 §5: a failed chunk
-        poisons and clears the whole window; no partial step). Walk the
-        ordinals below ``ordinal`` down to the nearest optim_step that actually
-        CONSUMED the window (claimed, terminal, and the executor confirmed the
-        gradients were stepped or cleared; a boundary-rejected, cancelled, or
-        executor-refused optim_step never touched them and is no delimiter).
-        A forward_backward in that span that
-        reached a terminal state without succeeding left the window holding
-        partial gradients: report it so the pending optim_step is failed and
-        the trainer discards the window instead of stepping it."""
         queue = self.queues.get((name, registration_id))
         if queue is None:
             return None
         for o in range(ordinal - 1, 0, -1):
             op = queue.by_ordinal.get(o)
             if op is None or isinstance(op, SealedGap):
-                # A sealed hole is poison-NEUTRAL: the submission never
-                # arrived, so it contributed no gradients and its (unknown,
-                # never guessed) kind can neither poison nor delimit the
-                # window. Arrived siblings that gap-failed carry the poison
-                # evidence themselves (terminal, not SUCCEEDED, known kind).
                 continue
             if op.kind is OperationKind.OPTIM_STEP and op.was_claimed and op.terminal and op.window_consumed:
                 return None
@@ -385,11 +316,6 @@ class OperationLedger:
         return stalls
 
     def sweep_gap_timeouts(self, now: float | None = None) -> list[dict]:
-        """Expire stalls older than ``gap_timeout``: terminal-fail the blocked
-        operations FAILED(user) naming the missing ordinal, and seal every
-        hole below the arrived tail so the sequence is contiguous again — the
-        client's NEXT (resubmitted) ordinal becomes runnable immediately.
-        Returns one event per expired registration."""
         now = self._time() if now is None else now
         if self.gap_timeout is None or self.gap_timeout <= 0:
             for queue in self.queues.values():  # keep stall clocks observable
@@ -404,9 +330,6 @@ class OperationLedger:
     def _expire_stall(self, stall: dict) -> dict:
         queue = self.queues[(stall["name"], stall["registration_id"])]
         missing, stalled_for = stall["missing_ordinal"], stall["stalled_for"]
-        # by_ordinal (not the ackable operations list) is the arrival truth:
-        # every hole below the highest ordinal ever arrived gets sealed, so
-        # one expiry restores contiguity — no second stall on a deeper hole.
         last_arrived = max(queue.by_ordinal)
         sealed = []
         for ordinal in range(missing, last_arrived):
@@ -450,18 +373,11 @@ class OperationLedger:
         op.error_category = category
 
     def mark_window_consumed(self, operation_id: str) -> None:
-        """The executor confirmed this optim_step physically consumed the
-        gradient window (step, discard, or veto). Recorded on the — possibly
-        already terminal — operation so ``poisoned_window_blocker`` treats it
-        as a window delimiter."""
         op = self.by_id.get(operation_id)
         if op is not None:
             op.window_consumed = True
 
     def cancel(self, operation_id: str) -> dict:
-        """Cancel a not-yet-claimed operation; anything already claimed must
-        run to a terminal state (a half-executed optimizer mutation cannot be
-        rolled back). A cancelled ordinal still counts for contiguity."""
         op = self.by_id.get(operation_id)
         if op is None:
             raise KeyError(f"unknown operation '{operation_id}'")
@@ -492,10 +408,6 @@ class OperationLedger:
         return op.payload if op is not None else None
 
     def ack(self, operation_id: str) -> None:
-        """Drop a terminal record the client has retrieved. Terminal records
-        are never evicted by pressure while their registration lives — the
-        enqueue backpressure cap is the knob, not result eviction. The
-        ordinal stays reserved for contiguity."""
         op = self.by_id.get(operation_id)
         if op is None:
             return
@@ -516,8 +428,6 @@ class OperationLedger:
     # ------------------------------ fencing ------------------------------
 
     def fence(self, name: str, registration_id: str) -> list[str]:
-        """Terminal-fail every open operation of a dead registration and
-        refuse new ones. Terminal records stay retrievable until acked."""
         queue = self.queues.get((name, registration_id))
         if queue is None or queue.fenced:
             return []

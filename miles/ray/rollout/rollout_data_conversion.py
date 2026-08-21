@@ -79,13 +79,6 @@ def _nested_sample_count(group) -> int:
 
 
 def _pad_samples_to_dp(data: list[Sample], dp_size: int) -> list[Sample]:
-    """Client-transparent zero-weight padding: round the flat sample list up to
-    the next multiple of ``dp_size`` so every DP rank stays non-empty and the
-    batch is divisible for the multi-LoRA dynamic-GBS branch. Padded rows clone
-    the last sample but contribute nothing: zero loss mask and weights, and a
-    sentinel sample index (< 0) that the logprob gather filters out — padding
-    never enters the result plane, the dirty pins, or any accumulation (loss is
-    gated by the zero mask)."""
     deficit = -len(data) % dp_size
     if deficit == 0:
         return data

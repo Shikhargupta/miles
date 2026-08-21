@@ -160,10 +160,6 @@ def convert_samples_to_train_data(
         ]
 
     if tinker:
-        # Generic tinker identity/correlation plane — batch-local lanes carry
-        # operation identity and loss/result correlation for ANY
-        # parameterization; nothing here depends on samples carrying adapters
-        # (codex-rollout-fullparameter-design-0810 §3.3).
         train_data["batch_kind"] = "tinker"
         train_data["tinker_operation_lanes"] = _tinker_sample_lanes(metadata["tinker_operation_lanes"], len(samples))
         train_data["tinker_loss_by_lane"] = metadata["tinker_loss_by_lane"]
@@ -177,10 +173,6 @@ def convert_samples_to_train_data(
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
         if tinker and metadata.get("batch_execution_lease") is not None:
-            # The batch lease is the single binding truth: derive each row's
-            # physical slot by joining lane -> operation -> binding. Slots are
-            # Multi-LoRA model routing ONLY; loss/result correlation rides the
-            # lanes above, and a stale sample stamp must never route.
             train_data["adapter_slots"] = _adapter_slots_from_lease(
                 metadata, train_data["tinker_operation_lanes"], samples
             )
@@ -202,12 +194,6 @@ def convert_samples_to_train_data(
 
 
 def tinker_dispatch_summary(train_data: dict[str, Any]) -> dict[str, Any] | None:
-    """Driver-visible dispatch identity of one converted tinker batch: the
-    claimed operation ids plus the encoded batch execution lease. The driver's
-    abnormal-outcome finalizer (``train_multi_lora_operations.train_data_batch``)
-    must fail exactly these operations and release exactly this lease without
-    fetching the batch back from the object store. ``None`` for non-tinker
-    batches."""
     if train_data.get("batch_kind") != "tinker":
         return None
     return {
@@ -217,18 +203,10 @@ def tinker_dispatch_summary(train_data: dict[str, Any]) -> dict[str, Any] | None
 
 
 def _adapter_slots_from_lease(metadata: dict, sample_lanes: list[int], samples: list[Sample]) -> list[int]:
-    """Join lane -> operation -> lease binding to produce per-row physical
-    slots. The lease and the lane maps must agree exactly (one binding per
-    planned operation), and every sample's stamped adapter name must match its
-    lane's binding — a mismatch means a stale or foreign row and fails loudly
-    before it can route onto another tenant's slot."""
     lease = metadata["batch_execution_lease"]
     binding_by_op = {op_id: tuple(binding) for op_id, binding in lease["bindings_by_operation"]}
     operation_by_lane = metadata["operation_by_lane"]
     lane_ops = list(operation_by_lane.values())
-    # Exact agreement: unique operation ids, and the lane plan and the lease
-    # must reference the SAME operation set — a lease binding no lane uses is
-    # as much of a plan mismatch as a lane the lease never bound.
     if len(set(lane_ops)) != len(lane_ops) or set(lane_ops) != set(binding_by_op):
         raise ValueError(
             f"batch lease and lane plan disagree: lanes carry {sorted(lane_ops)}, "
@@ -238,8 +216,6 @@ def _adapter_slots_from_lease(metadata: dict, sample_lanes: list[int], samples: 
     for sample, lane in zip(samples, sample_lanes, strict=True):
         name, registration_id, slot = binding_by_op[operation_by_lane[lane]]
         if sample.adapter.name != name or sample.adapter.registration_id != registration_id:
-            # The anti-ABA check: a Datum stamped by an OLD registration of
-            # the same name must never route onto the successor's slot.
             raise ValueError(
                 f"sample stamped for adapter '{sample.adapter.name}' "
                 f"(registration '{sample.adapter.registration_id}') rides lane {lane}, "
@@ -250,11 +226,6 @@ def _adapter_slots_from_lease(metadata: dict, sample_lanes: list[int], samples: 
 
 
 def _tinker_sample_lanes(lanes: list[int], num_samples: int) -> list[int]:
-    """Align the plan's per-sample lanes to the (possibly DP-padded) sample
-    list: pads clone the LAST sample (``_pad_samples_to_dp``) and append at
-    the tail, so the tail lane extends over them. Padded rows keep the ``-1``
-    sample index, which the result-plane gather filters out — a pad row can
-    share a lane but never reaches the SDK."""
     if not lanes or len(lanes) > num_samples:
         raise ValueError(f"tinker selection has {len(lanes)} planned rows but {num_samples} samples")
     return lanes + [lanes[-1]] * (num_samples - len(lanes))

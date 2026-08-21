@@ -1,13 +1,5 @@
-"""Multi-LoRA concrete of the generic ParameterExecutor port
-(codex-rollout-fullparameter-design-0810 §3.5): a thin adapter over the
-existing slot primitives — selective grad discard, per-slot Adam step with
-the all-rank veto, slot-sorted collective order.
-
-Bindings resolve EXCLUSIVELY from the batch execution lease, and each one is
-validated against this rank's locally loaded adapters (exact name,
-registration id, and slot) before any weights/optimizer/grad mutation; a
-stale binding yields a server-error outcome for that operation, never a
-mutation of another tenant's state. Outcomes key by operation ID only."""
+"""Execute Multi-LoRA optimizer operations in slot-sorted collective order.
+Lease bindings are validated against local residency before any mutation."""
 
 import logging
 from dataclasses import dataclass
@@ -28,9 +20,6 @@ class MultiLoraParameterExecutor:
     loaded_adapters: dict
 
     def discard_many(self, lease: BatchExecutionLease[ResidentBinding], operation_ids: list[str]) -> dict[str, dict]:
-        """Discard the listed operations' gradient windows (poisoned steps):
-        zero each slot's partial gradient sum on this rank, in slot-sorted
-        order so every rank's sequence matches."""
         outcomes: dict[str, dict] = {}
         targets: list[tuple[int, str]] = []
         for operation_id in operation_ids:
@@ -45,12 +34,6 @@ class MultiLoraParameterExecutor:
         return outcomes
 
     def step_many(self, lease: BatchExecutionLease[ResidentBinding], requests: list[StepRequest]) -> dict[str, dict]:
-        """Apply each operation's AdamParams and step its slot's accumulated
-        gradient sum (step_adapter_slots owns the slot-sorted collective order
-        and the unanimous non-finite veto). Every outcome carries
-        ``gradient_window_consumed``: True for a step or a veto (both leave
-        the slot's gradients cleared on every rank), absent for a refusal
-        that never touched them."""
         outcomes: dict[str, dict] = {}
         adam_by_slot: dict[int, dict] = {}
         operation_by_slot: dict[int, str] = {}
@@ -61,11 +44,6 @@ class MultiLoraParameterExecutor:
                 outcomes[request.operation_id] = refusal
                 continue
             if slot in operation_by_slot:
-                # Two operations bound to one physical slot in one batch: the
-                # generic lease contract has no answer for which AdamParams
-                # win, and rekeying by slot would silently drop one. Refuse
-                # every operation on that slot deterministically (same
-                # decision on every rank), with no gradient mutation.
                 duplicate_slots.add(slot)
                 continue
             adam_by_slot[slot] = request.adam_params

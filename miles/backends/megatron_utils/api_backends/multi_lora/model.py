@@ -1,7 +1,3 @@
-"""Model-side helpers for the multi-LoRA slot table: building the MultiLoRA
-megatron object and trimming max-rank-padded LoRA exports to an adapter's
-real rank (weight sync and HF PEFT export both require it)."""
-
 from argparse import Namespace
 
 import torch
@@ -36,8 +32,6 @@ def create_multi_lora_instance(args: Namespace):
 
 
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:
-    """Trim a max-rank-padded LoRA tensor to ``adapter_rank`` on the rank axis, addressed
-    from the end so packed grouped-expert exports are not sliced on the expert axis."""
     if "lora_A" in hf_name:
         rank_dim = tensor.ndim - 2
         if adapter_rank < tensor.shape[rank_dim]:
