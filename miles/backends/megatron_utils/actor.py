@@ -241,16 +241,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        # Adapters currently loaded into Megatron slots on this rank.
-        self.loaded_adapters: dict[str, object] = {}
-        # Adapters with stale engine-side weights (newly loaded or just trained);
-        # consumed by the next update_weights. Identical on every rank.
-        self._multi_lora_pending_push: set[str] = set()
-
-        load_output = self._load_state_core(
-            checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
-        )
-
         if self.args.colocate:
             update_weight_cls = UpdateWeightFromTensor
         else:
@@ -270,6 +260,16 @@ class MegatronTrainRayActor(TrainRayActor):
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=lora_rollout_enabled(args),
+        )
+
+        # Adapters currently loaded into Megatron slots on this rank.
+        self.loaded_adapters: dict[str, object] = {}
+        # Adapters with stale engine-side weights (newly loaded or just trained);
+        # consumed by the next update_weights. Identical on every rank.
+        self._multi_lora_pending_push: set[str] = set()
+
+        load_output = self._load_state_core(
+            checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
         )
 
         self.rollout_data_postprocess = None
