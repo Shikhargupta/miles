@@ -15,6 +15,8 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.inference_rollout.compatibility import call_rollout_function
+from miles.utils.async_utils import run
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
@@ -303,6 +305,408 @@ async def test_worker_failure_beats_queued_groups(monkeypatch):
         await fn(RolloutFnTrainInput(rollout_id=0))
 
 
+async def test_buffer_failure_beats_queued_groups(monkeypatch):
+    """A background buffer failure is terminal even when another subgroup is already readable."""
+    error = RuntimeError("buffer dispatch exploded")
+    entry = data_buffer.DataBufferInput(prompt_group=make_group(1), group=make_group(1))
+
+    class _FailedBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            raise AssertionError("unreachable")
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            return entry
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+        async def wait_failed(self) -> None:
+            raise error
+
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+    fn._output = _FailedBuffer()
+    fn._worker = asyncio.create_task(asyncio.Event().wait())
+    try:
+        with pytest.raises(RuntimeError, match="buffer dispatch exploded") as failed:
+            await fn(RolloutFnTrainInput(rollout_id=0))
+        assert failed.value is error
+    finally:
+        await fn.aclose()
+
+
+async def test_a_cancelled_inner_dispatch_fails_the_driver(monkeypatch):
+    """An inner cancellation is a terminal run failure, not a clean cancellation of one policy."""
+    error = asyncio.CancelledError("custom inner cancelled itself")
+
+    class _CancelledInner(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            raise error
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def get_metrics(self) -> dict[str, float]:
+            return {}
+
+        async def aclose(self) -> None:
+            return None
+
+    buffer, _ = make_multi_buffer("solver", "verifier")
+    buffer._inners["verifier"] = _CancelledInner()
+    await put_group(buffer, make_multi_policy_group(1, "solver", "verifier"))
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+    fn._output = buffer
+    fn._worker = asyncio.create_task(asyncio.Event().wait())
+    try:
+        with pytest.raises(RuntimeError, match="verifier.*cancelled") as failed:
+            await fn(RolloutFnTrainInput(rollout_id=0, trainer_model_id="solver"))
+        assert failed.value.__cause__ is error
+    finally:
+        with pytest.raises(RuntimeError, match="verifier.*cancelled") as closed:
+            await fn.aclose()
+        assert closed.value.__cause__ is error
+
+
+async def test_worker_publishes_a_disjoint_route_while_an_earlier_route_is_blocked(monkeypatch):
+    """A blocked publish preserves overlapping-policy FIFO without blocking an independent policy."""
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+    disjoint_started = asyncio.Event()
+    overlapping_started = asyncio.Event()
+
+    class _RouteBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            group_index = data_buffer.first_sample(input.group).group_index
+            if group_index == 1:
+                first_started.set()
+                await first_release.wait()
+            elif group_index == 2:
+                disjoint_started.set()
+            elif group_index == 3:
+                overlapping_started.set()
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+        async def aclose(self) -> None:
+            first_release.set()
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        group_index = data_buffer.first_sample(group).group_index
+        if group_index == 2:
+            await first_started.wait()
+        elif group_index == 3:
+            await disjoint_started.wait()
+        elif group_index > 3:
+            await asyncio.Event().wait()
+        model_id = "b" if group_index == 2 else "a"
+        return make_multi_policy_group(group_index, model_id)
+
+    args = make_args(rollout_batch_size=3, rollout_submission_granularity="group")
+    fn = make_fn(
+        monkeypatch,
+        args,
+        FakeDataSource(scripted=[make_group(group_index) for group_index in (1, 2, 3)]),
+        generate=generate,
+    )
+    fn._output = _RouteBuffer()
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    try:
+        await asyncio.wait_for(first_started.wait(), timeout=0.1)
+        await asyncio.wait_for(disjoint_started.wait(), timeout=0.1)
+        await asyncio.sleep(0.01)
+        assert not overlapping_started.is_set()
+
+        first_release.set()
+        await asyncio.wait_for(overlapping_started.wait(), timeout=0.1)
+    finally:
+        await fn.aclose()
+
+
+async def test_sample_backfill_does_not_exceed_the_shared_publish_budget(monkeypatch):
+    """Completed sample callbacks cannot admit new generation while one publish owns the only group slot."""
+    publish_started = asyncio.Event()
+    publish_release = asyncio.Event()
+    second_publish_started = asyncio.Event()
+    close_release = asyncio.Event()
+    publish_count = 0
+
+    class _BlockingPublishBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            nonlocal publish_count
+            publish_count += 1
+            if publish_count == 1:
+                publish_started.set()
+                await publish_release.wait()
+            else:
+                second_publish_started.set()
+                await close_release.wait()
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+        async def aclose(self) -> None:
+            publish_release.set()
+            close_release.set()
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        for _ in group:
+            sample_done_callback()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source, generate=generate)
+    fn._output = _BlockingPublishBuffer()
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    try:
+        await asyncio.wait_for(publish_started.wait(), timeout=0.1)
+        await asyncio.sleep(0.01)
+        assert data_source.num_get_calls == 1
+        publish_release.set()
+        await asyncio.wait_for(second_publish_started.wait(), timeout=0.1)
+        await asyncio.sleep(0.01)
+        assert data_source.num_get_calls == 2
+    finally:
+        await fn.aclose()
+
+
+@pytest.mark.parametrize("group_budget", [1, 2])
+async def test_sample_backfill_bounds_group_wrappers_during_rm_and_publish_stalls(monkeypatch, group_budget):
+    """One replacement wave is bounded while completed samples wait for group RM and blocked publication."""
+    initial_generation_started = asyncio.Event()
+    replacement_started = asyncio.Event()
+    rm_release = asyncio.Event()
+    close_release = asyncio.Event()
+    publish_started = [asyncio.Event() for _ in range(2 * group_budget)]
+    publish_releases = [asyncio.Event() for _ in range(2 * group_budget)]
+    publish_count = 0
+
+    class _BlockingPublishBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            nonlocal publish_count
+            index = publish_count
+            publish_count += 1
+            publish_started[index].set()
+            await publish_releases[index].wait()
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+        async def aclose(self) -> None:
+            rm_release.set()
+            close_release.set()
+            for release in publish_releases:
+                release.set()
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        group_index = data_buffer.first_sample(group).group_index
+        if group_index <= 1000 + 2 * group_budget:
+            for _ in group:
+                sample_done_callback()
+            if group_index == 1000 + 2 * group_budget:
+                initial_generation_started.set()
+            await rm_release.wait()
+        else:
+            replacement_started.set()
+            await close_release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=group_budget), data_source, generate=generate)
+    scheduler_wait_count = 0
+    original_wait_for_progress = fn._scheduler.wait_for_progress
+
+    async def record_wait_for_progress(
+        pendings: set[asyncio.Task],
+    ) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        nonlocal scheduler_wait_count
+        scheduler_wait_count += 1
+        return await original_wait_for_progress(pendings)
+
+    fn._scheduler.wait_for_progress = record_wait_for_progress
+    fn._output = _BlockingPublishBuffer()
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    try:
+        await asyncio.wait_for(initial_generation_started.wait(), timeout=0.1)
+        wait_count_at_capacity = scheduler_wait_count
+        event_loop_progressed = asyncio.Event()
+        asyncio.get_running_loop().call_soon(event_loop_progressed.set)
+        await asyncio.sleep(0.01)
+        assert data_source.num_get_calls == 2 * group_budget
+        assert event_loop_progressed.is_set()
+        assert scheduler_wait_count == wait_count_at_capacity
+
+        rm_release.set()
+        await asyncio.wait_for(publish_started[0].wait(), timeout=0.1)
+        await asyncio.sleep(0.01)
+        assert len(fn._active) + len(fn._publishing) <= 2 * group_budget
+        assert len(fn._publishing) == 2 * group_budget
+        assert data_source.num_get_calls == 2 * group_budget
+
+        for index in range(group_budget):
+            publish_releases[index].set()
+            await asyncio.wait_for(publish_started[index + 1].wait(), timeout=0.1)
+            await asyncio.sleep(0.01)
+            assert data_source.num_get_calls == 2 * group_budget
+
+        publish_releases[group_budget].set()
+        await asyncio.wait_for(replacement_started.wait(), timeout=0.1)
+        await asyncio.sleep(0.01)
+        assert data_source.num_get_calls == 2 * group_budget + 1
+    finally:
+        await fn.aclose()
+
+
+async def test_publish_order_ignores_an_incomplete_policy_subgroup(monkeypatch):
+    """A short subgroup is validated by the buffer but cannot add an ordering dependency for a complete sibling."""
+    verifier_started = asyncio.Event()
+    solver_release = asyncio.Event()
+
+    class _RecordingBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            verifier_started.set()
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+    fn = make_fn(monkeypatch, make_args(), FakeDataSource())
+    fn._output = _RecordingBuffer()
+    solver_tail = asyncio.create_task(solver_release.wait())
+    fn._publish_tails["solver"] = solver_tail
+    group = make_multi_policy_group(2, "solver", "verifier")
+    group[1] = [sample for sample in group[1] if sample.trainer_model_id == "verifier"]
+    publish = fn._submit_publish(data_buffer.DataBufferInput(prompt_group=make_group(2), group=group))
+    try:
+        await asyncio.wait_for(verifier_started.wait(), timeout=0.1)
+        assert fn._publish_tails["solver"] is solver_tail
+        assert fn._publish_tails["verifier"] is publish
+    finally:
+        solver_release.set()
+        publish.cancel()
+        await asyncio.gather(solver_tail, publish, return_exceptions=True)
+
+
+async def test_a_cancelled_publish_is_a_terminal_worker_failure(monkeypatch):
+    """A buffer put that cancels itself fails the rollout instead of masquerading as owner teardown."""
+    error = asyncio.CancelledError("custom output cancelled itself")
+
+    class _CancelledPublishBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            raise error
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+    fn = make_fn(
+        monkeypatch,
+        make_args(rollout_batch_size=1, rollout_submission_granularity="group"),
+        FakeDataSource(),
+    )
+    fn._output = _CancelledPublishBuffer()
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    try:
+        with pytest.raises(RuntimeError, match="rollout publish.*cancelled") as failed:
+            await fn._next_group(current_version=None, trainer_model_id=None)
+        assert failed.value.__cause__ is error
+    finally:
+        with pytest.raises(RuntimeError, match="rollout publish.*cancelled") as closed:
+            await fn.aclose()
+        assert closed.value.__cause__ is error
+
+
+async def test_aclose_cancels_the_worker_and_its_active_generation(monkeypatch):
+    """Rollout teardown owns both the producer worker and every generation task it submitted."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource(), generate=blocking_generate)
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+
+    await fn.aclose()
+    await fn.aclose()
+
+    assert cancelled.is_set()
+    assert fn._worker.done()
+    await asyncio.gather(drain, return_exceptions=True)
+
+
+async def test_dispose_closes_tasks_on_the_shared_rollout_loop(monkeypatch):
+    """Synchronous actor teardown delegates cleanup to the loop that owns rollout tasks."""
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+    await asyncio.to_thread(call_rollout_function, fn, RolloutFnTrainInput(rollout_id=0))
+    try:
+        fn.dispose()
+        assert fn._worker.done()
+    finally:
+        if not fn._worker.done():
+            await asyncio.to_thread(run, fn.aclose())
+
+
+async def test_aclose_finishes_after_its_first_waiter_is_cancelled(monkeypatch):
+    """A cancelled teardown waiter must not orphan cleanup or make a later close return early."""
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    class _SlowCloseBuffer(data_buffer.DataBuffer):
+        async def put(self, input: data_buffer.DataBufferInput) -> None:
+            raise AssertionError("unreachable")
+
+        async def get(self, **context) -> data_buffer.DataBufferInput:
+            raise AssertionError("unreachable")
+
+        def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+            return {}
+
+        async def aclose(self) -> None:
+            close_started.set()
+            await close_release.wait()
+            close_finished.set()
+
+    fn = make_fn(monkeypatch, make_args(), FakeDataSource())
+    fn._output = _SlowCloseBuffer()
+    first_close = asyncio.create_task(fn.aclose())
+    await close_started.wait()
+    first_close.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_close
+
+    close_release.set()
+    await fn.aclose()
+
+    assert close_finished.is_set()
+
+
 async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     """A generate function may expand one trajectory into several samples; the retry
     must resubmit the flat prompt group the data source handed out."""
@@ -462,11 +866,17 @@ def make_multi_policy_group(group_index: int, *trainer_model_ids: str) -> list[l
     ]
 
 
-def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None):
+def make_multi_buffer(
+    *model_ids: str,
+    max_staleness=None,
+    paths_per_model=None,
+    max_groups: int | None = None,
+    rollout_batch_size: int = 1,
+):
     unused = []
     args = make_args(
-        rollout_batch_size=1,
-        async_data_buffer_capacity_factor=1000.0,
+        rollout_batch_size=rollout_batch_size,
+        async_data_buffer_capacity_factor=(1000.0 if max_groups is None else max_groups / rollout_batch_size),
         max_weight_staleness=max_staleness,
         megatron_config=encode_megatron_config(*model_ids),
         custom_async_data_buffer_path_per_model=paths_per_model,
@@ -478,6 +888,139 @@ def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None)
 
 
 class TestPerPolicyQueues:
+    async def test_a_full_policy_does_not_block_a_sibling_training_batch(self):
+        """A bounded skew window lets another policy collect one complete batch before global backpressure."""
+        buffer, _ = make_multi_buffer("solver", "verifier", max_groups=1, rollout_batch_size=2)
+        solver_inner = buffer._inners["solver"]
+        await solver_inner.put(
+            data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver"))
+        )
+        await put_group(buffer, make_multi_policy_group(1, "solver"))
+
+        async def _put_first_batch() -> None:
+            await put_group(buffer, make_multi_policy_group(2, "solver", "verifier"))
+            await put_group(buffer, make_multi_policy_group(3, "solver", "verifier"))
+
+        first_batch = asyncio.create_task(_put_first_batch())
+        third_put: asyncio.Task | None = None
+        third_verifier: asyncio.Task | None = None
+        try:
+            verifier = [await asyncio.wait_for(buffer.get(trainer_model_id="verifier"), timeout=0.1) for _ in range(2)]
+            await asyncio.wait_for(first_batch, timeout=0.1)
+            assert [data_buffer.first_sample(entry.group).group_index for entry in verifier] == [2, 3]
+
+            third_put = asyncio.create_task(put_group(buffer, make_multi_policy_group(4, "solver", "verifier")))
+            third_verifier = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+            await asyncio.sleep(0.01)
+            assert not third_put.done()
+            assert not third_verifier.done()
+
+            prefilled = await solver_inner.get()
+            assert data_buffer.first_sample(prefilled.group).group_index == 0
+            await asyncio.sleep(0.01)
+            assert not third_put.done()
+
+            solver_only = await solver_inner.get()
+            assert data_buffer.first_sample(solver_only.group).group_index == 1
+            await asyncio.wait_for(third_put, timeout=0.1)
+            verifier.append(await asyncio.wait_for(third_verifier, timeout=0.1))
+            solver = [await asyncio.wait_for(solver_inner.get(), timeout=0.1) for _ in range(3)]
+
+            assert [data_buffer.first_sample(entry.group).group_index for entry in verifier] == [2, 3, 4]
+            assert [data_buffer.first_sample(entry.group).group_index for entry in solver] == [2, 3, 4]
+        finally:
+            for task in (first_batch, third_put, third_verifier):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (first_batch, third_put, third_verifier) if task is not None),
+                return_exceptions=True,
+            )
+
+    async def test_overlapping_policy_routes_have_independent_bounded_credits(self):
+        """Distinct target signatures progress independently while their shared policy remains globally FIFO."""
+        buffer, _ = make_multi_buffer("a", "b", "c", max_groups=1, rollout_batch_size=1)
+        a_inner = buffer._inners["a"]
+        await a_inner.put(data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "a")))
+
+        await put_group(buffer, make_multi_policy_group(1, "a", "b"))
+        first_b = await asyncio.wait_for(buffer.get(trainer_model_id="b"), timeout=0.1)
+        await asyncio.wait_for(put_group(buffer, make_multi_policy_group(2, "a", "c")), timeout=0.1)
+        first_c = await asyncio.wait_for(buffer.get(trainer_model_id="c"), timeout=0.1)
+        blocked_ab = asyncio.create_task(put_group(buffer, make_multi_policy_group(3, "a", "b")))
+        second_b = asyncio.create_task(buffer.get(trainer_model_id="b"))
+        try:
+            await asyncio.sleep(0.01)
+            assert data_buffer.first_sample(first_b.group).group_index == 1
+            assert data_buffer.first_sample(first_c.group).group_index == 2
+            assert not blocked_ab.done()
+            assert not second_b.done()
+            a_metrics = buffer.get_metrics("a")
+            assert a_metrics["rollout/fully_async/dispatch_pending"] == 2
+            assert a_metrics["rollout/fully_async/dispatch_route_pending"] == 2
+            for model_id in ("b", "c"):
+                metrics = buffer.get_metrics(model_id)
+                assert metrics["rollout/fully_async/dispatch_pending"] == 0
+                assert metrics["rollout/fully_async/queue_size"] == 0
+                assert metrics["rollout/fully_async/dispatch_route_pending"] == 2
+
+            await a_inner.get()
+            await asyncio.wait_for(blocked_ab, timeout=0.1)
+            assert data_buffer.first_sample((await asyncio.wait_for(second_b, timeout=0.1)).group).group_index == 3
+            a_entries = [await asyncio.wait_for(a_inner.get(), timeout=0.1) for _ in range(3)]
+
+            assert [data_buffer.first_sample(entry.group).group_index for entry in a_entries] == [1, 2, 3]
+        finally:
+            for task in (blocked_ab, second_b):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(blocked_ab, second_b, return_exceptions=True)
+
+    async def test_a_full_policy_does_not_block_a_complete_sibling(self):
+        """A policy nobody drains must not keep another policy's completed group out of its queue."""
+        buffer, _ = make_multi_buffer("solver", "verifier", max_groups=1)
+        await put_group(buffer, make_multi_policy_group(1, "solver"))
+        waiting_verifier = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        publishing = asyncio.create_task(put_group(buffer, make_multi_policy_group(2, "solver", "verifier")))
+
+        try:
+            done, _ = await asyncio.wait({waiting_verifier}, timeout=0.1)
+            assert waiting_verifier in done
+            verifier = waiting_verifier.result()
+            assert [sample.group_index for sample in data_buffer.iter_samples(verifier.group)] == [2, 2]
+            await asyncio.wait_for(publishing, timeout=0.1)
+
+            first_solver = await buffer.get(trainer_model_id="solver")
+            second_solver = await buffer.get(trainer_model_id="solver")
+            assert [
+                [sample.group_index for sample in data_buffer.iter_samples(entry.group)]
+                for entry in (first_solver, second_solver)
+            ] == [[1, 1], [2, 2]]
+            assert buffer.get_metrics("solver")["rollout/fully_async/queue_size"] == 0
+            assert buffer.get_metrics("verifier")["rollout/fully_async/queue_size"] == 0
+        finally:
+            for task in (waiting_verifier, publishing):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(waiting_verifier, publishing, return_exceptions=True)
+
+    async def test_an_incomplete_full_policy_sibling_does_not_delay_a_complete_policy(self):
+        """A short subgroup is dropped independently even when that policy's queue is already full."""
+        buffer, _ = make_multi_buffer("solver", "verifier", max_groups=1)
+        await put_group(buffer, make_multi_policy_group(1, "solver"))
+        first_solver, first_verifier = make_group(2)
+        second_verifier = make_group(2)[1]
+        first_solver.trainer_model_id = "solver"
+        first_verifier.trainer_model_id = second_verifier.trainer_model_id = "verifier"
+
+        await asyncio.wait_for(put_group(buffer, [[first_solver, first_verifier], [second_verifier]]), timeout=0.1)
+
+        verifier = await buffer.get(trainer_model_id="verifier")
+        solver = await buffer.get(trainer_model_id="solver")
+        assert [sample.group_index for sample in data_buffer.iter_samples(verifier.group)] == [2, 2]
+        assert [sample.group_index for sample in data_buffer.iter_samples(solver.group)] == [1, 1]
+        assert buffer.get_metrics("solver")["rollout/fully_async/queue_size"] == 0
+
     async def test_an_incomplete_policy_subgroup_is_not_enqueued(self):
         """A missing policy trajectory must not reach training as a short prompt group."""
         buffer, unused = make_multi_buffer("solver", "verifier")
@@ -571,6 +1114,264 @@ class TestPerPolicyQueues:
         with pytest.raises(AssertionError, match="trains no policy of this run"):
             await put_group(buffer, make_multi_policy_group(1, "solver", "reviewer"))
 
+        assert buffer.get_metrics("solver")["rollout/fully_async/queue_size"] == 0
+
+    async def test_an_incomplete_unknown_policy_refuses_the_whole_group(self):
+        """A short unknown subgroup is still invalid, and no valid sibling may be admitted first."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        first_solver, second_solver = make_group(1)
+        reviewer = make_group(1)[0]
+        first_solver.trainer_model_id = second_solver.trainer_model_id = "solver"
+        reviewer.trainer_model_id = "reviewer"
+
+        with pytest.raises(AssertionError, match="trains no policy of this run"):
+            await put_group(buffer, [[first_solver, reviewer], [second_solver]])
+
+        assert buffer.get_metrics("solver")["rollout/fully_async/queue_size"] == 0
+
+    async def test_cancelling_a_put_waiting_for_capacity_commits_no_policy_partially(self):
+        """Capacity is reserved for every target together, so cancellation cannot publish one sibling alone."""
+        buffer, _ = make_multi_buffer("solver", "verifier", max_groups=1, rollout_batch_size=1)
+        solver_inner = buffer._inners["solver"]
+        await solver_inner.put(
+            data_buffer.DataBufferInput(prompt_group=[], group=make_multi_policy_group(0, "solver"))
+        )
+        await asyncio.wait_for(put_group(buffer, make_multi_policy_group(1, "solver", "verifier")), timeout=0.1)
+        first_verifier = await asyncio.wait_for(buffer.get(trainer_model_id="verifier"), timeout=0.1)
+        assert data_buffer.first_sample(first_verifier.group).group_index == 1
+
+        waiting_put = asyncio.create_task(put_group(buffer, make_multi_policy_group(2, "solver", "verifier")))
+        waiting_verifier = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        try:
+            await asyncio.sleep(0.01)
+            assert not waiting_put.done()
+            assert not waiting_verifier.done()
+            waiting_put.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting_put
+
+            await solver_inner.get()
+            first_solver = await asyncio.wait_for(solver_inner.get(), timeout=0.1)
+            assert data_buffer.first_sample(first_solver.group).group_index == 1
+            await asyncio.sleep(0.01)
+            assert not waiting_verifier.done()
+        finally:
+            for task in (waiting_put, waiting_verifier):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(waiting_put, waiting_verifier, return_exceptions=True)
+
+    async def test_a_custom_inner_failure_poisons_the_composite_without_replaying_siblings(self):
+        """An asynchronous admission failure is terminal and already admitted siblings remain exactly once."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        solver_inner = buffer._inners["solver"]
+        solver_admitted = asyncio.Event()
+        error = RuntimeError("verifier admission failed")
+        closed: list[str] = []
+
+        class _SolverInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                await solver_inner.put(input)
+                solver_admitted.set()
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                return await solver_inner.get(**context)
+
+            def get_metrics(self) -> dict[str, float]:
+                return solver_inner.get_metrics()
+
+            async def aclose(self) -> None:
+                closed.append("solver")
+
+        class _FailingVerifierInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                await solver_admitted.wait()
+                raise error
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+            async def aclose(self) -> None:
+                closed.append("verifier")
+
+        buffer._inners["solver"] = _SolverInner()
+        buffer._inners["verifier"] = _FailingVerifierInner()
+        await asyncio.wait_for(put_group(buffer, make_multi_policy_group(1, "solver", "verifier")), timeout=0.1)
+
+        with pytest.raises(RuntimeError, match="verifier admission failed") as failed:
+            await asyncio.wait_for(buffer.wait_failed(), timeout=0.1)
+        assert failed.value is error
+        with pytest.raises(RuntimeError, match="verifier admission failed") as rejected:
+            await put_group(buffer, make_multi_policy_group(2, "solver", "verifier"))
+        assert rejected.value is error
+        first_solver, first_verifier = make_group(3)
+        first_solver.trainer_model_id = "solver"
+        first_verifier.trainer_model_id = "verifier"
+        with pytest.raises(RuntimeError, match="verifier admission failed") as short_rejected:
+            await put_group(buffer, [[first_solver], [first_verifier]])
+        assert short_rejected.value is error
+        with pytest.raises(RuntimeError, match="verifier admission failed") as unreadable:
+            await buffer.get(trainer_model_id="solver")
+        assert unreadable.value is error
+
+        solver = await solver_inner.get()
+        no_duplicate = asyncio.create_task(solver_inner.get())
+        try:
+            assert data_buffer.first_sample(solver.group).group_index == 1
+            await asyncio.sleep(0.01)
+            assert not no_duplicate.done()
+        finally:
+            no_duplicate.cancel()
+            await asyncio.gather(no_duplicate, return_exceptions=True)
+
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="verifier admission failed") as close_failed:
+                await buffer.aclose()
+            assert close_failed.value is error
+        assert sorted(closed) == ["solver", "verifier"]
+
+    async def test_a_custom_inner_background_failure_is_supervised(self):
+        """Every custom inner failure channel is watched even when its puts succeed."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        error = RuntimeError("verifier background failed")
+        closed = asyncio.Event()
+
+        class _BackgroundFailingInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                return None
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+            async def wait_failed(self) -> None:
+                raise error
+
+            async def aclose(self) -> None:
+                closed.set()
+
+        buffer._inners["verifier"] = _BackgroundFailingInner()
+        await put_group(buffer, make_multi_policy_group(1, "verifier", "verifier"))
+
+        with pytest.raises(RuntimeError, match="verifier background failed") as failed:
+            await asyncio.wait_for(buffer.wait_failed(), timeout=0.1)
+        assert failed.value is error
+        with pytest.raises(RuntimeError, match="verifier background failed") as close_failed:
+            await buffer.aclose()
+        assert close_failed.value is error
+        assert closed.is_set()
+
+    async def test_an_inner_cancelled_error_is_latched_as_a_terminal_failure(self):
+        """Only composite teardown may cancel a dispatcher; an inner cancellation is a run failure."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        error = asyncio.CancelledError("custom inner cancelled itself")
+
+        class _CancelledInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                raise error
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+        buffer._inners["verifier"] = _CancelledInner()
+        await put_group(buffer, make_multi_policy_group(1, "verifier", "verifier"))
+
+        with pytest.raises(RuntimeError, match="verifier.*cancelled") as failed:
+            await asyncio.wait_for(buffer.wait_failed(), timeout=0.1)
+        assert failed.value.__cause__ is error
+
+    async def test_closing_blocked_dispatchers_cancels_and_drains_them_once(self):
+        """Repeated close settles every fixed dispatcher and each inner lifecycle exactly once."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        started = {model_id: asyncio.Event() for model_id in ("solver", "verifier")}
+        cancelled: list[str] = []
+        closed: list[str] = []
+
+        class _BlockingInner(data_buffer.DataBuffer):
+            def __init__(self, model_id: str):
+                self._model_id = model_id
+
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                started[self._model_id].set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.append(self._model_id)
+                    raise
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+            async def aclose(self) -> None:
+                closed.append(self._model_id)
+
+        for model_id in started:
+            buffer._inners[model_id] = _BlockingInner(model_id)
+
+        await asyncio.wait_for(put_group(buffer, make_multi_policy_group(1, "solver", "verifier")), timeout=0.1)
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), timeout=0.1)
+        await buffer.aclose()
+        await buffer.aclose()
+
+        assert sorted(cancelled) == ["solver", "verifier"]
+        assert sorted(closed) == ["solver", "verifier"]
+        with pytest.raises(RuntimeError, match="closed"):
+            await put_group(buffer, make_multi_policy_group(2, "solver", "verifier"))
+
+    async def test_close_finishes_after_its_first_waiter_is_cancelled(self):
+        """Composite close stays owned after caller cancellation and a later waiter observes completion."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        close_started = {model_id: asyncio.Event() for model_id in ("solver", "verifier")}
+        close_release = asyncio.Event()
+        closed: list[str] = []
+
+        class _SlowCloseInner(data_buffer.DataBuffer):
+            def __init__(self, model_id: str):
+                self._model_id = model_id
+
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                raise AssertionError("unreachable")
+
+            async def get(self, **context) -> data_buffer.DataBufferInput:
+                raise AssertionError("unreachable")
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
+
+            async def aclose(self) -> None:
+                close_started[self._model_id].set()
+                await close_release.wait()
+                closed.append(self._model_id)
+
+        for model_id in close_started:
+            buffer._inners[model_id] = _SlowCloseInner(model_id)
+
+        first_close = asyncio.create_task(buffer.aclose())
+        await asyncio.gather(*(event.wait() for event in close_started.values()))
+        first_close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_close
+
+        close_release.set()
+        await buffer.aclose()
+
+        assert sorted(closed) == ["solver", "verifier"]
+
     async def test_the_prompt_group_of_a_split_group_stays_whole(self):
         """Recycling a rejected group resubmits prompts, which are not owned by either policy."""
         buffer, unused = make_multi_buffer("solver", "verifier", max_staleness=0)
@@ -616,10 +1417,16 @@ class TestPerPolicyQueues:
         buffer, _ = make_multi_buffer("solver", "verifier")
         seen: list[dict] = []
 
-        class _RecordingInner:
+        class _RecordingInner(data_buffer.DataBuffer):
+            async def put(self, input: data_buffer.DataBufferInput) -> None:
+                raise AssertionError("unreachable")
+
             async def get(self, **context):
                 seen.append(context)
                 return "entry"
+
+            def get_metrics(self) -> dict[str, float]:
+                return {}
 
         buffer._inners["solver"] = _RecordingInner()
 
@@ -909,7 +1716,7 @@ class TestBufferSelection:
 
 
 async def test_worker_defaults_to_sample_granularity(monkeypatch):
-    """Unset --rollout-submission-granularity: this driver backfills on sample completion."""
+    """Unset --rollout-submission-granularity backfills before a completed sample's group returns."""
     callbacks = []
     release = asyncio.Event()
 
@@ -931,7 +1738,6 @@ async def test_worker_defaults_to_sample_granularity(monkeypatch):
         callbacks[0]()
     await asyncio.sleep(0.01)
 
-    # A replacement group went out even though the first group has not returned.
     assert data_source.num_get_calls == 2
 
     release.set()

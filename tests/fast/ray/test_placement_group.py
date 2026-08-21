@@ -110,6 +110,18 @@ class TestCreateRolloutComponents:
         assert args.session_server_addrs == ["10.0.0.2:5000"]
         assert args.session_server_instance_ids == ["session-0"]
 
+    async def test_partial_component_creation_disposes_every_allocated_handle(self, fake_components):
+        """An executor init failure must not leak either handle created inside this helper."""
+        fake_components.executor_handle.init.side_effect = RuntimeError("executor init failed")
+        fake_components.executor_handle.dispose = AsyncMock()
+        fake_components.controller_handle.dispose = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="executor init failed"):
+            await create_rollout_components(_make_args(num_rollout=1))
+
+        fake_components.executor_handle.dispose.assert_awaited_once_with()
+        fake_components.controller_handle.dispose.assert_awaited_once_with()
+
     async def test_the_executor_is_waited_out_before_anything_is_initialized(self, fake_components):
         """A hot restart finds the previous script's executor up, and initializing anything against it is the bug."""
         args = _make_args(num_rollout=1)

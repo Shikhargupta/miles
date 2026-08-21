@@ -198,6 +198,88 @@ class TestRunPolicies:
 
         assert rounds_of_b <= 2
 
+    async def test_a_policy_failure_still_disposes_every_owned_component(self, monkeypatch):
+        """The rollout producer and its dispatchers must close on the same exception path that cancels peers."""
+
+        class _RuntimeErrorWithoutNotes(RuntimeError):
+            def add_note(self, note: str) -> None:
+                raise AttributeError("BaseException.add_note is unavailable on Python 3.10")
+
+        trainers = _make_trainers(("a", "b"))
+        primary_error = _RuntimeErrorWithoutNotes("trainer a died")
+        trainers["a"].handle.train = AsyncMock(side_effect=primary_error)
+        inference_controller = AsyncMock()
+        rollout_executor = AsyncMock()
+        rollout_executor.dispose.side_effect = RuntimeError("rollout cleanup failed")
+        worker_manager = object()
+        shutdown = AsyncMock()
+        multi_policy_driver.create_trainers.return_value = trainers
+        multi_policy_driver.create_rollout_components.return_value = (
+            inference_controller,
+            rollout_executor,
+            None,
+        )
+        monkeypatch.setattr(multi_policy_driver, "init_orchestration_script", lambda args: worker_manager)
+        monkeypatch.setattr(multi_policy_driver, "shutdown_worker_manager", shutdown)
+
+        with pytest.raises(RuntimeError, match="trainer a died") as failed:
+            await asyncio.wait_for(train_multi_policy(_make_args(num_rollout=100)), timeout=1)
+
+        assert failed.value is primary_error
+        rollout_executor.dispose.assert_awaited_once_with()
+        inference_controller.dispose.assert_awaited_once_with()
+        for trainer in trainers.values():
+            trainer.handle.dispose.assert_awaited_once_with()
+        shutdown.assert_awaited_once_with(worker_manager)
+
+    async def test_trainer_setup_failure_disposes_components_that_already_exist(self, monkeypatch):
+        """A trainer-construction failure still closes the rollout, inference, and worker-manager owners."""
+        inference_controller = AsyncMock()
+        rollout_executor = AsyncMock()
+        worker_manager = object()
+        shutdown = AsyncMock()
+        multi_policy_driver.create_rollout_components.return_value = (
+            inference_controller,
+            rollout_executor,
+            None,
+        )
+        multi_policy_driver.create_trainers.side_effect = RuntimeError("trainer setup failed")
+        monkeypatch.setattr(multi_policy_driver, "init_orchestration_script", lambda args: worker_manager)
+        monkeypatch.setattr(multi_policy_driver, "shutdown_worker_manager", shutdown)
+
+        with pytest.raises(RuntimeError, match="trainer setup failed"):
+            await train_multi_policy(_make_args())
+
+        rollout_executor.dispose.assert_awaited_once_with()
+        inference_controller.dispose.assert_awaited_once_with()
+        shutdown.assert_awaited_once_with(worker_manager)
+
+    async def test_initial_weight_failure_disposes_every_created_trainer(self, monkeypatch):
+        """Initial publication errors close every trainer and shared component before leaving the driver."""
+        trainers = _make_trainers(("a", "b"))
+        inference_controller = AsyncMock()
+        rollout_executor = AsyncMock()
+        worker_manager = object()
+        shutdown = AsyncMock()
+        multi_policy_driver.create_trainers.return_value = trainers
+        multi_policy_driver.create_rollout_components.return_value = (
+            inference_controller,
+            rollout_executor,
+            None,
+        )
+        multi_policy_driver.update_weights.side_effect = RuntimeError("initial publication failed")
+        monkeypatch.setattr(multi_policy_driver, "init_orchestration_script", lambda args: worker_manager)
+        monkeypatch.setattr(multi_policy_driver, "shutdown_worker_manager", shutdown)
+
+        with pytest.raises(RuntimeError, match="initial publication failed"):
+            await train_multi_policy(_make_args())
+
+        rollout_executor.dispose.assert_awaited_once_with()
+        inference_controller.dispose.assert_awaited_once_with()
+        for trainer in trainers.values():
+            trainer.handle.dispose.assert_awaited_once_with()
+        shutdown.assert_awaited_once_with(worker_manager)
+
     async def test_a_policy_resumes_from_its_own_position(self):
         """Each trainer restores its own checkpoint, so the policies need not stand at the same rollout."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}

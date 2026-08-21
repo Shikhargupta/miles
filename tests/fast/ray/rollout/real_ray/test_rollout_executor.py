@@ -804,6 +804,8 @@ class TestLifecycle:
         executor.data_source = SimpleNamespace(close=lambda: closed.append("closed"))
         checker = _RecordingMetricChecker()
         executor._metric_checker = checker
+        train_fn = SimpleNamespace(dispose=MagicMock())
+        executor.generate_rollout = train_fn
         eval_fn = _RecordingCheckpointEvalFn()
         executor.eval_generate_rollout = eval_fn
 
@@ -812,7 +814,62 @@ class TestLifecycle:
         assert closed == ["closed"]
         assert analyzed == [args]
         assert checker.disposed
+        train_fn.dispose.assert_called_once_with()
         assert eval_fn.disposed
+
+    async def test_dispose_calls_a_shared_train_and_eval_rollout_function_once(self, ray_local_mode, patch_low_level):
+        """Train and eval may share one stateful rollout object, whose background tasks have one owner."""
+        executor = await _make_executor(_make_test_args())
+        shared = SimpleNamespace(dispose=MagicMock())
+        executor.generate_rollout = shared
+        executor.eval_generate_rollout = shared
+
+        executor.dispose()
+
+        shared.dispose.assert_called_once_with()
+
+    async def test_failed_partial_init_disposes_every_resource_that_was_created(
+        self, ray_local_mode, patch_low_level, monkeypatch
+    ):
+        """An init failure after the train rollout loads still closes it and the already-created data source."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        args = _make_test_args(
+            data_source_path="tests.partial_data_source",
+            rollout_function_path="tests.train_rollout",
+            eval_function_path="tests.eval_rollout",
+        )
+        args.debug_train_only = True
+        data_source = SimpleNamespace(close=MagicMock())
+        train_rollout = SimpleNamespace(dispose=MagicMock())
+        analyzed: list = []
+        calls = 0
+
+        def load_rollout(input, path):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return train_rollout
+            raise RuntimeError("eval rollout setup failed")
+
+        monkeypatch.setattr(rexec, "load_function", lambda path: lambda loaded_args: data_source)
+        monkeypatch.setattr(rexec, "load_rollout_function", load_rollout)
+        monkeypatch.setattr(rexec, "enable_experimental_rollout_refactor", lambda: True)
+        monkeypatch.setattr(rexec.event_analyzer, "run_analysis_from_args", analyzed.append)
+        executor = RolloutExecutor(
+            args=args,
+            router_providers=[_NeverUsedProvider()],
+            session_server_provider=None,
+            inference_controller_provider=_NeverUsedProvider(),
+        )
+
+        with pytest.raises(RuntimeError, match="eval rollout setup failed"):
+            await executor.init()
+        executor.dispose()
+
+        data_source.close.assert_called_once_with()
+        train_rollout.dispose.assert_called_once_with()
+        assert analyzed == [args]
 
 
 @pytest.mark.asyncio

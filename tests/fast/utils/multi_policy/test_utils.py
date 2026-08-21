@@ -252,6 +252,32 @@ class TestCreatePolicyTrainers:
                 _make_trainer_args(megatron_config=None), rollout_executor=AsyncMock()
             )
 
+    async def test_partial_trainer_creation_disposes_every_allocated_handle(self, monkeypatch):
+        """A later trainer failure must not leak handles created before the helper can return them."""
+        handles = {trainer_id: AsyncMock() for trainer_id in ("a-actor", "b-actor")}
+        created = 0
+
+        async def create_training_model(*args, **kwargs):
+            nonlocal created
+            created += 1
+            if created == 2:
+                raise RuntimeError("second trainer failed")
+            return SimpleNamespace(handle=kwargs["handle"], start_rollout_id=0)
+
+        monkeypatch.setattr(
+            multi_policy_utils,
+            "create_trainer_handles",
+            lambda args, *, trainer_configs: handles,
+        )
+        monkeypatch.setattr(multi_policy_utils, "take_over_trainers", AsyncMock(return_value=False))
+        monkeypatch.setattr(multi_policy_utils, "create_training_model", create_training_model)
+
+        with pytest.raises(RuntimeError, match="second trainer failed"):
+            await multi_policy_utils.create_trainers(_make_trainer_args("a", "b"), rollout_executor=AsyncMock())
+
+        for handle in handles.values():
+            handle.dispose.assert_awaited_once_with()
+
 
 class TestDefinePolicyMetricGroups:
     def test_a_multi_policy_run_binds_every_prefixed_curve_to_its_own_step(self, monkeypatch):

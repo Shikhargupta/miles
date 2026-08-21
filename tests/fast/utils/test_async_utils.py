@@ -504,6 +504,30 @@ class TestWaitCancellingPendingOnFirstCompletion:
 
         assert len([record for record in caplog.records if record.getMessage() == "task failed"]) == 2
 
+    async def test_python310_preserves_the_primary_when_two_members_fail(self, caplog):
+        """A missing BaseException.add_note must not replace the first task failure."""
+
+        class _Python310Error(ValueError):
+            def add_note(self, note: str) -> None:
+                raise AttributeError("BaseException.add_note is unavailable on Python 3.10")
+
+        primary = _Python310Error("first")
+
+        async def failing(error: Exception) -> None:
+            raise error
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(_Python310Error, match="first") as failed:
+                await wait_cancelling_pending_on_first_completion(
+                    [
+                        asyncio.create_task(failing(primary)),
+                        asyncio.create_task(failing(RuntimeError("second"))),
+                    ]
+                )
+
+        assert failed.value is primary
+        assert len([record for record in caplog.records if record.getMessage() == "task failed"]) == 2
+
     async def test_a_member_that_fails_while_being_cancelled_is_not_lost(self):
         """Cleanup that raises is the second root cause of a run that is already failing."""
 
