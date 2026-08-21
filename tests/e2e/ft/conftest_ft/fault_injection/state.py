@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from pydantic import Field
 
+from miles.utils.ft_utils.api_server.models import WORKERS_HASH_LABEL
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
@@ -37,6 +38,7 @@ class BaseEvent(FrozenStrictBaseModel):
 
 class InjectionEvent(BaseEvent):
     cell_name: str
+    workers_hash: str
     form_name: str
     succeeded: bool
     harmed: bool = True
@@ -44,6 +46,7 @@ class InjectionEvent(BaseEvent):
 
 class CellInfo(FrozenStrictBaseModel):
     cell_type: str
+    workers_hash: str
     state: ObservedCellState
     alive: bool
 
@@ -68,8 +71,24 @@ class EventLog:
         with self._lock:
             return list(self._events)
 
-    def note_injection_attempt(self, *, cell_name: str, form_name: str, succeeded: bool, harmed: bool = True) -> None:
-        self._append(InjectionEvent(cell_name=cell_name, form_name=form_name, succeeded=succeeded, harmed=harmed))
+    def note_injection_attempt(
+        self,
+        *,
+        cell_name: str,
+        workers_hash: str,
+        form_name: str,
+        succeeded: bool,
+        harmed: bool = True,
+    ) -> None:
+        self._append(
+            InjectionEvent(
+                cell_name=cell_name,
+                workers_hash=workers_hash,
+                form_name=form_name,
+                succeeded=succeeded,
+                harmed=harmed,
+            )
+        )
 
     def observe(self, cells: list[dict]) -> None:
         self._append(
@@ -77,6 +96,7 @@ class EventLog:
                 cell_infos={
                     cell["metadata"]["name"]: CellInfo(
                         cell_type=cell_type_of(cell),
+                        workers_hash=cell_workers_hash(cell),
                         state=compute_observed_cell_state(cell),
                         alive=cell_is_alive(cell),
                     )
@@ -92,3 +112,7 @@ class EventLog:
 
 def cell_type_of(cell: dict) -> str:
     return cell["metadata"]["labels"]["miles.io/cell-type"]
+
+
+def cell_workers_hash(cell: dict) -> str:
+    return cell["metadata"]["labels"][WORKERS_HASH_LABEL]

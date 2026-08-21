@@ -10,6 +10,9 @@ from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.test_utils.fault_injector import FailureMode
 
 
+WORKERS_HASH_LABEL: str = "miles.io/workers-hash"
+
+
 class TriState(StrEnum):
     """K8s condition status: ``"True"``, ``"False"``, or ``"Unknown"``."""
 

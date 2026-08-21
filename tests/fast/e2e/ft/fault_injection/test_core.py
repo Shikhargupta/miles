@@ -90,6 +90,49 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
     assert len(injected) >= 2, f"expected a second injection after recovery, got {injected}"
 
 
+def test_loop_injects_a_replacement_when_the_down_snapshot_was_missed() -> None:
+    """A changed workers identity proves recovery when a short down interval falls between polls."""
+    cell_names = ["actor-0", "actor-1"]
+    generations = {name: 0 for name in cell_names}
+    injected: list[tuple[str, int]] = []
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if len(injected) >= 2 or polls["n"] >= 100:
+            stop_event.set()
+        return mock_response(
+            {
+                "items": [
+                    cell(name, healthy=True, workers_hash=f"generation-{generations[name]}")
+                    for name in cell_names
+                ]
+            }
+        )
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        name = url.rsplit("/cells/", 1)[1].split("/")[0]
+        injected.append((name, generations[name]))
+        generations[name] += 1
+        return mock_response({})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        mock_requests.post.side_effect = fake_post
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds_of_cell_type=intervals(("actor",), 1e-6),
+            stop_event=stop_event,
+            event_log=state.EventLog(),
+            cell_fault_forms=api_server_fault_forms(),
+            poll_interval_seconds=1e-6,
+        )
+
+    assert len(injected) >= 2, f"expected a second generation-aware injection, got {injected}"
+
+
 def _run_typed_injection_loop(cells: list[dict], *, cell_types: tuple[str, ...]) -> list[str]:
     injected: list[str] = []
     stop_event = threading.Event()

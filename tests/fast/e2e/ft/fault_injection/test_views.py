@@ -1,3 +1,5 @@
+import pytest
+
 from tests.e2e.ft.conftest_ft.fault_injection import state, views
 from tests.fast.e2e.ft.fault_injection.utils import (
     PENDING,
@@ -29,11 +31,73 @@ def test_injected_cell_is_excluded_while_its_crash_is_still_undetected() -> None
     assert names(views.compute_genuinely_alive(log.events, cells)) == {"c1"}
 
 
+def test_a_healthy_replacement_generation_rejoins_without_a_missed_down_sample() -> None:
+    """A new workers generation proves replacement even when polling missed the down snapshot."""
+    log = state.EventLog()
+    old_cells = [cell("c0", healthy=True, workers_hash="old"), cell("c1", healthy=True)]
+    replacement_cells = [cell("c0", healthy=True, workers_hash="new"), cell("c1", healthy=True)]
+    log.note_injection_attempt(
+        cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True
+    )
+
+    log.observe(old_cells)
+    assert names(views.compute_genuinely_alive(log.events, old_cells)) == {"c1"}
+    log.observe(replacement_cells)
+    assert names(views.compute_genuinely_alive(log.events, replacement_cells)) == {"c0", "c1"}
+
+
+def test_a_recovered_generation_can_be_injected_again() -> None:
+    """The same logical cell may be faulted again after a replacement changes its workers identity."""
+    log = state.EventLog()
+    old_cells = [cell("c0", healthy=True, workers_hash="old"), cell("c1", healthy=True)]
+    replacement_cells = [cell("c0", healthy=True, workers_hash="new"), cell("c1", healthy=True)]
+    log.note_injection_attempt(
+        cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True
+    )
+    log.observe(replacement_cells)
+    log.note_injection_attempt(
+        cell_name="c0", workers_hash="new", form_name="sigkill", succeeded=True
+    )
+
+    log.observe(replacement_cells)
+    assert names(views.compute_genuinely_alive(log.events, replacement_cells)) == {"c1"}
+
+
+def test_an_unhealthy_replacement_generation_stays_excluded() -> None:
+    """A new workers identity does not become injectable until the replacement is healthy."""
+    log = state.EventLog()
+    old_cells = [cell("c0", healthy=True, workers_hash="old"), cell("c1", healthy=True)]
+    replacement_cells = [cell("c0", healthy=False, workers_hash="new"), cell("c1", healthy=True)]
+    log.note_injection_attempt(
+        cell_name="c0", workers_hash="old", form_name="sigkill", succeeded=True
+    )
+
+    log.observe(old_cells)
+    log.observe(replacement_cells)
+    assert names(views.compute_genuinely_alive(log.events, replacement_cells)) == {"c1"}
+
+
+def test_an_observation_without_workers_identity_is_rejected() -> None:
+    """The injector must fail before acting when the control API omits authoritative generation identity."""
+    log = state.EventLog()
+    incomplete = cell("c0", healthy=True)
+    del incomplete["metadata"]["labels"]["miles.io/workers-hash"]
+
+    with pytest.raises(KeyError, match="miles.io/workers-hash"):
+        log.observe([incomplete])
+
+
 def test_a_fault_that_left_its_cell_running_keeps_that_cell_in_the_live_set() -> None:
     """A form that never crashes the cell would otherwise retire it after one draw and never fire again."""
     log = state.EventLog()
     cells = [cell("c0", healthy=True), cell("c1", healthy=True)]
-    log.note_injection_attempt(cell_name="c0", form_name="hot_restart", succeeded=True, harmed=False)
+    log.note_injection_attempt(
+        cell_name="c0",
+        workers_hash="generation-0",
+        form_name="hot_restart",
+        succeeded=True,
+        harmed=False,
+    )
     log.observe(cells)
     assert names(views.compute_genuinely_alive(log.events, cells)) == {"c0", "c1"}
 
@@ -196,7 +260,12 @@ class TestOverlappingRecoveries:
 
 
 def _note_injection(log: state.EventLog, *, cell_name: str = "rollout-engine-0") -> None:
-    log.note_injection_attempt(cell_name=cell_name, form_name="inject_fault:sigkill", succeeded=True)
+    log.note_injection_attempt(
+        cell_name=cell_name,
+        workers_hash="generation-0",
+        form_name="inject_fault:sigkill",
+        succeeded=True,
+    )
 
 
 class TestWhichInjectionsCount:
@@ -231,10 +300,26 @@ class TestWhichInjectionsCount:
         """A mixed soak draws several forms, and each one's own assertions count only its own draws."""
         log = state.EventLog()
         log.observe([staged("rollout-engine-0", SERVING)])
-        log.note_injection_attempt(cell_name="rollout-engine-0", form_name="hot_restart", succeeded=True, harmed=False)
-        log.note_injection_attempt(cell_name="rollout-engine-0", form_name="crash_pod", succeeded=True, harmed=True)
         log.note_injection_attempt(
-            cell_name="rollout-engine-0", form_name="hot_restart", succeeded=False, harmed=False
+            cell_name="rollout-engine-0",
+            workers_hash="generation-0",
+            form_name="hot_restart",
+            succeeded=True,
+            harmed=False,
+        )
+        log.note_injection_attempt(
+            cell_name="rollout-engine-0",
+            workers_hash="generation-0",
+            form_name="crash_pod",
+            succeeded=True,
+            harmed=True,
+        )
+        log.note_injection_attempt(
+            cell_name="rollout-engine-0",
+            workers_hash="generation-0",
+            form_name="hot_restart",
+            succeeded=False,
+            harmed=False,
         )
 
         assert views.compute_num_successful_injections_of_form(log.events, form_name="hot_restart") == 1
@@ -244,6 +329,12 @@ class TestWhichInjectionsCount:
 def _log_of_one_injection(*, form_name: str, succeeded: bool, harmed: bool) -> state.EventLog:
     log = state.EventLog()
     log.observe([staged("rollout-engine-0", SERVING)])
-    log.note_injection_attempt(cell_name="rollout-engine-0", form_name=form_name, succeeded=succeeded, harmed=harmed)
+    log.note_injection_attempt(
+        cell_name="rollout-engine-0",
+        workers_hash="generation-0",
+        form_name=form_name,
+        succeeded=succeeded,
+        harmed=harmed,
+    )
     log.observe([staged("rollout-engine-0", SERVING)])
     return log

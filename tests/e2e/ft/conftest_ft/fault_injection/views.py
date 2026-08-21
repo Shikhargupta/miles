@@ -22,19 +22,22 @@ def compute_genuinely_alive(events: list[Event], cells: list[dict]) -> list[dict
 
 
 def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
-    state_of_cell_name: dict[str, _CellState] = {}
+    recovery_of_cell_name: dict[str, _CellRecovery] = {}
     for event in events:
         if isinstance(event, InjectionEvent):
             if event.succeeded and event.harmed:
-                state_of_cell_name[event.cell_name] = _CellState.INJECTED
+                recovery_of_cell_name[event.cell_name] = _CellRecovery(
+                    state=_CellState.INJECTED,
+                    workers_hash=event.workers_hash,
+                )
             continue
-        for name, state in list(state_of_cell_name.items()):
+        for name, recovery in list(recovery_of_cell_name.items()):
             info = event.cell_infos.get(name)
             if info is None or not info.alive:
-                state_of_cell_name[name] = _CellState.RECOVERING
-            elif state is _CellState.RECOVERING:
-                del state_of_cell_name[name]
-    return set(state_of_cell_name)
+                recovery_of_cell_name[name] = dataclasses.replace(recovery, state=_CellState.RECOVERING)
+            elif info.workers_hash != recovery.workers_hash or recovery.state is _CellState.RECOVERING:
+                del recovery_of_cell_name[name]
+    return set(recovery_of_cell_name)
 
 
 def compute_num_injections(events: list[Event], *, cell_type: str | None = None, harmed_only: bool = True) -> int:
@@ -126,6 +129,12 @@ def compute_states_of_cell_name(events: list[Event]) -> dict[str, list[ObservedC
 class _CellState(enum.Enum):
     INJECTED = enum.auto()  # we crashed it; the api server may still report it Healthy
     RECOVERING = enum.auto()  # observed unhealthy; awaiting its return to Healthy
+
+
+@dataclasses.dataclass(frozen=True)
+class _CellRecovery:
+    state: _CellState
+    workers_hash: str
 
 
 @dataclasses.dataclass(frozen=True)

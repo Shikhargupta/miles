@@ -12,9 +12,14 @@ from tests.e2e.ft.conftest_ft.fault_injection.state import (
     EventLog,
     ObservedCellState,
     cell_type_of,
+    cell_workers_hash,
     compute_observed_cell_state,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.views import compute_genuinely_alive, compute_successful_form_names
+from tests.e2e.ft.conftest_ft.fault_injection.views import (
+    compute_cells_awaiting_recovery,
+    compute_genuinely_alive,
+    compute_successful_form_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +77,7 @@ def run_fault_injection_loop(
                 live_replicas_of_type.setdefault(kind, []).append(cell)
 
         logger.info(
-            "Live replicas %s, injectable victims %s",
+            "Live replicas %s, injectable victims %s, awaiting recovery %s",
             {
                 kind: sorted(c["metadata"]["name"] for c in kind_cells)
                 for kind, kind_cells in sorted(live_replicas_of_type.items())
@@ -81,6 +86,7 @@ def run_fault_injection_loop(
                 kind: sorted(c["metadata"]["name"] for c in kind_cells)
                 for kind, kind_cells in sorted(victims_of_type.items())
             },
+            sorted(compute_cells_awaiting_recovery(event_log.events)),
         )
 
         spare_types = [kind for kind in due_types if len(live_replicas_of_type.get(kind, [])) > 1]
@@ -95,18 +101,27 @@ def run_fault_injection_loop(
         cell_type = rng.choice(spare_types)
         target = rng.choice(victims_of_type[cell_type])
         cell_name = target["metadata"]["name"]
+        workers_hash = cell_workers_hash(target)
         form = _draw_form(cell_fault_forms[cell_type], events=event_log.events, cell_type=cell_type, rng=rng)
         try:
             form.inject(target, rng)
         except Exception:
             event_log.note_injection_attempt(
-                cell_name=cell_name, form_name=form.name, succeeded=False, harmed=form.harms_the_cell
+                cell_name=cell_name,
+                workers_hash=workers_hash,
+                form_name=form.name,
+                succeeded=False,
+                harmed=form.harms_the_cell,
             )
             logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
             continue
 
         event_log.note_injection_attempt(
-            cell_name=cell_name, form_name=form.name, succeeded=True, harmed=form.harms_the_cell
+            cell_name=cell_name,
+            workers_hash=workers_hash,
+            form_name=form.name,
+            succeeded=True,
+            harmed=form.harms_the_cell,
         )
         next_injection_time_of_cell_type[cell_type] = _compute_next_injection_time(
             rng, mean_interval_seconds_of_cell_type[cell_type]

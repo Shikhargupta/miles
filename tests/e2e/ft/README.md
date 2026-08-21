@@ -367,12 +367,14 @@ Targeting and assertions follow the mode's ft_components:
 Architecture (external fault injection, not inside the training loop):
   1. Start indep_dp training + api server (port 18080) + --mini-ft-controller-enable
   2. A background daemon thread iterates every 2s:
-     a. GET /api/v1/cells, keeping only the targeted cell types
+     a. GET /api/v1/cells, keeping only the targeted cell types; each item carries the
+        authoritative current workers hash as its logical-cell generation identity
      b. Append that whole snapshot to the injector's event log, its only state
      c. Collect the cell kinds whose own schedule is due; stop here if none
-     d. Compute the genuinely-alive cells - reported Healthy, minus injected cells that have
-        not completed a down -> up cycle, minus rollout cells not currently Serving - and
-        defer unless a due kind has a spare replica
+     d. Compute the genuinely-alive cells - reported Healthy, minus injected cell generations
+        that have neither completed a down -> up cycle nor been replaced by a different workers
+        hash, minus rollout cells not currently Serving - and defer unless a due kind has a
+        spare replica
      e. Draw a due kind, a cell of that kind and one of its fault forms - preferring a form the
         log shows has never worked - apply it, record the attempt, then draw that kind's next
         injection time
@@ -399,6 +401,7 @@ membership is asserted.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
 - **Why still-recovering cells are excluded**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica.
+- **Why recovery is generation-aware**: a replacement can complete between two injector polls, so the down snapshot may be missed. A Healthy cell with a different authoritative workers hash proves that the killed generation is gone and may rejoin the live set; the same hash still reads as stale and remains excluded. Missing generation identity is terminal before another fault is attempted.
 - **A form that leaves its cell running**: `BaseFaultForm.harms_the_cell` is false for it, so the draw is recorded without retiring that cell from the live set; a form which replaces a run's orchestration script rather than crashing a replica would otherwise fire once and never again.
 - **Why a rollout spare must be `Serving`**: `Healthy` and even `Running` include a replacement that got weights but cannot answer requests yet. `Suspended` is not required in between — it lasts only `--mini-ft-controller-resume-delay` (10s by default), which a 2s poll can miss.
 - **Why poll faster than injections**: a crash → detect → heal cycle completing between two sparse injections must be seen, or its cell stays excluded from the live set forever.

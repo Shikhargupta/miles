@@ -76,7 +76,11 @@ class TestGetCells:
                     "kind": "Cell",
                     "metadata": {
                         "name": "actor-0",
-                        "labels": {"miles.io/cell-type": "actor", "miles.io/cell-id": "actor-0"},
+                        "labels": {
+                            "miles.io/cell-type": "actor",
+                            "miles.io/cell-id": "actor-0",
+                            "miles.io/workers-hash": "pseudo-hash-1",
+                        },
                     },
                     "spec": {"suspend": False},
                     "status": {
@@ -104,7 +108,11 @@ class TestGetCells:
                     "kind": "Cell",
                     "metadata": {
                         "name": "rollout-0",
-                        "labels": {"miles.io/cell-type": "rollout", "miles.io/cell-id": "rollout-0"},
+                        "labels": {
+                            "miles.io/cell-type": "rollout",
+                            "miles.io/cell-id": "rollout-0",
+                            "miles.io/workers-hash": "pseudo-hash-1",
+                        },
                     },
                     "spec": {"suspend": True},
                     "status": {
@@ -146,7 +154,11 @@ class TestGetCell:
             "kind": "Cell",
             "metadata": {
                 "name": "actor-0",
-                "labels": {"miles.io/cell-type": "actor", "miles.io/cell-id": "actor-0"},
+                "labels": {
+                    "miles.io/cell-type": "actor",
+                    "miles.io/cell-id": "actor-0",
+                    "miles.io/workers-hash": "pseudo-hash-1",
+                },
             },
             "spec": {"suspend": False},
             "status": {

@@ -4,7 +4,15 @@ import asyncio
 from typing import Protocol
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
-from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
+from miles.utils.ft_utils.api_server.models import (
+    WORKERS_HASH_LABEL,
+    Cell,
+    CellCondition,
+    CellMetadata,
+    CellSpec,
+    CellStatus,
+    TriState,
+)
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -32,12 +40,13 @@ class _CellHandler:
     def cell_type(self) -> str:
         return self._cell_type
 
-    def _compute_metadata(self, cell_id: str) -> CellMetadata:
+    def _compute_metadata(self, cell_id: str, *, workers_hash: str) -> CellMetadata:
         return CellMetadata(
             name=cell_id,
             labels={
                 "miles.io/cell-type": self.cell_type,
                 "miles.io/cell-id": cell_id,
+                WORKERS_HASH_LABEL: workers_hash,
             },
         )
 
@@ -66,9 +75,10 @@ class _CellHandler:
         }
 
     def _compute_cell(self, cell_id: str, *, cell_infos: dict[str, CellInfo], statuses: dict[str, CellStatus]) -> Cell:
-        suspended = not cell_infos[cell_id].alive
+        cell_info = cell_infos[cell_id]
+        suspended = not cell_info.alive
         return Cell(
-            metadata=self._compute_metadata(cell_id),
+            metadata=self._compute_metadata(cell_id, workers_hash=cell_info.workers_hash),
             spec=CellSpec(suspend=suspended),
             status=(
                 CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
