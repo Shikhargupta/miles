@@ -526,7 +526,7 @@ class TestGetWorkerInfos:
         infos = _worker_infos_if_generation(provider, expected_workers_hash=expected_workers_hash)
 
         assert infos is not None
-        assert [info.name for info in infos] == ["engine-0-0"]
+        assert [info.name for info in infos] == ["engine-00000-00000"]
 
     def test_a_stale_generation_returns_no_workers(self):
         """A stale mutation precondition must not expose any replacement worker handle to the caller."""
