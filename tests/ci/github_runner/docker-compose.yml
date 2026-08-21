@@ -18,12 +18,7 @@
 # silently spins up many runners.
 services:
   runner:
-    # NOTE need to use the latest, o/w the runner will want to upgrade itself.
-    # `--disableupdate` below means a stale pin is not merely suboptimal: GitHub
-    # retires old runner versions server-side, and the broker then answers every
-    # poll with "Runner version vX is deprecated and cannot receive messages".
-    # The runner registers, shows online for a second, and dies. Bump this when
-    # that happens; check https://github.com/actions/runner/releases.
+    # NOTE need to use the latest, o/w the broker rejects it as deprecated
     image: ghcr.io/actions/actions-runner:2.336.0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -40,10 +35,6 @@ services:
     # ref: https://github.com/actions/runner/issues/367#issuecomment-2007558723
     # ref: https://github.com/actions/runner
     # args ref: https://github.com/actions/runner/blob/68ff57dbc4c836d50f46602a8a53301fb9513eb4/src/Runner.Listener/CommandSettings.cs#L53
-    # `.runner` lives in the container's writable layer, so `restart: always`
-    # re-runs this entrypoint against an already-configured runner. Guard the
-    # config step or every restart dies with "Cannot configure the runner
-    # because it is already configured" and the container loops.
     entrypoint: >
       sh -c "
       cd /data/miles_ci &&
