@@ -3,6 +3,7 @@
 import contextlib
 import os
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,10 @@ from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, r
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import selected_pods
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
+from miles.utils.workers.types import ClusterBackend
 
 
 BASELINE_SIDE: str = "baseline"
@@ -29,6 +34,8 @@ TARGET_SIDE: str = "target"
 
 _DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
 _DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
+_RELEASE_POLL_INTERVAL_SECONDS = 1.0
+_RELEASE_TIMEOUT_SECONDS = 300.0
 
 BuildArgsFn = Callable[[FTTestMode, str, bool], str]
 ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
@@ -48,11 +55,41 @@ class RunSideRequest:
 
 
 RunSideFn = Callable[[RunSideRequest], None]
+ReleaseSideFn = Callable[[RunSideRequest], None]
 ResolveModeFn = Callable[[str | None], FTTestMode]
 
 
 def run_one_release(request: RunSideRequest) -> None:
     run_training(train_args=request.train_args, mode=request.mode, dump_dir=request.dump_dir, config=request.config)
+
+
+def _release_comparison_side(request: RunSideRequest) -> None:
+    config = request.config
+    if config.cluster_backend is not ClusterBackend.KUBERNETES:
+        return
+
+    assert config.namespace, "A kubernetes comparison side needs a namespace before its release can be removed"
+    release = ReleaseName(
+        run_id=config.run_id,
+        deploy_component=config.deploy_component,
+        deploy_instance_id=config.deploy_instance_id,
+    ).serialize()
+    selector = Kubectl.release_selector(release)
+    deadline = time.monotonic() + _RELEASE_TIMEOUT_SECONDS
+
+    Helm.uninstall_if_present(release=release, namespace=config.namespace)
+    while True:
+        manifest = Helm.get_manifest(release, config.namespace)
+        pods = selected_pods(config.namespace, selector)
+        if manifest is None and not pods:
+            return
+        if time.monotonic() >= deadline:
+            pod_names = sorted(pod.metadata.name for pod in pods)
+            raise TimeoutError(
+                f"Timed out removing comparison release {release!r} from namespace {config.namespace!r}; "
+                f"release_exists={manifest is not None}, pods={pod_names}"
+            )
+        time.sleep(_RELEASE_POLL_INTERVAL_SECONDS)
 
 
 def resolve_dump_dir(test_name: str) -> str:
@@ -78,6 +115,7 @@ def run_pipeline(
     target_side_context: TargetSideContextFn | None = None,
     config_for_side: ConfigForSideFn | None = None,
     run_side: RunSideFn = run_one_release,
+    release_side: ReleaseSideFn = _release_comparison_side,
     resolve_mode_fn: ResolveModeFn = resolve_mode,
 ) -> None:
     """Full pipeline (prepare + every phase's baseline/target + compare) for one mode."""
@@ -101,17 +139,19 @@ def run_pipeline(
                     if side == TARGET_SIDE and target_side_context is not None
                     else contextlib.nullcontext()
                 )
-                with context:
-                    run_side(
-                        RunSideRequest(
-                            side=side,
-                            mode=ft_mode,
-                            train_args=build_args(ft_mode, side_dump, enable_dumper),
-                            dump_dir=side_dump,
-                            config=config,
-                            enable_dumper=enable_dumper,
-                        )
-                    )
+                request = RunSideRequest(
+                    side=side,
+                    mode=ft_mode,
+                    train_args=build_args(ft_mode, side_dump, enable_dumper),
+                    dump_dir=side_dump,
+                    config=config,
+                    enable_dumper=enable_dumper,
+                )
+                try:
+                    with context:
+                        run_side(request)
+                finally:
+                    release_side(request)
 
         if enable_dumper:
             compare_fn(dump_dir, ft_mode)

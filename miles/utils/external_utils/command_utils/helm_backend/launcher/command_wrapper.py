@@ -106,6 +106,20 @@ class Helm:
         _run(["helm", "uninstall", release, "--namespace", namespace], capture_output=False)
 
     @staticmethod
+    def uninstall_if_present(*, release: str, namespace: str) -> None:
+        result = Helm.run_raw("uninstall", release, "--namespace", namespace)
+        if result.returncode == 0:
+            return
+
+        reason = (result.stderr or result.stdout or "").strip()
+        if "not found" in reason.lower():
+            return
+        raise RuntimeError(
+            f"Could not uninstall Helm release {release!r} from namespace {namespace!r}: "
+            f"exit code {result.returncode}: {reason}"
+        )
+
+    @staticmethod
     def upgrade_command(
         release: str, namespace: str, chart: str | Path, values_files: list[str | Path], *, ci_run: bool
     ) -> list[str]:
