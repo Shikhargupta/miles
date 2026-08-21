@@ -45,6 +45,55 @@ Each loop iteration does:
 | `--rollout-health-check-timeout` | `30.0` | "Timeout in seconds to wait for a rollout engine `/health_generate` response before killing it." |
 | `--rollout-health-check-first-wait` | `0` | "Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm." |
 
+## RPC overload and outcome ownership
+
+Fault-tolerant trainer workers expose heartbeats and recovery operations through
+the Miles RPC server. The server applies the following bounded-delivery
+contract:
+
+- Request bodies are limited before each incoming chunk is retained. Concurrent
+  data-plane bodies and control-plane bodies use separate aggregate ingress
+  byte and in-flight-request budgets. A bounded byte array replaces per-chunk
+  retention, and conversion to the downstream immutable body reserves both
+  copies. A separate per-request chunk-count limit bounds streaming work.
+  Admitted calls then use matching bounded queued-request budgets, so many
+  near-limit requests cannot retain multiple GiB of input or decoded arguments.
+  Each lane also bounds concurrent overload responses. Before Uvicorn creates an
+  ASGI task, its pinned h11 protocol admits incomplete headers through a bounded
+  unknown lane and atomically transfers complete requests into separate data or
+  control connection lanes. Lane overflow closes the transport without an ASGI
+  task. Keep-alive requests are classified again, while pipelining and protocol
+  upgrades fail closed. Clients observe a transport failure and retry with the
+  same call ID.
+- Every method reserves its declared maximum serialized outcome before its
+  executor starts. New calls receive a retryable capacity response before worker
+  execution when the active-call, queued-request, or retained-outcome budget is
+  full.
+- `get_heartbeat_status` uses a separate bounded control-plane reserve. A full
+  training queue therefore does not make a healthy worker look dead, while
+  heartbeat traffic still has hard call, request, and outcome limits.
+  The 65,536-entry control tombstone lane covers the 43,201 identities needed by
+  the 12-hour horizon at the minimum supported one-second health-check interval.
+  The default trainer heartbeat interval is 10 seconds and needs 4,321 entries.
+- A call ID and its fixed request digest identify one execution. The client ACKs
+  only after decoding the terminal result or copying the remote error. ACK drops
+  the full outcome but keeps the digest tombstone for the 12-hour resolution
+  horizon; late duplicate submissions cannot execute again during that horizon.
+- ACK is pinned to the boot that returned the outcome and has a sub-second retry
+  budget. ACK transport failure never replaces an already decoded result or
+  copied business error.
+- Concurrent server-shutdown callers wait for one cancellation-shielded
+  teardown. It stops admission, cancels queued synchronous calls, and closes
+  outcome retention only after executor ownership has drained. Python cannot
+  interrupt a synchronous function that is already running in a thread; the
+  owning worker process must be terminated to fence that side effect. A late
+  completion cannot publish a new outcome or recreate an expiry timer after the
+  store closes.
+
+Health, in-flight inspection, outcome polling, and ACK remain available while
+new data-plane admission is saturated. Capacity does not evict live outcomes or
+unexpired tombstones.
+
 ## Engine recovery
 
 When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
