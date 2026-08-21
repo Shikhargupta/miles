@@ -28,16 +28,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_num_gpus: int = 4
     tp: int = 2
 
-    # LoRA slot pool: clients may register with rank <= lora_rank; alpha is fixed here.
-    lora_rank: int = 32
-    lora_alpha: int = 64
-    target_modules: str = "all-linear"
-    n_adapters: int = 4
+    # Deployment-wide LoRA slot constraints.
+    max_lora_rank: int = 32
+    backend_lora_alpha: int = 64
+    backend_target_modules: str = "all-linear"
+    max_adapters: int = 4
 
     # Soft coalescing target for one train call (whole client batches only).
-    rollout_batch_size: int = 32
-    n_samples_per_prompt: int = 1
-    global_batch_size: int = 32
+    backend_batch_size: int = 32
 
     api_port: int = 8068
     enable_wandb: bool = False
@@ -64,11 +62,11 @@ def _serve(args: ScriptArgs):
 
     ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
     lora_args = (
-        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} "
-        f'--lora-dropout 0.0 --target-modules "{args.target_modules}" '
+        f"--lora-rank {args.max_lora_rank} --lora-alpha {args.backend_lora_alpha} "
+        f'--lora-dropout 0.0 --target-modules "{args.backend_target_modules}" '
     )
     tinker_args = (
-        f"--tinker-backend --multi-lora-n-adapters {args.n_adapters} "
+        f"--tinker-backend --multi-lora-n-adapters {args.max_adapters} "
         f"--multi-lora-idle-poll-s 5 --multi-lora-api-port {args.api_port} "
     )
 
@@ -76,9 +74,8 @@ def _serve(args: ScriptArgs):
     sync_args = "--pause-generation-mode in_place "
 
     rollout_args = (
-        f"--rollout-batch-size {args.rollout_batch_size} "
-        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
-        f"--global-batch-size {args.global_batch_size} "
+        f"--rollout-batch-size {args.backend_batch_size} "
+        f"--n-samples-per-prompt 1 --global-batch-size {args.backend_batch_size} "
         "--num-rollout 1000000 "
     )
 
