@@ -12,11 +12,9 @@ back to the control phase, not an error.
 
 import asyncio
 import logging
-from pathlib import Path
 
 import ray
 
-from miles.ray.multi_lora.config import parse_adapter_run_yaml
 from miles.ray.multi_lora.controller import create_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_training_models
 from miles.ray.rollout.components import create_rollout_components
@@ -172,11 +170,6 @@ async def main(args):
     actor_model, _ = await create_training_models(args, pgs, rollout_components.weight_update_owner)
     weight_updater = ActorGroupWeightUpdater(actor_model)
 
-    # CLI-registered adapters; loaded and marked READY by the first reconcile.
-    for name, path in args.multi_lora_adapters:
-        config = parse_adapter_run_yaml(Path(path))
-        await multi_lora_controller.register_adapter.remote(name, config)
-
     # The trainer exists and the driver loop is about to run: flip readiness
     # so /api/v1/healthz stops answering 503 (liveness /health was up earlier,
     # but a probe must never see "ok" while trainer init can still fail).
@@ -189,9 +182,6 @@ async def main(args):
         # ray.get_actor handle — would let Ray reap the controller mid-run.
         snapshot = await multi_lora_controller.snapshot.remote()
         if not (snapshot["pending"] or snapshot["ready"] or snapshot["retiring"] or snapshot["cleanup"]):
-            if not args.multi_lora_service_mode:
-                logger.info("No adapters; exiting.")
-                break
             logger.info(f"No adapters; sleeping for {args.multi_lora_idle_poll_s}s...")
             await asyncio.sleep(args.multi_lora_idle_poll_s)
             continue
@@ -221,9 +211,6 @@ async def main(args):
         await train_data_batch(actor_model, multi_lora_controller, rollout_id, rollout_data)
         remove_rollout_data_refs(args, rollout_data)
         rollout_id += 1
-
-    await rollout_components.dispose()
-    await multi_lora_controller.stop.remote()
 
 
 if __name__ == "__main__":

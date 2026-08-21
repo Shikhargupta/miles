@@ -1833,14 +1833,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "as new operations. <= 0 disables (default: 600)",
             )
             parser.add_argument(
-                "--multi-lora-adapter",
-                nargs=2,
-                action="append",
-                type=str,
-                dest="multi_lora_adapters",
-                default=[],
-            )
-            parser.add_argument(
                 "--multi-lora-idle-poll-s",
                 type=float,
                 default=5.0,
@@ -1870,12 +1862,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=8068,
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
-            )
-            parser.add_argument(
-                "--multi-lora-disable-service-mode",
-                action="store_false",
-                dest="multi_lora_service_mode",
-                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
             )
             return parser
 

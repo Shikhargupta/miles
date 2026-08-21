@@ -6,8 +6,6 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
-_ADAPTER_DIR = f"{U.repo_base_dir}/examples/multi_lora_operations/adapters"
-
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -35,7 +33,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_alpha: int = 64
     target_modules: str = "all-linear"
     n_adapters: int = 4
-    adapters: str = "example"
 
     # Soft coalescing target for one train call (whole client batches only).
     rollout_batch_size: int = 32
@@ -59,10 +56,10 @@ def prepare(args: ScriptArgs):
     U.exec_command_cpu(f"hf download Qwen/Qwen3-4B --local-dir {args.model_dir}/Qwen3-4B")
 
 
-def _serve(args: ScriptArgs, service: bool):
-    mode = "service" if service else "bounded"
+def _serve(args: ScriptArgs):
     print(
-        f"[run] Multi-LoRA operations ({mode}): " f"{args.actor_num_gpus} train + {args.rollout_num_gpus} rollout GPUs"
+        f"[run] Multi-LoRA operations (service): "
+        f"{args.actor_num_gpus} train + {args.rollout_num_gpus} rollout GPUs"
     )
 
     ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
@@ -70,13 +67,10 @@ def _serve(args: ScriptArgs, service: bool):
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} "
         f'--lora-dropout 0.0 --target-modules "{args.target_modules}" '
     )
-    tinker_args = f"--tinker-backend --multi-lora-n-adapters {args.n_adapters} --multi-lora-idle-poll-s 5 "
-    if service:
-        tinker_args += f"--multi-lora-api-port {args.api_port} "
-    else:
-        for name in args.adapters.split(","):
-            tinker_args += f'--multi-lora-adapter "{name}" "{_ADAPTER_DIR}/{name}.yaml" '
-        tinker_args += "--multi-lora-disable-service-mode "
+    tinker_args = (
+        f"--tinker-backend --multi-lora-n-adapters {args.n_adapters} "
+        f"--multi-lora-idle-poll-s 5 --multi-lora-api-port {args.api_port} "
+    )
 
     # in_place pause + upsert push: adapters publish without unloading.
     sync_args = "--pause-generation-mode in_place "
@@ -131,14 +125,7 @@ def _serve(args: ScriptArgs, service: bool):
 @U.dataclass_cli
 def serve(args: ScriptArgs):
     """Service mode: no adapters preloaded; register via the HTTP API while it idles."""
-    _serve(args, service=True)
-
-
-@app.command()
-@U.dataclass_cli
-def train(args: ScriptArgs):
-    """Bounded run: pre-register adapters/, exit when every registration retires."""
-    _serve(args, service=False)
+    _serve(args)
 
 
 @app.callback()
