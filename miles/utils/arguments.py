@@ -1833,6 +1833,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "as new operations. <= 0 disables (default: 600)",
             )
             parser.add_argument(
+                "--multi-lora-max-consecutive-generate-failures",
+                type=int,
+                default=10,
+                help="Consecutive non-idle generate failures the multi-LoRA driver tolerates (log and "
+                "skip the round — failure paths restore unconsumed claims to READY, so a skipped round "
+                "self-heals) before re-raising and ending the run. A successful generate resets the "
+                "count. The driver owns the shared multi-tenant controller, so dying here takes every "
+                "tenant's service down. 0 fails fast on the first error (default: 10)",
+            )
+            parser.add_argument(
                 "--multi-lora-idle-poll-s",
                 type=float,
                 default=5.0,
