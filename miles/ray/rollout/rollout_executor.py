@@ -125,6 +125,8 @@ class RolloutExecutor:
     # -------------------------- lifecycle -----------------------------
 
     async def dispose(self) -> None:
+        if self.use_experimental_refactor:
+            await self.generate_rollout.dispose()
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
