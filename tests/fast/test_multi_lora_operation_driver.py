@@ -223,6 +223,8 @@ class FakeRayTaskError(ray.exceptions.RayTaskError):
     def __init__(self, cause):
         Exception.__init__(self, str(cause))
         self.cause = cause
+        self.function_name = "generate"
+        self.traceback_str = f"fake traceback: {cause}"
 
     def as_instanceof_cause(self):
         return self.cause
