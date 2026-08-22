@@ -84,4 +84,9 @@ def test_publish_path_function_local_imports_importable():
     )
     assert targets, "expected function-local miles imports under update_weight/"
     for target in targets:
-        importlib.import_module(target)
+        try:
+            importlib.import_module(target)
+        except ModuleNotFoundError as exc:
+            # Optional third-party deps (mooncake, ...) may be absent on CPU CI; a missing miles module is the bug.
+            if (exc.name or "").partition(".")[0] == "miles":
+                raise
