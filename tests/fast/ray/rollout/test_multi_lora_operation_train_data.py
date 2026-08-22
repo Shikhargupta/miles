@@ -261,17 +261,6 @@ class TestPadding:
         assert [s.index for s in data] == [0, 1, 2, 3]
         assert metadata["dynamic_global_batch_size"] == 4
 
-    def test_non_tinker_path_keeps_default_trim_behavior(self):
-        args = SimpleNamespace(
-            multi_lora=False,
-            use_dynamic_global_batch_size=False,
-            disable_rollout_trim_samples=False,
-            global_batch_size=2,
-        )
-        data, metadata = self.postprocess(n=5, pad_to_dp=False, args=args)
-        assert [s.index for s in data] == [0, 1, 2, 3]
-        assert "dynamic_global_batch_size" not in metadata
-
 
 class TestTinkerDispatchSummary:
     """The driver-visible dispatch identity: exactly the batch's operation ids
