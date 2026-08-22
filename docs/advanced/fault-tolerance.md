@@ -93,13 +93,13 @@ contract:
 - ACK is pinned to the boot that returned the outcome and has a sub-second retry
   budget. ACK transport failure never replaces an already decoded result or
   copied business error.
-- Concurrent server-shutdown callers wait for one cancellation-shielded
-  teardown. It stops admission, cancels queued synchronous calls, and closes
-  outcome retention only after executor ownership has drained. Python cannot
-  interrupt a synchronous function that is already running in a thread; the
-  owning worker process must be terminated to fence that side effect. A late
-  completion cannot publish a new outcome or recreate an expiry timer after the
-  store closes.
+- **There is no server-side shutdown sequence.** The server owns no teardown
+  path: a worker process serves until it exits, and the process exit is what
+  releases its threads, sockets and memory. Nothing refuses a call because the
+  server is stopping, and retained outcomes expire lazily on the next admission
+  rather than on a timer. Python also cannot interrupt a synchronous function
+  that is already running in a thread, so terminating the owning worker process
+  remains the only way to fence that side effect.
 
 Health, in-flight inspection, outcome polling, and ACK remain available while
 new data-plane admission is saturated. Capacity does not evict live outcomes or

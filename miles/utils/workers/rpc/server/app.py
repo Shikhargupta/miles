@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -275,14 +274,7 @@ class _RequestBodyLimitMiddleware:
 def create_rpc_app(worker: object) -> FastAPI:
     server = RpcServer(worker=worker)
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        try:
-            yield
-        finally:
-            await server.close()
-
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI()
     app.state.rpc_server = server
     app.state.rpc_control_paths = server.control_paths
     app.add_middleware(

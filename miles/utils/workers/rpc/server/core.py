@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import functools
 import hashlib
 import logging
@@ -42,7 +41,6 @@ class RpcServer:
         self._specs = collect_rpc_method_specs(type(worker))
         self._store = CallStore()
         self._executor = RpcCallExecutor(worker=worker, specs=self._specs)
-        self._close_task: asyncio.Task[None] | None = None
         log_structured(
             logger.info,
             tag="rpc",
@@ -145,12 +143,3 @@ class RpcServer:
         except CallNotFinishedError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         return AcknowledgeResponse()
-
-    async def close(self) -> None:
-        if self._close_task is None:
-            self._close_task = asyncio.create_task(self._close())
-        await asyncio.shield(self._close_task)
-
-    async def _close(self) -> None:
-        await self._executor.close()
-        self._store.close()

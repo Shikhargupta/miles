@@ -42,10 +42,6 @@ class CallStoreCapacityError(Exception):
     pass
 
 
-class CallStoreClosedError(Exception):
-    pass
-
-
 class CallIdTooLongError(Exception):
     pass
 
@@ -90,8 +86,6 @@ class CallStore:
         self._records: dict[str, _CallRecord] = {}
         self._tombstones: dict[str, _CallTombstone] = {}
         self._expiry_heap: list[tuple[float, str]] = []
-        self._expiry_handle: asyncio.Handle | None = None
-        self._next_expiry: float | None = None
         self._active_calls = 0
         self._control_calls = 0
         self._queued_request_bytes = 0
@@ -102,7 +96,6 @@ class CallStore:
         self._control_unacknowledged_outcome_bytes = 0
         self._data_tombstones = 0
         self._control_tombstones = 0
-        self._closed = False
 
     @property
     def stats(self) -> CallStoreStats:
@@ -117,10 +110,6 @@ class CallStore:
             tombstones=len(self._tombstones),
         )
 
-    @property
-    def closed(self) -> bool:
-        return self._closed
-
     def begin(
         self,
         *,
@@ -130,7 +119,6 @@ class CallStore:
         outcome_reservation_bytes: int | None = None,
         control_plane: bool = False,
     ) -> None:
-        self._ensure_open()
         try:
             call_id_bytes = len(call_id.encode())
         except UnicodeEncodeError as e:
@@ -138,7 +126,6 @@ class CallStore:
         if call_id_bytes > MAX_CALL_ID_BYTES:
             raise CallIdTooLongError(f"call id exceeds {MAX_CALL_ID_BYTES} UTF-8 bytes")
         self._expire_due(now=time.monotonic())
-        self._schedule_expiry()
 
         if (record := self._records.get(call_id)) is not None:
             self._validate_fingerprint(call_id=call_id, expected=record.fingerprint, actual=fingerprint)
@@ -199,7 +186,6 @@ class CallStore:
         )
 
     def finish(self, *, call_id: str, outcome: CallStatusResponse) -> None:
-        self._ensure_open()
         record = self._records[call_id]
         if record.outcome is not None:
             raise RuntimeError(f"call {call_id} finished twice")
@@ -222,11 +208,9 @@ class CallStore:
         record.request_reservation_bytes = 0
         record.finished_event.set()
         heapq.heappush(self._expiry_heap, (record.expires_at, call_id))
-        self._schedule_expiry()
         log_structured(logger.debug, tag="rpc", op="call_store", phase="finish", call=call_id, status=outcome.status)
 
     def rollback_admission(self, *, call_id: str, fingerprint: bytes) -> None:
-        self._ensure_open()
         record = self._records[call_id]
         self._validate_fingerprint(call_id=call_id, expected=record.fingerprint, actual=fingerprint)
         if record.outcome is not None:
@@ -282,32 +266,6 @@ class CallStore:
     def in_flight_call_ids(self) -> list[str]:
         return sorted(call_id for call_id, record in self._records.items() if record.outcome is None)
 
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self._expiry_handle is not None:
-            self._expiry_handle.cancel()
-        self._expiry_handle = None
-        self._next_expiry = None
-        self._records.clear()
-        self._tombstones.clear()
-        self._expiry_heap.clear()
-        self._active_calls = 0
-        self._control_calls = 0
-        self._queued_request_bytes = 0
-        self._reserved_outcome_bytes = 0
-        self._unacknowledged_outcome_bytes = 0
-        self._control_queued_request_bytes = 0
-        self._control_reserved_outcome_bytes = 0
-        self._control_unacknowledged_outcome_bytes = 0
-        self._data_tombstones = 0
-        self._control_tombstones = 0
-
-    def _ensure_open(self) -> None:
-        if self._closed:
-            raise CallStoreClosedError("rpc call store is closed")
-
     def _validate_fingerprint(self, *, call_id: str, expected: bytes, actual: bytes) -> None:
         if expected != actual:
             raise DuplicateCallError(f"call {call_id} already belongs to another request")
@@ -334,39 +292,6 @@ class CallStore:
 
         if purged:
             log_structured(logger.debug, tag="rpc", op="call_store", phase="purge", purged=purged)
-
-    def _schedule_expiry(self) -> None:
-        if self._closed:
-            return
-        next_expiry = self._expiry_heap[0][0] if self._expiry_heap else None
-        if next_expiry == self._next_expiry:
-            return
-        if next_expiry is None:
-            if self._expiry_handle is not None:
-                self._expiry_handle.cancel()
-            self._expiry_handle = None
-            self._next_expiry = None
-            return
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-
-        if self._expiry_handle is not None:
-            self._expiry_handle.cancel()
-        self._next_expiry = next_expiry
-        delay = max(0.0, next_expiry - time.monotonic())
-        if delay == 0.0:
-            self._expiry_handle = loop.call_soon(self._expiry_timer_fired)
-        else:
-            self._expiry_handle = loop.call_later(delay, self._expiry_timer_fired)
-
-    def _expiry_timer_fired(self) -> None:
-        self._expiry_handle = None
-        self._next_expiry = None
-        self._expire_due(now=time.monotonic())
-        self._schedule_expiry()
 
     def _adjust_reservations(
         self,

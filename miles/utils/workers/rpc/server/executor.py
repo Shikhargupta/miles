@@ -29,38 +29,15 @@ class RpcCallExecutor:
             for group in sorted({spec.concurrency_group for spec in specs.values() if not spec.is_async})
         }
         self._background_tasks: set[asyncio.Task[None]] = set()
-        self._closed = False
-        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def concurrency_groups(self) -> list[str]:
         return sorted(self._executors)
 
-    @property
-    def background_task_count(self) -> int:
-        return len(self._background_tasks)
-
     def start(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any], call_id: str, finish: Callable[..., None]) -> None:
-        if self._closed:
-            raise RuntimeError("rpc call executor is closed")
         task = asyncio.create_task(self._run(spec=spec, kwargs=kwargs, call_id=call_id, finish=finish))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-
-    async def close(self) -> None:
-        if self._close_task is None:
-            self._closed = True
-            self._close_task = asyncio.create_task(self._close())
-        await asyncio.shield(self._close_task)
-
-    async def _close(self) -> None:
-        tasks = tuple(self._background_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        for executor in self._executors.values():
-            executor.shutdown(wait=False, cancel_futures=True)
 
     async def _run(
         self, *, spec: RpcMethodSpec, kwargs: dict[str, Any], call_id: str, finish: Callable[..., None]

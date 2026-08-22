@@ -15,8 +15,7 @@ from tests.fast.utils.workers.rpc.server.fake_workers import (
     SyncAndAsyncWorker,
 )
 
-from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
-from miles.utils.workers.rpc.server.executor import RpcCallExecutor
+from miles.utils.workers.rpc.common.metadata import rpc
 
 
 class _OversizedWorker:
@@ -121,44 +120,6 @@ class TestBackgroundTasks:
 
         assert [outcome.status for outcome in recorder.outcomes] == ["failed"]
         assert under_test.executor._background_tasks == set()
-
-    async def test_close_cancels_queued_sync_work_but_cannot_stop_a_running_thread(self) -> None:
-        """Shutdown hides late outcomes, cancels queued work, and honestly leaves entered sync code to its owner."""
-        worker = _BlockingSyncWorker()
-        specs = collect_rpc_method_specs(_BlockingSyncWorker)
-        executor = RpcCallExecutor(worker=worker, specs=specs)
-        recorder = OutcomeRecorder()
-        executor.start(spec=specs["demo"], kwargs={"value": "running"}, call_id="running", finish=recorder.finish)
-        assert await asyncio.to_thread(worker.started.wait, 1.0)
-        executor.start(spec=specs["demo"], kwargs={"value": "queued"}, call_id="queued", finish=recorder.finish)
-
-        await executor.close()
-        worker.release.set()
-        assert await asyncio.to_thread(worker.finished.wait, 1.0)
-
-        assert worker.executed == ["running"]
-        assert executor.background_task_count == 0
-
-    async def test_a_cancelled_first_close_does_not_abandon_or_bypass_teardown(self) -> None:
-        """Cancelling one close waiter leaves one shared teardown for later callers to finish."""
-        worker = _CancellationResistantAsyncWorker()
-        specs = collect_rpc_method_specs(_CancellationResistantAsyncWorker)
-        executor = RpcCallExecutor(worker=worker, specs=specs)
-        executor.start(spec=specs["demo"], kwargs={}, call_id="running", finish=OutcomeRecorder().finish)
-        await asyncio.wait_for(worker.started.wait(), timeout=1.0)
-
-        first_close = asyncio.create_task(executor.close())
-        await asyncio.wait_for(worker.cancelled.wait(), timeout=1.0)
-        first_close.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await first_close
-        second_close = asyncio.create_task(executor.close())
-        await asyncio.sleep(0)
-
-        assert not second_close.done()
-        worker.release.set()
-        await asyncio.wait_for(second_close, timeout=1.0)
-        assert executor.background_task_count == 0
 
 
 class TestOutcomeSize:

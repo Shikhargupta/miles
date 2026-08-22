@@ -1,10 +1,8 @@
-import asyncio
 import hashlib
 import json
 import subprocess
 import sys
 import textwrap
-import time
 
 import pytest
 
@@ -83,46 +81,6 @@ class TestAcknowledgement:
         assert store.stats.tombstones == 1
         with pytest.raises(store_module.DuplicateCallError):
             store.begin(call_id="c1", fingerprint=_OTHER_DIGEST)
-
-    async def test_expiry_runs_without_another_submission(self) -> None:
-        """The background expiry removes a tombstone even when no later call arrives."""
-        store = _new_store(finished_ttl_seconds=0.01)
-        store.begin(call_id="c1", fingerprint=_DIGEST)
-        store.finish(call_id="c1", outcome=CallStatusResponse(status="success", result=1))
-        store.acknowledge(call_id="c1", fingerprint=_DIGEST)
-
-        await asyncio.sleep(0.03)
-
-        assert not store.contains("c1")
-        store.begin(call_id="c1", fingerprint=_DIGEST)
-        store.close()
-
-    async def test_close_cancels_the_single_expiry_timer(self) -> None:
-        """Store shutdown cancels its one background expiry timer idempotently."""
-        store = _new_store()
-        store.begin(call_id="c1", fingerprint=_DIGEST)
-        store.finish(call_id="c1", outcome=CallStatusResponse(status="success"))
-        timer = store._expiry_handle
-        assert timer is not None and not timer.cancelled()
-
-        store.close()
-        store.close()
-
-        assert timer.cancelled()
-        assert store._expiry_handle is None
-
-    async def test_close_is_terminal_for_late_admission_and_completion(self) -> None:
-        """A closed store cannot admit work or let a late executor completion rearm retention."""
-        store = _new_store()
-        store.begin(call_id="pending", fingerprint=_DIGEST)
-        store.close()
-
-        with pytest.raises(store_module.CallStoreClosedError):
-            store.begin(call_id="new", fingerprint=_OTHER_DIGEST)
-        with pytest.raises(store_module.CallStoreClosedError):
-            store.finish(call_id="pending", outcome=CallStatusResponse(status="success"))
-
-        assert store._expiry_handle is None
 
 
 class TestCapacity:
@@ -247,17 +205,14 @@ class TestCapacity:
         heartbeats_per_horizon = int(store_module.FINISHED_TTL_SECONDS // MIN_HEALTH_CHECK_INTERVAL_SECONDS) + 1
         assert store_module.MAX_CONTROL_TOMBSTONES > heartbeats_per_horizon
         store = _new_store()
-        try:
-            for index in range(heartbeats_per_horizon):
-                call_id = f"heartbeat-{index}"
-                digest = hashlib.sha256(call_id.encode()).digest()
-                store.begin(call_id=call_id, fingerprint=digest, control_plane=True)
-                store.finish(call_id=call_id, outcome=CallStatusResponse(status="success"))
-                store.acknowledge(call_id=call_id, fingerprint=digest)
+        for index in range(heartbeats_per_horizon):
+            call_id = f"heartbeat-{index}"
+            digest = hashlib.sha256(call_id.encode()).digest()
+            store.begin(call_id=call_id, fingerprint=digest, control_plane=True)
+            store.finish(call_id=call_id, outcome=CallStatusResponse(status="success"))
+            store.acknowledge(call_id=call_id, fingerprint=digest)
 
-            store.begin(call_id="next-heartbeat", fingerprint=_OTHER_DIGEST, control_plane=True)
-        finally:
-            store.close()
+        store.begin(call_id="next-heartbeat", fingerprint=_OTHER_DIGEST, control_plane=True)
 
     async def test_call_ids_are_bounded_by_utf8_bytes_before_storage(self) -> None:
         """One oversized logical id cannot retain unaccounted bytes in active records or tombstones."""
@@ -268,74 +223,6 @@ class TestCapacity:
             store.begin(call_id=oversized, fingerprint=_DIGEST)
 
         assert store.stats.active_calls == 0
-        assert store.stats.tombstones == 0
-
-
-class TestExpiryScheduling:
-    async def test_a_large_expiry_batch_yields_to_the_event_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Expiring 65k tombstones is split into bounded callbacks so control traffic can run between batches."""
-        now = [10.0]
-        monkeypatch.setattr(store_module.time, "monotonic", lambda: now[0])
-        store = _new_store(finished_ttl_seconds=3600.0, expiry_batch_size=256)
-        for index in range(65536):
-            call_id = f"c{index}"
-            digest = hashlib.sha256(call_id.encode()).digest()
-            store.begin(call_id=call_id, fingerprint=digest)
-            store.finish(call_id=call_id, outcome=CallStatusResponse(status="success"))
-            store.acknowledge(call_id=call_id, fingerprint=digest)
-
-        heartbeat_gaps: list[float] = []
-        last = time.perf_counter()
-
-        async def heartbeat() -> None:
-            nonlocal last
-            while store.stats.tombstones:
-                await asyncio.sleep(0)
-                now = time.perf_counter()
-                heartbeat_gaps.append(now - last)
-                last = now
-
-        now[0] = 4000.0
-        original = store._expiry_handle
-        assert original is not None
-        original.cancel()
-        store._expiry_handle = None
-        store._next_expiry = None
-        store._expiry_timer_fired()
-        await asyncio.wait_for(heartbeat(), timeout=5.0)
-
-        assert heartbeat_gaps
-        assert max(heartbeat_gaps) < 0.05
-        assert store.stats.tombstones == 0
-        store.close()
-
-    async def test_close_cancels_a_mid_batch_expiry_continuation(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Closing between expiry batches cancels the queued continuation and cannot leave an orphan handle."""
-        now = [10.0]
-        monkeypatch.setattr(store_module.time, "monotonic", lambda: now[0])
-        store = _new_store(finished_ttl_seconds=3600.0, expiry_batch_size=16)
-        for index in range(128):
-            call_id = f"c{index}"
-            digest = hashlib.sha256(call_id.encode()).digest()
-            store.begin(call_id=call_id, fingerprint=digest)
-            store.finish(call_id=call_id, outcome=CallStatusResponse(status="success"))
-            store.acknowledge(call_id=call_id, fingerprint=digest)
-
-        now[0] = 4000.0
-        original = store._expiry_handle
-        assert original is not None
-        original.cancel()
-        store._expiry_handle = None
-        store._next_expiry = None
-        store._expiry_timer_fired()
-        continuation = store._expiry_handle
-        assert continuation is not None
-
-        store.close()
-        await asyncio.sleep(0)
-
-        assert continuation.cancelled()
-        assert store._expiry_handle is None
         assert store.stats.tombstones == 0
 
 
@@ -361,7 +248,6 @@ def _run_resource_probe(body: str) -> dict[str, float]:
         {textwrap.indent(textwrap.dedent(body), '        ').strip()}
         gc.collect()
         print(json.dumps({{'rss_delta': rss_bytes() - baseline, **metrics}}))
-        store.close()
         """
     )
     completed = subprocess.run(
