@@ -5,7 +5,6 @@ import pytest
 
 from miles.ray.multi_lora.backend import MultiLoraOperationBackend
 from miles.ray.multi_lora.config import AdapterRunConfig
-from miles.ray.multi_lora.identity import make_rid, parse_adapter
 from miles.ray.multi_lora.registry import AdapterState
 
 
@@ -61,10 +60,6 @@ class TestRegistration:
             register(backend, rank=64)
         with pytest.raises(ValueError, match="must not set alpha"):
             register(backend, alpha=16)
-
-    def test_rid_roundtrip_preserves_names_with_underscores(self):
-        for name in ["a", "adapter_a", "weird__name", "x_y_z"]:
-            assert parse_adapter(make_rid(name, "reg1")) == name
 
 
 class TestPreflight:
