@@ -181,6 +181,9 @@ class TestConvert:
 
     def test_legacy_batch_keeps_first_sample_optional_channel_semantics(self):
         samples = [make_sample("A"), make_sample("B")]
+        # Legacy batches carry no adapter stamps; stamped batches now require the tinker lease.
+        for sample in samples:
+            sample.adapter = None
         samples[1].rollout_log_probs = [-0.1, -0.2]
 
         data = convert_samples_to_train_data(
