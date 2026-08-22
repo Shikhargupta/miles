@@ -21,7 +21,6 @@ from miles.utils.workers.rpc.common.protocol import (
     IN_FLIGHT_PATH,
     MAX_AGGREGATE_REQUEST_BODY_BYTES,
     MAX_CONTROL_AGGREGATE_REQUEST_BODY_BYTES,
-    MAX_REQUEST_BODY_BYTES,
     SUBMIT_PATH,
     AcknowledgeRequest,
     AcknowledgeResponse,
@@ -36,7 +35,6 @@ from miles.utils.workers.rpc.server.core import RpcServer
 
 logger = logging.getLogger(__name__)
 
-MAX_REQUEST_BODY_CHUNKS = 4096
 MAX_DATA_IN_FLIGHT_REQUESTS = 4096
 MAX_CONTROL_IN_FLIGHT_REQUESTS = 4096
 MAX_DATA_IN_FLIGHT_REJECTIONS = 256
@@ -48,8 +46,9 @@ class _RequestBodyLimitMiddleware:
         self,
         app: ASGIApp,
         *,
-        max_bytes: int,
         boot_uuid: str,
+        max_bytes: int | None = None,
+        max_body_chunks: int | None = None,
         max_data_aggregate_bytes: int = MAX_AGGREGATE_REQUEST_BODY_BYTES,
         max_control_aggregate_bytes: int = MAX_CONTROL_AGGREGATE_REQUEST_BODY_BYTES,
         max_data_in_flight_requests: int = MAX_DATA_IN_FLIGHT_REQUESTS,
@@ -59,8 +58,9 @@ class _RequestBodyLimitMiddleware:
         control_paths: frozenset[str] = frozenset(),
     ) -> None:
         self._app = app
-        self._max_bytes = max_bytes
         self._boot_uuid = boot_uuid
+        self._max_bytes = max_bytes
+        self._max_body_chunks = max_body_chunks
         self._max_data_aggregate_bytes = max_data_aggregate_bytes
         self._max_control_aggregate_bytes = max_control_aggregate_bytes
         self._max_data_in_flight_requests = max_data_in_flight_requests
@@ -107,7 +107,12 @@ class _RequestBodyLimitMiddleware:
                 (value for key, value in scope["headers"] if key.lower() == b"content-length"),
                 None,
             )
-            if content_length is not None and content_length.isdigit() and int(content_length) > self._max_bytes:
+            if (
+                self._max_bytes is not None
+                and content_length is not None
+                and content_length.isdigit()
+                and int(content_length) > self._max_bytes
+            ):
                 await self._reject(
                     scope=scope,
                     receive=receive,
@@ -129,19 +134,19 @@ class _RequestBodyLimitMiddleware:
                     del message
                     continue
                 chunk_count += 1
-                if chunk_count > MAX_REQUEST_BODY_CHUNKS:
+                if self._max_body_chunks is not None and chunk_count > self._max_body_chunks:
                     del message
                     await self._reject(
                         scope=scope,
                         receive=receive,
                         send=send,
                         status_code=413,
-                        detail=f"rpc request body exceeds {MAX_REQUEST_BODY_CHUNKS} chunks",
+                        detail=f"rpc request body exceeds {self._max_body_chunks} chunks",
                     )
                     return
                 chunk = message.get("body", b"")
                 chunk_bytes = len(chunk)
-                if body_bytes + chunk_bytes > self._max_bytes:
+                if self._max_bytes is not None and body_bytes + chunk_bytes > self._max_bytes:
                     del message, chunk
                     await self._reject(
                         scope=scope,
@@ -282,7 +287,6 @@ def create_rpc_app(worker: object) -> FastAPI:
     app.state.rpc_control_paths = server.control_paths
     app.add_middleware(
         _RequestBodyLimitMiddleware,
-        max_bytes=MAX_REQUEST_BODY_BYTES,
         boot_uuid=server.boot_uuid,
         control_paths=server.control_paths,
     )

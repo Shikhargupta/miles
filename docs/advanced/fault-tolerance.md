@@ -51,11 +51,14 @@ Fault-tolerant trainer workers expose heartbeats and recovery operations through
 the Miles RPC server. The server applies the following bounded-delivery
 contract:
 
-- Request bodies are limited before each incoming chunk is retained. Concurrent
-  data-plane bodies and control-plane bodies use separate aggregate ingress
-  byte and in-flight-request budgets. A bounded byte array replaces per-chunk
-  retention, and conversion to the downstream immutable body reserves both
-  copies. A separate per-request chunk-count limit bounds streaming work.
+- Concurrent data-plane bodies and control-plane bodies use separate aggregate
+  ingress byte and in-flight-request budgets. A bounded byte array replaces
+  per-chunk retention, and conversion to the downstream immutable body reserves
+  both copies. Neither a per-request byte cap nor a per-request chunk-count cap
+  is imposed by default; both are available as opt-ins. They are opt-in because
+  the server does not control how a body is fragmented into reads, so a fixed
+  chunk-count cap would make a legal upload fail or succeed depending on network
+  conditions.
   Admitted calls then use matching bounded queued-request budgets, so many
   near-limit requests cannot retain multiple GiB of input or decoded arguments.
   Each lane also bounds concurrent overload responses. Before Uvicorn creates an
@@ -65,10 +68,13 @@ contract:
   task. Keep-alive requests are classified again, while pipelining and protocol
   upgrades fail closed. Clients observe a transport failure and retry with the
   same call ID.
-- Every method reserves its declared maximum serialized outcome before its
-  executor starts. New calls receive a retryable capacity response before worker
-  execution when the active-call, queued-request, or retained-outcome budget is
-  full.
+- A method that declares a maximum serialized outcome reserves it before its
+  executor starts, and that reservation is what the aggregate retained-outcome
+  budget accounts for. A method that declares none reserves nothing and its
+  retained outcome is therefore not bounded, matching the behaviour before
+  reservations existed. New calls receive a retryable capacity response before
+  worker execution when the active-call, queued-request, or reserved-outcome
+  budget is full.
 - `get_heartbeat_status` uses a separate bounded control-plane reserve. A full
   training queue therefore does not make a healthy worker look dead, while
   heartbeat traffic still has hard call, request, and outcome limits.

@@ -8,7 +8,6 @@ import logging
 import time
 
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.utils.workers.rpc.common.metadata import DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES
 from miles.utils.workers.rpc.common.protocol import CallStatusResponse
 
 logger = logging.getLogger(__name__)
@@ -128,7 +127,7 @@ class CallStore:
         call_id: str,
         fingerprint: bytes,
         request_reservation_bytes: int = 0,
-        outcome_reservation_bytes: int = DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES,
+        outcome_reservation_bytes: int | None = None,
         control_plane: bool = False,
     ) -> None:
         self._ensure_open()
@@ -177,7 +176,7 @@ class CallStore:
         max_outcome_bytes = (
             self._max_control_outcome_bytes if control_plane else self._max_unacknowledged_outcome_bytes
         )
-        if reserved_outcome_bytes + outcome_reservation_bytes > max_outcome_bytes:
+        if reserved_outcome_bytes + (outcome_reservation_bytes or 0) > max_outcome_bytes:
             raise CallStoreCapacityError(
                 f"{admission_class} outcome retention capacity {max_outcome_bytes} bytes is full"
             )
@@ -193,7 +192,7 @@ class CallStore:
         self._adjust_reservations(
             control_plane=control_plane,
             request_bytes=request_reservation_bytes,
-            outcome_bytes=outcome_reservation_bytes,
+            outcome_bytes=outcome_reservation_bytes or 0,
         )
         log_structured(
             logger.debug, tag="rpc", op="call_store", phase="accept", call=call_id, tracked=len(self._records)
@@ -206,7 +205,7 @@ class CallStore:
             raise RuntimeError(f"call {call_id} finished twice")
 
         outcome_bytes = len(outcome.model_dump_json().encode())
-        if outcome_bytes > record.outcome_reservation_bytes:
+        if record.outcome_reservation_bytes is not None and outcome_bytes > record.outcome_reservation_bytes:
             raise RuntimeError(
                 f"call {call_id} serialized outcome is {outcome_bytes} bytes, "
                 f"above its {record.outcome_reservation_bytes}-byte reservation"
@@ -238,7 +237,7 @@ class CallStore:
         self._adjust_reservations(
             control_plane=record.control_plane,
             request_bytes=-record.request_reservation_bytes,
-            outcome_bytes=-record.outcome_reservation_bytes,
+            outcome_bytes=-(record.outcome_reservation_bytes or 0),
         )
 
     def acknowledge(self, *, call_id: str, fingerprint: bytes) -> None:
@@ -262,7 +261,7 @@ class CallStore:
         self._adjust_tombstone_count(control_plane=record.control_plane, delta=1)
         self._adjust_reservations(
             control_plane=record.control_plane,
-            outcome_bytes=-record.outcome_reservation_bytes,
+            outcome_bytes=-(record.outcome_reservation_bytes or 0),
             unacknowledged_bytes=-record.outcome_bytes,
         )
         log_structured(logger.debug, tag="rpc", op="call_store", phase="ack", call=call_id)
@@ -324,7 +323,7 @@ class CallStore:
                 self._adjust_call_count(control_plane=record.control_plane, delta=-1)
                 self._adjust_reservations(
                     control_plane=record.control_plane,
-                    outcome_bytes=-record.outcome_reservation_bytes,
+                    outcome_bytes=-(record.outcome_reservation_bytes or 0),
                     unacknowledged_bytes=-record.outcome_bytes,
                 )
                 purged += 1
@@ -404,7 +403,7 @@ class _CallRecord:
     fingerprint: bytes
     finished_event: asyncio.Event
     request_reservation_bytes: int
-    outcome_reservation_bytes: int
+    outcome_reservation_bytes: int | None
     control_plane: bool
     outcome: CallStatusResponse | None = None
     outcome_bytes: int = 0

@@ -95,9 +95,9 @@ class TestCollectSpecs:
         assert specs["demo_grouped"].concurrency_group == "heavy"
 
     def test_default_serialized_outcome_limit(self) -> None:
-        """Undecorated RPC methods reserve the bounded default outcome size."""
+        """An undecorated RPC method declares no outcome limit, so nothing is reserved for it."""
         specs = collect_rpc_method_specs(_GoodWorker)
-        assert specs["demo_default_arg"].max_serialized_outcome_bytes == 64 * 1024
+        assert specs["demo_default_arg"].max_serialized_outcome_bytes is None
 
     def test_decorated_serialized_outcome_limit(self) -> None:
         """A method can declare a smaller proven serialized outcome bound."""

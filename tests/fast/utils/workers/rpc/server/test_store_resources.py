@@ -463,8 +463,8 @@ class TestResourceBounds:
         assert metrics["different_digest_rejected"]
         assert metrics["acknowledged_poll_rejected"]
 
-    def test_default_no_ack_flood_reserves_exactly_256_mebibytes_without_allocating_it(self) -> None:
-        """The default no-ACK limit reserves 256 MiB yet keeps live RSS bounded for variable small outcomes."""
+    def test_default_no_ack_flood_is_stopped_by_the_active_cap_and_reserves_nothing(self) -> None:
+        """With no declared outcome cap nothing is reserved, so the flood is stopped by the active-call cap instead."""
         metrics = _run_resource_probe(
             """
             for index in range(4096):
@@ -489,9 +489,43 @@ class TestResourceBounds:
         )
 
         assert metrics["active"] == 4096
-        assert metrics["reserved"] == 256 * 1024 * 1024
+        assert metrics["reserved"] == 0
         assert metrics["rejected"]
         assert metrics["rss_delta"] <= 32 * 1024 * 1024
+
+    def test_a_declared_outcome_cap_saturates_the_aggregate_retention_budget(self) -> None:
+        """A declared cap still reserves, so the aggregate outcome budget rejects before the active cap can."""
+        metrics = _run_resource_probe(
+            """
+            reservation = 1024 * 1024
+            for index in range(256):
+                call_id = f'c{index}'
+                store.begin(
+                    call_id=call_id,
+                    fingerprint=hashlib.sha256(call_id.encode()).digest(),
+                    outcome_reservation_bytes=reservation,
+                )
+            detail = ''
+            try:
+                store.begin(
+                    call_id='overflow',
+                    fingerprint=hashlib.sha256(b'overflow').digest(),
+                    outcome_reservation_bytes=reservation,
+                )
+            except Exception as error:
+                detail = f'{type(error).__name__}: {error}'
+            metrics = {
+                'active': store.stats.active_calls,
+                'reserved': store.stats.reserved_outcome_bytes,
+                'detail': detail,
+            }
+            """
+        )
+
+        assert metrics["active"] == 256
+        assert metrics["reserved"] == 256 * 1024 * 1024
+        assert metrics["detail"].startswith("CallStoreCapacityError")
+        assert "outcome retention capacity" in metrics["detail"]
 
     def test_default_request_reservations_prevent_a_four_gibibyte_queued_workload(self) -> None:
         """Near-limit requests stop at the aggregate queued-byte cap without retaining their payloads in the store."""

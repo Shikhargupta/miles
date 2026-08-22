@@ -21,16 +21,16 @@ from miles.utils.workers.rpc.common.protocol import (
     BOOT_UUID_HEADER,
     EXPECTED_BOOT_UUID_HEADER,
     IN_FLIGHT_PATH,
-    MAX_REQUEST_BODY_BYTES,
     CallStatusResponse,
     SubmitRequest,
 )
-from miles.utils.workers.rpc.server import app as app_module
 from miles.utils.workers.rpc.server import store as store_module
 from miles.utils.workers.rpc.server.app import _RequestBodyLimitMiddleware, create_rpc_app
 from miles.utils.workers.rpc.server.core import RpcServer
 from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 from miles.utils.workers.rpc.server.store import CallStore
+
+_MAX_BODY_CHUNKS = 4096
 
 
 class _Item(StrictBaseModel):
@@ -625,35 +625,44 @@ class TestCapacity:
 
         assert started == ["heartbeat"]
 
-    async def test_oversized_request_is_rejected_before_worker_execution(self) -> None:
-        """A request over the wire-size limit fails before its target method starts."""
+    async def test_a_multi_megabyte_request_reaches_its_worker(self) -> None:
+        """No per-request wire-size cap is imposed by default, so a large declared payload still executes."""
         worker = _Worker()
         async with _client(worker) as client:
             response = await _submit(
                 client,
                 "demo_tag",
-                {"tag": "x" * MAX_REQUEST_BODY_BYTES},
-                call_id="oversized",
+                {"tag": "x" * (4 * 1024 * 1024)},
+                call_id="large",
             )
 
-        assert response.response.status_code == 413
-        assert worker.order == []
+        assert response.response.json() == {"status": "submitted"}
 
-    async def test_chunked_oversized_request_is_stopped_without_content_length(self) -> None:
-        """Streaming input is rejected as soon as cumulative bytes cross the body limit."""
+    async def test_a_declared_per_request_cap_rejects_an_oversized_body(self) -> None:
+        """The per-request cap is opt-in: a middleware given one rejects before the body is retained."""
+        downstream_calls = 0
 
-        async def chunks():
-            yield b"x" * (MAX_REQUEST_BODY_BYTES // 2)
-            yield b"y" * (MAX_REQUEST_BODY_BYTES // 2 + 1)
-            raise AssertionError("the body limiter read beyond the first oversized chunk")
+        async def downstream(scope: dict, receive: object, send: object) -> None:
+            nonlocal downstream_calls
+            downstream_calls += 1
 
-        worker = _Worker()
-        async with _client(worker) as client:
-            response = await client.post("/v1/demo_tag", content=chunks())
+        middleware = _RequestBodyLimitMiddleware(downstream, max_bytes=128, boot_uuid="boot")
+        sent: list[dict] = []
 
-        assert "content-length" not in response.request.headers
-        assert response.status_code == 413
-        assert worker.order == []
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b"x" * 256, "more_body": False}
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        await middleware(
+            {"type": "http", "method": "POST", "path": "/v1/demo_tag", "headers": []},
+            receive,
+            send,
+        )
+
+        assert sent[0]["status"] == 413
+        assert downstream_calls == 0
 
     async def test_disconnected_chunked_requests_terminate_without_task_leaks(self) -> None:
         """A client disconnect during body streaming terminates each middleware call without reading forever."""
@@ -1153,15 +1162,15 @@ class TestCapacity:
         assert middleware._data_aggregate_bytes == 0
 
     @pytest.mark.parametrize("chunk", [b"", b"x"])
-    async def test_request_chunk_count_is_bounded_independently_of_payload_bytes(self, chunk: bytes) -> None:
-        """Empty or one-byte chunk floods stop before list and object overhead can grow without bound."""
+    async def test_a_declared_chunk_count_cap_stops_a_chunk_flood(self, chunk: bytes) -> None:
+        """The chunk-count cap is opt-in: a middleware given one stops empty or one-byte floods."""
         received = 0
         responses: list[dict] = []
 
         async def receive() -> dict:
             nonlocal received
             received += 1
-            if received > app_module.MAX_REQUEST_BODY_CHUNKS + 1:
+            if received > _MAX_BODY_CHUNKS + 1:
                 raise AssertionError("middleware read beyond its chunk-count limit")
             return {"type": "http.request", "body": chunk, "more_body": True}
 
@@ -1171,7 +1180,9 @@ class TestCapacity:
         async def downstream(scope: dict, receive: object, send: object) -> None:
             raise AssertionError("a chunk flood must not reach the downstream app")
 
-        middleware = _RequestBodyLimitMiddleware(downstream, max_bytes=1024 * 1024, boot_uuid="boot")
+        middleware = _RequestBodyLimitMiddleware(
+            downstream, max_bytes=1024 * 1024, max_body_chunks=_MAX_BODY_CHUNKS, boot_uuid="boot"
+        )
         await middleware(
             {"type": "http", "headers": [], "path": "/v1/demo", "method": "POST"},
             receive,
@@ -1179,7 +1190,7 @@ class TestCapacity:
         )
 
         assert responses[0]["status"] == 413
-        assert received == app_module.MAX_REQUEST_BODY_CHUNKS + 1
+        assert received == _MAX_BODY_CHUNKS + 1
 
     async def test_only_canonical_post_control_routes_use_the_control_ingress_reserve(self) -> None:
         """Wrong methods and suffix lookalikes cannot consume the independent control ingress budget."""

@@ -95,6 +95,8 @@ class RpcCallExecutor:
         )
 
     def _validate_outcome_size(self, *, spec: RpcMethodSpec, outcome: CallStatusResponse) -> None:
+        if spec.max_serialized_outcome_bytes is None:
+            return
         if (
             _measure_json_bytes(
                 outcome.model_dump(mode="json"),
@@ -108,6 +110,8 @@ class RpcCallExecutor:
             )
 
     def _failed_outcome(self, *, spec: RpcMethodSpec, error: BaseException) -> CallStatusResponse:
+        if spec.max_serialized_outcome_bytes is None:
+            return CallStatusResponse(status="failed", error="".join(traceback.format_exception(error)))
         if _measure_json_bytes(str(error), limit=spec.max_serialized_outcome_bytes // 2) is None:
             return self._compact_failure(spec=spec, error=error)
         outcome = CallStatusResponse(status="failed", error="".join(traceback.format_exception(error)))
@@ -117,6 +121,7 @@ class RpcCallExecutor:
         return self._compact_failure(spec=spec, error=error)
 
     def _compact_failure(self, *, spec: RpcMethodSpec, error: BaseException) -> CallStatusResponse:
+        assert spec.max_serialized_outcome_bytes is not None
         compact = CallStatusResponse(
             status="failed",
             error=(

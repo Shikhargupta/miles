@@ -10,7 +10,6 @@ from typing import Any, TypeVar
 from miles.utils.workers.rpc.common.serialization import RpcSerializer
 
 DEFAULT_CONCURRENCY_GROUP = "default"
-DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES = 64 * 1024
 MIN_SERIALIZED_OUTCOME_BYTES = 512
 
 _RPC_CONFIG_ATTR = "_miles_rpc_config"
@@ -23,10 +22,10 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 def rpc(
     *,
     concurrency_group: str = DEFAULT_CONCURRENCY_GROUP,
-    max_serialized_outcome_bytes: int = DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES,
+    max_serialized_outcome_bytes: int | None = None,
     control_plane: bool = False,
 ) -> Callable[[_F], _F]:
-    if max_serialized_outcome_bytes < MIN_SERIALIZED_OUTCOME_BYTES:
+    if max_serialized_outcome_bytes is not None and max_serialized_outcome_bytes < MIN_SERIALIZED_OUTCOME_BYTES:
         raise ValueError(f"max_serialized_outcome_bytes must be at least {MIN_SERIALIZED_OUTCOME_BYTES}")
     config = _RpcConfig(
         concurrency_group=concurrency_group,
@@ -45,7 +44,7 @@ def rpc(
 class RpcMethodSpec:
     name: str
     concurrency_group: str
-    max_serialized_outcome_bytes: int
+    max_serialized_outcome_bytes: int | None
     control_plane: bool
     is_async: bool
     serializer: RpcSerializer
@@ -103,7 +102,7 @@ def _collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
 @dataclasses.dataclass(frozen=True)
 class _RpcConfig:
     concurrency_group: str
-    max_serialized_outcome_bytes: int
+    max_serialized_outcome_bytes: int | None
     control_plane: bool
 
 
@@ -116,7 +115,7 @@ def _find_rpc_config(attr: Callable[..., Any]) -> _RpcConfig:
         layer = getattr(layer, "__wrapped__", None)
     return _RpcConfig(
         concurrency_group=DEFAULT_CONCURRENCY_GROUP,
-        max_serialized_outcome_bytes=DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES,
+        max_serialized_outcome_bytes=None,
         control_plane=False,
     )
 
