@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import statistics
+import sys
 import threading
 import time
 import urllib.error
@@ -455,6 +456,11 @@ def main() -> None:
         if s["reward_first10_mean"] is not None and s["reward_last10_mean"] > s["reward_first10_mean"]
     )
     print(f"\n=== RL QUALITY: reward grew (last10 > first10) on {grew}/{len(runs)} adapters ===", flush=True)
+
+    # An aborted loop is recorded in run.error by its thread; it must fail the process, not just the summary.
+    aborted = [run.spec["name"] for run in runs if run.error]
+    if aborted:
+        sys.exit(f"RL quality FAILED: adapter loop(s) aborted: {', '.join(aborted)}")
 
 
 def _thread_main(run: AdapterRun, ops: Ops, router: str, dataset, grade, args, log) -> None:
