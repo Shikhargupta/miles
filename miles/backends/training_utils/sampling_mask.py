@@ -1,45 +1,96 @@
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import torch
 
 
-def get_rollout_sampling_mask(batch: Mapping[str, object]) -> tuple[object, object]:
-    """Read the complete sampling mask required by an actor scoring pass."""
+@dataclass(frozen=True, eq=False)
+class RolloutSamplingMask:
+    """One sample's sampling support: the token ids the rollout sampler could
+    emit at each response position.
+
+    Stored in CSR form so it stays two flat integer arrays end to end: token
+    ``t``'s support is ``ids[offsets[t] : offsets[t + 1]]``. Inputs may be
+    tensors or plain integer sequences (the Mooncake object-store codec
+    decodes per-sample rows as plain int lists).
+    """
+
+    ids: torch.Tensor
+    offsets: torch.Tensor
+
+    def __post_init__(self):
+        object.__setattr__(self, "ids", _to_cpu_integer_tensor(self.ids))
+        object.__setattr__(self, "offsets", _to_cpu_integer_tensor(self.offsets))
+        if self.offsets.numel() == 0 or self.offsets[0] != 0 or self.offsets[-1] != self.ids.numel():
+            raise ValueError("sampling-mask offsets must start at zero and end at the flattened id count")
+        if torch.any(self.offsets[1:] <= self.offsets[:-1]):
+            raise ValueError("every response token must have a non-empty sampling support")
+
+    @classmethod
+    def from_supports(cls, supports: Sequence[Sequence[int] | torch.Tensor]) -> "RolloutSamplingMask":
+        """Build from one support (the allowed token ids) per response token."""
+        parts = [_to_cpu_integer_tensor(support) for support in supports]
+        lengths = torch.tensor([part.numel() for part in parts], dtype=torch.long)
+        ids = torch.cat(parts) if parts else torch.empty(0, dtype=torch.long)
+        offsets = torch.cat([torch.zeros(1, dtype=torch.long), lengths.cumsum(0)])
+        return cls(ids=ids, offsets=offsets)
+
+    def __len__(self) -> int:
+        return self.offsets.numel() - 1
+
+    def __getitem__(self, token_index: int) -> torch.Tensor:
+        if token_index < 0:
+            token_index += len(self)
+        if not 0 <= token_index < len(self):
+            raise IndexError(f"response token index {token_index} out of range for {len(self)} tokens")
+        return self.ids[self.offsets[token_index] : self.offsets[token_index + 1]]
+
+
+def get_rollout_sampling_mask(batch: Mapping[str, object]) -> list[RolloutSamplingMask]:
+    """Read the complete sampling mask required by an actor scoring pass.
+
+    The batch carries the mask as two flat per-sample sequences — the wire
+    format both object-store backends can transport — wrapped here into one
+    validated value object per sample.
+    """
     sampling_mask_ids = batch.get("rollout_sampling_mask_ids")
     sampling_mask_offsets = batch.get("rollout_sampling_mask_offsets")
     if sampling_mask_ids is None or sampling_mask_offsets is None:
         raise ValueError(
             "truncated-sampling actor scoring requires rollout_sampling_mask_ids and rollout_sampling_mask_offsets"
         )
-    return sampling_mask_ids, sampling_mask_offsets
+    if len(sampling_mask_ids) != len(sampling_mask_offsets):
+        raise ValueError(
+            "sampling-mask ids and offsets must cover the same samples: "
+            f"ids={len(sampling_mask_ids)}, offsets={len(sampling_mask_offsets)}"
+        )
+    return [
+        RolloutSamplingMask(ids=ids, offsets=offsets)
+        for ids, offsets in zip(sampling_mask_ids, sampling_mask_offsets, strict=True)
+    ]
 
 
 def build_local_sampling_mask(
     logits: torch.Tensor,
-    sampling_mask_ids: Sequence[int] | torch.Tensor,
-    sampling_mask_offsets: Sequence[int] | torch.Tensor,
+    sampling_mask: RolloutSamplingMask,
     response_indices: Sequence[int] | torch.Tensor,
     *,
     response_length: int,
     tp_rank: int,
 ) -> torch.Tensor:
     """Build the dense local-vocabulary mask consumed by the log-prob primitive."""
-    ids = _to_cpu_integer_tensor(sampling_mask_ids)
-    offsets = _to_cpu_integer_tensor(sampling_mask_offsets)
+    ids = sampling_mask.ids
+    offsets = sampling_mask.offsets
     indices = _to_cpu_integer_tensor(response_indices)
 
     if indices.numel() != logits.size(0):
         raise ValueError(
             f"sampling-mask rows must align with logits: indices={indices.numel()}, logits={logits.size(0)}"
         )
-    if offsets.numel() == 0 or offsets[0] != 0 or offsets[-1] != ids.numel():
-        raise ValueError("sampling-mask offsets must start at zero and end at the flattened id count")
-    if offsets.numel() != response_length + 1:
+    if len(sampling_mask) != response_length:
         raise ValueError(
-            f"sampling-mask offsets length {offsets.numel()} != response length + 1 ({response_length + 1})"
+            f"sampling mask covers {len(sampling_mask)} response tokens != response length {response_length}"
         )
-    if torch.any(offsets[1:] <= offsets[:-1]):
-        raise ValueError("every response token must have a non-empty sampling support")
     if torch.any(indices < 0) or torch.any(indices >= response_length):
         raise ValueError(f"response indices must be in [0, {response_length})")
 

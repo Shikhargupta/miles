@@ -6,7 +6,7 @@ import torch
 from miles.backends.training_utils.cp_utils import allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
 from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.sampling_mask import build_local_sampling_mask
+from miles.backends.training_utils.sampling_mask import RolloutSamplingMask, build_local_sampling_mask
 
 
 def _iter_response_chunks(
@@ -191,8 +191,7 @@ def get_log_probs_and_entropy(
     entropy_requires_grad: bool = True,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
-    rollout_sampling_mask_ids: Sequence[Sequence[int] | torch.Tensor] | None = None,
-    rollout_sampling_mask_offsets: Sequence[Sequence[int] | torch.Tensor] | None = None,
+    rollout_sampling_mask: Sequence[RolloutSamplingMask] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -211,10 +210,8 @@ def get_log_probs_and_entropy(
         entropy_requires_grad: If False, compute entropy as an observed metric
             without attaching it to the autograd graph.
         non_loss_data: Unused; kept for API compatibility.
-        rollout_sampling_mask_ids: Flattened sampling-support token IDs for
-            each sample.
-        rollout_sampling_mask_offsets: CSR offsets delimiting one support per
-            response token for each sample.
+        rollout_sampling_mask: Per-sample sampling support restricting scoring
+            to the token ids the rollout sampler could emit.
 
     Returns:
         Dict with key "log_probs" mapping to a list of `[R]` tensors per
@@ -222,17 +219,11 @@ def get_log_probs_and_entropy(
         a list of `[R]` tensors.
     """
     assert non_loss_data
-    if (rollout_sampling_mask_ids is None) != (rollout_sampling_mask_offsets is None):
-        raise ValueError("rollout sampling mask ids and offsets must either both be provided or both be omitted")
-    if rollout_sampling_mask_ids is not None:
-        mask_batch_size = len(rollout_sampling_mask_ids)
-        offsets_batch_size = len(rollout_sampling_mask_offsets)
-        response_batch_size = len(response_lengths)
-        if mask_batch_size != response_batch_size or offsets_batch_size != response_batch_size:
-            raise ValueError(
-                "sampling-mask batch sizes must match the response batch: "
-                f"ids={mask_batch_size}, offsets={offsets_batch_size}, responses={response_batch_size}"
-            )
+    if rollout_sampling_mask is not None and len(rollout_sampling_mask) != len(response_lengths):
+        raise ValueError(
+            "sampling-mask batch size must match the response batch: "
+            f"masks={len(rollout_sampling_mask)}, responses={len(response_lengths)}"
+        )
     parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
@@ -243,15 +234,14 @@ def get_log_probs_and_entropy(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
-        include_response_indices=rollout_sampling_mask_ids is not None,
+        include_response_indices=rollout_sampling_mask is not None,
     )
     for sample_index, (logits_chunk, tokens_chunk, response_indices) in enumerate(response_chunks):
         sampling_mask = None
-        if rollout_sampling_mask_ids is not None:
+        if rollout_sampling_mask is not None:
             sampling_mask = build_local_sampling_mask(
                 logits_chunk,
-                rollout_sampling_mask_ids[sample_index],
-                rollout_sampling_mask_offsets[sample_index],
+                rollout_sampling_mask[sample_index],
                 response_indices,
                 response_length=response_lengths[sample_index],
                 tp_rank=parallel_state.tp.rank,
