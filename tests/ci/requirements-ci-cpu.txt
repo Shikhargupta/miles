@@ -10,8 +10,8 @@ pyzmq==27.1.0
 sentencepiece==0.2.1
 tiktoken==0.13.0
 # The official tinker SDK wheel: the frontend contract tests
-# (tests/fast/ray/tinker_frontend/test_sdk_contract.py) drive the
-# real client; without the pin they importorskip and hosted CI never runs them.
+# (tests/fast/ray/tinker_frontend/test_sdk_contract.py) and the backend
+# metrics-combiner contract test importorskip without the pin.
 tinker==0.24.1
 torch==2.11.0
 torchvision==0.26.0
