@@ -414,3 +414,57 @@ class TestGapTimeout:
         ledger.fence("A", "ra")
         clock.now += 100
         assert ledger.gap_stalls() == [] and ledger.sweep_gap_timeouts() == []
+
+
+class TestClaimedTimeout:
+    """An orphaned CLAIMED head ages out for the backend to fail instead of blocking its registration forever."""
+
+    def claimed(self, ttl=100.0):
+        clock = Clock()
+        ledger = OperationLedger(gap_timeout=10.0, claimed_ttl=ttl, time_fn=clock)
+        enqueue(ledger, "fb1", 1)
+        ledger.claim_data_operation("A", "ra")
+        return ledger, clock
+
+    def test_over_age_claimed_is_reported_with_its_age(self):
+        ledger, clock = self.claimed()
+        clock.now += 101
+        [view] = ledger.claimed_timeouts()
+        assert view["operation_id"] == "fb1" and view["state"] == "CLAIMED"
+        assert view["claimed_age"] == pytest.approx(101.0)
+
+    def test_younger_claimed_is_untouched(self):
+        ledger, clock = self.claimed()
+        clock.now += 99
+        assert ledger.claimed_timeouts() == []
+        assert ledger.get("fb1")["state"] == "CLAIMED"
+
+    def test_control_claims_age_too(self):
+        ledger, clock = self.claimed()
+        ledger.complete("fb1", {})
+        enqueue(ledger, "opt2", 2, "optim_step")
+        ledger.claim_control_operation("A", "ra")
+        clock.now += 101
+        [view] = ledger.claimed_timeouts()
+        assert view["operation_id"] == "opt2"
+
+    def test_disabled_ttl_never_reports(self):
+        ledger, clock = self.claimed(ttl=0)
+        clock.now += 1_000_000
+        assert ledger.claimed_timeouts() == []
+        assert ledger.get("fb1")["state"] == "CLAIMED"
+
+    def test_queued_operations_age_by_gap_rules_only(self):
+        # A QUEUED head is claimable, not orphaned: only the CLAIMED state ages against the TTL.
+        clock = Clock()
+        ledger = OperationLedger(claimed_ttl=100.0, time_fn=clock)
+        enqueue(ledger, "fb1", 1)
+        clock.now += 1000
+        assert ledger.claimed_timeouts() == []
+        assert ledger.get("fb1")["state"] == "QUEUED"
+
+    def test_a_claimed_head_is_not_a_gap_stall(self):
+        # The gap sweep's QUEUED-hole semantics are untouched by the claimed TTL.
+        ledger, clock = self.claimed()
+        clock.now += 1000
+        assert ledger.gap_stalls() == [] and ledger.sweep_gap_timeouts() == []

@@ -32,7 +32,10 @@ class MultiLoraOperationBackend:
     def __init__(self, args: Any, router_url: str) -> None:
         self.args = args
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
-        self.operations = OperationLedger(gap_timeout=getattr(args, "tinker_operation_gap_timeout", 600.0))
+        self.operations = OperationLedger(
+            gap_timeout=getattr(args, "tinker_operation_gap_timeout", 600.0),
+            claimed_ttl=getattr(args, "tinker_operation_claimed_ttl", 1800.0),
+        )
         self.gradient_windows = GradientWindowTracker()
         self.residency = FixedSlotResidency(self.registry)
         self.router_url = router_url.rstrip("/")
@@ -261,8 +264,20 @@ class MultiLoraOperationBackend:
     EXECUTABLE_CONTROL_KINDS = ("optim_step", "save_weights_for_sampler", "save_state", "load_state")
     DIRTY_GATED_KINDS = ("save_state", "load_state")
 
-    def claim_ready_control_operations(self) -> dict:
+    def sweep_operation_timeouts(self) -> None:
+        # Both liveness backstops ride the same heartbeat: QUEUED gap holes and orphaned CLAIMED heads.
         self.operations.sweep_gap_timeouts()
+        for view in self.operations.claimed_timeouts():
+            error = (
+                f"claimed-operation timeout: {view['kind']} '{view['operation_id']}' held CLAIMED for "
+                f"{view['claimed_age']:.0f}s (TTL {self.operations.claimed_ttl:.0f}s) without a terminal "
+                "outcome; its executor dispatch is presumed lost — resubmit the operation"
+            )
+            logger.warning(f"[tinker] {error}")
+            self.fail_tinker_batch([view["operation_id"]], error)
+
+    def claim_ready_control_operations(self) -> dict:
+        self.sweep_operation_timeouts()
         ready: list[dict] = []
         bindings: list[tuple[str, ResidentBinding]] = []
         for name, registration_id in self.operations.claimable_control_tenants():
@@ -304,7 +319,8 @@ class MultiLoraOperationBackend:
     def complete_control_operations(self, results: dict[str, dict]) -> None:
         for operation_id, outcome in results.items():
             operation = self.operations.get(operation_id)
-            if operation is None:
+            # Only still-CLAIMED operations complete: a swept/fenced (already terminal) one keeps its outcome.
+            if operation is None or operation["state"] != "CLAIMED":
                 continue
             if outcome.get("ok"):
                 result = outcome.get("result")
@@ -377,7 +393,7 @@ class MultiLoraOperationBackend:
     # ---------------- info ----------------
 
     def operation_view(self, operation_id: str) -> dict | None:
-        self.operations.sweep_gap_timeouts()
+        self.sweep_operation_timeouts()
         view = self.operations.get(operation_id)
         if view is not None and view["state"] == "QUEUED":
             for stall in self.operations.gap_stalls():
@@ -387,7 +403,7 @@ class MultiLoraOperationBackend:
         return view
 
     def service_info(self) -> dict:
-        self.operations.sweep_gap_timeouts()
+        self.sweep_operation_timeouts()
         args = self.args
         return dict(
             base_model=getattr(args, "hf_checkpoint", None),
@@ -397,6 +413,7 @@ class MultiLoraOperationBackend:
             ready_adapters=sorted(self.registry.in_state(AdapterState.READY)),
             supported_loss_fns=list(SUPPORTED_LOSS_FNS),
             operation_gap_timeout=self.operations.gap_timeout,
+            operation_claimed_ttl=self.operations.claimed_ttl,
             gap_stalls=self.operations.gap_stalls(),
         )
 

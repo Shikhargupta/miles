@@ -492,3 +492,60 @@ class TestGapTimeoutSurface:
         backend.enqueue_operation("X", "opt4", 4, "optim_step", {"adam_params": {"learning_rate": 1e-4}})
         [operation] = backend.claim_ready_control_operations()["operations"]
         assert operation["operation_id"] == "opt4" and "poison" not in operation
+
+
+class TestClaimedTtlSurface:
+    """Backend wiring of the claimed-op TTL: an orphaned CLAIMED head terminal-fails typed instead of blocking."""
+
+    def orphaned_backend(self, ttl=60.0):
+        backend = ready_backend()
+        backend.operations.claimed_ttl = ttl
+        clock = {"now": 1000.0}
+        backend.operations._time = lambda: clock["now"]
+        backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
+        # Claimed, then the claiming executor vanished (e.g. restart lost its in-memory runtimes).
+        assert backend.claim_data_operation(*reg_key(backend)) is not None
+        return backend, clock
+
+    def test_flag_reaches_the_ledger_with_a_default(self):
+        assert make_backend().operations.claimed_ttl == 1800.0
+        args = SimpleNamespace(multi_lora_n_adapters=4, tinker_operation_claimed_ttl=5.0)
+        assert MultiLoraOperationBackend(args, "http://unused").operations.claimed_ttl == 5.0
+
+    def test_heartbeat_fails_the_orphan_typed_server_and_unblocks_the_queue(self):
+        backend, clock = self.orphaned_backend()
+        clock["now"] += 61
+        backend.enqueue_operation("X", "opt2", 2, "optim_step")
+        [op] = backend.claim_ready_control_operations()["operations"]
+        assert op["operation_id"] == "opt2"  # the swept orphan no longer blocks the queue head
+        view = backend.operations.get("fb1")
+        assert view["state"] == "FAILED" and view["error_category"] == "server"
+        assert "'fb1'" in view["error"] and "61s" in view["error"] and "forward_backward" in view["error"]
+
+    def test_sweep_routes_through_the_lease_releasing_batch_finalizer(self):
+        backend, clock = self.orphaned_backend()
+        calls = []
+        original = backend.fail_tinker_batch
+
+        def spy(operation_ids, error, lease_metadata=None):
+            calls.append((operation_ids, lease_metadata))
+            original(operation_ids, error, lease_metadata)
+
+        backend.fail_tinker_batch = spy
+        clock["now"] += 61
+        assert backend.service_info()["operation_claimed_ttl"] == 60.0
+        # No lease metadata exists for an orphaned claim; the finalizer's finally covers batches that carry one.
+        assert calls == [(["fb1"], None)]
+
+    def test_younger_claim_survives_the_sweep(self):
+        backend, clock = self.orphaned_backend()
+        clock["now"] += 59
+        backend.service_info()
+        assert backend.operations.get("fb1")["state"] == "CLAIMED"
+
+    def test_late_completion_of_a_swept_operation_is_ignored_not_a_crash(self):
+        backend, clock = self.orphaned_backend()
+        clock["now"] += 61
+        backend.service_info()  # sweeps fb1 to FAILED
+        backend.complete_control_operations({"fb1": dict(ok=True, result={})})
+        assert backend.operations.get("fb1")["state"] == "FAILED"
