@@ -35,6 +35,10 @@ helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-inference-e0 -n $MILES_SCRIPT_NAME
 helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-inference-e1 -n $MILES_SCRIPT_NAMESPACE
 ```
 
+Uninstalling by hand races the primary release's own uninstall job, which fires two minutes after
+the verdict. Whichever runs second finds the release already gone, and `--ignore-not-found` makes
+that a successful uninstall rather than a failed job.
+
 ## Example 2: A Run That Trains Several Policies
 
 `run_solver_verifier_gsm8k_split.py` installs the [multi_policy](/examples/multi-policy) solver /
