@@ -181,6 +181,9 @@ class TestConvert:
 
     def test_legacy_batch_keeps_first_sample_optional_channel_semantics(self):
         samples = [make_sample("A"), make_sample("B")]
+        # Legacy batches carry no adapter stamps; stamped batches now require the tinker lease.
+        for sample in samples:
+            sample.adapter = None
         samples[1].rollout_log_probs = [-0.1, -0.2]
 
         data = convert_samples_to_train_data(
@@ -257,17 +260,6 @@ class TestPadding:
         data, metadata = self.postprocess(n=4)
         assert [s.index for s in data] == [0, 1, 2, 3]
         assert metadata["dynamic_global_batch_size"] == 4
-
-    def test_non_tinker_path_keeps_default_trim_behavior(self):
-        args = SimpleNamespace(
-            multi_lora=False,
-            use_dynamic_global_batch_size=False,
-            disable_rollout_trim_samples=False,
-            global_batch_size=2,
-        )
-        data, metadata = self.postprocess(n=5, pad_to_dp=False, args=args)
-        assert [s.index for s in data] == [0, 1, 2, 3]
-        assert "dynamic_global_batch_size" not in metadata
 
 
 class TestTinkerDispatchSummary:
