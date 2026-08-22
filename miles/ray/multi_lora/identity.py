@@ -15,11 +15,6 @@ def rid_prefix(adapter_name: str, registration_id: str) -> str:
     return f"{adapter_name}{RID_SEPARATOR}{registration_id}{RID_SEPARATOR}"
 
 
-def parse_adapter(rid: str) -> str:
-    """Extract the adapter name from a registration-scoped request ID."""
-    return rid.split(RID_SEPARATOR, 1)[0]
-
-
 def serving_lora_name(adapter_name: str, registration_id: str) -> str:
     """Return the engine-side name for one exact adapter registration."""
     return f"__miles_adapter_{adapter_name}_{registration_id}"
