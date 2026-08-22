@@ -87,26 +87,23 @@ class RpcCallExecutor:
             )
 
     def _failed_outcome(self, *, spec: RpcMethodSpec, error: BaseException) -> CallStatusResponse:
-        if spec.max_serialized_outcome_bytes is None:
+        limit = spec.max_serialized_outcome_bytes
+        if limit is None:
             return CallStatusResponse(status="failed", error="".join(traceback.format_exception(error)))
-        if _measure_json_bytes(str(error), limit=spec.max_serialized_outcome_bytes // 2) is None:
-            return self._compact_failure(spec=spec, error=error)
+        if _measure_json_bytes(str(error), limit=limit // 2) is None:
+            return self._compact_failure(limit=limit, error=error)
         outcome = CallStatusResponse(status="failed", error="".join(traceback.format_exception(error)))
-        if _measure_json_bytes(outcome.model_dump(mode="json"), limit=spec.max_serialized_outcome_bytes) is not None:
+        if _measure_json_bytes(outcome.model_dump(mode="json"), limit=limit) is not None:
             return outcome
 
-        return self._compact_failure(spec=spec, error=error)
+        return self._compact_failure(limit=limit, error=error)
 
-    def _compact_failure(self, *, spec: RpcMethodSpec, error: BaseException) -> CallStatusResponse:
-        assert spec.max_serialized_outcome_bytes is not None
+    def _compact_failure(self, *, limit: int, error: BaseException) -> CallStatusResponse:
         compact = CallStatusResponse(
             status="failed",
-            error=(
-                f"{type(error).__name__}: remote exception exceeded the "
-                f"{spec.max_serialized_outcome_bytes}-byte RPC error limit"
-            ),
+            error=f"{type(error).__name__}: remote exception exceeded the {limit}-byte RPC error limit",
         )
-        assert len(compact.model_dump_json().encode()) <= spec.max_serialized_outcome_bytes
+        assert len(compact.model_dump_json().encode()) <= limit
         return compact
 
 
