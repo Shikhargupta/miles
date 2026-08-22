@@ -51,48 +51,44 @@ Fault-tolerant trainer workers expose heartbeats and recovery operations through
 the Miles RPC server. The server applies the following bounded-delivery
 contract:
 
-- Concurrent data-plane bodies and control-plane bodies use separate aggregate
-  ingress byte and in-flight-request budgets. A bounded byte array replaces
-  per-chunk retention, and conversion to the downstream immutable body reserves
-  both copies. Neither a per-request byte cap nor a per-request chunk-count cap
-  is imposed by default; both are available as opt-ins. They are opt-in because
-  the server does not control how a body is fragmented into reads, so a fixed
-  chunk-count cap would make a legal upload fail or succeed depending on network
-  conditions.
-  Admitted calls then use matching bounded queued-request budgets, so many
-  near-limit requests cannot retain multiple GiB of input or decoded arguments.
-  Each lane also bounds concurrent overload responses. Before Uvicorn creates an
-  ASGI task, its pinned h11 protocol admits incomplete headers through a bounded
-  unknown lane and atomically transfers complete requests into separate data or
-  control connection lanes. Lane overflow closes the transport without an ASGI
-  task. Keep-alive requests are classified again, while pipelining and protocol
-  upgrades fail closed. Clients observe a transport failure and retry with the
-  same call ID.
-- A method that declares a maximum serialized outcome reserves it before its
-  executor starts, and that reservation is what the aggregate retained-outcome
-  budget accounts for. A method that declares none reserves nothing and its
-  retained outcome is therefore not bounded, matching the behaviour before
-  reservations existed. New calls receive a retryable capacity response before
-  worker execution when the active-call, queued-request, or reserved-outcome
-  budget is full.
-- `get_heartbeat_status` uses a separate bounded control-plane reserve. A full
-  training queue therefore does not make a healthy worker look dead, while
-  heartbeat traffic still has hard call, request, and outcome limits.
-  The 65,536-entry control tombstone lane covers the 43,201 identities needed by
-  the 12-hour horizon at the minimum supported one-second health-check interval.
-  The default trainer heartbeat interval is 10 seconds and needs 4,321 entries.
-- A call ID and its fixed request digest identify one execution. The client ACKs
-  only after decoding the terminal result or copying the remote error. ACK drops
-  the full outcome but keeps the digest tombstone for the 12-hour resolution
-  horizon.
-- Duplicate submissions fail loudly. Reusing a call ID is refused with `409`,
-  whether the original is still running, already finished, or already
+- **Ingress budgets are aggregate, not per request.** Data-plane and
+  control-plane bodies use separate aggregate ingress byte and
+  in-flight-request budgets, and each lane bounds its concurrent overload
+  responses. A bounded byte array replaces per-chunk retention, and conversion
+  to the downstream immutable body reserves both copies. Neither a per-request
+  byte cap nor a per-request chunk-count cap is imposed by default; both are
+  available as opt-ins. They are opt-in because the server does not control how
+  a body is fragmented into reads, so a fixed chunk-count cap would make a
+  legal upload fail or succeed depending on network conditions.
+- **Admitted calls reserve their decoded arguments.** Matching bounded
+  queued-request budgets mean many near-limit requests cannot retain multiple
+  GiB of input or decoded arguments.
+- **Outcome reservation is opt-in.** A method that declares a maximum
+  serialized outcome reserves it before its executor starts, and that
+  reservation is what the aggregate retained-outcome budget accounts for. A
+  method that declares none reserves nothing and its retained outcome is
+  therefore not bounded, matching the behaviour before reservations existed.
+  New calls receive a retryable capacity response before worker execution when
+  the active-call, queued-request, or reserved-outcome budget is full.
+- **Heartbeats have their own reserve.** `get_heartbeat_status` uses a separate
+  bounded control-plane reserve, so a full training queue does not make a
+  healthy worker look dead while heartbeat traffic still has hard call,
+  request, and outcome limits. The 65,536-entry control tombstone lane covers
+  the 43,201 identities needed by the 12-hour horizon at the minimum supported
+  one-second health-check interval; the default trainer heartbeat interval is
+  10 seconds and needs 4,321 entries.
+- **A call ID and its fixed request digest identify one execution.** The client
+  ACKs only after decoding the terminal result or copying the remote error. ACK
+  drops the full outcome but keeps the digest tombstone for the 12-hour
+  resolution horizon.
+- **Duplicate submissions fail loudly.** Reusing a call ID is refused with
+  `409`, whether the original is still running, already finished, or already
   acknowledged, and whether or not the payload matches. A resubmission never
   re-executes the call. Submit retries are safe because the client retries a
   submit only when the request provably never reached the server.
-- ACK is pinned to the boot that returned the outcome and has a sub-second retry
-  budget. ACK transport failure never replaces an already decoded result or
-  copied business error.
+- **ACK is pinned to the boot that returned the outcome** and has a sub-second
+  retry budget. ACK transport failure never replaces an already decoded result
+  or copied business error.
 - **There is no server-side shutdown sequence.** The server owns no teardown
   path: a worker process serves until it exits, and the process exit is what
   releases its threads, sockets and memory. Nothing refuses a call because the

@@ -40,10 +40,8 @@ class TestParseOwnArgs:
 
 
 class TestStartingTheServer:
-    def test_the_inner_worker_uses_the_bounded_http_protocol(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Split workers must have the same pre-task connection bound as Ray actors."""
-        import importlib
-
+    def test_the_inner_worker_serves_its_rpc_app_on_its_own_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A split worker serves the app it built on the port its identity resolved to."""
         seen: list[dict[str, Any]] = []
         spec = SimpleNamespace(worker_class="demo.Worker")
         monkeypatch.setattr(serve_inner_module, "split_worker_argv", lambda argv: ([], []))
@@ -61,9 +59,6 @@ class TestStartingTheServer:
 
         main()
 
-        assert set(seen[0]) == {"host", "port", "http", "backlog"}
+        assert set(seen[0]) == {"host", "port"}
         assert seen[0]["host"] == "0.0.0.0"
         assert seen[0]["port"] == 12345
-        protocol_module = importlib.import_module("miles.utils.workers.serving.http_protocol")
-        assert seen[0]["http"] is protocol_module._BoundedH11Protocol
-        assert seen[0]["backlog"] == protocol_module.RPC_LISTEN_BACKLOG

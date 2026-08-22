@@ -11,7 +11,6 @@ from miles.utils.function_registry import load_function
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.factory import get_backend_capability
 from miles.utils.workers.rpc.server.app import create_rpc_app
-from miles.utils.workers.serving.http_protocol import RPC_LISTEN_BACKLOG, _BoundedH11Protocol
 from miles.utils.workers.serving.utils import (
     compute_serve_worker_spec,
     override_argv,
@@ -41,8 +40,6 @@ def main() -> None:
         app,
         host=DEFAULT_HOST,
         port=port,
-        http=_BoundedH11Protocol,
-        backlog=RPC_LISTEN_BACKLOG,
     )
 
 
