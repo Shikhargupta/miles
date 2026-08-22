@@ -464,8 +464,16 @@ class TestSampling:
 
             probe = self.sample_request(sampler_id, seq_id=2)
             probe.prompt_logprobs = True
-            failed = await stack.retrieve(stack.frontend.sample(probe)["request_id"])
-            assert failed["category"] == "user" and "prompt_logprobs" in failed["error"]
+            body = await stack.retrieve(stack.frontend.sample(probe)["request_id"])
+            # Prompt scoring rides the same generate: one entry per prompt token, first None.
+            assert body["type"] == "sample" and body["prompt_logprobs"] == [None, -0.125]
+            assert stack.router.requests[-1]["logprob_start_len"] == 0
+            assert all("logprob_start_len" not in r for r in stack.router.requests[:-1])
+
+            topk_probe = self.sample_request(sampler_id, seq_id=3)
+            topk_probe.topk_prompt_logprobs = 2
+            failed = await stack.retrieve(stack.frontend.sample(topk_probe)["request_id"])
+            assert failed["category"] == "user" and "topk_prompt_logprobs" in failed["error"]
 
         run(scenario)
 

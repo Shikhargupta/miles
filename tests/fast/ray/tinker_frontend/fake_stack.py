@@ -151,11 +151,15 @@ class FakeRouter:
     def response_for(self, payload: dict) -> dict:
         max_new = int((payload.get("sampling_params") or {}).get("max_new_tokens") or 4)
         n = min(max_new, 3)
-        return {
-            "text": "ok",
-            "meta_info": {
-                "finish_reason": {"type": "length" if n == max_new else "stop"},
-                "output_token_logprobs": [[-0.25 * (i + 1), 1000 + i, None] for i in range(n)],
-                "prompt_tokens": len(payload.get("input_ids") or []),
-            },
+        input_ids = payload.get("input_ids") or []
+        meta_info = {
+            "finish_reason": {"type": "length" if n == max_new else "stop"},
+            "output_token_logprobs": [[-0.25 * (i + 1), 1000 + i, None] for i in range(n)],
+            "prompt_tokens": len(input_ids),
         }
+        if payload.get("logprob_start_len") == 0:
+            # Real sglang shape: one entry per prompt token, first logprob None (no context).
+            meta_info["input_token_logprobs"] = [
+                [None if i == 0 else -0.125 * i, token, None] for i, token in enumerate(input_ids)
+            ]
+        return {"text": "ok", "meta_info": meta_info}

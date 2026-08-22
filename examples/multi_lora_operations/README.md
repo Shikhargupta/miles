@@ -199,10 +199,14 @@ the backend restores the full training state; use the `_with_optimizer`
 variants), named persistent sampler checkpoints
 (`save_weights_for_sampler(name)` / `create_sampling_client(model_path=...)`),
 `ttl_seconds` (checkpoint/sampler TTL expiry is not implemented),
-`prompt_logprobs` / `topk_prompt_logprobs`, sparse-CSR tensors, and negative
+`topk_prompt_logprobs`, sparse-CSR tensors, and negative
 token ids anywhere (targets, inputs, prompts, stop tokens). A sampling
 `seed` maps to sglang `sampling_seed`, offset per sample so
-`num_samples > 1` stays diverse.
+`num_samples > 1` stays diverse. `prompt_logprobs` maps to sglang
+`logprob_start_len=0` on the same generate (the engine scores the prompt
+natively; position 0 has no context and returns null) — this serves both
+`sample(include_prompt_logprobs=True)` and the SDK's `compute_logprobs()`,
+which the 0.24.1 wheel sends as a 1-sample, 1-token generation.
 
 Sampling architecture: `/asample` returns its future immediately and a
 background task posts one router `/generate` per sample, carrying the
@@ -229,7 +233,9 @@ Supported: text-only input; the synchronous training loop; 1-D shifted
 targets; `loss_fn ∈ {cross_entropy, importance_sampling, ppo}` (per-op clip
 config); per-call AdamParams; multi-chunk gradient accumulation with
 independent `optim_step`; latest-only sampler weights behind the publish
-barrier; named immutable `save_state` / `load_state` (create-from-checkpoint
+barrier; prompt logprobs (`compute_logprobs()` /
+`sample(include_prompt_logprobs=True)`, one sub-generation of admission
+weight); named immutable `save_state` / `load_state` (create-from-checkpoint
 included, shape-fenced); optional `num_step` auto-retirement.
 
 Explicitly rejected (boundary error, never a silent fallback): multimodal

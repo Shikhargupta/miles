@@ -182,3 +182,20 @@ class TestSampling:
     def test_aborted_generation_raises(self):
         with pytest.raises(RuntimeError, match="abort"):
             translation.generation_to_sequence({"meta_info": {"finish_reason": {"type": "abort"}}})
+
+    def test_prompt_logprobs_map_per_token_with_leading_none(self):
+        generation = {"meta_info": {"input_token_logprobs": [[None, 5, None], [-0.5, 6, None], [-1.25, 7, None]]}}
+        assert translation.prompt_logprobs_from_generation(generation, 3) == [None, -0.5, -1.25]
+
+    def test_prompt_logprobs_missing_from_the_engine_is_a_server_fault(self):
+        with pytest.raises(RuntimeError, match="no input_token_logprobs"):
+            translation.prompt_logprobs_from_generation({"meta_info": {}}, 2)
+
+    def test_prompt_logprobs_length_mismatch_is_a_server_fault(self):
+        generation = {"meta_info": {"input_token_logprobs": [[None, 5, None]]}}
+        with pytest.raises(RuntimeError, match="1 prompt logprobs for 2 prompt tokens"):
+            translation.prompt_logprobs_from_generation(generation, 2)
+
+    def test_sample_response_carries_prompt_logprobs_only_when_scored(self):
+        assert translation.sequences_to_sample_response([])["prompt_logprobs"] is None
+        assert translation.sequences_to_sample_response([], [None, -0.5])["prompt_logprobs"] == [None, -0.5]

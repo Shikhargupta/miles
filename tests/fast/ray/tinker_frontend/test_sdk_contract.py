@@ -297,6 +297,43 @@ class TestSampling:
         assert response.sequences[0].tokens == [1000, 1001]
         assert "lora_path" not in stack.router.requests[-1]
 
+    def test_compute_logprobs_scores_every_prompt_token(self, stack, service_client):
+        sampling = service_client.create_sampling_client(base_model=BASE)
+        prompt = [5, 6, 7, 8]
+        logprobs = sampling.compute_logprobs(types.ModelInput.from_ints(prompt)).result()
+        # Exact alignment with the router's per-position scores; position 0 has no context.
+        assert logprobs == [None, -0.125, -0.25, -0.375]
+        assert len(logprobs) == len(prompt)
+        assert all(isinstance(lp, float) for lp in logprobs[1:])
+        sent = stack.router.requests[-1]
+        assert sent["input_ids"] == prompt
+        assert sent["logprob_start_len"] == 0 and sent["return_logprob"] is True
+        # The 0.24.1 SDK's compute_logprobs wire form is a 1-sample, 1-token generation.
+        assert sent["sampling_params"]["max_new_tokens"] == 1
+
+    def test_sample_with_prompt_logprobs_returns_both(self, service_client):
+        sampling = service_client.create_sampling_client(base_model=BASE)
+        response = sampling.sample(
+            prompt=types.ModelInput.from_ints([5, 6, 7]),
+            num_samples=2,
+            sampling_params=types.SamplingParams(max_tokens=3),
+            include_prompt_logprobs=True,
+        ).result()
+        assert len(response.sequences) == 2
+        assert response.sequences[0].tokens == [1000, 1001, 1002]
+        assert response.prompt_logprobs == [None, -0.125, -0.25]
+
+    def test_topk_prompt_logprobs_is_a_typed_rejection(self, service_client):
+        sampling = service_client.create_sampling_client(base_model=BASE)
+        future = sampling.sample(
+            prompt=types.ModelInput.from_ints([5, 6]),
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=2),
+            topk_prompt_logprobs=2,
+        )
+        with pytest.raises(tinker.RequestFailedError, match="topk_prompt_logprobs"):
+            future.result()
+
     def test_stale_ephemeral_sampler_fails_loud_after_republish(self, service_client):
         client = service_client.create_lora_training_client(base_model=BASE, rank=8)
         old = client.save_weights_and_get_sampling_client()
