@@ -175,7 +175,9 @@ def convert_samples_to_train_data(
         # Adapter batches only come from the tinker rollout fn, whose lease is mandatory; stamped-slot fallback removed.
         if not tinker or metadata.get("batch_execution_lease") is None:
             raise ValueError("adapter-stamped batch without a tinker batch lease; BatchPlan slot routing is required")
-        train_data["adapter_slots"] = _adapter_slots_from_lease(metadata, train_data["tinker_operation_lanes"], samples)
+        train_data["adapter_slots"] = _adapter_slots_from_lease(
+            metadata, train_data["tinker_operation_lanes"], samples
+        )
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
