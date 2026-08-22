@@ -1,7 +1,11 @@
 import asyncio
 from types import SimpleNamespace
 
-from train_multi_lora_operations import ActorGroupWeightUpdater, run_control_phase
+import pytest
+import ray
+from train_multi_lora_operations import ActorGroupWeightUpdater, generate_with_failure_cap, run_control_phase
+
+from miles.utils.operation_contract import EmptyBatchTimeoutError
 
 
 class Remote:
@@ -211,3 +215,67 @@ class TestDataBatchFinalizer:
         asyncio.run(train_data_batch(SimpleNamespace(train=train), controller, 0, {"data_ref": None}))
         [(name, (operation_ids, error, lease_arg))] = log
         assert operation_ids == [] and lease_arg is None
+
+
+class FakeRayTaskError(ray.exceptions.RayTaskError):
+    """Real RayTaskError construction needs a serialized traceback; tests only need the cause surface."""
+
+    def __init__(self, cause):
+        Exception.__init__(self, str(cause))
+        self.cause = cause
+        self.function_name = "generate"
+        self.traceback_str = f"fake traceback: {cause}"
+
+    def as_instanceof_cause(self):
+        return self.cause
+
+
+class TestGenerateFailureCap:
+    """Generate failures skip rounds up to the cap instead of killing the shared multi-tenant service."""
+
+    class Executor:
+        def __init__(self, outcomes):
+            self.outcomes = list(outcomes)
+
+        async def generate(self, rollout_id):
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    def attempt(self, executor, streak, cap=3):
+        return asyncio.run(generate_with_failure_cap(executor, 0, streak, cap))
+
+    def test_a_failure_below_the_cap_skips_the_round(self):
+        executor = self.Executor([FakeRayTaskError(RuntimeError("engine died"))])
+        assert self.attempt(executor, streak=0) == (None, 1)
+
+    def test_a_success_resets_the_streak(self):
+        executor = self.Executor([{"batch": 1}])
+        assert self.attempt(executor, streak=2) == ({"batch": 1}, 0)
+
+    def test_the_cap_reraises(self):
+        executor = self.Executor([FakeRayTaskError(RuntimeError("engine died"))])
+        with pytest.raises(ray.exceptions.RayTaskError):
+            self.attempt(executor, streak=2, cap=3)
+
+    def test_zero_cap_fails_fast(self):
+        executor = self.Executor([FakeRayTaskError(RuntimeError("engine died"))])
+        with pytest.raises(ray.exceptions.RayTaskError):
+            self.attempt(executor, streak=0, cap=0)
+
+    def test_empty_batch_timeout_neither_counts_nor_resets(self):
+        executor = self.Executor([FakeRayTaskError(EmptyBatchTimeoutError("idle"))])
+        assert self.attempt(executor, streak=2) == (None, 2)
+
+    def test_interleaved_successes_keep_the_loop_alive(self):
+        # fail, succeed, fail: with a cap of 2 the reset means neither failure is the second consecutive one.
+        executor = self.Executor(
+            [FakeRayTaskError(RuntimeError("a")), {"batch": 1}, FakeRayTaskError(RuntimeError("b"))]
+        )
+        data, streak = self.attempt(executor, streak=0, cap=2)
+        assert data is None and streak == 1
+        data, streak = self.attempt(executor, streak=streak, cap=2)
+        assert data == {"batch": 1} and streak == 0
+        data, streak = self.attempt(executor, streak=streak, cap=2)
+        assert data is None and streak == 1

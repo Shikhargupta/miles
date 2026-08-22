@@ -94,6 +94,25 @@ async def run_control_phase(actor_model, controller, weight_updater) -> None:
             await controller.release_batch_lease.remote(lease)
 
 
+async def generate_with_failure_cap(rollout_executor, rollout_id: int, failure_streak: int, cap: int):
+    """One tolerated generate attempt; returns (rollout_data or None, updated consecutive-failure streak)."""
+    try:
+        return await rollout_executor.generate(rollout_id), 0
+    except ray.exceptions.RayTaskError as e:
+        if _is_empty_batch_timeout(e):
+            # The data queue is idle; yield to the control phase so queued optim/save/load never wait behind it.
+            return None, failure_streak
+        failure_streak += 1
+        if failure_streak >= cap:
+            raise
+        # Skipping the round self-heals: failure paths restore unconsumed claims to READY for re-dispatch.
+        logger.exception(
+            f"[tinker] generate failed ({failure_streak} consecutive, cap {cap}); "
+            f"keeping the multi-tenant service alive: {e}"
+        )
+        return None, failure_streak
+
+
 async def main(args):
     assert (
         not args.colocate
@@ -123,6 +142,7 @@ async def main(args):
     await multi_lora_controller.set_trainer_ready.remote()
 
     rollout_id = 0
+    generate_failures = 0
     while True:
         # This handle is the controller's only owning reference; rebinding it would let Ray reap the actor.
         snapshot = await multi_lora_controller.snapshot.remote()
@@ -142,14 +162,11 @@ async def main(args):
 
         # Per-rollout engine preparation; a no-op behind today's combined manager.
         await inference_controller.prepare_rollout(rollout_id)
-        try:
-            rollout_data = await rollout_executor.generate(rollout_id)
-        except ray.exceptions.RayTaskError as e:
-            if _is_empty_batch_timeout(e):
-                # The data queue is idle; loop back to the control phase so
-                # queued optim/save/load operations never wait behind it.
-                continue
-            raise
+        rollout_data, generate_failures = await generate_with_failure_cap(
+            rollout_executor, rollout_id, generate_failures, args.multi_lora_max_consecutive_generate_failures
+        )
+        if rollout_data is None:
+            continue
         await train_data_batch(actor_model, multi_lora_controller, rollout_id, rollout_data)
         remove_rollout_data_refs(args, rollout_data)
         rollout_id += 1

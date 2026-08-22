@@ -53,6 +53,8 @@ def batch_plan_to_metadata(batch_plan: list[dict], lease) -> dict[str, Any]:
 
 
 _CLAIM_POLL_S = 0.5
+# A FAILED child runtime returns to IDLE after this cooldown instead of starving its adapter until deregister.
+_FAILED_RELAUNCH_COOLDOWN_S = 5.0
 
 Tenant = tuple[str, str]
 
@@ -144,6 +146,7 @@ class AdapterRolloutRuntime:
         self.state = self.IDLE
         self.ready_output: ClaimedOperationBatch | None = None
         self.task: asyncio.Task | None = None
+        self.last_failure: float | None = None
 
     @property
     def ready_kind(self) -> str | None:
@@ -231,7 +234,13 @@ class MultiLoraOperationBatchFn:
         self.rotation = kept
 
     def _launch_idle_children(self) -> None:
+        now = time.monotonic()
         for runtime in self.runtimes.values():
+            if runtime.state == AdapterRolloutRuntime.FAILED and (
+                runtime.last_failure is None or now - runtime.last_failure >= _FAILED_RELAUNCH_COOLDOWN_S
+            ):
+                # FAILED is transient: after the cooldown the child relaunches instead of starving the adapter.
+                runtime.state = AdapterRolloutRuntime.IDLE
             if runtime.state == AdapterRolloutRuntime.IDLE:
                 runtime.state = AdapterRolloutRuntime.IN_FLIGHT
                 runtime.task = asyncio.create_task(self._run_child(runtime))
@@ -262,6 +271,7 @@ class MultiLoraOperationBatchFn:
         except Exception as e:
             # Child failure isolates to this adapter; other adapters keep going.
             logger.exception(f"[tinker] child for '{runtime.run.name}' failed: {e}")
+            runtime.last_failure = time.monotonic()
             runtime.state = AdapterRolloutRuntime.FAILED
         finally:
             self._ready.set()
