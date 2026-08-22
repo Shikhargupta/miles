@@ -90,7 +90,7 @@ data:
               command:
                 - sh
                 - -c
-                - "sleep 120 && helm uninstall myrun --namespace myns"
+                - "sleep 120 && helm uninstall myrun --namespace myns --ignore-not-found"
 
 ---
 # Source: miles-run/templates/colocate-pairing.yaml

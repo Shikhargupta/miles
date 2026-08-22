@@ -34,5 +34,5 @@ data:
               command:
                 - sh
                 - -c
-                - {{ printf "sleep 120 && helm uninstall %s --namespace %s" .Release.Name .Release.Namespace | quote }}
+                - {{ printf "sleep 120 && helm uninstall %s --namespace %s --ignore-not-found" .Release.Name .Release.Namespace | quote }}
 {{- end }}
