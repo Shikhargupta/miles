@@ -83,6 +83,31 @@ class TestAcknowledgement:
             store.begin(call_id="c1", fingerprint=_OTHER_DIGEST)
 
 
+class TestExpiryScheduling:
+    async def test_expiry_purges_at_most_one_batch_per_admission(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The batch cap bounds how much expiry work one admission does, and later admissions drain the rest."""
+        now = [10.0]
+        monkeypatch.setattr(store_module.time, "monotonic", lambda: now[0])
+        store = _new_store(finished_ttl_seconds=5.0, expiry_batch_size=2)
+        for index in range(5):
+            call_id = f"c{index}"
+            digest = hashlib.sha256(call_id.encode()).digest()
+            store.begin(call_id=call_id, fingerprint=digest)
+            store.finish(call_id=call_id, outcome=CallStatusResponse(status="success", result=index))
+            store.acknowledge(call_id=call_id, fingerprint=digest)
+
+        assert store.stats.tombstones == 5
+
+        now[0] = 20.0
+        store.begin(call_id="first", fingerprint=_DIGEST)
+
+        assert store.stats.tombstones == 3
+
+        store.begin(call_id="second", fingerprint=_OTHER_DIGEST)
+
+        assert store.stats.tombstones == 1
+
+
 class TestCapacity:
     async def test_active_capacity_is_exact_and_duplicates_do_not_consume_it(self) -> None:
         """A duplicate is refused as a duplicate, not as capacity exhaustion, so it never consumes a slot."""
