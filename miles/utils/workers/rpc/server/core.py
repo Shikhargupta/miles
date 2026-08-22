@@ -85,7 +85,7 @@ class RpcServer:
 
         identity = compute_request_identity(method_name=method_name, query=request.query)
         try:
-            is_new = self._store.begin(
+            self._store.begin(
                 call_id=request.call_id,
                 fingerprint=identity.digest,
                 request_reservation_bytes=identity.serialized_bytes,
@@ -99,26 +99,16 @@ class RpcServer:
         except CallStoreCapacityError as e:
             reject(status_code=503, reason="capacity", detail=str(e))
 
-        if is_new:
-            try:
-                self._executor.start(
-                    spec=spec,
-                    kwargs=kwargs,
-                    call_id=request.call_id,
-                    finish=functools.partial(self._store.finish, call_id=request.call_id),
-                )
-            except BaseException:
-                self._store.rollback_admission(call_id=request.call_id, fingerprint=identity.digest)
-                raise
-        else:
-            log_structured(
-                logger.debug,
-                tag="rpc",
-                op="submit",
-                phase="existing",
-                method=method_name,
-                call=request.call_id,
+        try:
+            self._executor.start(
+                spec=spec,
+                kwargs=kwargs,
+                call_id=request.call_id,
+                finish=functools.partial(self._store.finish, call_id=request.call_id),
             )
+        except BaseException:
+            self._store.rollback_admission(call_id=request.call_id, fingerprint=identity.digest)
+            raise
 
         return SubmitResponse()
 

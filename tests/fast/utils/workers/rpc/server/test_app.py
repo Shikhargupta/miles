@@ -318,8 +318,8 @@ class TestProtocolErrors:
 
 
 class TestDuplicateCalls:
-    async def test_resubmit_same_payload_returns_the_existing_completed_call(self) -> None:
-        """Resubmitting an identical completed call is idempotent and never reruns it."""
+    async def test_resubmit_same_payload_after_completion_is_409_and_never_reruns(self) -> None:
+        """A completed call still owns its id: the resubmit is refused loudly and the work is not rerun."""
         worker = _Worker()
         async with _client(worker) as client:
             first = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="fixed")
@@ -327,11 +327,11 @@ class TestDuplicateCalls:
             assert await asyncio.to_thread(worker.done_event.wait, 5.0)
 
             second = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="fixed")
-            assert second.response.json() == {"status": "submitted"}
+            assert second.response.status_code == 409
             assert worker.calls == 1
 
-    async def test_resubmit_same_payload_returns_the_existing_pending_call(self) -> None:
-        """Resubmitting an identical pending call is idempotent and never queues it twice."""
+    async def test_resubmit_same_payload_while_pending_is_409_and_never_queues_twice(self) -> None:
+        """An in-flight call owns its id: the resubmit is refused loudly and the work runs exactly once."""
         worker = _Worker()
         async with _client(worker) as client:
             first = await _submit(client, "demo_slow", {"tag": "slow"}, call_id="fixed")
@@ -339,7 +339,7 @@ class TestDuplicateCalls:
             assert await asyncio.to_thread(worker.slow_started.wait, 5.0)
 
             second = await _submit(client, "demo_slow", {"tag": "slow"}, call_id="fixed")
-            assert second.response.json() == {"status": "submitted"}
+            assert second.response.status_code == 409
             worker.release_slow.set()
 
             assert (await _poll_until_done(client, "fixed"))["status"] == "success"
@@ -348,7 +348,7 @@ class TestDuplicateCalls:
     async def test_retrieved_outcome_remains_idempotent_past_the_old_short_ttl(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A lost retrieved response cannot expire before the outcome-resolution horizon."""
+        """A retrieved outcome stays pollable past the old short ttl, and its id stays owned."""
         from miles.utils.workers.rpc.server import store as store_module
 
         now = [10.0]
@@ -360,10 +360,10 @@ class TestDuplicateCalls:
             assert (await _poll_until_done(client, "fixed"))["status"] == "success"
 
             now[0] += 301.0
-            second = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="fixed")
             assert (await _poll_until_done(client, "fixed"))["status"] == "success"
 
-            assert second.response.json() == {"status": "submitted"}
+            second = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="fixed")
+            assert second.response.status_code == 409
             assert worker.calls == 1
 
 
@@ -386,8 +386,9 @@ class TestAcknowledgement:
         assert first_ack.status_code == second_ack.status_code == 200
         assert first_ack.json() == second_ack.json() == {"status": "acknowledged"}
         assert poll_after_ack.status_code == 410
-        assert duplicate.response.status_code == 200
-        assert conflicting.response.status_code == 409
+        assert duplicate.response.status_code == conflicting.response.status_code == 409
+        assert "outcome was already acknowledged" in duplicate.response.json()["detail"]
+        assert "already belongs to another request" in conflicting.response.json()["detail"]
         assert worker.calls == 1
 
     async def test_pending_call_acknowledgement_is_rejected(self) -> None:
@@ -1303,7 +1304,7 @@ class TestCapacity:
         assert health.status_code == 200
         assert in_flight.json() == {"call_ids": ["data"]}
         assert poll.json()["status"] == "pending"
-        assert duplicate.response.status_code == 200
+        assert duplicate.response.status_code == 409
         assert rejected.response.status_code == 503
         assert heartbeat.response.status_code == 200
 
@@ -1331,7 +1332,7 @@ class TestCapacity:
 
         assert first_ack.status_code == second_ack.status_code == 200
         assert poll.status_code == poll_after_duplicate.status_code == 410
-        assert duplicate.response.status_code == 200
+        assert duplicate.response.status_code == 409
         assert rejected.response.status_code == 503
         assert health.status_code == 200
         assert worker.calls == 1
@@ -1352,7 +1353,8 @@ class TestCapacity:
                 poll = await client.get("/v1/calls/fixed", params={"timeout": 0.0})
                 health = await client.get("/v1/health")
 
-        assert accepted.response.status_code == duplicate.response.status_code == 200
+        assert accepted.response.status_code == 200
+        assert duplicate.response.status_code == 409
         assert rejected.response.status_code == 503
         assert poll.status_code == 200 and poll.json()["status"] == "success"
         assert health.status_code == 200
@@ -1398,8 +1400,8 @@ class TestPendingAndCompletion:
 
 
 class TestShutdown:
-    async def test_close_cancels_executor_ownership_before_closing_retention(self) -> None:
-        """Server shutdown closes admission and prevents a late worker completion from rearming retention."""
+    async def test_close_leaves_retention_closed_and_a_late_completion_does_not_fail(self) -> None:
+        """Shutdown closes admission, and a late worker completion neither rearms retention nor fails its own task."""
         worker = _Worker()
         server = RpcServer(worker=worker)
         server.submit_call(
@@ -1407,17 +1409,20 @@ class TestShutdown:
             request=SubmitRequest(call_id="pending", query={"tag": "slow"}),
         )
         assert await asyncio.to_thread(worker.slow_started.wait, 5.0)
+        in_flight = tuple(server._executor._background_tasks)
+        assert len(in_flight) == 1
 
         await server.close()
         worker.release_slow.set()
         assert await asyncio.to_thread(worker.slow_finished.wait, 5.0)
+        await asyncio.gather(*in_flight, return_exceptions=True)
 
         assert server._store.closed
         assert server._store._expiry_handle is None
-        assert server._executor.background_task_count == 0
+        assert [task.exception() for task in in_flight] == [None]
 
-    async def test_app_lifespan_closes_active_server_tasks_and_store(self) -> None:
-        """FastAPI lifespan owns executor shutdown before the active store reaches its terminal closed state."""
+    async def test_app_lifespan_closes_the_store_without_failing_a_late_completion(self) -> None:
+        """FastAPI lifespan drives the same shutdown, so a completion after it neither rearms retention nor fails."""
         worker = _Worker()
         app = create_rpc_app(worker)
         server = app.state.rpc_server
@@ -1427,13 +1432,16 @@ class TestShutdown:
                 request=SubmitRequest(call_id="pending", query={"tag": "slow"}),
             )
             assert await asyncio.to_thread(worker.slow_started.wait, 5.0)
+            in_flight = tuple(server._executor._background_tasks)
+            assert len(in_flight) == 1
 
         worker.release_slow.set()
         assert await asyncio.to_thread(worker.slow_finished.wait, 5.0)
+        await asyncio.gather(*in_flight, return_exceptions=True)
 
         assert server._store.closed
-        assert server._executor.background_task_count == 0
         assert server._store._expiry_handle is None
+        assert [task.exception() for task in in_flight] == [None]
 
     async def test_concurrent_close_waiters_share_teardown_before_store_close(
         self, monkeypatch: pytest.MonkeyPatch

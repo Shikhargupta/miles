@@ -78,7 +78,12 @@ contract:
 - A call ID and its fixed request digest identify one execution. The client ACKs
   only after decoding the terminal result or copying the remote error. ACK drops
   the full outcome but keeps the digest tombstone for the 12-hour resolution
-  horizon; late duplicate submissions cannot execute again during that horizon.
+  horizon.
+- Duplicate submissions fail loudly. Reusing a call ID is refused with `409`,
+  whether the original is still running, already finished, or already
+  acknowledged, and whether or not the payload matches. A resubmission never
+  re-executes the call. Submit retries are safe because the client retries a
+  submit only when the request provably never reached the server.
 - ACK is pinned to the boot that returned the outcome and has a sub-second retry
   budget. ACK transport failure never replaces an already decoded result or
   copied business error.

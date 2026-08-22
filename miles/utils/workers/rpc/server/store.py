@@ -130,7 +130,7 @@ class CallStore:
         request_reservation_bytes: int = 0,
         outcome_reservation_bytes: int = DEFAULT_MAX_SERIALIZED_OUTCOME_BYTES,
         control_plane: bool = False,
-    ) -> bool:
+    ) -> None:
         self._ensure_open()
         try:
             call_id_bytes = len(call_id.encode())
@@ -143,10 +143,10 @@ class CallStore:
 
         if (record := self._records.get(call_id)) is not None:
             self._validate_fingerprint(call_id=call_id, expected=record.fingerprint, actual=fingerprint)
-            return False
+            raise DuplicateCallError(f"call {call_id} already submitted")
         if (tombstone := self._tombstones.get(call_id)) is not None:
             self._validate_fingerprint(call_id=call_id, expected=tombstone.fingerprint, actual=fingerprint)
-            return False
+            raise DuplicateCallError(f"call {call_id} outcome was already acknowledged")
 
         identity_count = (
             self._control_calls + self._control_tombstones
@@ -198,7 +198,6 @@ class CallStore:
         log_structured(
             logger.debug, tag="rpc", op="call_store", phase="accept", call=call_id, tracked=len(self._records)
         )
-        return True
 
     def finish(self, *, call_id: str, outcome: CallStatusResponse) -> None:
         self._ensure_open()

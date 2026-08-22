@@ -69,13 +69,14 @@ class TestAcknowledgement:
             store.acknowledge(call_id="c1", fingerprint=_DIGEST)
 
     async def test_acknowledged_call_cannot_be_executed_again(self) -> None:
-        """A late duplicate submit reuses a tombstone instead of rerunning the call."""
+        """A late duplicate submit hits its tombstone and is refused, so the call is never rerun."""
         store = _new_store()
         store.begin(call_id="c1", fingerprint=_DIGEST)
         store.finish(call_id="c1", outcome=CallStatusResponse(status="success", result=1))
         store.acknowledge(call_id="c1", fingerprint=_DIGEST)
 
-        assert not store.begin(call_id="c1", fingerprint=_DIGEST)
+        with pytest.raises(store_module.DuplicateCallError):
+            store.begin(call_id="c1", fingerprint=_DIGEST)
         with pytest.raises(store_module.AcknowledgedCallError):
             await store.wait(call_id="c1", timeout=0.0)
         store.acknowledge(call_id="c1", fingerprint=_DIGEST)
@@ -93,7 +94,7 @@ class TestAcknowledgement:
         await asyncio.sleep(0.03)
 
         assert not store.contains("c1")
-        assert store.begin(call_id="c1", fingerprint=_DIGEST)
+        store.begin(call_id="c1", fingerprint=_DIGEST)
         store.close()
 
     async def test_close_cancels_the_single_expiry_timer(self) -> None:
@@ -125,13 +126,14 @@ class TestAcknowledgement:
 
 
 class TestCapacity:
-    async def test_active_capacity_is_exact_and_duplicates_bypass_it(self) -> None:
-        """The active limit rejects only the first admission of a new call id."""
+    async def test_active_capacity_is_exact_and_duplicates_do_not_consume_it(self) -> None:
+        """A duplicate is refused as a duplicate, not as capacity exhaustion, so it never consumes a slot."""
         store = _new_store(max_active_calls=2)
         for call_id in ("c1", "c2"):
-            assert store.begin(call_id=call_id, fingerprint=_DIGEST)
+            store.begin(call_id=call_id, fingerprint=_DIGEST)
 
-        assert not store.begin(call_id="c1", fingerprint=_DIGEST)
+        with pytest.raises(store_module.DuplicateCallError):
+            store.begin(call_id="c1", fingerprint=_DIGEST)
         with pytest.raises(store_module.CallStoreCapacityError, match="active"):
             store.begin(call_id="c3", fingerprint=_DIGEST)
         assert store.stats.active_calls == 2
@@ -146,13 +148,13 @@ class TestCapacity:
             store.begin(call_id="c2", fingerprint=_DIGEST)
         store.acknowledge(call_id="c1", fingerprint=_DIGEST)
 
-        assert store.begin(call_id="c2", fingerprint=_OTHER_DIGEST)
+        store.begin(call_id="c2", fingerprint=_OTHER_DIGEST)
         assert store.contains("c1")
 
     async def test_outcome_capacity_is_reserved_before_admission(self) -> None:
         """A call that cannot reserve its declared result budget is rejected before execution starts."""
         store = _new_store(max_unacknowledged_outcome_bytes=128)
-        assert store.begin(call_id="c1", fingerprint=_DIGEST, outcome_reservation_bytes=96)
+        store.begin(call_id="c1", fingerprint=_DIGEST, outcome_reservation_bytes=96)
 
         with pytest.raises(store_module.CallStoreCapacityError, match="outcome"):
             store.begin(call_id="c2", fingerprint=_OTHER_DIGEST, outcome_reservation_bytes=64)
@@ -175,14 +177,15 @@ class TestCapacity:
         assert store.stats.active_calls == store_module.MAX_ACTIVE_CALLS == 4096
 
     async def test_tombstone_capacity_rejects_new_ids_without_evicting_live_tombstones(self) -> None:
-        """A full tombstone budget rejects a new id but still accepts duplicate submits and ACKs."""
+        """A full tombstone budget refuses a duplicate as a duplicate, refuses a new id as capacity, and still ACKs."""
         store = _new_store(max_active_calls=2, max_tombstones=2)
         for call_id in ("c1", "c2"):
             store.begin(call_id=call_id, fingerprint=_DIGEST)
             store.finish(call_id=call_id, outcome=CallStatusResponse(status="success"))
             store.acknowledge(call_id=call_id, fingerprint=_DIGEST)
 
-        assert not store.begin(call_id="c1", fingerprint=_DIGEST)
+        with pytest.raises(store_module.DuplicateCallError):
+            store.begin(call_id="c1", fingerprint=_DIGEST)
         store.acknowledge(call_id="c2", fingerprint=_DIGEST)
         with pytest.raises(store_module.CallStoreCapacityError, match="tombstone"):
             store.begin(call_id="c3", fingerprint=_DIGEST)
@@ -198,7 +201,7 @@ class TestCapacity:
 
         store.finish(call_id="c1", outcome=CallStatusResponse(status="success"))
         assert store.stats.queued_request_bytes == 0
-        assert store.begin(call_id="c2", fingerprint=_OTHER_DIGEST, request_reservation_bytes=64)
+        store.begin(call_id="c2", fingerprint=_OTHER_DIGEST, request_reservation_bytes=64)
 
     async def test_failed_executor_start_rolls_back_every_admission_reservation(self) -> None:
         """A submit that never starts execution can atomically release its id and byte reservations."""
@@ -215,7 +218,7 @@ class TestCapacity:
         assert store.stats.active_calls == 0
         assert store.stats.queued_request_bytes == 0
         assert store.stats.reserved_outcome_bytes == 0
-        assert store.begin(call_id="c1", fingerprint=_OTHER_DIGEST, request_reservation_bytes=128)
+        store.begin(call_id="c1", fingerprint=_OTHER_DIGEST, request_reservation_bytes=128)
 
     async def test_control_admission_has_a_bounded_reserve_when_data_calls_are_full(self) -> None:
         """Heartbeat-class calls retain a small independent admission budget under data-plane saturation."""
@@ -236,7 +239,7 @@ class TestCapacity:
         store.finish(call_id="data", outcome=CallStatusResponse(status="success"))
         store.acknowledge(call_id="data", fingerprint=_DIGEST)
 
-        assert store.begin(call_id="heartbeat", fingerprint=_OTHER_DIGEST, control_plane=True)
+        store.begin(call_id="heartbeat", fingerprint=_OTHER_DIGEST, control_plane=True)
         assert store.stats.control_calls == 1
 
     async def test_default_control_tombstones_cover_the_full_heartbeat_resolution_horizon(self) -> None:
@@ -252,7 +255,7 @@ class TestCapacity:
                 store.finish(call_id=call_id, outcome=CallStatusResponse(status="success"))
                 store.acknowledge(call_id=call_id, fingerprint=digest)
 
-            assert store.begin(call_id="next-heartbeat", fingerprint=_OTHER_DIGEST, control_plane=True)
+            store.begin(call_id="next-heartbeat", fingerprint=_OTHER_DIGEST, control_plane=True)
         finally:
             store.close()
 
@@ -426,9 +429,11 @@ class TestResourceBounds:
                 store.acknowledge(call_id=call_id, fingerprint=digest)
                 durations.append(time.perf_counter_ns() - started)
             durations.sort()
-            same_digest_reused = not store.begin(
-                call_id='c0', fingerprint=hashlib.sha256(b'c0').digest()
-            )
+            same_digest_rejected = False
+            try:
+                store.begin(call_id='c0', fingerprint=hashlib.sha256(b'c0').digest())
+            except Exception as error:
+                same_digest_rejected = type(error).__name__ == 'DuplicateCallError'
             different_digest_rejected = False
             try:
                 store.begin(call_id='c1', fingerprint=hashlib.sha256(b'different').digest())
@@ -443,7 +448,7 @@ class TestResourceBounds:
             metrics = {
                 'p99_ns': durations[int(len(durations) * 0.99)],
                 'tombstones': store.stats.tombstones,
-                'same_digest_reused': same_digest_reused,
+                'same_digest_rejected': same_digest_rejected,
                 'different_digest_rejected': different_digest_rejected,
                 'acknowledged_poll_rejected': acknowledged_poll_rejected,
             }
@@ -454,7 +459,7 @@ class TestResourceBounds:
         assert metrics["rss_delta"] <= 24 * 1024 * 1024
         assert metrics["p99_ns"] <= 1_000_000
         assert metrics["tombstones"] == 60000
-        assert metrics["same_digest_reused"]
+        assert metrics["same_digest_rejected"]
         assert metrics["different_digest_rejected"]
         assert metrics["acknowledged_poll_rejected"]
 

@@ -29,25 +29,36 @@ class TestBegin:
         """The first submission registers its call id."""
         store = _make_store()
 
-        is_new = store.begin(call_id="c1", fingerprint=_FINGERPRINT)
+        store.begin(call_id="c1", fingerprint=_FINGERPRINT)
 
-        assert is_new
         assert store.contains("c1")
 
-    async def test_matching_pending_call_is_reused(self) -> None:
-        """Resubmitting an identical pending call returns the existing call."""
+    async def test_resubmitting_an_identical_pending_call_fails_loudly(self) -> None:
+        """A duplicate call id is an error even when the payload matches, so double submits surface."""
         store = _make_store()
         store.begin(call_id="c1", fingerprint=_FINGERPRINT)
 
-        assert not store.begin(call_id="c1", fingerprint=_FINGERPRINT)
+        with pytest.raises(DuplicateCallError):
+            store.begin(call_id="c1", fingerprint=_FINGERPRINT)
 
-    async def test_matching_finished_call_is_reused(self) -> None:
-        """Resubmitting an identical finished call returns the existing call."""
+    async def test_resubmitting_an_identical_finished_call_fails_loudly(self) -> None:
+        """A finished call keeps owning its id, so resubmitting it is still an error."""
         store = _make_store()
         store.begin(call_id="c1", fingerprint=_FINGERPRINT)
         store.finish(call_id="c1", outcome=CallStatusResponse(status="success", result=1))
 
-        assert not store.begin(call_id="c1", fingerprint=_FINGERPRINT)
+        with pytest.raises(DuplicateCallError):
+            store.begin(call_id="c1", fingerprint=_FINGERPRINT)
+
+    async def test_resubmitting_an_acknowledged_call_fails_loudly(self) -> None:
+        """After acknowledgement only a tombstone remains; a resubmit could never be served, so it must not look accepted."""
+        store = _make_store()
+        store.begin(call_id="c1", fingerprint=_FINGERPRINT)
+        store.finish(call_id="c1", outcome=CallStatusResponse(status="success", result=1))
+        store.acknowledge(call_id="c1", fingerprint=_FINGERPRINT)
+
+        with pytest.raises(DuplicateCallError):
+            store.begin(call_id="c1", fingerprint=_FINGERPRINT)
 
     @pytest.mark.parametrize("finished", [False, True])
     async def test_conflicting_call_id_rejected(self, *, finished: bool) -> None:
@@ -70,7 +81,7 @@ class TestBegin:
         )
 
         now[0] = 15.01
-        assert store.begin(call_id="c1", fingerprint=_FINGERPRINT)
+        store.begin(call_id="c1", fingerprint=_FINGERPRINT)
         reused_outcome = CallStatusResponse(status="success", result=2)
         store.finish(call_id="c1", outcome=reused_outcome)
 
