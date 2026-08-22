@@ -108,6 +108,8 @@ class Operation:
     error_category: str | None = None
     was_claimed: bool = False
     window_consumed: bool = False
+    # Monotonic stamp of the QUEUED->CLAIMED transition; the claimed-TTL sweep ages against it.
+    claimed_at: float | None = None
 
     @property
     def tenant(self) -> Tenant:
@@ -198,11 +200,13 @@ class OperationLedger:
         max_pending: int = 256,
         max_unacked_results: int = 4096,
         gap_timeout: float | None = 600.0,
+        claimed_ttl: float | None = 1800.0,
         time_fn=time.monotonic,
     ) -> None:
         self.max_pending = max_pending
         self.max_unacked_results = max_unacked_results
         self.gap_timeout = gap_timeout
+        self.claimed_ttl = claimed_ttl
         self._time = time_fn
         self.queues: dict[Tenant, _RegistrationQueue] = {}
         self.by_id: dict[str, Operation] = {}
@@ -341,6 +345,7 @@ class OperationLedger:
             return None
         op.state = OperationState.CLAIMED
         op.was_claimed = True
+        op.claimed_at = self._time()
         return op.claimed_view()
 
     def claimable_control_tenants(self) -> list[Tenant]:
@@ -364,6 +369,7 @@ class OperationLedger:
             return None
         op.state = OperationState.CLAIMED
         op.was_claimed = True
+        op.claimed_at = self._time()
         return op.claimed_view()
 
     def poisoned_window_blocker(self, name: str, registration_id: str, ordinal: int) -> str | None:
@@ -453,6 +459,21 @@ class OperationLedger:
             f"never arrived in {stalled_for:.0f}s; sealed {sealed}, failed {failed}"
         )
         return event
+
+    # ------------------------------ claimed TTL ------------------------------
+
+    def claimed_timeouts(self, now: float | None = None) -> list[dict]:
+        """Over-age CLAIMED operations for the backend to terminal-fail (an orphaned claim blocks its queue forever)."""
+        now = self._time() if now is None else now
+        if self.claimed_ttl is None or self.claimed_ttl <= 0:
+            return []
+        return [
+            {**op.view(), "claimed_age": now - op.claimed_at}
+            for op in self.by_id.values()
+            if op.state is OperationState.CLAIMED
+            and op.claimed_at is not None
+            and now - op.claimed_at >= self.claimed_ttl
+        ]
 
     # ------------------------------ terminals ------------------------------
 

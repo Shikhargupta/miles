@@ -252,3 +252,43 @@ class TestSelectionKindLock:
         assert output.conversion_metadata["operation_by_lane"] == {0: "op-A", 1: "op-B"}
         assert output.conversion_metadata["tinker_operation_lanes"] == [0, 1]
         assert output.postprocess.pad_to_dp is True
+
+
+class TestFailedRuntimeSelfHeal:
+    """A transient child failure must not starve the adapter until deregister."""
+
+    def test_child_failure_stamps_the_cooldown_clock(self):
+        class BoomQueue(FakeOperationQueue):
+            async def claim_data(self, key):
+                raise RuntimeError("transient engine failure")
+
+        fn = make_fn()
+        fn.operations = BoomQueue()
+        runtime = AdapterRolloutRuntime(make_run(name="A", reg="r-A"))
+        asyncio.run(fn._run_child(runtime))
+        assert runtime.state == AdapterRolloutRuntime.FAILED
+        assert runtime.last_failure is not None
+
+    def test_failed_runtime_relaunches_after_the_cooldown_not_before(self, monkeypatch):
+        import time
+
+        import miles.rollout.multi_lora.rollout_fn as rollout_module
+
+        fn = make_fn()
+        runtime = AdapterRolloutRuntime(make_run(name="A", reg="r-A"))
+        runtime.state = AdapterRolloutRuntime.FAILED
+        runtime.last_failure = time.monotonic()
+        fn.runtimes[("A", "r-A")] = runtime
+        fn._sync_rotation()
+
+        async def scenario():
+            monkeypatch.setattr(rollout_module, "_FAILED_RELAUNCH_COOLDOWN_S", 3600.0)
+            fn._launch_idle_children()
+            assert runtime.state == AdapterRolloutRuntime.FAILED and runtime.task is None
+
+            monkeypatch.setattr(rollout_module, "_FAILED_RELAUNCH_COOLDOWN_S", 0.0)
+            fn._launch_idle_children()
+            assert runtime.state == AdapterRolloutRuntime.IN_FLIGHT and runtime.task is not None
+            await fn.aclose()
+
+        asyncio.run(scenario())
