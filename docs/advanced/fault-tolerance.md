@@ -55,11 +55,11 @@ contract:
   control-plane bodies use separate aggregate ingress byte and
   in-flight-request budgets, and each lane bounds its concurrent overload
   responses. A bounded byte array replaces per-chunk retention, and conversion
-  to the downstream immutable body reserves both copies. Neither a per-request
-  byte cap nor a per-request chunk-count cap is imposed by default; both are
-  available as opt-ins. They are opt-in because the server does not control how
-  a body is fragmented into reads, so a fixed chunk-count cap would make a
-  legal upload fail or succeed depending on network conditions.
+  to the downstream immutable body reserves both copies. There is no per-request
+  byte cap and no per-request chunk-count cap. The server does not control how
+  a body is fragmented into reads, so a fixed per-request cap would make the
+  same legal upload fail or succeed depending on network conditions; the
+  aggregate budgets bound the same resource without that dependence.
 - **Admitted calls reserve their decoded arguments.** Matching bounded
   queued-request budgets mean many near-limit requests cannot retain multiple
   GiB of input or decoded arguments.

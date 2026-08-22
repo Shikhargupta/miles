@@ -46,8 +46,6 @@ class _RequestBodyLimitMiddleware:
         app: ASGIApp,
         *,
         boot_uuid: str,
-        max_bytes: int | None = None,
-        max_body_chunks: int | None = None,
         max_data_aggregate_bytes: int = MAX_AGGREGATE_REQUEST_BODY_BYTES,
         max_control_aggregate_bytes: int = MAX_CONTROL_AGGREGATE_REQUEST_BODY_BYTES,
         max_data_in_flight_requests: int = MAX_DATA_IN_FLIGHT_REQUESTS,
@@ -58,8 +56,6 @@ class _RequestBodyLimitMiddleware:
     ) -> None:
         self._app = app
         self._boot_uuid = boot_uuid
-        self._max_bytes = max_bytes
-        self._max_body_chunks = max_body_chunks
         self._max_data_aggregate_bytes = max_data_aggregate_bytes
         self._max_control_aggregate_bytes = max_control_aggregate_bytes
         self._max_data_in_flight_requests = max_data_in_flight_requests
@@ -102,29 +98,9 @@ class _RequestBodyLimitMiddleware:
 
         reserved_bytes = 0
         try:
-            content_length = next(
-                (value for key, value in scope["headers"] if key.lower() == b"content-length"),
-                None,
-            )
-            if (
-                self._max_bytes is not None
-                and content_length is not None
-                and content_length.isdigit()
-                and int(content_length) > self._max_bytes
-            ):
-                await self._reject(
-                    scope=scope,
-                    receive=receive,
-                    send=send,
-                    status_code=413,
-                    detail=f"rpc request body exceeds {self._max_bytes} bytes",
-                )
-                return
-
             body = bytearray()
             body_bytes = 0
             more_body = True
-            chunk_count = 0
             while more_body:
                 message = await receive()
                 if message["type"] == "http.disconnect":
@@ -132,29 +108,8 @@ class _RequestBodyLimitMiddleware:
                 if message["type"] != "http.request":
                     del message
                     continue
-                chunk_count += 1
-                if self._max_body_chunks is not None and chunk_count > self._max_body_chunks:
-                    del message
-                    await self._reject(
-                        scope=scope,
-                        receive=receive,
-                        send=send,
-                        status_code=413,
-                        detail=f"rpc request body exceeds {self._max_body_chunks} chunks",
-                    )
-                    return
                 chunk = message.get("body", b"")
                 chunk_bytes = len(chunk)
-                if self._max_bytes is not None and body_bytes + chunk_bytes > self._max_bytes:
-                    del message, chunk
-                    await self._reject(
-                        scope=scope,
-                        receive=receive,
-                        send=send,
-                        status_code=413,
-                        detail=f"rpc request body exceeds {self._max_bytes} bytes",
-                    )
-                    return
                 if chunk_bytes and not self._reserve(control_plane=control_plane, body_bytes=chunk_bytes):
                     del message, chunk
                     await self._reject(
