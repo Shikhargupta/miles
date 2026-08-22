@@ -775,8 +775,6 @@ class TinkerFrontend:
 
         record = FutureRecord(request_id=request_id, kind="sample", fingerprint=fingerprint)
         try:
-            if request.prompt_logprobs:
-                raise UserInputError("prompt_logprobs is not supported in v1")
             if request.topk_prompt_logprobs:
                 raise UserInputError("topk_prompt_logprobs is not supported in v1")
             if request.num_samples < 1:
@@ -837,7 +835,13 @@ class TinkerFrontend:
         self.futures.put(record)
         task = asyncio.get_running_loop().create_task(
             self._run_sample(
-                record, sampler, prompt_tokens, sglang_params, request.num_samples, request.sampling_params.seed
+                record,
+                sampler,
+                prompt_tokens,
+                sglang_params,
+                request.num_samples,
+                request.sampling_params.seed,
+                prompt_logprobs=bool(request.prompt_logprobs),
             )
         )
         self._sample_tasks.add(task)
@@ -945,9 +949,10 @@ class TinkerFrontend:
         params: dict,
         num_samples: int,
         seed: int | None = None,
+        prompt_logprobs: bool = False,
     ) -> None:
         try:
-            await self._execute_sample(record, sampler, tokens, params, num_samples, seed)
+            await self._execute_sample(record, sampler, tokens, params, num_samples, seed, prompt_logprobs)
         except asyncio.CancelledError:
             # Reaper cancellation carries its reason on the record; anything
             # else is the shutdown barrier. Either way the future resolves so
@@ -976,8 +981,12 @@ class TinkerFrontend:
         params: dict,
         num_samples: int,
         seed: int | None = None,
+        prompt_logprobs: bool = False,
     ) -> None:
         payload: dict = {"input_ids": tokens, "sampling_params": params, "return_logprob": True}
+        if prompt_logprobs:
+            # sglang natively scores the prompt: input_token_logprobs from position 0.
+            payload["logprob_start_len"] = 0
         if sampler.name is not None:
             live = self.backend.registration_view(sampler.name)
             if live is None or live["registration_id"] != sampler.registration_id:
@@ -1040,7 +1049,9 @@ class TinkerFrontend:
             )
             return
         sequences = [translation.generation_to_sequence(generation) for generation in generations]
-        record.resolve(translation.sequences_to_sample_response(sequences))
+        # The prompt is shared across the fan-out, so any generation's scores serve.
+        scored = translation.prompt_logprobs_from_generation(generations[0], len(tokens)) if prompt_logprobs else None
+        record.resolve(translation.sequences_to_sample_response(sequences, scored))
 
     def _account_sample_terminal(
         self, record: FutureRecord, num_samples: int, prompt_tokens: int, max_new_tokens: int | None

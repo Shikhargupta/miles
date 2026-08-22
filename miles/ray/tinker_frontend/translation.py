@@ -259,11 +259,22 @@ def generation_to_sequence(generation: dict) -> dict:
     }
 
 
-def sequences_to_sample_response(sequences: list[dict]) -> dict:
+def prompt_logprobs_from_generation(generation: dict, prompt_len: int) -> list[float | None]:
+    """meta_info.input_token_logprobs (logprob_start_len=0) -> one float-or-None per prompt token."""
+    entries = (generation.get("meta_info") or {}).get("input_token_logprobs")
+    if not entries:
+        raise RuntimeError("the engine returned no input_token_logprobs for a prompt_logprobs request")
+    if len(entries) != prompt_len:
+        raise RuntimeError(f"the engine returned {len(entries)} prompt logprobs for {prompt_len} prompt tokens")
+    # The first entry has no context, so sglang reports None there; keep it.
+    return [None if entry[0] is None else float(entry[0]) for entry in entries]
+
+
+def sequences_to_sample_response(sequences: list[dict], prompt_logprobs: list[float | None] | None = None) -> dict:
     return {
         "type": "sample",
         "sequences": sequences,
-        "prompt_logprobs": None,
+        "prompt_logprobs": prompt_logprobs,
         "topk_prompt_logprobs": None,
         "prompt_cache_hit_tokens": 0,
     }
