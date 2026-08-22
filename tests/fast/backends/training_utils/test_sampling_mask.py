@@ -6,11 +6,7 @@ import torch
 from miles.backends.training_utils import cp_utils
 from miles.backends.training_utils.loss_hub import logit_processors
 from miles.backends.training_utils.loss_hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
-from miles.backends.training_utils.sampling_mask import (
-    RolloutSamplingMask,
-    build_local_sampling_mask,
-    get_rollout_sampling_mask,
-)
+from miles.backends.training_utils.sampling_mask import RolloutSamplingMask, build_local_sampling_mask
 
 
 def test_rollout_sampling_mask_from_supports_roundtrip():
@@ -52,34 +48,6 @@ def test_rollout_sampling_mask_rejects_out_of_range_token_index():
 
     with pytest.raises(IndexError, match="out of range"):
         mask[2]
-
-
-def test_get_rollout_sampling_mask_wraps_per_sample_values():
-    batch = {
-        "rollout_sampling_mask_ids": [[5, 9, 2], torch.tensor([7, 8])],
-        "rollout_sampling_mask_offsets": [[0, 2, 3], torch.tensor([0, 2])],
-    }
-
-    masks = get_rollout_sampling_mask(batch)
-
-    assert [len(mask) for mask in masks] == [2, 1]
-    assert masks[0][0].tolist() == [5, 9]
-    assert masks[1][0].tolist() == [7, 8]
-
-
-def test_get_rollout_sampling_mask_fails_when_required_support_is_missing():
-    with pytest.raises(ValueError, match="truncated-sampling actor scoring requires"):
-        get_rollout_sampling_mask({})
-
-
-def test_get_rollout_sampling_mask_fails_on_mismatched_sample_counts():
-    with pytest.raises(ValueError, match="must cover the same samples"):
-        get_rollout_sampling_mask(
-            {
-                "rollout_sampling_mask_ids": [[1]],
-                "rollout_sampling_mask_offsets": [[0, 1], [0, 1]],
-            }
-        )
 
 
 def test_build_local_sampling_mask_selects_original_response_rows_and_tp_shard():

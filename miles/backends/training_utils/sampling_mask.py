@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import torch
@@ -44,30 +44,6 @@ class RolloutSamplingMask:
         if not 0 <= token_index < len(self):
             raise IndexError(f"response token index {token_index} out of range for {len(self)} tokens")
         return self.ids[self.offsets[token_index] : self.offsets[token_index + 1]]
-
-
-def get_rollout_sampling_mask(batch: Mapping[str, object]) -> list[RolloutSamplingMask]:
-    """Read the complete sampling mask required by an actor scoring pass.
-
-    The batch carries the mask as two flat per-sample sequences — the wire
-    format both object-store backends can transport — wrapped here into one
-    validated value object per sample.
-    """
-    sampling_mask_ids = batch.get("rollout_sampling_mask_ids")
-    sampling_mask_offsets = batch.get("rollout_sampling_mask_offsets")
-    if sampling_mask_ids is None or sampling_mask_offsets is None:
-        raise ValueError(
-            "truncated-sampling actor scoring requires rollout_sampling_mask_ids and rollout_sampling_mask_offsets"
-        )
-    if len(sampling_mask_ids) != len(sampling_mask_offsets):
-        raise ValueError(
-            "sampling-mask ids and offsets must cover the same samples: "
-            f"ids={len(sampling_mask_ids)}, offsets={len(sampling_mask_offsets)}"
-        )
-    return [
-        RolloutSamplingMask(ids=ids, offsets=offsets)
-        for ids, offsets in zip(sampling_mask_ids, sampling_mask_offsets, strict=True)
-    ]
 
 
 def build_local_sampling_mask(
