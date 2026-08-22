@@ -745,7 +745,7 @@ class _RecordingCheckpointEvalFn(CheckpointEvalFn):
     async def evaluate_checkpoint(self, checkpoint_dir, input):
         raise AssertionError("not exercised by the lifecycle tests")
 
-    def dispose(self) -> None:
+    async def dispose(self) -> None:
         self.disposed = True
 
 
@@ -788,7 +788,7 @@ class TestLifecycle:
         eval_fn = _RecordingCheckpointEvalFn()
         executor.eval_generate_rollout = eval_fn
 
-        executor.dispose()
+        await executor.dispose()
 
         assert closed == ["closed"]
         assert analyzed == [args]
