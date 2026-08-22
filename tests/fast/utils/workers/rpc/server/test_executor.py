@@ -3,7 +3,6 @@ import json
 import subprocess
 import sys
 import textwrap
-import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -22,39 +21,6 @@ class _OversizedWorker:
     @rpc(max_serialized_outcome_bytes=512)
     def demo_oversized(self) -> str:
         return "x" * 1024
-
-
-class _BlockingSyncWorker:
-    def __init__(self) -> None:
-        self.started = threading.Event()
-        self.release = threading.Event()
-        self.finished = threading.Event()
-        self.executed: list[str] = []
-
-    @rpc()
-    def demo(self, value: str) -> None:
-        self.executed.append(value)
-        if value == "running":
-            self.started.set()
-            assert self.release.wait(timeout=5.0)
-            self.finished.set()
-
-
-class _CancellationResistantAsyncWorker:
-    def __init__(self) -> None:
-        self.started = asyncio.Event()
-        self.cancelled = asyncio.Event()
-        self.release = asyncio.Event()
-
-    @rpc()
-    async def demo(self) -> None:
-        self.started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            self.cancelled.set()
-            await self.release.wait()
-            raise
 
 
 class TestConcurrencyGroups:
