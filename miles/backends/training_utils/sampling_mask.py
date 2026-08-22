@@ -1,17 +1,8 @@
-from collections.abc import Mapping, Sequence
-from typing import cast
+from collections.abc import Sequence
 
 import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
-
-
-def get_rollout_sampling_mask(batch: Mapping[str, object]) -> list[RolloutSamplingMask]:
-    """Read the complete sampling mask required by an actor scoring pass."""
-    sampling_mask = batch.get("rollout_sampling_mask")
-    if sampling_mask is None:
-        raise ValueError("truncated-sampling actor scoring requires rollout_sampling_mask")
-    return [RolloutSamplingMask.from_mask_list(mask_list) for mask_list in cast(list[list[list[int]]], sampling_mask)]
 
 
 def build_local_sampling_mask(

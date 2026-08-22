@@ -6,7 +6,7 @@ import torch
 from miles.backends.training_utils import cp_utils
 from miles.backends.training_utils.loss_hub import logit_processors
 from miles.backends.training_utils.loss_hub.math_utils import _calculate_log_probs_and_entropy_true_on_policy
-from miles.backends.training_utils.sampling_mask import build_local_sampling_mask, get_rollout_sampling_mask
+from miles.backends.training_utils.sampling_mask import build_local_sampling_mask
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 
@@ -150,18 +150,6 @@ def test_get_log_probs_and_entropy_rejects_mask_shorter_than_response(monkeypatc
             response_lengths=[2],
             rollout_sampling_mask=[RolloutSamplingMask.from_mask_list([[0]])],
         )
-
-
-def test_get_rollout_sampling_mask_fails_when_required_support_is_missing():
-    with pytest.raises(ValueError, match="truncated-sampling actor scoring requires"):
-        get_rollout_sampling_mask({})
-
-
-def test_get_rollout_sampling_mask_wraps_each_sample():
-    masks = get_rollout_sampling_mask({"rollout_sampling_mask": [[[1, 2], [3]], [[4]]]})
-
-    assert [len(mask) for mask in masks] == [2, 1]
-    assert masks[0][1].tolist() == [3]
 
 
 @pytest.mark.parametrize(("cp_rank", "expected_indices"), [(0, [0, 1]), (1, [2, 3])])
