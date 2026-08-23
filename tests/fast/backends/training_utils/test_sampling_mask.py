@@ -50,6 +50,37 @@ def test_build_local_sampling_mask_rejects_row_misalignment():
         )
 
 
+def test_build_local_sampling_mask_skips_selection_for_empty_local_rows(monkeypatch):
+    def unexpected_selection(*args, **kwargs):
+        raise AssertionError("empty local rows must not select sampling-mask ids")
+
+    monkeypatch.setattr(RolloutSamplingMask, "_select_masks", unexpected_selection)
+
+    mask = build_local_sampling_mask(
+        torch.zeros(0, 4),
+        sampling_mask=RolloutSamplingMask.from_mask_list([[0]]),
+        response_indices=range(0),
+        tp_rank=0,
+    )
+
+    assert mask.shape == (0, 4)
+    assert mask.dtype == torch.bool
+
+
+@pytest.mark.parametrize(
+    "response_indices",
+    [torch.empty(0, dtype=torch.float32), torch.empty((0, 1), dtype=torch.long)],
+)
+def test_build_local_sampling_mask_validates_empty_tensor_indices(response_indices):
+    with pytest.raises(ValueError, match="must be one-dimensional integers"):
+        build_local_sampling_mask(
+            torch.zeros(0, 4),
+            sampling_mask=RolloutSamplingMask.from_mask_list([[0]]),
+            response_indices=response_indices,
+            tp_rank=0,
+        )
+
+
 def test_true_on_policy_masks_logprob_but_keeps_full_vocab_entropy():
     logits = torch.tensor([[2.0, 1.0, 0.0, -1.0]], requires_grad=True)
     tokens = torch.tensor([0])

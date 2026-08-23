@@ -1,6 +1,7 @@
 import operator
+from array import array
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 
 import torch
 
@@ -17,21 +18,23 @@ class RolloutSamplingMask:
     transport needs, so no per-token nesting is rebuilt on the trainer side.
     """
 
-    ids: torch.Tensor
-    offsets: torch.Tensor
+    ids: InitVar[Sequence[int] | torch.Tensor]
+    offsets: InitVar[Sequence[int] | torch.Tensor]
+    _ids: torch.Tensor = field(init=False, repr=False)
+    _offsets: torch.Tensor = field(init=False, repr=False)
 
-    def __post_init__(self):
-        # copy=True takes ownership: a caller mutating its input tensor after
-        # construction must not be able to invalidate the checks below.
-        object.__setattr__(self, "ids", _to_cpu_integer_tensor(self.ids).to(torch.long, copy=True))
-        object.__setattr__(self, "offsets", _to_cpu_integer_tensor(self.offsets).to(torch.long, copy=True))
-        if self.offsets.numel() == 0 or self.offsets[0] != 0 or self.offsets[-1] != self.ids.numel():
+    def __post_init__(self, ids: Sequence[int] | torch.Tensor, offsets: Sequence[int] | torch.Tensor):
+        owned_ids = _to_owned_cpu_integer_tensor(ids, dtype=torch.int32)
+        owned_offsets = _to_owned_cpu_integer_tensor(offsets, dtype=torch.long)
+        if owned_offsets.numel() == 0 or owned_offsets[0] != 0 or owned_offsets[-1] != owned_ids.numel():
             raise ValueError("sampling-mask offsets must start at zero and end at the flattened id count")
-        if torch.any(self.offsets[1:] <= self.offsets[:-1]):
+        if torch.any(owned_offsets[1:] <= owned_offsets[:-1]):
             raise ValueError(
                 "sampling-mask offsets must be strictly increasing: "
                 "every response token needs a non-empty sampling mask"
             )
+        object.__setattr__(self, "_ids", owned_ids)
+        object.__setattr__(self, "_offsets", owned_offsets)
 
     @classmethod
     def from_mask_list(cls, mask_list: Sequence[Sequence[int]]) -> "RolloutSamplingMask":
@@ -43,22 +46,17 @@ class RolloutSamplingMask:
                 response position ``t``. SGLang's ``output_token_sampling_mask``
                 arrives in this shape.
         """
-        ids = _to_cpu_integer_tensor([token_id for mask in mask_list for token_id in mask])
-        lengths = torch.tensor([len(mask) for mask in mask_list], dtype=torch.long)
-        offsets = torch.cat([torch.zeros(1, dtype=torch.long), lengths.cumsum(0)])
+        ids = []
+        offsets = [0]
+        for mask in mask_list:
+            ids.extend(mask)
+            offsets.append(len(ids))
         return cls(ids=ids, offsets=offsets)
 
     def __len__(self) -> int:
-        return self.offsets.numel() - 1
+        return self._offsets.numel() - 1
 
-    def __getitem__(self, token_index: int) -> torch.Tensor:
-        """Mask ids at one response position, shape ``[mask_size_t]``."""
-        token_index = operator.index(token_index)
-        if not 0 <= token_index < len(self):
-            raise IndexError(f"response token index {token_index} out of range for {len(self)} tokens")
-        return self.ids[self.offsets[token_index] : self.offsets[token_index + 1]]
-
-    def select_masks(self, token_indices: Sequence[int] | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _select_masks(self, token_indices: Sequence[int] | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Flattened masks for the given response positions.
 
         Args:
@@ -69,24 +67,76 @@ class RolloutSamplingMask:
             masks concatenated in ``token_indices`` order, and ``lengths`` is
             ``[num_selected]``, each position's mask size.
 
-        Consecutive token indices share one CSR run, so whole runs are sliced
-        at once: O(#runs) slices instead of one per token.
+        The returned ids may share the mask's private storage and are only for
+        immediate read-only use by the scoring path.
         """
+        if isinstance(token_indices, range) and token_indices.step == 1:
+            if len(token_indices) == 0:
+                return self._ids.new_empty(0), self._offsets.new_empty(0)
+            if token_indices.start < 0 or token_indices.stop > len(self):
+                raise ValueError(f"response indices must be in [0, {len(self)})")
+            start, stop = token_indices.start, token_indices.stop
+            lengths = self._offsets[start + 1 : stop + 1] - self._offsets[start:stop]
+            return self._ids[self._offsets[start] : self._offsets[stop]], lengths
+
         indices = _to_cpu_integer_tensor(token_indices).to(torch.long)
         if torch.any(indices < 0) or torch.any(indices >= len(self)):
             raise ValueError(f"response indices must be in [0, {len(self)})")
-        lengths = self.offsets[indices + 1] - self.offsets[indices]
+        lengths = self._offsets[indices + 1] - self._offsets[indices]
         if indices.numel() == 0:
-            return self.ids.new_empty(0), lengths
+            return self._ids.new_empty(0), lengths
         run_starts = [0]
         run_starts.extend((torch.nonzero(indices[1:] != indices[:-1] + 1).flatten() + 1).tolist())
         run_starts.append(indices.numel())
         parts = [
-            self.ids[self.offsets[indices[start]] : self.offsets[indices[end - 1] + 1]]
+            self._ids[self._offsets[indices[start]] : self._offsets[indices[end - 1] + 1]]
             for start, end in zip(run_starts[:-1], run_starts[1:], strict=True)
         ]
-        # cat always copies, so the result never aliases the frozen storage.
-        return torch.cat(parts), lengths
+        return (parts[0] if len(parts) == 1 else torch.cat(parts)), lengths
+
+
+def _to_owned_cpu_integer_tensor(
+    values: Sequence[int] | torch.Tensor,
+    *,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    if isinstance(values, torch.Tensor):
+        tensor = values.detach()
+        _validate_integer_tensor(tensor)
+        if dtype == torch.int32 and tensor.numel() > 0:
+            min_value, max_value = tensor.min().item(), tensor.max().item()
+            if min_value < torch.iinfo(torch.int32).min or max_value > torch.iinfo(torch.int32).max:
+                raise ValueError("sampling-mask token ids must fit in int32")
+        return tensor.to(device="cpu", dtype=dtype, copy=True)
+
+    int32_info = torch.iinfo(torch.int32)
+    if dtype == torch.int32 and len(values) > 0:
+        if bool in map(type, values):
+            raise ValueError("sampling-mask ids, offsets, and response indices must be one-dimensional integers")
+        try:
+            storage = array("i", values)
+        except OverflowError:
+            raise ValueError("sampling-mask token ids must fit in int32") from None
+        except TypeError:
+            pass
+        else:
+            # The tensor retains the array as its owned backing storage.
+            return torch.frombuffer(storage, dtype=torch.int32)
+
+    normalized = []
+    for value in values:
+        if isinstance(value, bool):
+            raise ValueError("sampling-mask ids, offsets, and response indices must be one-dimensional integers")
+        try:
+            integer = operator.index(value)
+        except TypeError:
+            raise ValueError(
+                "sampling-mask ids, offsets, and response indices must be one-dimensional integers"
+            ) from None
+        if dtype == torch.int32 and not int32_info.min <= integer <= int32_info.max:
+            raise ValueError("sampling-mask token ids must fit in int32")
+        normalized.append(integer)
+    return torch.tensor(normalized, dtype=dtype, device="cpu")
 
 
 def _to_cpu_integer_tensor(values: Sequence[int] | torch.Tensor) -> torch.Tensor:
@@ -98,6 +148,10 @@ def _to_cpu_integer_tensor(values: Sequence[int] | torch.Tensor) -> torch.Tensor
         tensor = torch.arange(values.start, values.stop, values.step, device="cpu")
     else:
         tensor = torch.as_tensor(values, device="cpu")
+    _validate_integer_tensor(tensor)
+    return tensor
+
+
+def _validate_integer_tensor(tensor: torch.Tensor) -> None:
     if tensor.ndim != 1 or tensor.dtype == torch.bool or torch.is_floating_point(tensor) or torch.is_complex(tensor):
         raise ValueError("sampling-mask ids, offsets, and response indices must be one-dimensional integers")
-    return tensor
