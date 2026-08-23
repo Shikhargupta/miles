@@ -1799,60 +1799,37 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--tinker-backend",
                 action="store_true",
                 default=False,
-                help="Enable the Tinker protocol adapter for the Multi-LoRA operation backend "
-                "(client-driven forward_backward/optim_step; no dataset or reward on the server). "
-                "Requires --multi-lora-n-adapters > 0.",
+                help="Enable the Tinker protocol adapter for Multi-LoRA (requires --multi-lora-n-adapters > 0)",
             )
             parser.add_argument(
                 "--tinker-max-coalesce-wait-s",
                 type=float,
                 default=2.0,
-                help="After the first child batch is selected, keep coalescing further ready "
-                "batches into the same train call for this long (default: 2.0)",
+                help="Keep coalescing ready batches into the same train call this long after the first (default: 2.0)",
             )
             parser.add_argument(
                 "--tinker-max-empty-wait-s",
                 type=float,
                 default=5.0,
-                help="End generate with EmptyBatchTimeoutError when no adapter produces a "
-                "batch within this window. Deliberately short: the driver treats it as a "
-                "yield back to the control phase, so queued optim_step/save/load operations "
-                "never wait behind an idle data queue (default: 5.0)",
+                help="Idle window before EmptyBatchTimeoutError; short so control ops never wait (default: 5.0)",
             )
             parser.add_argument(
                 "--tinker-operation-gap-timeout",
                 type=float,
                 default=600.0,
-                help="Seconds a registration's operation stream may stall on a never-arriving "
-                "ordinal before the backend terminal-fails the blocked operations with a typed "
-                "user error naming the missing ordinal and seals the hole (the tinker SDK can "
-                "consume a seq_id and then fail client-side before HTTP: non-finite JSON "
-                "serialization, a cancelled future — no retry ever fills that ordinal). Sealed "
-                "ordinals never execute (a late arrival is a conflict) and nothing overtakes "
-                "them, so strict per-registration ordering is preserved; the client resubmits "
-                "as new operations. <= 0 disables (default: 600)",
+                help="Gap-stall seconds before blocked ops fail and the hole seals; <= 0 disables (default: 600)",
             )
             parser.add_argument(
                 "--tinker-operation-claimed-ttl",
                 type=float,
                 default=1800.0,
-                help="Seconds an operation may hold CLAIMED without reaching a terminal state before "
-                "the backend terminal-fails it with a typed server error naming the operation and its "
-                "age. This is the liveness backstop for orphaned claims (e.g. a restarted rollout "
-                "executor whose in-memory runtimes vanished): an orphaned CLAIMED head otherwise "
-                "blocks its registration's queue forever — the gap-timeout sweep only covers "
-                "never-arrived QUEUED ordinals. Generous by design: legitimate train steps hold "
-                "CLAIMED for minutes. <= 0 disables (default: 1800)",
+                help="Liveness backstop: fail orphaned CLAIMED ops after this long; <= 0 disables (default: 1800)",
             )
             parser.add_argument(
                 "--multi-lora-max-consecutive-generate-failures",
                 type=int,
                 default=10,
-                help="Consecutive non-idle generate failures the multi-LoRA driver tolerates (log and "
-                "skip the round — failure paths restore unconsumed claims to READY, so a skipped round "
-                "self-heals) before re-raising and ending the run. A successful generate resets the "
-                "count. The driver owns the shared multi-tenant controller, so dying here takes every "
-                "tenant's service down. 0 fails fast on the first error (default: 10)",
+                help="Consecutive generate failures skipped before re-raising; 0 fails fast (default: 10)",
             )
             parser.add_argument(
                 "--multi-lora-idle-poll-s",
@@ -1873,11 +1850,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--multi-lora-backend-path",
                 type=str,
                 default=None,
-                help=(
-                    "Dotted path to a MultiLoraOperationBackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter "
-                    "(default: MultiLoraOperationBackend)"
-                ),
+                help="Dotted path to a MultiLoraOperationBackend subclass (e.g. custom validate_adapter)",
             )
             parser.add_argument(
                 "--multi-lora-api-port",

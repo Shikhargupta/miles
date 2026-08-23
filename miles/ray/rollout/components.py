@@ -1,19 +1,4 @@
-"""Role-separated construction of the rollout plane
-(codex-rollout-fullparameter-design-0810 §4.3/§4.8).
-
-Consumer-facing names are fixed NOW to the roles PR #1842 will ship —
-``inference_controller`` (engine/router/weight-update ownership) and
-``rollout_executor`` (rollout-fn execution/conversion) — while the current
-concretes are ``Legacy...Adapter`` views over ONE combined RolloutManager
-actor. When the split lands, only ``create_rollout_components`` changes:
-construct the real InferenceController and RolloutExecutor (behind a thin
-adapter if their invocation shape differs), and every call site keeps its
-role variable. Deliberately not named ``InferenceController``/
-``RolloutExecutor`` (the future classes must not collide) and not ``_tbd``
-(Legacy states what the object actually is and when it dies).
-
-The ports carry only what the tinker driver needs — no copy of the full
-future public surface, and sampling/scoring never enters the executor."""
+"""Role-separated rollout construction: PR #1842 role names now, Legacy adapters over one combined RolloutManager."""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -35,11 +20,7 @@ class InferenceControllerPort(Protocol):
     async def get_inference_endpoint(self) -> InferenceEndpoint: ...
 
     async def prepare_rollout(self, rollout_id: int) -> None:
-        """Per-rollout engine preparation/health handling (the PR #1842
-        InferenceController responsibility). The driver calls this before
-        every ``rollout_executor.generate(rollout_id)``; the legacy combined
-        manager prepares inside ``generate()`` itself, so its adapter's
-        implementation is a no-op."""
+        """Called before every generate; no-op in the legacy adapter (PR #1842 moves engine preparation here)."""
         ...
 
 
@@ -52,10 +33,7 @@ class RolloutLifecyclePort(Protocol):
 
 
 class LegacyInferenceControllerAdapter:
-    """Inference-owner role view over the combined RolloutManager. The raw
-    actor handle is private: the training-side weight-update wiring reaches
-    it through ``RolloutComponents.weight_update_owner`` (an opaque factory
-    product), never through this role object."""
+    """Inference-owner role view over the combined RolloutManager; the raw handle rides only weight_update_owner."""
 
     def __init__(self, manager) -> None:
         self._manager = manager
@@ -65,10 +43,7 @@ class LegacyInferenceControllerAdapter:
         return InferenceEndpoint(host=host, port=port)
 
     async def prepare_rollout(self, rollout_id: int) -> None:
-        """No-op today: the combined ``RolloutManager.generate()`` performs
-        its own per-rollout preparation internally. The PR #1842 controller
-        moves that preparation here, and the driver already calls it in the
-        right place."""
+        """No-op: the combined manager prepares inside generate(); PR #1842 moves that preparation here."""
 
 
 class LegacyRolloutExecutorAdapter:
@@ -82,8 +57,7 @@ class LegacyRolloutExecutorAdapter:
 
 
 class LegacyRolloutLifecycle:
-    """Exactly-once disposal of the SHARED underlying actor: two role views
-    must never each dispose the same manager."""
+    """Exactly-once disposal of the SHARED underlying actor: two role views must never each dispose it."""
 
     def __init__(self, manager) -> None:
         self._manager = manager
@@ -101,10 +75,7 @@ class RolloutComponents:
     inference_controller: InferenceControllerPort
     rollout_executor: RolloutExecutorPort
     lifecycle: RolloutLifecyclePort
-    # Opaque owner/target the training actors wire their weight-update push
-    # against (today: the combined RolloutManager actor handle). The driver
-    # passes it to create_training_models verbatim and never introspects it;
-    # PR #1842's factory hands out its real controller-owned target here.
+    # Opaque weight-update owner/target (today the combined manager handle); passed verbatim, never introspected.
     weight_update_owner: object
 
     async def dispose(self) -> None:
@@ -112,10 +83,7 @@ class RolloutComponents:
 
 
 def create_rollout_components(args, pg) -> RolloutComponents:
-    """The one construction seam: today it builds one RolloutManager and two
-    role views over it; after PR #1842 it builds the real controller/executor
-    pair — call sites never change. The tinker driver has no epochs, so the
-    manager's num_rollout_per_epoch is deliberately not carried."""
+    """One construction seam: legacy manager + role views today, PR #1842's pair later; call sites never change."""
     from miles.ray.placement_group import create_rollout_manager
 
     rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pg)

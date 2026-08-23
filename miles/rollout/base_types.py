@@ -51,13 +51,7 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
 
 @dataclass(frozen=True)
 class RolloutPostprocessOptions:
-    """Postprocess policy the rollout fn declares for its own output, so the
-    generic manager never has to recognize fn-specific metadata keys.
-
-    pad_to_dp: zero-weight pad the flat sample list up to the DP grid instead
-    of trimming — for whole-batch selections (e.g. tinker client operations)
-    where dropping samples would corrupt the result plane.
-    """
+    """Postprocess policy declared by the rollout fn; pad_to_dp zero-weight pads to the DP grid instead of trimming."""
 
     pad_to_dp: bool = False
 

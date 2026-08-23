@@ -46,14 +46,14 @@ def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
 
 
 def build_multi_lora_operation_optimizer(args: Namespace, config, model_chunks: Sequence):
-    assert not config.use_distributed_optimizer, (
-        "tinker per-slot optimizers require use_distributed_optimizer=False: "
-        "gradient retention uses all-reduce; LayerWise provides sharding"
-    )
+    assert (
+        not config.use_distributed_optimizer
+    ), "per-slot optimizers require use_distributed_optimizer=False (LayerWise shards; grad retention all-reduces)"
     assert not config.fp16, "tinker per-slot optimizers require bf16 (no dynamic loss scaler)"
-    assert (config.optimizer or "").lower() == "adam", (
-        "tinker per-slot optimizers only implement Adam semantics (state init, "
-        f"slot retirement cleanup, step clocks); got optimizer={config.optimizer!r}"
+    assert (
+        config.optimizer or ""
+    ).lower() == "adam", (
+        f"tinker per-slot optimizers only implement Adam semantics; got optimizer={config.optimizer!r}"
     )
 
     from megatron.core.optimizer import get_megatron_optimizer
@@ -198,11 +198,7 @@ def step_adapter_slots(
             any(param.grad is not None and bool((param.grad != 0).any().item()) for param in slot_params),
         )
         if has_grads and not has_norm_source:
-            logger.error(
-                f"[tinker] slot {slot}: gradients exist but NO rank contributed a grad-norm source — "
-                "the slot's parameters are mis-flagged for norm collection (upstream parameter-attribute "
-                "bug); step refused, grads cleared"
-            )
+            logger.error(f"[tinker] slot {slot}: no grad-norm source despite grads (mis-flagged params); step refused")
             norm_blind.add(slot)
             zero_adapter_slot_grads(model, slot)
             continue

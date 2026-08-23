@@ -51,14 +51,7 @@ def payload_fingerprint(kind: str, payload: dict | None) -> str:
 
 @dataclass
 class SealedGap:
-    """Contiguity filler for an ordinal whose submission never arrived within
-    the gap timeout. The tinker SDK can consume a seq_id and then fail BEFORE
-    HTTP (non-finite JSON serialization, a cancelled future): no retry will
-    ever fill that ordinal, so the seal restores liveness without relaxing
-    the fence — the missing ordinal's identity is never executed (a late
-    genuine arrival hits the ordinal-taken conflict), its kind is never
-    guessed, and the poison scan treats the seal as neutral (it contributed
-    no gradients and delimits no window)."""
+    """Gap-timeout filler for a never-arrived ordinal: liveness, fence kept; never executes, poison-neutral."""
 
     operation_id: str
     ordinal: int
@@ -121,8 +114,7 @@ class _RegistrationQueue:
     fenced: bool = False
     # Cached contiguity frontier; ordinals are never removed, so it only advances.
     _contiguous: int = 0
-    # Gap-stall clock: the missing ordinal the queue is blocked on and when
-    # that block was first observed. A different hole restarts the clock.
+    # Gap-stall clock: missing ordinal blocking the queue and when first observed; a new hole restarts it.
     _stall_missing: int | None = None
     _stall_since: float | None = None
 
@@ -292,13 +284,7 @@ class OperationLedger:
         return None
 
     # ------------------------------ gap stalls ------------------------------
-    # A client can consume an ordinal and then fail BEFORE HTTP (the 0.24.1
-    # SDK serializes AFTER taking its seq counter: non-finite floats raise a
-    # local ValueError, an immediately-cancelled future never posts). No retry
-    # fills such a hole, so the buffered tail would wait forever. Enforcement
-    # never relaxes the fence: nothing is skipped, no kind is guessed, no
-    # operation runs out of order — the blocked (never-claimed) operations
-    # terminal-fail typed and the hole is sealed against late execution.
+    # A consumed ordinal can fail client-side before HTTP; no retry fills it — blocked ops terminal-fail, hole sealed.
 
     def gap_stalls(self, now: float | None = None) -> list[dict]:
         """Current stalls (observability): registrations whose open operations
@@ -349,11 +335,7 @@ class OperationLedger:
             if not op.terminal:  # all QUEUED: nothing is claimable while the queue stalls
                 op.state = OperationState.FAILED
                 op.error = (
-                    f"operation gap timeout: ordinal {op.ordinal} waited {stalled_for:.0f}s behind missing "
-                    f"ordinal {missing}, whose submission never reached the server (it failed client-side "
-                    "before HTTP — e.g. non-finite values failing JSON serialization, or a cancelled SDK "
-                    "future); the never-arrived ordinals are sealed and will never execute — resubmit this "
-                    "work as new operations"
+                    f"gap timeout: stalled {stalled_for:.0f}s behind missing ordinal {missing}; resubmit as new ops"
                 )
                 op.error_category = "user"
                 failed.append(op.operation_id)

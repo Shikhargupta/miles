@@ -10,9 +10,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ResidentBinding:
-    """Multi-LoRA execution binding: one registration pinned to its fixed
-    trainer slot. Opaque above the residency port — batch plumbing forwards
-    it, only Multi-LoRA code interprets it."""
+    """Multi-LoRA execution binding (registration -> fixed trainer slot); opaque above the residency port."""
 
     registration_key: RegistrationKey
     training_slot: int
@@ -65,9 +63,7 @@ class FixedSlotResidency:
 
 
 # ---------------- data-plane encoding ----------------
-# The lease crosses the rollout -> object store -> trainer boundary as plain
-# data (the store's codecs never see a dataclass); typed leases live at the
-# controller/adapter boundaries.
+# The lease crosses rollout -> store -> trainer as plain data; typed leases stay at controller/adapter boundaries.
 
 
 def lease_to_metadata(lease: BatchExecutionLease[ResidentBinding]) -> dict:
