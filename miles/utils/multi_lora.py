@@ -63,6 +63,24 @@ def targets_expert_leaves(target_modules: Any) -> bool:
     return any(entry.split(".")[-1] in _EXPERT_LEAF_NAMES for entry in entries)
 
 
+def _recompute_source_recognizes_adapters(recompute_module: Any) -> bool:
+    import inspect
+
+    try:
+        source = inspect.getsource(recompute_module.maybe_enable_recompute_inputs_grad)
+    except (AttributeError, OSError, TypeError):
+        return False
+    return ".adapters." in source
+
+
+def _bridge_recompute_patch_recognizes_multi_lora() -> bool:
+    try:
+        from megatron.bridge.peft import recompute
+    except Exception:
+        return False
+    return _recompute_source_recognizes_adapters(recompute)
+
+
 def validate_multi_lora_args(args: Any) -> None:
     """Set ``args.multi_lora``, then validate and default the multi-LoRA arg
     surface. Called from ``miles_validate_args``; a no-op for normal runs."""
@@ -87,6 +105,17 @@ def validate_multi_lora_args(args: Any) -> None:
         "complete adapter to push to the rollout engines, and a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
     )
+    recompute_modules = list(getattr(args, "recompute_modules", None) or [])
+    risky_full = getattr(args, "recompute_granularity", None) == "full"
+    risky_moe = "moe" in recompute_modules and targets_expert_leaves(args.target_modules)
+    if risky_full or risky_moe:
+        bridge_fixed = _bridge_recompute_patch_recognizes_multi_lora()
+        assert (
+            not risky_full or bridge_fixed
+        ), "Full recompute requires Megatron-Bridge#27 ('.adapters.' aware); upgrade or use selective recompute"
+        assert (
+            not risky_moe or bridge_fixed
+        ), "Expert targets with MoE recompute require Megatron-Bridge#27; upgrade or recompute core_attn and moe_act"
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
     assert getattr(args, "qkv_format", "thd") == "thd", (
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
