@@ -63,12 +63,7 @@ DATA_OPERATION_KINDS = ("forward_backward", "forward")
 
 @dataclass(frozen=True)
 class ClaimedOperationBatch:
-    """One claimed client operation, decoded and stamped into a complete batch
-    (external review 0813 §6.5): the single typed claim result that flows from
-    the claim path through READY state and selection into the merge. The
-    binding is the claim's fixed execution binding, resolved atomically with
-    the claim (claim-and-bind) — the one dispatch truth; the long-lived
-    runtime's AdapterRun view never is."""
+    """One claimed operation as a complete batch; its binding (claim-and-bind) is the one dispatch truth."""
 
     operation_id: str
     kind: str
@@ -109,9 +104,7 @@ def decode_operation(operation: dict, run: AdapterRun) -> ClaimedOperationBatch:
 
 
 class TinkerNullDataSource:
-    """The manager-level data source slot for tinker runs. Tinker has no
-    dataset — every child pulls from the operation queue — so this only
-    satisfies the manager's save/load/close surface."""
+    """Dataset-less data source for tinker runs; only satisfies the manager's save/load/close surface."""
 
     dataset = ()
 
@@ -189,8 +182,7 @@ class MultiLoraOperationBatchFn:
             raise ValueError(
                 "MultiLoraOperationBatchFn does not serve eval; tinker runs have no server-side eval loop"
             )
-        # READY streams only: a retiring registration's queued operations are
-        # fenced terminal, so a child claim would never return for it.
+        # READY streams only: a retiring registration's queued ops are fenced terminal, so a claim never returns.
         adapters = await self.operations.ready_streams()
         await self._reconcile(adapters)
         self._launch_idle_children()

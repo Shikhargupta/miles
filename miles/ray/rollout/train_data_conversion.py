@@ -145,9 +145,7 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
-    # Client-supplied per-token channels (tinker adapters). Absent tensors
-    # default to zeros so one selection may mix CE (weights) and IS/PPO
-    # (advantages) adapters.
+    # Client-supplied per-token channels (tinker); absent tensors default to zeros so CE and IS/PPO adapters can mix.
     if any(sample.loss_weights is not None for sample in samples):
         train_data["loss_weights"] = [
             sample.loss_weights if sample.loss_weights is not None else [0.0] * sample.response_length
