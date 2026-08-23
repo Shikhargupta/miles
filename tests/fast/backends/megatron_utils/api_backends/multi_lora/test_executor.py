@@ -39,7 +39,6 @@ class TestStepMany:
         assert outcomes["op-A"]["ok"] is True
         assert outcomes["op-A"]["gradient_window_consumed"] is True
         assert outcomes["op-A"]["result"]["grad_norm"] == 1.5
-        # The veto cleared the gradients on every rank: consumed, not ok.
         assert outcomes["op-B"]["ok"] is False
         assert outcomes["op-B"]["gradient_window_consumed"] is True
 
@@ -51,7 +50,6 @@ class TestStepMany:
         assert not outcomes["op-A"].get("gradient_window_consumed")
 
     def test_duplicate_physical_step_targets_never_silently_drop_an_operation(self, monkeypatch):
-        """Every duplicate target is refused explicitly before optimizer mutation."""
         stepped = []
         monkeypatch.setattr(
             executor_module,

@@ -26,7 +26,7 @@ def claim_batch(run: AdapterRun, operations) -> ClaimedOperationBatch:
 
 def sample_payload(n=2) -> dict:
     return {
-        "batch_id": "batch-7",  # client-side bookkeeping key the server ignores
+        "batch_id": "batch-7",
         "samples": [
             {"prompt": "p", "tokens": [1, 2, 3, 4], "response_length": 2, "loss_mask": [1, 1]} for _ in range(n)
         ],
@@ -67,7 +67,6 @@ def fast_poll(monkeypatch):
 
 
 def op(op_id="op1", kind="forward_backward", payload=None, slot=3):
-    # A claim always carries its fixed binding (claim-and-bind).
     return dict(
         operation_id=op_id,
         name="X",
@@ -89,7 +88,7 @@ class TestClaimBatch:
         assert stamped.adapter.serving_version == 2 and stamped.adapter.slot == 3
         assert stamped.metadata["team"] == "t1"
         assert stamped.status == stamped.Status.COMPLETED
-        assert [group[0].index for group in output.samples] == [0, 1]  # result-plane row identity
+        assert [group[0].index for group in output.samples] == [0, 1]
         assert isinstance(output, ClaimedOperationBatch)
         assert output.operation_id == "op1"
         assert output.kind == "forward_backward"
@@ -97,9 +96,6 @@ class TestClaimBatch:
         assert output.binding == ResidentBinding(registration_key=("X", "rx"), training_slot=3)
 
     def test_client_supplied_row_index_is_overwritten(self):
-        # index is server-owned: a client -1 would alias the DP-padding
-        # sentinel (row silently dropped from the result plane) and duplicates
-        # would collide in the (lane, row) logprob collector.
         payload = sample_payload()
         payload["samples"][0]["index"] = -1
         payload["samples"][1]["index"] = 0
@@ -130,8 +126,6 @@ class TestClaimBatch:
 
 
 def ready_runtime(fn: MultiLoraOperationBatchFn, name: str, slot: int, kind: str) -> AdapterRolloutRuntime:
-    # The runtime's stamped slot (9) is deliberately stale: the claim's
-    # binding, not the long-lived AdapterRun view, is the dispatch truth.
     run = make_run(name=name, reg=f"r-{name}", slot=9)
     runtime = AdapterRolloutRuntime(run)
     runtime.state = AdapterRolloutRuntime.READY
@@ -189,8 +183,6 @@ class TestSelectionKindLock:
             asyncio.run(fn._select())
 
     def test_merge_ships_the_converted_plan_and_pad_policy(self):
-        """The claim binding drives the batch lease and routing; the runtime's
-        stale stamped slot must not leak into either."""
         fn = make_fn()
         first = ready_runtime(fn, "A", 0, "forward_backward")
         selected = asyncio.run(fn._select())
@@ -210,9 +202,6 @@ class TestSelectionKindLock:
         assert first.state == AdapterRolloutRuntime.IDLE and first.ready_output is None
 
     def test_failed_lease_acquisition_keeps_claimed_output_retryable(self):
-        """A failed acquisition must not orphan the only in-memory copy of an
-        already-claimed output; the next selection retries it."""
-
         class RefusingOnceResidency(FakeResidency):
             def __init__(self):
                 super().__init__()
@@ -240,9 +229,6 @@ class TestSelectionKindLock:
         assert runtime.state == AdapterRolloutRuntime.IDLE and runtime.ready_output is None
 
     def test_merge_of_a_forward_selection_marks_forward_only(self):
-        """Forward kind: the same composition with ``tinker_forward_only``
-        set — the flag that keeps forward operations gradient-free must
-        survive the lane re-keying."""
         fn = make_fn()
         ready_runtime(fn, "A", 0, "forward")
         ready_runtime(fn, "B", 1, "forward")
@@ -255,8 +241,6 @@ class TestSelectionKindLock:
 
 
 class TestFailedRuntimeSelfHeal:
-    """A transient child failure must not starve the adapter until deregister."""
-
     def test_child_failure_stamps_the_cooldown_clock(self):
         class BoomQueue(FakeOperationQueue):
             async def claim_data(self, key):

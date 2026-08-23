@@ -39,14 +39,14 @@ class TestFutureStore:
         for i in range(3):
             rec = store.put(record(f"r{i}", terminal={"n": i}))
             store.mark_delivered(rec)
-        assert store.get("r0") is None  # oldest delivered evicted
+        assert store.get("r0") is None
         assert store.get("r1").terminal == {"n": 1}
         assert store.get("r2").terminal == {"n": 2}
 
     def test_pending_records_are_never_evicted(self):
         store = FutureStore(max_delivered=1)
         pending = store.put(record("pending"))
-        store.mark_delivered(pending)  # no-op: not terminal
+        store.mark_delivered(pending)
         for i in range(3):
             store.mark_delivered(store.put(record(f"r{i}", terminal={})))
         assert store.get("pending") is pending
@@ -54,11 +54,9 @@ class TestFutureStore:
     def test_eviction_leaves_a_typed_tombstone(self):
         store = FutureStore(max_delivered=1)
         store.mark_delivered(store.put(record("r1", "f1", terminal={"n": 1})))
-        store.mark_delivered(store.put(record("r2", "f2", terminal={"n": 2})))  # evicts r1
+        store.mark_delivered(store.put(record("r2", "f2", terminal={"n": 2})))
         assert store.get("r1") is None
         assert store.expired_fingerprint("r1") == "f1"
-        # An identical retry of the expired identity is typed, never a fresh
-        # record (re-execution) and never a conflict blaming the client.
         with pytest.raises(ExpiredError, match="already delivered"):
             store.existing("r1", "f1")
         with pytest.raises(ConflictError, match="identical"):
@@ -68,9 +66,9 @@ class TestFutureStore:
         store = FutureStore(max_delivered=1, max_expired=2)
         for i in range(4):
             store.mark_delivered(store.put(record(f"r{i}", f"f{i}", terminal={})))
-        assert store.expired_fingerprint("r0") is None  # trimmed
+        assert store.expired_fingerprint("r0") is None
         assert store.expired_fingerprint("r2") == "f2"
-        assert store.existing("r0", "f0") is None  # falls back to unknown
+        assert store.existing("r0", "f0") is None
 
     def test_resolve_drops_the_forward_payload(self):
         rec = record()

@@ -10,7 +10,7 @@ class TestSlotPool:
         pool = SlotPool(2)
         assert pool.bind_immediately(("a", "r1")) == 0
         assert pool.bind_immediately(("b", "r1")) == 1
-        assert pool.bind_immediately(("c", "r1")) is None  # fixed residency: queue, never evict
+        assert pool.bind_immediately(("c", "r1")) is None
         assert pool.release(("a", "r1")) == 0
         assert pool.bind_immediately(("c", "r1")) == 0
 
@@ -21,7 +21,7 @@ class TestSlotPool:
         assert pool.is_pinned(("a", "r1"), "dirty-grads")
         pool.release(("a", "r1"))
         pool.bind_immediately(("b", "r1"))
-        assert not pool.is_pinned(("b", "r1"), "dirty-grads")  # nothing leaks to the next tenant
+        assert not pool.is_pinned(("b", "r1"), "dirty-grads")
 
     def test_occupied_ids(self):
         pool = SlotPool(3)
@@ -46,7 +46,6 @@ class TestLifecycle:
         registry = AdapterRegistry(2)
         registry.register("A", config())
         assert registry.find("A").state is AdapterState.PENDING
-        # A weight push bumps serving_version but never promotes.
         registry.record_weight_update(["A"])
         assert registry.find("A").state is AdapterState.PENDING
         assert registry.find("A").serving_version == 1
@@ -74,12 +73,12 @@ class TestLifecycle:
     def test_queue_drains_in_arrival_order_not_name_order(self):
         registry = AdapterRegistry(1)
         registry.register("A", config())
-        registry.register("Z", config())  # queued first
-        registry.register("B", config())  # queued second, sorts before Z
+        registry.register("Z", config())
+        registry.register("B", config())
         registry.deregister("A")
         registry.retire_adapters()
         registry.free_slot("A")
-        assert registry.bootstrap_pending() == ["Z"]  # FIFO wins over the name sort
+        assert registry.bootstrap_pending() == ["Z"]
         registry.deregister("Z")
         registry.retire_adapters()
         registry.free_slot("Z")
@@ -101,8 +100,6 @@ class TestLifecycle:
 
 
 class TestClocksAndPins:
-    """The registry mirrors committed clocks, releases pins, and applies num_step retirement."""
-
     def test_committed_step_mirrors_clock_and_releases_the_pin(self):
         registry = AdapterRegistry(1)
         record = register_ready(registry, "A")
@@ -113,8 +110,6 @@ class TestClocksAndPins:
         assert record.step == 1
 
     def test_hook_ignores_a_stale_registration(self):
-        # Anti-ABA: a completion for a retired tenant must never move a
-        # same-name successor's mirror.
         registry = AdapterRegistry(1)
         record = register_ready(registry, "A")
         registry.on_step_committed("A", "not-the-registration", 7)

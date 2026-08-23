@@ -69,9 +69,6 @@ class Stack:
 
 
 class RouterSamplingTransport:
-    """SamplingTransport-shaped fake: the tests exercise the REAL transport
-    seam (no method monkeypatching), routing /generate to the FakeRouter."""
-
     def __init__(self, router):
         self.router = router
         self.closed = False
@@ -113,8 +110,6 @@ class TestTrainingChain:
     def test_out_of_order_chunks_then_optim(self):
         async def scenario(stack):
             model_id = await stack.create_model()
-            # The SDK posts the first chunk LAST: submit seq 2 before seq 1,
-            # and the optim (seq 3) before either result is retrieved.
             fb2 = stack.frontend.forward_backward(stack.fb_request(model_id, 2, tokens=(5, 6, 7)))
             fb1 = stack.frontend.forward_backward(stack.fb_request(model_id, 1))
             optim = stack.frontend.optim_step(stack.optim_request(model_id, 3))
@@ -123,11 +118,10 @@ class TestTrainingChain:
             body3 = await stack.retrieve(optim["request_id"])
             for body in (body1, body2):
                 (row,) = [output["logprobs"]["data"] for output in body["loss_fn_outputs"]]
-                assert row == [-0.5, -0.5, -0.5]  # step clock 0 at execution
+                assert row == [-0.5, -0.5, -0.5]
                 assert body["metrics"]["loss:sum"] == pytest.approx(1.0)
                 assert body["metrics"]["unmasked_tokens:sum"] == pytest.approx(3.0)
             assert body3 == {"type": "optim_step", "metrics": {"grad_norm": 0.125, "learning_rate": 1e-4}}
-            # The optim step moved the weights: same payload, new logprobs.
             fb4 = stack.frontend.forward_backward(stack.fb_request(model_id, 4))
             body4 = await stack.retrieve(fb4["request_id"])
             assert body4["loss_fn_outputs"][0]["logprobs"]["data"] == [-0.51, -0.51, -0.51]
@@ -148,7 +142,6 @@ class TestTrainingChain:
             )
             body = await stack.retrieve(forward["request_id"])
             assert body["metrics"]["loss:sum"] == pytest.approx(1.0)
-            # No unstepped gradients: save_state right after a forward works.
             save = stack.frontend.save_weights(
                 wire.SaveWeightsRequest(model_id=model_id, path="after-forward", seq_id=2)
             )
@@ -177,23 +170,18 @@ class TestTrainingChain:
         async def scenario(stack):
             model_id = await stack.create_model()
             fb1 = stack.frontend.forward_backward(stack.fb_request(model_id, 1))
-            # seq 2 is a boundary rejection (active target not next-token).
             bad = stack.frontend.forward_backward(
                 stack.fb_request(model_id, 2, tokens=(1, 2, 3), weights=(1.0, 1.0, 1.0), targets=[9, 3, 99])
             )
             fb3 = stack.frontend.forward_backward(stack.fb_request(model_id, 3))
             failed = await stack.retrieve(bad["request_id"])
             assert failed["category"] == "user" and "next input" in failed["error"]
-            # seq 3 executes: the rejected ordinal did not leave a gap.
             assert (await stack.retrieve(fb3["request_id"]))["type"] == "forward_backward"
             assert (await stack.retrieve(fb1["request_id"]))["type"] == "forward_backward"
 
         run(scenario)
 
     def test_failed_chunk_poisons_the_gradient_window(self):
-        # #2258 §5: one rejected chunk of a multi-chunk fb must fail the
-        # window's optim_step (discard, no partial step); the consumed poison
-        # resets the window for the next round.
         async def scenario(stack):
             model_id = await stack.create_model()
             good = stack.frontend.forward_backward(stack.fb_request(model_id, 1))
@@ -206,9 +194,8 @@ class TestTrainingChain:
             poisoned = await stack.retrieve(optim["request_id"])
             assert poisoned["category"] == "user" and "gradient window" in poisoned["error"]
             record = stack.frontend.backend.registry.find(stack.frontend.models.get(model_id).name)
-            assert record.step == 0  # the step clock never advanced
+            assert record.step == 0
 
-            # The discard reset the window: a clean fb+optim round succeeds.
             fb4 = stack.frontend.forward_backward(stack.fb_request(model_id, 4))
             optim5 = stack.frontend.optim_step(stack.optim_request(model_id, 5))
             assert (await stack.retrieve(fb4["request_id"]))["type"] == "forward_backward"
@@ -226,7 +213,6 @@ class TestTrainingChain:
             with pytest.raises(OperationBackpressure):
                 stack.frontend.optim_step(stack.optim_request(model_id, 2))
             stack.driver.paused = False
-            # The SDK backs off and resends the identical request until admitted.
             for _ in range(500):
                 try:
                     retried = stack.frontend.optim_step(stack.optim_request(model_id, 2))
@@ -295,7 +281,7 @@ class TestCheckpoints:
             save = stack.frontend.save_weights(wire.SaveWeightsRequest(model_id=model_id, path="lost", seq_id=1))
             tinker_path = (await stack.retrieve(save["request_id"]))["path"]
             backend_path = stack.frontend.checkpoints.get(tinker_path).backend_path
-            del stack.driver.saved_states[backend_path]  # the artifact vanished server-side
+            del stack.driver.saved_states[backend_path]
             load = stack.frontend.load_weights(
                 wire.LoadWeightsRequest(model_id=model_id, path=tinker_path, optimizer=True, seq_id=2)
             )
@@ -363,11 +349,6 @@ class TestSampling:
         run(scenario)
 
     def test_client_supplied_routing_identity_never_reaches_the_router(self):
-        # rid/lora_path/extra_key are the server-derived serving identity: a
-        # client posting them (top-level or smuggled into sampling_params)
-        # must never see its values on the router payload — the wire models
-        # drop unknown fields and the sglang params are rebuilt from an
-        # allowlist. This test locks that construction.
         async def scenario(stack):
             model_id = await stack.create_model()
             sampler_id = await self.publish(stack, model_id, seq_id=1, sampling_session_seq_id=0)
@@ -405,9 +386,6 @@ class TestSampling:
         run(scenario)
 
     def test_republish_mid_generation_fails_the_inflight_sample(self):
-        # TOCTOU fence: the pre-dispatch version check alone would let a
-        # sample straddling a republish resolve as if it came from the pinned
-        # version; the post-generation re-check fails it loudly.
         async def scenario(stack):
             model_id = await stack.create_model()
             sampler_id = await self.publish(stack, model_id, seq_id=1, sampling_session_seq_id=0)
@@ -423,8 +401,8 @@ class TestSampling:
 
             transport.generate = delayed
             future = stack.frontend.sample(self.sample_request(sampler_id))
-            await asyncio.sleep(0.02)  # the sample task is awaiting /generate
-            stack.frontend.backend.registry.record_weight_update([name])  # republish lands mid-flight
+            await asyncio.sleep(0.02)
+            stack.frontend.backend.registry.record_weight_update([name])
             gate.set()
             body = await stack.retrieve(future["request_id"])
             assert body["category"] == "user" and "republished while this sample was in flight" in body["error"]
@@ -453,7 +431,6 @@ class TestSampling:
             body = await stack.retrieve(future["request_id"])
             assert body["type"] == "sample"
             assert "lora_path" not in stack.router.requests[-1]
-            # Deterministic yet diverse: each fanned-out sample gets seed + i.
             seeds = sorted(r["sampling_params"]["sampling_seed"] for r in stack.router.requests[-2:])
             assert seeds == [40, 41]
             calls = len(stack.router.requests)
@@ -465,7 +442,6 @@ class TestSampling:
             probe = self.sample_request(sampler_id, seq_id=2)
             probe.prompt_logprobs = True
             body = await stack.retrieve(stack.frontend.sample(probe)["request_id"])
-            # Prompt scoring rides the same generate: one entry per prompt token, first None.
             assert body["type"] == "sample" and body["prompt_logprobs"] == [None, -0.125]
             assert stack.router.requests[-1]["logprob_start_len"] == 0
             assert all("logprob_start_len" not in r for r in stack.router.requests[:-1])
@@ -479,9 +455,6 @@ class TestSampling:
 
 
 class TestReplayExpiry:
-    """Delivered-then-evicted results must answer with a typed 410 tombstone:
-    the bytes are gone and re-execution would break idempotency."""
-
     def test_training_resubmit_after_eviction_is_410_not_conflict(self):
         async def scenario(stack):
             stack.frontend.futures.max_delivered = 1
@@ -489,17 +462,14 @@ class TestReplayExpiry:
             first = stack.frontend.forward_backward(stack.fb_request(model_id, 1))
             await stack.retrieve(first["request_id"])
             second = stack.frontend.forward_backward(stack.fb_request(model_id, 2))
-            await stack.retrieve(second["request_id"])  # evicts seq 1's record
+            await stack.retrieve(second["request_id"])
 
             with pytest.raises(ApiError) as repoll:
                 await stack.retrieve(first["request_id"])
             assert repoll.value.status_code == 410 and "already delivered" in repoll.value.detail
-            # The identical re-submit must not surface as a fatal 422 conflict
-            # blaming the client ("retries must be identical" — it was).
             with pytest.raises(ApiError) as resubmit:
                 stack.frontend.forward_backward(stack.fb_request(model_id, 1))
             assert resubmit.value.status_code == 410
-            # A DIFFERENT payload at the spent identity is still a conflict.
             with pytest.raises(ApiError) as conflict:
                 stack.frontend.forward_backward(stack.fb_request(model_id, 1, tokens=(7, 8, 9)))
             assert conflict.value.status_code == 422
@@ -527,9 +497,9 @@ class TestReplayExpiry:
             await stack.retrieve(future["request_id"])
             generated = len(stack.router.requests)
             fb = stack.frontend.forward_backward(stack.fb_request(model_id, 2))
-            await stack.retrieve(fb["request_id"])  # evicts the sample record
+            await stack.retrieve(fb["request_id"])
             with pytest.raises(ApiError) as excinfo:
-                stack.frontend.sample(request)  # same seq: must NOT re-generate
+                stack.frontend.sample(request)
             assert excinfo.value.status_code == 410
             await asyncio.sleep(0.05)
             assert len(stack.router.requests) == generated
@@ -577,9 +547,6 @@ class TestLifecycle:
         run(scenario)
 
     def test_stale_model_handle_never_binds_to_a_same_name_successor(self):
-        # Anti-ABA: operations are pinned to (name, registration_id); after
-        # the name is re-registered, the stale handle fences as a typed user
-        # failure and the successor's ledger stays untouched.
         async def scenario(stack):
             model_id = await stack.create_model()
             record = stack.frontend.models.get(model_id)
@@ -590,7 +557,7 @@ class TestLifecycle:
                 if stack.frontend.backend.registry.find(name) is None:
                     break
                 await asyncio.sleep(0.005)
-            await stack.frontend.backend.register(name, AdapterRunConfig(rank=8))  # operator reuses the name
+            await stack.frontend.backend.register(name, AdapterRunConfig(rank=8))
             rid2 = stack.frontend.backend.registry.find(name).registration_id
             assert rid2 != rid1
 
@@ -606,7 +573,7 @@ class TestLifecycle:
             for request in (
                 lambda: stack.frontend.client_config(wire.ClientConfigRequest(sdk_version="0.25.0")),
                 lambda: stack.frontend.create_session(wire.CreateSessionRequest(sdk_version="0.25.0")),
-                lambda: stack.frontend.create_session(wire.CreateSessionRequest()),  # unknown client
+                lambda: stack.frontend.create_session(wire.CreateSessionRequest()),
             ):
                 with pytest.raises(ApiError) as excinfo:
                     request()
@@ -616,7 +583,7 @@ class TestLifecycle:
 
     def test_healthz_reports_readiness_not_liveness(self):
         async def scenario(stack):
-            assert stack.frontend.health() == {"status": "ok"}  # the fake driver marked ready
+            assert stack.frontend.health() == {"status": "ok"}
             stack.frontend.backend.trainer_ready = False
             with pytest.raises(ApiError) as excinfo:
                 stack.frontend.health()
@@ -629,7 +596,7 @@ class TestLifecycle:
     def test_rejected_flood_backpressures_instead_of_growing_without_bound(self):
         async def scenario(stack):
             model_id = await stack.create_model()
-            stack.driver.paused = True  # nothing drains, nothing is retrieved
+            stack.driver.paused = True
             stack.frontend.backend.operations.max_unacked_results = 8
             accepted = throttled = 0
             for seq in range(1, 101):
@@ -640,7 +607,7 @@ class TestLifecycle:
                 except OperationBackpressure:
                     throttled += 1
             assert accepted == 8 and throttled == 92
-            assert len(stack.frontend.futures.records) <= 8 + 1  # +1: the create_model future
+            assert len(stack.frontend.futures.records) <= 8 + 1
 
         run(scenario)
 
@@ -675,12 +642,6 @@ async def until_terminal(stack, request_id):
 
 class TestCapacityQueue:
     def test_unbound_create_reports_paused_capacity_until_the_slot_frees(self):
-        # Fixed residency, SDK-visible: with one trainer slot, a second
-        # registration queues UNBOUND — its create future long-polls as
-        # 'paused_capacity' (never an early success), its operations enqueue
-        # into the ordered ledger but never execute, and only the incumbent's
-        # full retirement/cleanup binds the queued registration, resolves the
-        # create future, and drains the queued work.
         async def scenario(stack):
             model_a = await stack.create_model(model_seq_id=0)
             future_b = await stack.frontend.create_model(
@@ -695,15 +656,10 @@ class TestCapacityQueue:
             paused = {"type": "try_again", "queue_state": "paused_capacity"}
             assert await stack.retrieve(future_b["request_id"]) == paused
 
-            # The paused registration accepts operations, but nothing runs:
-            # the forward_backward future stays pending, and the create future
-            # still reports paused_capacity (no early create success).
             fb_b = stack.frontend.forward_backward(stack.fb_request(model_b, 1))
             assert (await stack.retrieve(fb_b["request_id"]))["type"] == "try_again"
             assert await stack.retrieve(future_b["request_id"]) == paused
 
-            # A's retirement frees the slot: the driver binds and loads B, the
-            # create future resolves, and the queued forward_backward executes.
             unload = await stack.frontend.unload_model(wire.UnloadModelRequest(model_id=model_a))
             assert await until_terminal(stack, unload["request_id"]) == {
                 "type": "unload_model",
@@ -715,41 +671,28 @@ class TestCapacityQueue:
             }
             body = await until_terminal(stack, fb_b["request_id"])
             (row,) = [output["logprobs"]["data"] for output in body["loss_fn_outputs"]]
-            assert row == [-0.5, -0.5, -0.5]  # executed at B's fresh step clock
+            assert row == [-0.5, -0.5, -0.5]
 
         run(scenario, poll_window_s=0.2, multi_lora_n_adapters=1)
 
 
 def test_seq_to_ordinal_documented_mapping():
-    # The D5 mapping is 1:1 by design; keep it explicit and grep-able.
     from miles.ray.tinker_frontend import service
 
     assert "ordinal = seq_id" in service.__doc__
 
 
 def test_frontend_reads_the_backend_facade_only():
-    """§4.2/§3.7 dependency rule (codex-rollout-fullparameter-design-0810):
-    the frontend consumes projections and verbs — a facade fake needs no
-    .registry, .operations, or .router_url fields. Enforced structurally:
-    the service source never dereferences backend internals."""
     import inspect
 
     from miles.ray.tinker_frontend import service
 
     source = inspect.getsource(service)
-    # Match dereferences of the injected backend (self.backend.<internal>),
-    # not module paths: importing the OperationBackpressure TYPE from
-    # miles.ray.multi_lora.operations is part of the frontend's wire
-    # contract (429 + Retry-After), not a reach into backend state.
     for internal in ("self.backend.registry", "self.backend.operations", "self.backend.router_url"):
         assert internal not in source, f"frontend must not read {internal}"
 
 
 def test_injected_sampling_transport_receives_the_exact_router_payload():
-    """§4.6/§8.2: sampling stays frontend -> router through the injected
-    transport — /asample answers with a future immediately (the transport is
-    awaited by a background task), the payload matches the direct-router wire
-    shape exactly, and no rollout component is ever involved."""
     import asyncio
 
     from tests.fast.ray.tinker_frontend.fake_stack import FakeDriver, FakeRouter, make_backend
@@ -797,14 +740,12 @@ def test_injected_sampling_transport_receives_the_exact_router_payload():
                 }
             )
             future = frontend.sample(request)
-            assert future["request_id"]  # the future returns IMMEDIATELY
+            assert future["request_id"]
             for _ in range(200):
                 if transport.payloads:
                     break
                 await asyncio.sleep(0.002)
             [payload] = transport.payloads
-            # The exact direct-router wire shape: tokenized prompt, sglang
-            # params, logprobs on, registration-scoped rid + cache key.
             assert payload["input_ids"] == [1, 2, 3]
             assert payload["return_logprob"] is True
             assert payload["sampling_params"]["max_new_tokens"] == 4

@@ -9,8 +9,6 @@ def enqueue(ledger, op_id, ordinal, kind="forward_backward", name="A", reg="ra",
 
 class TestArrivalBuffering:
     def test_out_of_order_arrival_executes_in_ordinal_order(self):
-        # The tinker SDK posts the first chunk of a large forward_backward
-        # LAST: arrival 2,3,1 must execute 1,2,3.
         ledger = OperationLedger()
         enqueue(ledger, "op2", 2)
         enqueue(ledger, "op3", 3)
@@ -59,8 +57,6 @@ class TestFingerprintedIdempotency:
             enqueue(ledger, "op1", 1, "optim_step")
 
     def test_same_id_different_ordinal_is_a_conflict(self):
-        # A "retry" that moves the operation's sequence position is not a
-        # retry: client and server would disagree on execution order.
         ledger = OperationLedger()
         enqueue(ledger, "op1", 1, payload={"samples": [1]})
         with pytest.raises(ValueError, match="different content"):
@@ -69,16 +65,12 @@ class TestFingerprintedIdempotency:
 
 class TestClaimViews:
     def test_claims_carry_the_request_payload(self):
-        # The executor consumes the claim directly: a data claim without its
-        # samples (or a control claim without its adam_params/tag/path) would
-        # execute against an empty request.
         ledger = OperationLedger()
         enqueue(ledger, "fb", 1, payload={"samples": [{"tokens": [1, 2]}]})
         enqueue(ledger, "optim", 2, "optim_step", payload={"adam_params": {"learning_rate": 2e-4}})
         assert ledger.claim_data_operation("A", "ra")["payload"] == {"samples": [{"tokens": [1, 2]}]}
         ledger.complete("fb", {})
         assert ledger.claim_control_operation("A", "ra")["payload"] == {"adam_params": {"learning_rate": 2e-4}}
-        # Poll results stay lean: get() never exposes the payload.
         assert "payload" not in ledger.get("optim")
 
 
@@ -120,8 +112,6 @@ class TestSerialization:
 
 
 class TestPoisonedWindow:
-    """A failed forward-backward poisons its window until an optimizer operation consumes it."""
-
     def fail_fb(self, ledger, op_id, ordinal, category="user"):
         enqueue(ledger, op_id, ordinal, "forward_backward")
         claimed = ledger.claim_data_operation("A", "ra")
@@ -147,8 +137,6 @@ class TestPoisonedWindow:
         enqueue(ledger, "opt2", 2, "optim_step")
         ledger.claim_control_operation("A", "ra")
         ledger.fail("opt2", "window poisoned", "user")
-        # Terminal alone is not enough: only the executor's confirmation that
-        # the gradients were consumed (step/discard/veto) makes a delimiter.
         assert ledger.poisoned_window_blocker("A", "ra", 4) is not None
         ledger.mark_window_consumed("opt2")
         self.complete_fb(ledger, "fb3", 3)
@@ -213,21 +201,16 @@ class TestBackpressureAndRetention:
             enqueue(ledger, "op3", 3)
 
     def test_gap_filler_bypasses_the_pending_cap(self):
-        # Arrival 2,3 fills the cap; without the bypass the hole at 1 would be
-        # refused forever while 2 and 3 stay unclaimable: a permanent deadlock.
         ledger = OperationLedger(max_pending=2)
         enqueue(ledger, "op2", 2)
         enqueue(ledger, "op3", 3)
         assert ledger.claim_data_operation("A", "ra") is None
         enqueue(ledger, "op1", 1)
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op1"
-        # A beyond-the-tail arrival is NOT a gap filler: still backpressured.
         with pytest.raises(OperationBackpressure):
             enqueue(ledger, "op4", 4)
 
     def test_ack_releases_the_payload_and_result(self):
-        # The ordinal slot survives the ack for contiguity, but the retained
-        # record must not pin the (possibly large) payload/result forever.
         ledger = OperationLedger()
         enqueue(ledger, "op1", 1, payload={"samples": ["x" * 64]})
         ledger.claim_data_operation("A", "ra")
@@ -283,8 +266,6 @@ class TestFencing:
 
 class TestRecordRejected:
     def test_rejected_ordinal_keeps_the_sequence_gap_free(self):
-        # seq 1 ok, seq 2 rejected at the boundary, seq 3 ok: 3 must still
-        # become claimable once 1 completes (2 is terminal on arrival).
         ledger = OperationLedger()
         enqueue(ledger, "op1", 1)
         rejected = ledger.record_rejected("op2", "A", "ra", 2, "optim_step", {"adam_params": {}}, "bad params")
@@ -317,8 +298,6 @@ class TestRecordRejected:
             ledger.record_rejected("op2", "A", "ra", 2, "forward", {}, "x")
 
     def test_rejected_flood_hits_the_unacked_results_budget(self):
-        # An invalid-request flood must not grow born-terminal records without
-        # bound: past the budget it backpressures like any unretrieved pile-up.
         ledger = OperationLedger(max_unacked_results=8)
         accepted = 0
         for i in range(1, 1001):
@@ -329,26 +308,21 @@ class TestRecordRejected:
                 break
         assert accepted == 8
         assert ledger.queues[("A", "ra")].unacked_terminal_count() == 8
-        # Acking terminal records frees budget for the retried rejection.
         ledger.ack("op1")
         assert ledger.record_rejected("op9", "A", "ra", 9, "forward_backward", {"i": 9}, "bad")["state"] == "FAILED"
 
     def test_rejected_hole_filler_bypasses_the_unacked_budget(self):
-        # Refusing the blocking-gap rejection would deadlock the buffered tail.
         ledger = OperationLedger(max_unacked_results=1)
         enqueue(ledger, "fb1", 1)
-        enqueue(ledger, "fb3", 3)  # buffered above the future hole
+        enqueue(ledger, "fb3", 3)
         ledger.claim_data_operation("A", "ra")
-        ledger.fail("fb1", "boom", "user")  # the budget is now full
+        ledger.fail("fb1", "boom", "user")
         with pytest.raises(OperationBackpressure):
             ledger.record_rejected("tail", "A", "ra", 4, "forward_backward", {}, "bad")
-        # ...but ordinal 2 is the blocking gap below buffered fb3: always admitted.
         ledger.record_rejected("hole", "A", "ra", 2, "forward_backward", {}, "bad")
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "fb3"
 
     def test_born_terminal_optim_is_no_window_delimiter(self):
-        # A rejected optim_step never executed: it cleared nothing, so a
-        # poisoned window stays poisoned across it.
         ledger = OperationLedger()
         enqueue(ledger, "fb1", 1)
         ledger.claim_data_operation("A", "ra")
@@ -361,7 +335,6 @@ class TestRecordRejected:
         enqueue(ledger, "op1", 1)
         with pytest.raises(OperationBackpressure):
             enqueue(ledger, "op3", 3)
-        # A terminal-on-arrival record occupies no execution capacity.
         assert ledger.record_rejected("op2", "A", "ra", 2, "forward", {}, "x")["state"] == "FAILED"
 
     def test_rejected_record_is_ackable(self):
@@ -382,8 +355,6 @@ class Clock:
 
 
 class TestGapTimeout:
-    """A missing ordinal times out without permitting skips, guessed kinds, or late replay."""
-
     def gapped(self, timeout=10.0):
         clock = Clock()
         ledger = OperationLedger(gap_timeout=timeout, time_fn=clock)
@@ -391,7 +362,7 @@ class TestGapTimeout:
         ledger.claim_data_operation("A", "ra")
         ledger.complete("fb1", {})
         enqueue(ledger, "opt3", 3, "optim_step")
-        ledger.sweep_gap_timeouts()  # first observation arms the stall clock
+        ledger.sweep_gap_timeouts()
         return ledger, clock
 
     def test_stall_is_observable_before_expiry(self):
@@ -404,13 +375,11 @@ class TestGapTimeout:
         assert ledger.get("opt3")["state"] == "QUEUED"
 
     def test_legit_out_of_order_fill_beats_the_timeout(self):
-        # The SDK posts the first chunk of a large fb LAST: an armed timeout
-        # must not change gap-buffered reordering when the hole fills in time.
         ledger, clock = self.gapped()
         clock.now += 9
         enqueue(ledger, "fb2", 2)
         assert ledger.sweep_gap_timeouts() == []
-        assert ledger.gap_stalls() == []  # the fill cleared the stall clock
+        assert ledger.gap_stalls() == []
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "fb2"
 
     def test_expiry_fails_blocked_ops_typed_and_seals_the_hole(self):
@@ -422,11 +391,8 @@ class TestGapTimeout:
         view = ledger.get("opt3")
         assert view["state"] == "FAILED" and view["error_category"] == "user"
         assert "missing ordinal 2" in view["error"] and "resubmit" in view["error"]
-        # The sealed identity can never execute: a late genuine arrival at the
-        # ordinal is a conflict, exactly like any taken ordinal (anti-replay).
         with pytest.raises(ValueError, match="already taken"):
             enqueue(ledger, "late2", 2, "optim_step")
-        # Clean resubmit: the client's next ordinal is immediately runnable.
         enqueue(ledger, "opt4", 4, "optim_step")
         assert ledger.claimable_control_tenants() == [("A", "ra")]
         assert ledger.claim_control_operation("A", "ra")["operation_id"] == "opt4"
@@ -444,15 +410,10 @@ class TestGapTimeout:
         [event] = ledger.sweep_gap_timeouts()
         assert event["sealed_ordinals"] == [2, 4]
         assert sorted(event["failed_operations"]) == ["fb3", "fb5"]
-        # One expiry restores contiguity for the whole tail: no second stall.
         enqueue(ledger, "fb6", 6)
         assert ledger.claim_data_operation("A", "ra")["operation_id"] == "fb6"
 
     def test_sealed_hole_is_poison_neutral_and_no_delimiter(self):
-        # fb1 SUCCEEDED before the stall: its gradients are complete and
-        # legitimate. The seal must neither poison them (its kind is unknown,
-        # never guessed) nor delimit the window — the resubmitted optim_step
-        # steps fb1's window.
         ledger, clock = self.gapped()
         clock.now += 11
         ledger.sweep_gap_timeouts()
@@ -460,7 +421,6 @@ class TestGapTimeout:
         assert ledger.poisoned_window_blocker("A", "ra", 4) is None
 
     def test_gap_failed_forward_backward_still_poisons_its_window(self):
-        # A typed forward-backward failure still poisons the gradient window.
         clock = Clock()
         ledger = OperationLedger(gap_timeout=10.0, time_fn=clock)
         enqueue(ledger, "fb1", 1)
@@ -509,8 +469,6 @@ class TestGapTimeout:
 
 
 class TestClaimedTimeout:
-    """An orphaned CLAIMED head ages out for the backend to fail instead of blocking its registration forever."""
-
     def claimed(self, ttl=100.0):
         clock = Clock()
         ledger = OperationLedger(gap_timeout=10.0, claimed_ttl=ttl, time_fn=clock)
@@ -547,7 +505,6 @@ class TestClaimedTimeout:
         assert ledger.get("fb1")["state"] == "CLAIMED"
 
     def test_queued_operations_age_by_gap_rules_only(self):
-        # A QUEUED head is claimable, not orphaned: only the CLAIMED state ages against the TTL.
         clock = Clock()
         ledger = OperationLedger(claimed_ttl=100.0, time_fn=clock)
         enqueue(ledger, "fb1", 1)
@@ -556,7 +513,6 @@ class TestClaimedTimeout:
         assert ledger.get("fb1")["state"] == "QUEUED"
 
     def test_a_claimed_head_is_not_a_gap_stall(self):
-        # The gap sweep's QUEUED-hole semantics are untouched by the claimed TTL.
         ledger, clock = self.claimed()
         clock.now += 1000
         assert ledger.gap_stalls() == [] and ledger.sweep_gap_timeouts() == []

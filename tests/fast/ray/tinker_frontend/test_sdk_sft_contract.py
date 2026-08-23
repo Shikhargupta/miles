@@ -25,8 +25,6 @@ from miles.ray.multi_lora.operations import SealedGap  # noqa: E402
 
 BASE = sdk_contract.BASE
 make_datum = sdk_contract.make_datum
-# Live-HTTP stack fixtures, reused by reference (module-scoped: this module
-# gets its own frontend/backend/FakeDriver instance).
 stack = sdk_contract.stack
 service_client = sdk_contract.service_client
 
@@ -46,8 +44,6 @@ async def _set_driver_paused(stack, paused):
 
 
 def sft_datum(prompt_tokens, completion_tokens):
-    """The correct teacher-forced shape (codex-0817-sft-fix §2): position i
-    predicts tokens[i+1], prompt-internal positions weight 0."""
     tokens = prompt_tokens + completion_tokens
     return types.Datum(
         model_input=types.ModelInput.from_ints(tokens[:-1]),
@@ -74,9 +70,6 @@ class TestSftTrainingContract:
         assert forward.loss_fn_outputs[0]["logprobs"].tolist() == pytest.approx([-0.51] * 3)
 
     def test_prompt_masked_sft_datum_separates_the_two_denominators(self, service_client):
-        # The §7 regression: unmasked_tokens:sum counts ALL mask-active
-        # positions (prompt included); loss_weight:sum is the SFT per-token
-        # denominator (completion positions under 0/1 masking).
         client = service_client.create_lora_training_client(base_model=BASE, rank=4)
         result = client.forward_backward([sft_datum([11, 12, 13, 14], [15, 16, 17])], "cross_entropy").result()
         assert result.metrics["unmasked_tokens:sum"] == pytest.approx(6.0)
@@ -93,9 +86,6 @@ class TestSftTrainingContract:
         )
         result = client.forward_backward([datum], "cross_entropy").result()
 
-        # Zero-weight non-next-token targets are legal and normalized. The
-        # loss remains the linear weighted token sum: -(-.5) * (0 + .5 + 0 + 2),
-        # and the weighted-mean denominator is the weight sum itself.
         assert result.loss_fn_outputs[0]["logprobs"].tolist() == pytest.approx([-0.5] * 4)
         assert result.metrics["loss:sum"] == pytest.approx(1.25)
         assert result.metrics["unmasked_tokens:sum"] == pytest.approx(4.0)
@@ -109,8 +99,6 @@ class TestSftTrainingContract:
         with pytest.raises(tinker.RequestFailedError, match="unstepped gradients"):
             client.save_state("must-not-save-dirty").result()
 
-        # The rejected save consumed its ordinal but did not clear the already
-        # accumulated gradients: a later optimizer step consumes that window.
         result = client.optim_step(types.AdamParams(learning_rate=3e-4)).result()
         assert result.metrics["grad_norm"] == pytest.approx(0.125)
         assert _record_for(stack, client).step == 1
@@ -152,13 +140,6 @@ class TestPreHttpSdkFailureModes:
     def test_pre_http_serialization_hole_gap_times_out_typed_then_the_same_client_resubmits(
         self, stack, service_client
     ):
-        """The verified 0.24.1 failure (codex-0817-sft-fix §4): NaN Adam params
-        fail JSON serialization AFTER the SDK spent the seq — the request
-        never reaches the server, and the next operation queues behind a hole
-        no retry ever fills. The gap timeout converts the permanent stall into
-        a typed failure naming the missing ordinal; the fence holds (the
-        missing identity never executes, the step clock proves it ran nothing)
-        and the SAME TrainingClient resubmits cleanly."""
         client = service_client.create_lora_training_client(base_model=BASE, rank=4)
         client.forward_backward([make_datum([1, 2, 3])], "cross_entropy").result()
 
@@ -171,7 +152,7 @@ class TestPreHttpSdkFailureModes:
         try:
             bad = client.optim_step(types.AdamParams(learning_rate=float("nan")))
             with pytest.raises(ValueError, match="Out of range float values|JSON compliant"):
-                bad.result(timeout=2)  # dies client-side; ordinal 2 is spent, never posted
+                bad.result(timeout=2)
 
             later = client.optim_step(types.AdamParams(learning_rate=1e-4))
             with pytest.raises(tinker.RequestFailedError, match="missing ordinal 2"):
@@ -180,10 +161,8 @@ class TestPreHttpSdkFailureModes:
             stack.run(set_gap_timeout(original))
 
         record = _record_for(stack, client)
-        assert record.step == 0  # nothing executed for the sealed ordinal or the failed one
+        assert record.step == 0
 
-        # Clean resubmit on the SAME client: fb1's window was never poisoned
-        # (the seal is neutral), so the new optim_step STEPS it.
         result = client.optim_step(types.AdamParams(learning_rate=1e-4)).result(timeout=30)
         assert result.metrics["grad_norm"] == pytest.approx(0.125)
         assert record.step == 1
@@ -195,15 +174,6 @@ class TestPreHttpSdkFailureModes:
         assert stack.run(sealed_ordinals()) == [2]
 
     def test_immediate_sdk_future_cancel_spends_turn_and_wedges_later_work(self, stack, service_client):
-        """Characterize the unmodified 0.24.1 SDK cancellation contract
-        (codex-0817-sft-fix §5): cancelling the underlying concurrent future
-        before its coroutine enters ``_take_turn`` spends the request id
-        without advancing the SDK turn counter. Later operations wait forever
-        CLIENT-side; Miles receives no ordinal it could terminalize (the queue
-        stays empty), so this is an upstream SDK gap — the deployment guidance
-        (never ``.future().cancel()``; discard the client) is the mitigation,
-        and the gap timeout covers only mixed cases where later submissions
-        did reach the server."""
         client = service_client.create_lora_training_client(base_model=BASE, rank=4)
         cancelled = []
         for _ in range(32):

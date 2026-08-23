@@ -95,7 +95,7 @@ class TestStep:
         child = FakeChild([[3.0, 4.0]])
         chained = FakeChained({0: [child]})
         norms, _, _ = step_adapter_slots(chained, None, {0: {"grad_clip_norm": 1.0}})
-        assert norms[0] == pytest.approx(5.0)  # Norm reporting is pre-clip.
+        assert norms[0] == pytest.approx(5.0)
         assert torch.allclose(child.params[0].grad, torch.tensor([0.6, 0.8]), atol=1e-4)
 
     def test_zero_clip_means_no_clip(self, torch_clip_grads, no_slot_traversal):
@@ -128,8 +128,6 @@ class TestStep:
         assert torch.allclose(retained.params[0].grad, torch.tensor([7.0]))
 
     def test_norm_blind_slot_is_refused_not_silently_stepped(self, torch_clip_grads, no_slot_traversal):
-        """A slot with real gradients but no norm inputs must not step unclipped."""
-
         class NormBlindChild(FakeChild):
             def get_main_grads_for_grad_norm(self):
                 return []
@@ -141,8 +139,6 @@ class TestStep:
         assert child.stepped == 0
 
     def test_truly_zero_gradients_step_with_a_truthful_zero_norm(self, torch_clip_grads, no_slot_traversal):
-        """Empty norm inputs are valid when every gradient is zero."""
-
         class NormBlindChild(FakeChild):
             def get_main_grads_for_grad_norm(self):
                 return []

@@ -55,6 +55,5 @@ def test_merge_pads_the_channels_over_the_observation_span(monkeypatch):
         rollout_log_probs=[-0.2, -0.3],
     )
     merged = merge_samples([a, b], tokenizer=_Tok())
-    # one observation token sits between the turns: zero weight/advantage there.
     assert merged.loss_weights == [0.5, 0.0, 1.5, 2.5]
     assert merged.advantages == [1.0, 0.0, 0.0, -1.0]

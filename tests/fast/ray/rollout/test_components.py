@@ -35,8 +35,6 @@ def test_factory_builds_two_role_views_over_one_legacy_handle(monkeypatch):
     components, manager = build(monkeypatch, log)
 
     assert components.inference_controller is not components.rollout_executor
-    # The raw combined actor is exposed ONLY as the factory's opaque
-    # weight-update owner; the controller role never leaks it publicly.
     assert components.weight_update_owner is manager
     assert not hasattr(components.inference_controller, "manager")
 

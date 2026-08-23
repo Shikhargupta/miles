@@ -224,7 +224,6 @@ def test_cleanup_failure_is_fail_stop():
 
     with pytest.raises(RuntimeError, match="cannot clear"):
         executor.step_many(make_lease(), [make_request()])
-    # Cleanup is best-effort across every holder, even after one holder fails.
     assert [chunk.zero_calls for chunk in model] == [1, 1]
     assert optimizer.zero_calls == 1
 

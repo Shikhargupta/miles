@@ -11,8 +11,6 @@ from miles.utils.types import AdapterRef, Sample
 
 
 def plan_lease(batch_plan) -> BatchExecutionLease:
-    """The dispatch receipt the adapter acquires after selection: one binding
-    per planned operation."""
     return BatchExecutionLease(
         dispatch_id="lease-test",
         bindings_by_operation=tuple(
@@ -46,8 +44,6 @@ class TestBatchPlanToMetadata:
         plan = [plan_entry("A", 0, loss={"loss_fn": "ppo"}), plan_entry("B", 3, op_id="op-B")]
         metadata = batch_plan_to_metadata(plan, plan_lease(plan))
         assert metadata["batch_kind"] == "tinker"
-        # Correlation is batch-local: lanes follow SELECTION order, and the
-        # physical slots (0, 3) appear only inside the lease bindings.
         assert metadata["tinker_operation_lanes"] == [0, 1]
         assert metadata["tinker_loss_by_lane"] == {0: {"loss_fn": "ppo"}, 1: {}}
         assert metadata["operation_by_lane"] == {0: "op-A", 1: "op-B"}
@@ -108,7 +104,7 @@ class TestConvert:
         samples = [make_sample("A", i, stale_slot=9, loss_weights=[0.5, 1.5]) for i in range(2)]
         data = convert(samples, metadata)
         assert data["rewards"] == [0.0, 0.0]
-        assert data["adapter_slots"] == [5, 5]  # the plan wins over the stale stamp
+        assert data["adapter_slots"] == [5, 5]
         assert data["loss_weights"] == [[0.5, 1.5], [0.5, 1.5]]
         assert data["sample_indices"] == [0, 1]
         assert data["batch_kind"] == "tinker"
@@ -117,11 +113,9 @@ class TestConvert:
         assert data["operation_by_lane"] == {0: "op-A"}
         assert data["registration_by_lane"] == {0: ("A", "r-A")}
         assert data["batch_execution_lease"]["bindings_by_operation"] == [["op-A", ["A", "r-A", 5]]]
-        assert "step_slots" not in data  # tinker never steps in-batch
+        assert "step_slots" not in data
 
     def test_two_operations_may_share_one_physical_slot(self):
-        """Two operation IDs bound to one physical slot retain distinct lanes,
-        loss specs, and result identities."""
         plan = [
             plan_entry("A", 5, op_id="op-A1"),
             plan_entry("A", 5, op_id="op-A2", loss={"loss_fn": "ppo"}),
@@ -140,8 +134,6 @@ class TestConvert:
             convert([make_sample("ghost")], metadata)
 
     def test_stale_same_name_registration_is_rejected_before_slot_routing(self):
-        """A Datum from an old registration must not route to its same-name
-        successor; the name alone is not the tenant identity."""
         metadata = plan_metadata([plan_entry("A", 5)])
         stale = make_sample("A")
         stale.adapter = AdapterRef(name="A", registration_id="r-old", serving_version=1, slot=9)
@@ -149,8 +141,6 @@ class TestConvert:
             convert([stale], metadata)
 
     def test_lease_binding_no_lane_references_is_a_plan_mismatch(self):
-        """Exact set agreement: a lease carrying a binding no lane uses is as
-        much of a mismatch as a lane the lease never bound."""
         metadata = plan_metadata([plan_entry("A", 5)])
         metadata["batch_execution_lease"]["bindings_by_operation"].append(["op-ghost", ["G", "r-G", 7]])
         with pytest.raises(ValueError, match="disagree"):
@@ -181,7 +171,6 @@ class TestConvert:
 
     def test_legacy_batch_keeps_first_sample_optional_channel_semantics(self):
         samples = [make_sample("A"), make_sample("B")]
-        # Legacy batches carry no adapter stamps; stamped batches now require the tinker lease.
         for sample in samples:
             sample.adapter = None
         samples[1].rollout_log_probs = [-0.1, -0.2]
@@ -199,8 +188,6 @@ class TestConvert:
         assert "rollout_log_probs" not in data
 
     def test_client_channels_survive_the_dp_shard_split(self):
-        # The DP packager ships an explicit key list; a channel missing from it
-        # silently reaches the loss as None ("needs per-token 'loss_weights'").
         from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 
         metadata = plan_metadata([plan_entry("A", 0, sample_count=2)])
@@ -211,18 +198,12 @@ class TestConvert:
         for shard in shards:
             assert shard["loss_weights"] == [[0.5, 1.5]]
             assert shard["advantages"] == [[1.0, -1.0]]
-            # The per-sample lane and the batch-level correlation maps ship
-            # with every shard: the loss dispatches on them rank-locally.
             assert shard["tinker_operation_lanes"] == [0]
             assert shard["tinker_loss_by_lane"] == {0: {}}
             assert shard["operation_by_lane"] == {0: "op-A"}
 
 
 class TestPadding:
-    """Sample-level zero-weight padding in ``postprocess_rollout_data``: tinker
-    selections ride main's multi-LoRA dynamic-GBS branch, which requires the
-    batch to be divisible by dp_size — pads make it so without trimming."""
-
     def tinker_args(self):
         return SimpleNamespace(
             multi_lora=True,
@@ -245,7 +226,7 @@ class TestPadding:
     def test_pads_to_dp_size_with_inert_rows(self):
         data, metadata = self.postprocess(n=2)
         assert metadata["dynamic_global_batch_size"] == len(data) == 4
-        assert [s.index for s in data] == [0, 1, -1, -1]  # sentinel: filtered from the result plane
+        assert [s.index for s in data] == [0, 1, -1, -1]
         assert data[2].loss_mask == [0, 0] and data[3].loss_weights == [0.0, 0.0]
         assert data[2].rollout_id is None
         assert data[0].loss_mask == [1, 1] and data[1].loss_weights == [0.5, 1.5]
@@ -263,10 +244,6 @@ class TestPadding:
 
 
 class TestTinkerDispatchSummary:
-    """The driver-visible dispatch identity: exactly the batch's operation ids
-    plus its encoded lease, so the abnormal-outcome finalizer never has to
-    fetch the batch back from the object store."""
-
     def test_summary_carries_operation_ids_and_lease(self):
         from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
 

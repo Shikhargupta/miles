@@ -550,7 +550,6 @@ class TestMultiLoRAValidation:
         )
 
     def test_rejects_multi_lora_without_tinker_backend(self):
-        # The operation backend is currently the only supported Multi-LoRA path.
         parser = argparse.ArgumentParser()
         get_miles_extra_args_provider()(parser)
         args = parser.parse_args(

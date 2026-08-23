@@ -46,7 +46,6 @@ def test_every_tinker_conversion_key_is_handled(monkeypatch):
         "n_adapters": 2,
     }
 
-    # Every conversion key must be accepted without raising.
     log_utils.log_rollout_data(
         0,
         Namespace(
