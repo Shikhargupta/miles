@@ -542,7 +542,6 @@ class TestGenerate:
         tmp_path,
         patch_low_level,
     ):
-        """Typed postprocess options request DP padding without metadata inspection."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         args.global_batch_size = 8
         pg = placement_group_factory(2)
@@ -560,7 +559,6 @@ class TestGenerate:
 
         result = await manager.generate(rollout_id=7)
 
-        # One inert sentinel pads seven samples onto the DP=2 grid.
         assert result["sample_indices"] == [0, 1, 2, 3, 4, 5, 6, -1]
         partitions = ray.get([box.inner for box in result["data_ref"]])
         assert [len(p["tokens"]) for p in partitions] == [4, 4]

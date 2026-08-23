@@ -66,15 +66,9 @@ class TestRunOptimControls:
         executor = FakeExecutor(discard_outcomes={"opt1": dict(ok=False, error="stale binding", category="server")})
         results = run_optim_controls([optim("opt1", poison="poisoned")], LEASE, executor)
         assert results["opt1"] == dict(ok=False, error="stale binding", category="server")
-        # A refusal never touched the gradients, so it must not claim the
-        # window was consumed.
         assert not results["opt1"].get("gradient_window_consumed")
 
     def test_missing_discard_outcome_fails_closed_as_a_server_error(self):
-        """An executor that returns no outcome for a poisoned step proved
-        nothing about the gradients; defaulting it to ok would
-        book the user-poison terminal (a window delimiter) over a window that
-        still physically holds partial gradients."""
         executor = FakeExecutor(discard_outcomes={})
         results = run_optim_controls([optim("opt1", poison="poisoned")], LEASE, executor)
         outcome = results["opt1"]

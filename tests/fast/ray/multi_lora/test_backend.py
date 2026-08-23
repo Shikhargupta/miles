@@ -31,7 +31,6 @@ def ready_backend(num_step=None):
 
 
 def reg_key(backend, name="X"):
-    """The exact registration key batch commits carry."""
     return (name, backend.registry.find(name).registration_id)
 
 
@@ -51,7 +50,7 @@ class TestRegistration:
         result = register(backend, rank=8)
         assert result == {"name": "X", "slot": 0}
         config = backend.registry.find("X").config
-        assert config.rank == 8 and config.alpha == 64  # alpha is deployment-set
+        assert config.rank == 8 and config.alpha == 64
         assert str(config.save).endswith("adapters/X")
 
     def test_rank_ceiling_and_client_alpha_rejected(self):
@@ -94,8 +93,6 @@ class TestPreflight:
             backend.enqueue_operation("X", "op1", 1, "optim_step", {"adam_params": {"learning_rate": "fast"}})
 
     def test_adam_params_domain_checked_at_the_boundary(self):
-        # The GPU-side veto only guards non-finite GRADIENTS: a NaN rate or an
-        # out-of-range beta would silently poison the slot's param groups.
         backend = ready_backend()
         rejected = [
             {"learning_rate": float("nan")},
@@ -103,13 +100,13 @@ class TestPreflight:
             {"learning_rate": -1e-4},
             {"beta1": 2.0},
             {"beta2": -0.1},
-            {"beta1": 1.0},  # beta < 1 strictly
+            {"beta1": 1.0},
             {"eps": 0.0},
             {"eps": -1e-8},
             {"weight_decay": float("nan")},
             {"weight_decay": -0.1},
             {"grad_clip_norm": -1.0},
-            {"learning_rate": True},  # bool is not a number here
+            {"learning_rate": True},
         ]
         for adam in rejected:
             with pytest.raises(ValueError, match="adam_params"):
@@ -119,7 +116,6 @@ class TestPreflight:
 
     def test_loss_required_channels_preflighted(self):
         backend = ready_backend()
-        # CE without loss_weights would only fail inside the GPU loss dispatch.
         ce = fb_payload()
         del ce["samples"][0]["loss_weights"]
         with pytest.raises(ValueError, match="loss_weights"):
@@ -133,13 +129,10 @@ class TestPreflight:
                 del bad["samples"][0][missing]
                 with pytest.raises(ValueError, match=missing):
                     backend.enqueue_operation("X", "op1", 1, "forward_backward", bad)
-        # forward has no loss: no channels are required.
         bare = {"samples": [{"tokens": [1, 2, 3, 4], "response_length": 2}]}
         assert backend.enqueue_operation("X", "op2", 1, "forward", bare)["state"] == "QUEUED"
 
     def test_response_must_leave_a_context_token(self):
-        # Targets are shifted: the first response token's logprob conditions on
-        # the previous position, so response_length == len(tokens) is invalid.
         backend = ready_backend()
         bad = fb_payload()
         bad["samples"][0].update(response_length=4, loss_mask=[1] * 4, loss_weights=[1.0] * 4)
@@ -171,7 +164,6 @@ class TestControlClaims:
         claimed = backend.claim_ready_control_operations()
         [op] = claimed["operations"]
         assert op["operation_id"] == "opt1"
-        # The claim carries no slot: the batch lease is the single binding truth.
         assert "slot" not in op
         rid = backend.registry.find("X").registration_id
         assert claimed["lease"]["bindings_by_operation"] == [["opt1", ["X", rid, 0]]]
@@ -210,8 +202,6 @@ class TestControlClaims:
         backend.commit_tinker_batch([reg_key(backend)], [])
         backend.enqueue_operation("X", "opt1", 1, "optim_step")
         [op] = backend.claim_ready_control_operations()["operations"]
-        # The executor's veto zeroed the gradients on every rank, so its
-        # outcome carries the consumed bit — only then is the pin released.
         backend.complete_control_operations(
             {op["operation_id"]: dict(ok=False, error="veto", category="server", gradient_window_consumed=True)}
         )
@@ -219,7 +209,6 @@ class TestControlClaims:
         assert not backend.registry.is_dirty("X")
 
     def test_failed_chunk_poisons_the_pending_optim(self):
-        # The failed chunk's window must discard, never partial-step.
         backend = ready_backend()
         rid = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
@@ -228,14 +217,11 @@ class TestControlClaims:
         backend.enqueue_operation("X", "opt2", 2, "optim_step")
         [op] = backend.claim_ready_control_operations()["operations"]
         assert "gradient window" in op["poison"] and "discarded" in op["poison"]
-        # The trainer runs the discard on every rank and reports a user
-        # failure whose outcome confirms the window was consumed.
         backend.complete_control_operations(
             {"opt2": dict(ok=False, error=op["poison"], category="user", gradient_window_consumed=True)}
         )
         assert backend.registry.find("X").step == 0
 
-        # The executed (poison-consuming) optim delimits: the next round is clean.
         backend.enqueue_operation("X", "fb3", 3, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("X", rid)
         backend.commit_tinker_batch([reg_key(backend)], ["fb3"], {"fb3": [[-0.1, -0.2]]})
@@ -244,11 +230,6 @@ class TestControlClaims:
         assert clean["operation_id"] == "opt4" and "poison" not in clean
 
     def test_pre_mutation_refusal_keeps_dirty_and_poison(self):
-        """An optimizer outcome without the consumed bit (executor refusal
-        before any gradient mutation — stale binding,
-        missing result) must neither release the dirty pin nor delimit the
-        poison window: the partial gradients still physically exist and the
-        next optim_step must still be routed to a discard."""
         backend = ready_backend()
         rid = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
@@ -283,7 +264,6 @@ class TestControlClaims:
         with pytest.raises(ValueError, match="fenced"):
             backend.enqueue_operation("X", "op9", 1, "optim_step", None, expected_registration_id=rid1)
         assert backend.operations.queue_view("X", rid2) == []
-        # A stale-handle deregister must never retire the successor.
         asyncio.run(backend.deregister("X", rid1))
         assert backend.registry.records["X"].state is AdapterState.PENDING
 
@@ -316,7 +296,7 @@ class TestCommitAndFence:
         backend.commit_tinker_batch([reg_key(backend)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
         result = backend.operations.get("fb1")["result"]
         assert result["logprobs"] == [[-0.1, -0.2]]
-        assert result["metrics"]["loss:sum"] == pytest.approx(0.1 + 0.2)  # unit loss_weights
+        assert result["metrics"]["loss:sum"] == pytest.approx(0.1 + 0.2)
         assert backend.registry.is_dirty("X")
 
     def test_retirement_fences_open_operations(self, monkeypatch):
@@ -337,9 +317,6 @@ class TestCommitAndFence:
 
 
 class TestFailTinkerBatch:
-    """Data operations must not remain claimed when training exits without
-    committing."""
-
     def _claimed_batch(self, backend):
         rid = backend.registry.find("X").registration_id
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
@@ -358,9 +335,6 @@ class TestFailTinkerBatch:
         assert "without committing" in view["error"]
 
     def test_finalized_forward_backward_is_poison_evidence_for_the_next_optim(self):
-        # The finalizer must PRESERVE poison semantics, not bypass them: the
-        # failed forward_backward left possibly-partial gradients, so the
-        # next optim_step is routed to a discard.
         backend = ready_backend()
         lease_metadata = self._claimed_batch(backend)
         backend.fail_tinker_batch(["fb1"], "abnormal train outcome", lease_metadata)
@@ -369,8 +343,6 @@ class TestFailTinkerBatch:
         assert "forward_backward ordinal 1" in op["poison"]
 
     def test_already_terminal_operations_are_left_untouched(self):
-        # A late finalization after a partial commit must never overwrite a
-        # landed result.
         backend = ready_backend()
         lease_metadata = self._claimed_batch(backend)
         backend.commit_tinker_batch([reg_key(backend)], ["fb1"], {"fb1": [[-0.1, -0.2]]})
@@ -393,8 +365,6 @@ class TestFailTinkerBatch:
         assert released == [lease_metadata["dispatch_id"]]
 
     def test_unknown_operation_ids_and_missing_lease_are_tolerated(self):
-        # Finalizing is best-effort bookkeeping: a batch whose operations were
-        # already fenced away (retirement) must not crash the driver loop.
         backend = ready_backend()
         backend.fail_tinker_batch(["ghost"], "abnormal train outcome", None)
 
@@ -409,8 +379,6 @@ def test_service_info_reports_the_v1_matrix():
 
 
 def test_engine_aborts_go_through_the_inference_admin_port():
-    # The backend's only engine-facing need rides the narrow admin port with
-    # the full registration-scoped rid prefix (anti-ABA).
     backend = make_backend()
     aborted = []
 
@@ -424,8 +392,6 @@ def test_engine_aborts_go_through_the_inference_admin_port():
 
 
 def test_trainer_readiness_flag_flips_once_marked():
-    # Liveness comes up with the HTTP server; readiness only when the driver
-    # says the trainer exists (probes must not report ok on a dead trainer).
     backend = make_backend()
     assert backend.trainer_ready is False
     backend.mark_trainer_ready()
@@ -433,8 +399,6 @@ def test_trainer_readiness_flag_flips_once_marked():
 
 
 def test_advertised_host_is_the_bind_host():
-    # A loopback bind must never advertise the node IP: that URL would not
-    # reach the socket.
     from miles.ray.multi_lora.http_server import AdapterRunControlServer
 
     assert AdapterRunControlServer(None, host="127.0.0.1").advertised_host == "127.0.0.1"
@@ -466,10 +430,6 @@ class TestRejectOperation:
 
 
 class TestGapTimeoutSurface:
-    """Backend wiring of the ledger gap timeout: the flag reaches the ledger,
-    the driver's control-claim heartbeat enforces it, and the stall is a
-    typed, observable surface (operation_view + service_info)."""
-
     def stalled_backend(self, timeout=30.0):
         backend = ready_backend()
         backend.operations.gap_timeout = timeout
@@ -478,9 +438,8 @@ class TestGapTimeoutSurface:
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
         backend.claim_data_operation(*reg_key(backend))
         backend.operations.complete("fb1", {})
-        # Ordinal 2 was consumed client-side and never posted; 3 arrives.
         backend.enqueue_operation("X", "opt3", 3, "optim_step", {"adam_params": {"learning_rate": 1e-4}})
-        assert backend.claim_ready_control_operations()["operations"] == []  # blocked, and arms the clock
+        assert backend.claim_ready_control_operations()["operations"] == []
         return backend, clock
 
     def test_flag_reaches_the_ledger_with_a_default(self):
@@ -502,28 +461,23 @@ class TestGapTimeoutSurface:
     def test_control_claim_heartbeat_expires_the_stall(self):
         backend, clock = self.stalled_backend()
         clock["now"] += 31
-        assert backend.claim_ready_control_operations()["operations"] == []  # the sweep fires here
+        assert backend.claim_ready_control_operations()["operations"] == []
         view = backend.operation_view("opt3")
         assert view["state"] == "FAILED" and view["error_category"] == "user"
         assert "missing ordinal 2" in view["error"]
         assert backend.service_info()["gap_stalls"] == []
-        # Clean resubmit: the sealed hole is poison-neutral, so the new
-        # optim_step STEPS fb1's intact window instead of discarding it.
         backend.enqueue_operation("X", "opt4", 4, "optim_step", {"adam_params": {"learning_rate": 1e-4}})
         [operation] = backend.claim_ready_control_operations()["operations"]
         assert operation["operation_id"] == "opt4" and "poison" not in operation
 
 
 class TestClaimedTtlSurface:
-    """Backend wiring of the claimed-op TTL: an orphaned CLAIMED head terminal-fails typed instead of blocking."""
-
     def orphaned_backend(self, ttl=60.0):
         backend = ready_backend()
         backend.operations.claimed_ttl = ttl
         clock = {"now": 1000.0}
         backend.operations._time = lambda: clock["now"]
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
-        # Claimed, then the claiming executor vanished (e.g. restart lost its in-memory runtimes).
         assert backend.claim_data_operation(*reg_key(backend)) is not None
         return backend, clock
 
@@ -537,7 +491,7 @@ class TestClaimedTtlSurface:
         clock["now"] += 61
         backend.enqueue_operation("X", "opt2", 2, "optim_step")
         [op] = backend.claim_ready_control_operations()["operations"]
-        assert op["operation_id"] == "opt2"  # the swept orphan no longer blocks the queue head
+        assert op["operation_id"] == "opt2"
         view = backend.operations.get("fb1")
         assert view["state"] == "FAILED" and view["error_category"] == "server"
         assert "'fb1'" in view["error"] and "61s" in view["error"] and "forward_backward" in view["error"]
@@ -554,7 +508,6 @@ class TestClaimedTtlSurface:
         backend.fail_tinker_batch = spy
         clock["now"] += 61
         assert backend.service_info()["operation_claimed_ttl"] == 60.0
-        # No lease metadata exists for an orphaned claim; the finalizer's finally covers batches that carry one.
         assert calls == [(["fb1"], None)]
 
     def test_younger_claim_survives_the_sweep(self):
@@ -566,6 +519,6 @@ class TestClaimedTtlSurface:
     def test_late_completion_of_a_swept_operation_is_ignored_not_a_crash(self):
         backend, clock = self.orphaned_backend()
         clock["now"] += 61
-        backend.service_info()  # sweeps fb1 to FAILED
+        backend.service_info()
         backend.complete_control_operations({"fb1": dict(ok=True, result={})})
         assert backend.operations.get("fb1")["state"] == "FAILED"

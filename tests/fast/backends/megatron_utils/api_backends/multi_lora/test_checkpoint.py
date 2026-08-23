@@ -14,8 +14,6 @@ from miles.backends.megatron_utils.api_backends.multi_lora.checkpoint import (
 
 class TestStableName:
     def test_strips_exactly_the_target_slot(self):
-        # load_adapter consumes ".adapter." keys; a co-tenant's index must
-        # survive untouched, including prefix-colliding double-digit slots.
         name = "decoder.layers.0.self_attention.linear_qkv.adapters.3.linear_in.weight"
         assert stable_slot_param_name(name, 3) == "decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight"
         assert stable_slot_param_name(name, 2) == name
@@ -37,8 +35,6 @@ def write_manifest(base, **overrides):
 
 
 class TestManifestGating:
-    """State compatibility is fenced by format, topology, rank, and alpha, never display name."""
-
     def test_missing_dir_or_manifest_means_no_state(self, tmp_path):
         assert find_slot_state(SimpleNamespace(config=SimpleNamespace(save=None))) is None
         adapter = make_adapter(tmp_path)
@@ -62,8 +58,6 @@ class TestManifestGating:
 
 
 class TestSlotStateRoundTrip:
-    """Cross-slot restore requires matching ownership and save generation before mutation."""
-
     class _FakeChild:
         def __init__(self, slot: int, moment: float):
             self.param_groups = [{"params": [0], "miles_multi_lora_slot": slot, "step": 0}]
@@ -119,7 +113,7 @@ class TestSlotStateRoundTrip:
         assert torch.equal(target[0].moment, torch.full((2,), 1.5))
         group = target[0].param_groups[0]
         assert group["step"] == 7
-        assert group["miles_multi_lora_slot"] == 1  # re-stamped over the saved slot-0 tag
+        assert group["miles_multi_lora_slot"] == 1
 
     def test_child_count_mismatch_is_refused(self, tmp_path, monkeypatch):
         two_children = [self._FakeChild(slot=1, moment=0.0), self._FakeChild(slot=1, moment=0.0)]
@@ -127,8 +121,6 @@ class TestSlotStateRoundTrip:
             self._round_trip(tmp_path, monkeypatch, two_children)
 
     def test_torn_save_is_refused(self, tmp_path, monkeypatch):
-        # An interrupted overwrite leaves shards of one save under the
-        # manifest of another; the shared save token catches the mix.
         def cross_generation_manifest():
             manifest_path = tmp_path / "slot_state" / "manifest.pt"
             manifest = torch.load(manifest_path, weights_only=True)
@@ -140,9 +132,6 @@ class TestSlotStateRoundTrip:
             self._round_trip(tmp_path, monkeypatch, target, after_save=cross_generation_manifest)
 
     def test_ownership_signature_mismatch_is_refused_before_mutation(self, tmp_path, monkeypatch):
-        # Positional optimizer entries follow LayerWise DP ownership: when the
-        # target slot's rank owns DIFFERENT parameters, a blind positional load
-        # would silently restore the wrong state — refuse, weights untouched.
         adapter = make_adapter(tmp_path)
         param_a, param_b = torch.zeros(1), torch.zeros(1)
 
@@ -168,7 +157,7 @@ class TestSlotStateRoundTrip:
         adapter.slot = 1
         with pytest.raises(ValueError, match="ownership"):
             tc.load_slot_state(args=SimpleNamespace(), model=[], optimizer=None, adapter=adapter)
-        assert loads == {}  # refused before any weight or optimizer mutation
+        assert loads == {}
 
     def test_ttl_is_recorded_in_the_manifest(self, tmp_path, monkeypatch):
         target = [self._FakeChild(slot=1, moment=0.0)]

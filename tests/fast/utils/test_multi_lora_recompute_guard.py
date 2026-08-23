@@ -21,7 +21,6 @@ from miles.utils.multi_lora import (
 
 
 def _args(**overrides) -> SimpleNamespace:
-    """Arguments that otherwise pass Multi-LoRA validation."""
     base = dict(
         tinker_backend=True,
         multi_lora_n_adapters=2,
@@ -57,20 +56,16 @@ PROBE_NAME = "_bridge_recompute_patch_recognizes_multi_lora"
 
 @pytest.fixture
 def unfixed_bridge(monkeypatch):
-    """The installed bridge does NOT recognize .adapters. in its recompute patch."""
     monkeypatch.setattr(multi_lora_module, PROBE_NAME, lambda: False)
 
 
 @pytest.fixture
 def fixed_bridge(monkeypatch):
-    """The installed bridge DOES recognize .adapters. in its recompute patch."""
     monkeypatch.setattr(multi_lora_module, PROBE_NAME, lambda: True)
 
 
 @pytest.fixture
 def probe_must_not_run(monkeypatch):
-    """Supported recompute shapes must never import/probe the bridge at all."""
-
     def _boom():
         raise AssertionError("bridge probe ran for a recompute shape that never needs it")
 
@@ -117,7 +112,6 @@ class TestShapesThatNeverProbeTheBridge:
         validate_multi_lora_args(_args(target_modules=EXPERT_TARGETS))
 
     def test_selective_default_modules_is_allowed(self, probe_must_not_run):
-        # recompute_modules=None defaults to ['core_attn'] downstream.
         validate_multi_lora_args(_args(recompute_granularity="selective", target_modules=EXPERT_TARGETS))
 
     def test_selective_core_attn_moe_act_is_allowed_for_expert_targets(self, probe_must_not_run):
@@ -130,8 +124,6 @@ class TestShapesThatNeverProbeTheBridge:
         )
 
     def test_moe_module_without_expert_targets_is_allowed(self, probe_must_not_run):
-        # Attention-only adapters sit outside the checkpointed MoE region; 'moe'
-        # recompute is then a legitimate memory saver on ANY bridge.
         validate_multi_lora_args(
             _args(
                 recompute_granularity="selective",
@@ -157,9 +149,6 @@ def _load_module_file(tmp_path, name: str, body: str):
 
 
 class TestSourceProbe:
-    """The probe inspects the REAL installed function's source: these tests run
-    it against file-backed stand-ins for the fixed/unfixed bridge shapes."""
-
     FIXED_BODY = (
         "def maybe_enable_recompute_inputs_grad(model):\n"
         '    names = ["x.adapter.w", "x.adapters.0.w"]\n'
@@ -184,8 +173,6 @@ class TestSourceProbe:
         assert _recompute_source_recognizes_adapters(module) is False
 
     def test_unimportable_bridge_fails_closed(self, monkeypatch):
-        # sys.modules[name] = None makes any import of that name raise: the
-        # probe must report 'unfixed' rather than crash arg validation.
         monkeypatch.setitem(sys.modules, "megatron.bridge.peft", None)
         monkeypatch.delitem(sys.modules, "megatron.bridge.peft.recompute", raising=False)
         assert _bridge_recompute_patch_recognizes_multi_lora() is False

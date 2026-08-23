@@ -1,7 +1,7 @@
 from miles.ray.multi_lora.gradient_windows import GradientWindowTracker
 
 KEY_A = ("A", "reg-1")
-KEY_A2 = ("A", "reg-2")  # same name, new registration: a different stream
+KEY_A2 = ("A", "reg-2")
 KEY_B = ("B", "reg-1")
 
 
@@ -21,8 +21,6 @@ class TestDirtyFlag:
         assert tracker.step_of(KEY_A) == 1
 
     def test_executed_optim_without_commit_clears_without_advancing(self):
-        # Veto and poison-discard both execute (clear grads on every rank)
-        # but never move the clock.
         tracker = GradientWindowTracker()
         tracker.mark_forward_backward_succeeded(KEY_A)
         tracker.clear_after_executed_optim(KEY_A)
@@ -40,7 +38,7 @@ class TestStreamIdentity:
         tracker.mark_forward_backward_succeeded(KEY_A)
         assert not tracker.is_dirty(KEY_A2)
         assert tracker.commit_step(KEY_A2) == 1
-        assert tracker.is_dirty(KEY_A)  # untouched by the other stream
+        assert tracker.is_dirty(KEY_A)
 
     def test_streams_are_independent_across_names(self):
         tracker = GradientWindowTracker()
@@ -61,10 +59,7 @@ class TestStreamIdentity:
 
 class TestRestore:
     def test_restore_moves_the_clock(self):
-        # The num_step baseline (start_step) is the registry's authority;
-        # the tracker deliberately keeps no duplicate copy of it.
         tracker = GradientWindowTracker()
         tracker.restore_step(KEY_A, 42)
         assert tracker.step_of(KEY_A) == 42
-        # The next commit counts from the restored clock.
         assert tracker.commit_step(KEY_A) == 43

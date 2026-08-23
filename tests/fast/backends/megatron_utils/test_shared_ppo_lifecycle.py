@@ -328,7 +328,6 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
         "witness_info": None,
         "attempt": 0,
         "ft_test_action_executor": None,
-        # Dataset-driven batches never request Tinker forward-only execution.
         "forward_only": False,
     }
 

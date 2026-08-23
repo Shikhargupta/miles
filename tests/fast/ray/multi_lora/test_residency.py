@@ -66,7 +66,6 @@ class TestBindingFor:
         registry.retire_adapters()
         assert residency.binding_for(key_a) is None
 
-        # Rejected lookups must not mutate ownership or queueing.
         assert registry.records["A"].slot == 0
         assert registry.records["B"].slot is None
         before = copy.deepcopy(registry.snapshot())
@@ -86,7 +85,6 @@ class TestClaimAndBind:
         assert claim["binding"] == ResidentBinding(registration_key=("A", rid), training_slot=0)
 
     def test_unbound_pending_is_never_claimed_and_head_stays_queued(self):
-        """An unbound tenant remains queued until full cleanup releases a slot."""
         backend = make_backend(max_adapters=1)
         asyncio.run(backend.register("A", AdapterRunConfig()))
         backend.registry.mark_ready(["A"])
@@ -132,12 +130,11 @@ class TestBatchLease:
         assert lease.binding_of("op-B").training_slot == 1
         assert lease.binding_of("op-unknown") is None
         before = copy.deepcopy(registry.snapshot())
-        residency.release_batch(lease)  # no-op lifecycle hook
+        residency.release_batch(lease)
         assert registry.snapshot() == before
         assert lease_from_metadata(lease_to_metadata(lease)) == lease
 
     def test_retiring_after_claim_keeps_the_receipt_valid(self):
-        """Deregistration preserves an in-flight receipt until cleanup reassigns the slot."""
         registry = make_registry(1)
         key = register_ready(registry, "A")
         residency = FixedSlotResidency(registry)
@@ -147,7 +144,6 @@ class TestBatchLease:
         lease = residency.acquire_batch((("op-A", binding),))
         assert lease.binding_of("op-A") is binding
 
-        # Full cleanup reassigns the slot: the receipt dies with the tenancy.
         registry.retire_adapters()
         registry.free_slot("A")
         with pytest.raises(ValueError, match="no longer owns trainer slot"):

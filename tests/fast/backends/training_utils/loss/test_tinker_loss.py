@@ -92,7 +92,6 @@ def test_importance_sampling_and_ppo_clip():
         -torch.minimum(r * a, r.clamp(0.9, 1.1) * a).sum() for r, a in zip(ratios, advantages, strict=True)
     )
     assert torch.allclose(loss_ppo, expected_ppo)
-    # Ensure these logits exercise the clipped branch.
     assert not torch.allclose(loss_ppo, loss)
 
 
@@ -114,9 +113,6 @@ def test_mixed_lanes_dispatch_independently():
 
 
 def test_sum_reduction_is_chunk_additive():
-    # The same data as one batch vs two single-sample batches must produce the
-    # same total loss — the invariant that makes K forward_backward operations
-    # accumulate identically to one.
     args, batch, logits = make_batch()
     batch["loss_weights"] = [torch.ones(3) * 0.5, torch.ones(5) * 1.5]
     full_loss, _ = run(args, batch, logits)
@@ -141,8 +137,6 @@ def test_sum_reduction_is_chunk_additive():
 
 
 def test_zero_weight_padding_contributes_nothing():
-    # DP padding duplicates a sample with all-zero loss_weights; the padded
-    # row must not move the loss.
     args, batch, logits = make_batch()
     batch["loss_weights"] = [torch.ones(3), torch.zeros(5)]
     loss, _ = run(args, batch, logits)
@@ -181,9 +175,6 @@ def test_collector_captures_per_datum_logprobs_in_row_order():
 
 
 def test_forward_only_batch_collects_logprobs_without_client_loss_terms():
-    # Homogeneous selections: an all-forward batch never mixes with backward
-    # rows; it needs no channels, fills the collector, and its dummy loss is
-    # never backwarded (the executor runs forward_only=True).
     args, batch, logits = make_batch()
     batch["tinker_operation_lanes"] = [0, 1]
     batch["tinker_loss_by_lane"] = {}
