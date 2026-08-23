@@ -1,4 +1,3 @@
-import operator
 from array import array
 from collections.abc import Sequence
 from dataclasses import InitVar, dataclass, field
@@ -101,42 +100,15 @@ def _to_owned_cpu_integer_tensor(
     dtype: torch.dtype,
 ) -> torch.Tensor:
     if isinstance(values, torch.Tensor):
-        tensor = values.detach()
-        _validate_integer_tensor(tensor)
-        if dtype == torch.int32 and tensor.numel() > 0:
-            min_value, max_value = tensor.min().item(), tensor.max().item()
-            if min_value < torch.iinfo(torch.int32).min or max_value > torch.iinfo(torch.int32).max:
-                raise ValueError("sampling-mask token ids must fit in int32")
-        return tensor.to(device="cpu", dtype=dtype, copy=True)
+        _validate_integer_tensor(values)
+        return values.to(device="cpu", dtype=dtype, copy=True)
 
-    int32_info = torch.iinfo(torch.int32)
     if dtype == torch.int32 and len(values) > 0:
-        if bool in map(type, values):
-            raise ValueError("sampling-mask ids, offsets, and response indices must be one-dimensional integers")
-        try:
-            storage = array("i", values)
-        except OverflowError:
-            raise ValueError("sampling-mask token ids must fit in int32") from None
-        except TypeError:
-            pass
-        else:
-            # The tensor retains the array as its owned backing storage.
-            return torch.frombuffer(storage, dtype=torch.int32)
+        storage = array("i", values)
+        # frombuffer keeps this private backing array alive without copying it.
+        return torch.frombuffer(storage, dtype=torch.int32)
 
-    normalized = []
-    for value in values:
-        if isinstance(value, bool):
-            raise ValueError("sampling-mask ids, offsets, and response indices must be one-dimensional integers")
-        try:
-            integer = operator.index(value)
-        except TypeError:
-            raise ValueError(
-                "sampling-mask ids, offsets, and response indices must be one-dimensional integers"
-            ) from None
-        if dtype == torch.int32 and not int32_info.min <= integer <= int32_info.max:
-            raise ValueError("sampling-mask token ids must fit in int32")
-        normalized.append(integer)
-    return torch.tensor(normalized, dtype=dtype, device="cpu")
+    return torch.tensor(values, dtype=dtype, device="cpu")
 
 
 def _to_cpu_integer_tensor(values: Sequence[int] | torch.Tensor) -> torch.Tensor:

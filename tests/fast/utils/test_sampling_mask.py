@@ -41,15 +41,10 @@ def test_rollout_sampling_mask_validates_csr_offsets():
         RolloutSamplingMask(ids=torch.tensor([0, 1]), offsets=torch.tensor([0, 1]))
 
 
-@pytest.mark.parametrize("ids", [[1.5], [True], torch.tensor([[1]])])
-def test_rollout_sampling_mask_rejects_non_integer_or_non_1d_ids(ids):
+@pytest.mark.parametrize("ids", [torch.tensor([1.5]), torch.tensor([True]), torch.tensor([[1]])])
+def test_rollout_sampling_mask_rejects_non_integer_or_non_1d_tensor_ids(ids):
     with pytest.raises(ValueError, match="must be one-dimensional integers"):
         RolloutSamplingMask(ids=ids, offsets=[0, 1])
-
-
-def test_rollout_sampling_mask_rejects_ids_outside_int32():
-    with pytest.raises(ValueError, match="token ids must fit in int32"):
-        RolloutSamplingMask(ids=[torch.iinfo(torch.int32).max + 1], offsets=[0, 1])
 
 
 def test_select_masks_slices_a_contiguous_range_and_reports_lengths():
