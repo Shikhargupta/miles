@@ -7,15 +7,7 @@ from miles.utils.operation_contract import BindingT, RegistrationKey
 
 
 class OperationQueuePort(Protocol[BindingT]):
-    """Claims against the backend's operation ledger.
-
-    ``ready_streams`` lists the current READY registration streams (keyed by
-    name, valued by the controller's run views) — these are streams, not
-    unclaimed operation candidates: a stream's head kind is unknown until
-    claimed. ``claim_data`` is claim-and-bind in ONE backend actor call: the
-    exact READY binding resolves first, only then does the ledger turn the
-    head CLAIMED, and the returned claim carries the binding; a missing
-    binding leaves the head QUEUED."""
+    """Ledger claims: ready_streams lists READY streams (head kind unknown); claim_data claim-and-binds in one call."""
 
     async def ready_streams(self) -> dict: ...
 
@@ -25,11 +17,7 @@ class OperationQueuePort(Protocol[BindingT]):
 
 
 class BatchResidencyPort(Protocol[BindingT]):
-    """Selection-side view of the trainer-residency facade: after RR/coalesce
-    picks a selection, acquire ONE immutable dispatch receipt for its
-    already-claimed bindings. (The synchronous port lives controller-side —
-    miles/utils/operation_contract.TrainerResidencyPort; this is its async
-    transport face.)"""
+    """Async transport face of controller-side TrainerResidencyPort: one immutable dispatch receipt per selection."""
 
     async def acquire_batch(self, bindings_by_operation: list) -> object: ...
 

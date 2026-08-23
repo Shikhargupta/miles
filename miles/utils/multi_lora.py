@@ -92,14 +92,12 @@ def validate_multi_lora_args(args: Any) -> None:
     risky_moe = "moe" in recompute_modules and targets_expert_leaves(args.target_modules)
     if risky_full or risky_moe:
         bridge_fixed = _bridge_recompute_patch_recognizes_multi_lora()
-        assert not risky_full or bridge_fixed, (
-            "Multi-LoRA --recompute-granularity full requires the radixark/Megatron-Bridge#27 PEFT patch recognizing "
-            "'.adapters.<slot>.' parameters; upgrade the bridge or use selective recompute."
-        )
-        assert not risky_moe or bridge_fixed, (
-            "Multi-LoRA expert targets with MoE recompute require the radixark/Megatron-Bridge#27 PEFT patch recognizing "
-            "'.adapters.<slot>.' parameters; upgrade the bridge or recompute core_attn and moe_act instead."
-        )
+        assert (
+            not risky_full or bridge_fixed
+        ), "Full recompute requires Megatron-Bridge#27 ('.adapters.' aware); upgrade or use selective recompute"
+        assert (
+            not risky_moe or bridge_fixed
+        ), "Expert targets with MoE recompute require Megatron-Bridge#27; upgrade or recompute core_attn and moe_act"
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
     assert getattr(args, "qkv_format", "thd") == "thd", (
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
