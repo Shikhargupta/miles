@@ -60,7 +60,6 @@ def test_multi_lora_rejects_dp_indivisible_batch():
 
 
 def test_adapter_batch_without_tinker_lease_is_rejected():
-    # The stamped-slot fallback was removed: adapter batches must carry the tinker batch lease.
     args = multi_lora_args()
     data, metadata = postprocess_rollout_data(args, make_batch(), train_parallel_config={"dp_size": 2})
     with pytest.raises(ValueError, match="batch lease"):

@@ -37,7 +37,7 @@ def test_control_phase_completes_deferred_publishes_only_after_the_push():
 
     async def execute(ops, lease_metadata):
         log.append(("execute", tuple(op["operation_id"] for op in ops)))
-        assert lease_metadata == lease  # every rank receives the batch lease
+        assert lease_metadata == lease
         return {
             "opt1": dict(ok=True, result=dict(grad_norm=1.0, learning_rate=1e-4)),
             "pub1": dict(ok=True, deferred="publish"),
@@ -51,14 +51,10 @@ def test_control_phase_completes_deferred_publishes_only_after_the_push():
     asyncio.run(run_control_phase(actor_model, controller, ActorGroupWeightUpdater(actor_model)))
 
     order = [name for name, _ in log]
-    # A deferred batch holds its lease through the publish barrier: release
-    # comes strictly AFTER the deferred completions.
     assert order == ["claim", "execute", "complete", "update_weights", "complete", "release"]
     first_complete = log[2][1][0]
     assert set(first_complete) == {"opt1"}
     deferred_complete = log[4][1][0]
-    # Deferred completions carry the ORIGINAL execution results (a load_state
-    # keeps its restored step; the backend sets the step clock from it).
     assert deferred_complete == {
         "pub1": dict(ok=True),
         "load1": dict(ok=True, result=dict(step=4, path="/s")),
@@ -89,8 +85,6 @@ def test_immediate_only_batch_releases_at_its_completion_boundary():
 
 
 def test_control_phase_still_pushes_with_no_operations():
-    # load_state re-publishes ride pending_push without a claimed operation
-    # this cycle; the push call must not be gated on claims.
     log: list = []
     controller = SimpleNamespace(
         claim_ready_control_operations=Remote(log, "claim", {"operations": [], "lease": None}),
@@ -136,8 +130,6 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
 
 
 class TestDataBatchFinalizer:
-    """Every non-normal train exit finalizes claimed operations and releases the lease."""
-
     def _pack(self):
         lease = {
             "dispatch_id": "lease-9",
@@ -170,15 +162,12 @@ class TestDataBatchFinalizer:
         controller = SimpleNamespace(fail_tinker_batch=Remote(log, "fail"))
 
         async def train(rollout_id, rollout_data):
-            # One rank reporting an abnormal outcome is enough: the batch did
-            # not commit anywhere.
             return [TrainStepOutcome.NORMAL, TrainStepOutcome.DISCARDED_SHOULD_RETRY]
 
         pack, lease = self._pack()
         asyncio.run(train_data_batch(SimpleNamespace(train=train), controller, 3, pack))
         [(name, (operation_ids, error, lease_arg))] = log
         assert name == "fail" and operation_ids == ["fb1", "fb2"] and lease_arg == lease
-        # Retry ownership is explicit in the message: the client resubmits.
         assert "discarded_should_retry" in error and "resubmit" in error
 
     def test_train_exception_finalizes_then_reraises(self):
@@ -199,9 +188,6 @@ class TestDataBatchFinalizer:
         assert "trainer rank died" in error and "poisoned" in error
 
     def test_missing_dispatch_summary_still_finalizes_with_empty_ids(self):
-        # A pack without the summary (defensive: custom conversion path) must
-        # not crash the driver; the finalizer degrades to a lease-less no-op
-        # call rather than an AttributeError.
         from train_multi_lora_operations import train_data_batch
 
         from miles.backends.megatron_utils.ft.types import TrainStepOutcome
@@ -218,8 +204,6 @@ class TestDataBatchFinalizer:
 
 
 class FakeRayTaskError(ray.exceptions.RayTaskError):
-    """Real RayTaskError construction needs a serialized traceback; tests only need the cause surface."""
-
     def __init__(self, cause):
         Exception.__init__(self, str(cause))
         self.cause = cause
@@ -231,8 +215,6 @@ class FakeRayTaskError(ray.exceptions.RayTaskError):
 
 
 class TestGenerateFailureCap:
-    """Generate failures skip rounds up to the cap instead of killing the shared multi-tenant service."""
-
     class Executor:
         def __init__(self, outcomes):
             self.outcomes = list(outcomes)
@@ -269,7 +251,6 @@ class TestGenerateFailureCap:
         assert self.attempt(executor, streak=2) == (None, 2)
 
     def test_interleaved_successes_keep_the_loop_alive(self):
-        # fail, succeed, fail: with a cap of 2 the reset means neither failure is the second consecutive one.
         executor = self.Executor(
             [FakeRayTaskError(RuntimeError("a")), {"batch": 1}, FakeRayTaskError(RuntimeError("b"))]
         )

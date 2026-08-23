@@ -50,8 +50,6 @@ class TestMetricsValues:
         assert metrics_ppo["loss:sum"] != pytest.approx(metrics["loss:sum"])
 
     def test_degenerate_ratio_cannot_overflow_the_recompute(self):
-        # exp(1000) would raise OverflowError AFTER the GPU work landed,
-        # leaving the operation without a terminal result; the recompute clamps.
         sample = {
             "tokens": [1, 1, 1],
             "response_length": 2,
@@ -75,9 +73,6 @@ class TestMetricsValues:
 
 
 def test_sdk_combiner_merges_our_chunked_metrics():
-    """The load-bearing contract: every key we emit uses a reduction the SDK
-    combiner implements, and combining per-chunk outputs reproduces the
-    whole-batch metrics (the client sees one merged result)."""
     helpers = pytest.importorskip("tinker.lib.chunked_fwdbwd_helpers")
     types = pytest.importorskip("tinker.types")
 
@@ -105,32 +100,23 @@ def test_sdk_combiner_merges_our_chunked_metrics():
 
 
 class TestLossWeightSum:
-    """A teacher-forced datum excludes its prompt via loss_weights=0 while
-    loss_mask stays 1, so ``unmasked_tokens:sum`` over-counts. CE reports
-    ``loss_weight:sum`` = Σ weight·mask; the old key keeps its meaning."""
-
     def test_prompt_masked_sft_gets_the_completion_denominator(self):
         payload = ce_payload([[0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]])
         metrics = operation_result_metrics(payload, [[-0.5] * 7])
-        assert metrics["unmasked_tokens:sum"] == 7.0  # mask-active positions, unchanged
+        assert metrics["unmasked_tokens:sum"] == 7.0
         assert metrics["loss_weight:sum"] == pytest.approx(4.0)
         assert metrics["loss:sum"] / metrics["loss_weight:sum"] == pytest.approx(0.5)
 
     def test_fractional_weights_get_a_weighted_mean_denominator(self):
-        # A nonzero-position COUNT could not normalize fractional weighting.
         metrics = operation_result_metrics(ce_payload([[0.0, 0.5, 0.0, 2.0]]), [[-0.5] * 4])
         assert metrics["loss:sum"] == pytest.approx(1.25)
         assert metrics["loss_weight:sum"] == pytest.approx(2.5)
 
     def test_all_zero_weight_chunk_still_reports_the_key(self):
-        # The SDK combiner drops a merged metric when ANY chunk lacks the key:
-        # a fully prompt-masked chunk must emit loss_weight:sum == 0.
         metrics = operation_result_metrics(ce_payload([[0.0, 0.0]]), [[-1.0, -1.0]])
         assert metrics["loss_weight:sum"] == 0.0
 
     def test_non_ce_losses_do_not_report_it(self):
-        # IS/PPO have no loss_weights channel; within one operation the
-        # loss_fn is uniform, so the key is uniformly present or absent.
         sample = {
             "tokens": [1, 1, 1],
             "response_length": 2,

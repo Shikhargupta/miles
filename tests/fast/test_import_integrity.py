@@ -11,7 +11,6 @@ import miles
 MILES_ROOT = Path(miles.__file__).resolve().parent
 REPO_ROOT = MILES_ROOT.parent
 
-# Frontend package exists only on stack heads that carry it; find_spec-gated below.
 MOVED_PACKAGES = (
     "miles.backends.megatron_utils.api_backends",
     "miles.ray.multi_lora",
@@ -19,7 +18,6 @@ MOVED_PACKAGES = (
     "miles.ray.tinker_frontend",
 )
 
-# The publish path whose function-local import broke silently under CPU gates.
 PUBLISH_PATH_DIR = MILES_ROOT / "backends" / "megatron_utils" / "update_weight"
 
 
@@ -56,7 +54,6 @@ def _python_files(root: Path):
 
 
 def test_moved_namespace_modules_all_import():
-    """Every module under the restructured packages must import cleanly."""
     for package_name in MOVED_PACKAGES:
         if importlib.util.find_spec(package_name) is None:
             continue
@@ -66,7 +63,6 @@ def test_moved_namespace_modules_all_import():
 
 
 def test_every_miles_import_site_resolves_statically():
-    """Every miles.* import statement anywhere in miles/ and examples/ must name a real module."""
     stale = []
     roots = [MILES_ROOT] + ([REPO_ROOT / "examples"] if (REPO_ROOT / "examples").is_dir() else [])
     for root in roots:
@@ -78,7 +74,6 @@ def test_every_miles_import_site_resolves_statically():
 
 
 def test_publish_path_function_local_imports_importable():
-    """importlib-resolve the miles.* targets used inside update_weight function bodies."""
     targets = sorted(
         {target for py_file in _python_files(PUBLISH_PATH_DIR) for _, target in _iter_miles_import_targets(py_file)}
     )
@@ -87,6 +82,5 @@ def test_publish_path_function_local_imports_importable():
         try:
             importlib.import_module(target)
         except ModuleNotFoundError as exc:
-            # Optional third-party deps (mooncake, ...) may be absent on CPU CI; a missing miles module is the bug.
             if (exc.name or "").partition(".")[0] == "miles":
                 raise

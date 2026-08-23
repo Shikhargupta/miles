@@ -21,7 +21,7 @@ def control_op(kind, name="X", slot=0, op_id="op1", payload=None, step=3, servin
         payload=payload,
         step=step,
         serving_version=serving_version,
-        _lease_slot=slot,  # Harness-only; the lease remains the binding source.
+        _lease_slot=slot,
     )
 
 
@@ -57,7 +57,6 @@ def harness(monkeypatch):
 class TestExecuteControls:
     def test_optim_steps_apply_per_call_adam_and_report_norms(self, harness):
         results = harness.run([control_op("optim_step", payload={"adam_params": {"learning_rate": 3e-4}})])
-        # The coordinator resolves the SDK defaults into the request.
         assert harness.calls.step_args[0]["learning_rate"] == 3e-4
         assert harness.calls.step_args[0]["beta1"] == 0.9
         assert results["op1"] == dict(
@@ -102,7 +101,6 @@ class TestExecuteControls:
         assert harness.calls.step_args is None
 
     def test_state_operation_validates_the_binding_name_before_mutation(self):
-        """The binding name is part of tenant identity and is checked before mutation."""
         from miles.ray.multi_lora.residency import ResidentBinding
         from miles.utils.operation_contract import BatchExecutionLease
 
@@ -155,14 +153,11 @@ class TestExecuteControls:
         assert "immutable" in results["op1"]["error"]
 
         results = harness.run([control_op("save_state", payload={"tag": "t1"})])
-        # The registry clock rides the op, not the stale loaded view.
         assert results["op1"] == dict(ok=True, result=dict(path=str(tmp_path / "X" / "states" / "t1"), step=3))
         assert harness.calls.saved[0]["reason"] == "state:t1"
 
     def test_load_state_restores_step_and_stages_republish(self, harness):
         results = harness.run([control_op("load_state", payload={"path": "/good/state"})])
-        # Deferred: the operation completes only after the re-publish lands, so
-        # a client that saw SUCCEEDED can never sample pre-restore weights.
         assert results["op1"] == dict(ok=True, deferred="publish", result=dict(step=42, path="/good/state"))
         assert harness.pending == {"X"}
         assert harness.calls.backups == 1
@@ -195,15 +190,12 @@ class TestLoadAdapters:
         adapters = [make_run("fresh", slot=0), make_run("resumed", slot=1), make_run("resumed-at-zero", slot=2)]
         assert trainer.load_adapters(SimpleNamespace(), None, None, adapters) == 3
         assert inits == [0]
-        # A restored slot's fp32 masters came from the checkpoint; rebuilding
-        # them from the bf16 model weights would drop the saved precision.
         assert reloaded == [0]
 
 
 class TestGatherAndCommit:
     def test_gather_groups_rows_per_operation_in_order(self):
         rollout_data = {
-            # (0, -1) is a zero-weight DP pad: filtered from the result plane.
             "tinker_logprob_collector": {(0, 1): [-2.0], (0, 0): [-1.0], (1, 0): [-9.0], (0, -1): [-7.0]},
             "operation_by_lane": {0: "fb1", 1: "fb2", 2: None},
         }
@@ -232,14 +224,13 @@ class TestGatherAndCommit:
             "tinker_logprob_collector": {(0, 0): [-1.0]},
         }
         trainer.commit_batch(rollout_data, pending_push=set())
-        # Exact registration keys, never a bare name list.
         assert committed["accumulated"] == [("A", "r-A"), ("B", "r-B")]
         assert committed["operation_ids"] == ["fb1"]
         assert committed["logprobs_by_op"] == {"fb1": [[-1.0]]}
 
         committed.clear()
         trainer.commit_batch({**rollout_data, "tinker_forward_only": True}, pending_push=set())
-        assert committed["accumulated"] == []  # forward batches pin nothing
+        assert committed["accumulated"] == []
 
 
 class TestPushPlumbing:
@@ -250,7 +241,7 @@ class TestPushPlumbing:
 
         pushes, bumps = trainer.select_adapters_to_push(loaded, {"B"}, has_new_engines=True)
         assert list(pushes) == ["A", "B"]
-        assert bumps == ["B"]  # re-pushes to fresh engines bump nothing
+        assert bumps == ["B"]
 
     def test_commit_weight_push_only_on_main_rank(self, monkeypatch):
         recorded = []
