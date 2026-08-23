@@ -28,8 +28,6 @@ SERVICE_LOGGER = "miles.ray.tinker_frontend.service"
 
 
 class GatedTransport:
-    """Counts calls; holds every generation until released."""
-
     def __init__(self) -> None:
         self.calls = 0
         self.started = asyncio.Event()
@@ -117,18 +115,12 @@ class TestOrphanedSamples:
                 await asyncio.gather(task, return_exceptions=True)
                 await drain_callbacks()
 
-                # The generation is gone and its permits are back (the same
-                # done-callback path sibling cancellation uses)...
                 assert frontend.sampling_admission.in_use == 0
                 assert request_id not in frontend._sample_task_by_request
-                # ...and the future resolved typed with the REAP reason, not a
-                # shutdown notice; the identity remains spent.
                 body = await retrieve(frontend, request_id)
                 assert body["category"] == "server" and "orphaned" in body["error"]
                 assert frontend.samplers.get(sampler_id).is_spent(0)
 
-                # A late identical resubmit replays the typed terminal — it
-                # must never re-run the generation.
                 calls = transport.calls
                 replay = frontend.sample(sample_request(sampler_id, seq=0, num_samples=3))
                 assert replay["request_id"] == request_id
@@ -174,10 +166,8 @@ class TestOrphanedSamples:
                 submitted = frontend.sample(sample_request(sampler_id, seq=0))
                 await transport.started.wait()
                 record = frontend.futures.get(submitted["request_id"])
-                # The client has been polling all along (age >> TTL, but the
-                # last poll is recent): liveness comes from polls, not age.
                 record.created_at -= frontend.future_unpolled_ttl_s * 10
-                await retrieve(frontend, submitted["request_id"])  # try_again; touches last_polled_at
+                await retrieve(frontend, submitted["request_id"])
 
                 counts = frontend.reap_once()
                 assert counts["cancelled_samples"] == 0
@@ -222,7 +212,6 @@ class TestUndeliveredResults:
             try:
                 submitted = frontend.sample(sample_request(sampler_id, seq=0))
                 request_id = submitted["request_id"]
-                # Let it complete but never retrieve it (the client vanished).
                 for _ in range(200):
                     record = frontend.futures.get(request_id)
                     if record.terminal is not None:
@@ -235,8 +224,6 @@ class TestUndeliveredResults:
                 assert counts["undelivered"] == 1
                 assert frontend.futures.get(request_id) is None
 
-                # Phase 1 — tombstoned: retrieval AND identical resubmission
-                # answer a typed 410; nothing re-executes.
                 with pytest.raises(ApiError) as repoll:
                     await retrieve(frontend, request_id)
                 assert repoll.value.status_code == 410 and "reaped" in repoll.value.detail
@@ -245,14 +232,11 @@ class TestUndeliveredResults:
                 assert resent.value.status_code == 410
                 assert transport.calls == calls
 
-                # Phase 2 — the tombstone itself rolls off (bounded): the
-                # per-session spent fence still knows seq 0 executed, so the
-                # resubmit gets a typed terminal, never a re-run.
-                done = frontend.sample(sample_request(sampler_id, seq=1))  # completes
+                done = frontend.sample(sample_request(sampler_id, seq=1))
                 await retrieve(frontend, done["request_id"])
                 await drain_callbacks()
                 second = frontend.futures.get(done["request_id"])
-                frontend.futures.reap_undelivered(second)  # pushes seq 0's tombstone out (max_expired=1)
+                frontend.futures.reap_undelivered(second)
                 assert frontend.futures.reaped_fingerprint(request_id) is None
                 calls = transport.calls
                 fenced = frontend.sample(sample_request(sampler_id, seq=0))
@@ -274,8 +258,6 @@ class TestUndeliveredResults:
                 submitted = frontend.sample(sample_request(sampler_id, seq=0))
                 body = await retrieve(frontend, submitted["request_id"])
                 assert body["type"] == "sample"
-                # Delivered records answer to the bounded LRU, not the reaper:
-                # replay keeps working however far the clock jumps.
                 counts = frontend.reap_once(now=time.time() + 10_000_000)
                 assert counts["undelivered"] == 0
                 assert (await retrieve(frontend, submitted["request_id"])) == body
@@ -311,8 +293,6 @@ class TestIdleSessions:
 
                 counts = frontend.reap_once(now=time.time() + frontend.session_idle_ttl_s + 1)
                 assert counts["sessions"] == 1
-                # The vanished client's session is gone (a zombie heartbeat is
-                # a typed 404)...
                 with pytest.raises(ApiError) as heartbeat:
                     frontend.session_heartbeat(wire.SessionHeartbeatRequest(session_id=session_id))
                 assert heartbeat.value.status_code == 404
@@ -385,7 +365,6 @@ class TestVanishedClientOperations:
                     )
                 )
                 operation_id = fb["request_id"]
-                # The trainer completes the operation; the client NEVER polls.
                 for _ in range(500):
                     view = backend.operation_view(operation_id)
                     if view is not None and view["state"] == "SUCCEEDED":
@@ -393,16 +372,11 @@ class TestVanishedClientOperations:
                     await asyncio.sleep(0.002)
                 assert backend.operation_view(operation_id)["state"] == "SUCCEEDED"
 
-                # The reaper polls on the vanished client's behalf: terminal
-                # bytes land in the future store FIRST, then the ledger record
-                # is acked — the unacked-results budget drains.
                 frontend.reap_once(now=time.time() + frontend.future_unpolled_ttl_s + 1)
                 record = frontend.futures.get(operation_id)
                 assert record.terminal is not None and record.terminal["type"] == "forward_backward"
-                assert backend.operation_view(operation_id) is None  # acked
+                assert backend.operation_view(operation_id) is None
 
-                # A client that DOES come back inside the undelivered window
-                # still gets the replayed bytes.
                 assert (await retrieve(frontend, operation_id))["type"] == "forward_backward"
             finally:
                 driver_task.cancel()
@@ -422,7 +396,7 @@ class TestMaintenanceLoop:
                 task = frontend._maintenance_task
                 assert task is not None
                 frontend.start_maintenance()
-                assert frontend._maintenance_task is task  # idempotent
+                assert frontend._maintenance_task is task
             finally:
                 await frontend.close()
                 await backend.close()
@@ -447,7 +421,6 @@ class TestSamplingMetrics:
                 await retrieve(frontend, first["request_id"])
                 await retrieve(frontend, second["request_id"])
                 await drain_callbacks()
-                # The high-water survives the drain; live occupancy returns to 0.
                 assert admission.in_use == 0 and admission.peak_in_use == 4
                 assert frontend.sampling_stats.completed == 2
                 assert frontend.sampling_stats.failed == 0
@@ -519,7 +492,7 @@ class TestSamplingMetrics:
                 summaries = [line for line in captured if "sampling summary" in line]
                 assert len(summaries) == 1
                 assert "admitted=1" in summaries[0] and "completed=1" in summaries[0]
-                frontend._log_sampling_summary()  # nothing changed: no new line
+                frontend._log_sampling_summary()
                 assert len([line for line in captured if "sampling summary" in line]) == 1
             finally:
                 logger.removeHandler(handler)

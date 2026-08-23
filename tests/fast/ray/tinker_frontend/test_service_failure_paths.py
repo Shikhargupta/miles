@@ -20,8 +20,6 @@ BASE = "Qwen/Qwen3-0.6B"
 
 
 class StaticTransport:
-    """One deterministic completed generation per call."""
-
     def __init__(self) -> None:
         self.calls = 0
         self.closed = False
@@ -91,8 +89,6 @@ class TestExactSdkPin:
             backend = make_backend()
             frontend = TinkerFrontend(backend, sampling_transport=StaticTransport())
             try:
-                # Sibling patches of 0.24.x are untested wire surface — the
-                # frontend mirrors exactly what 0.24.1 POSTs.
                 for version in ("0.24.0", "0.24.2"):
                     with pytest.raises(ApiError, match="0.24.1"):
                         frontend.create_session(wire.CreateSessionRequest(sdk_version=version))
@@ -105,11 +101,6 @@ class TestExactSdkPin:
 
 class TestPublishRetryIdempotency:
     def test_lost_response_retry_replays_the_original_future(self):
-        """The official 0.24.1 client increments its sampling counter INSIDE
-        the HTTP retry closure (training_client.py mints a fresh
-        sampling_session_seq_id per attempt) while the operation seq_id stays
-        fixed. The retry must replay the original future, never 422."""
-
         async def main():
             backend, frontend, session_id = await make_frontend(StaticTransport())
             try:
@@ -135,8 +126,6 @@ class TestPublishRetryIdempotency:
                 frontend.save_weights_for_sampler(
                     wire.SaveWeightsForSamplerRequest(model_id=model_id, seq_id=1, sampling_session_seq_id=0)
                 )
-                # A named publish at the same seq is different CONTENT, not a
-                # retry: the fingerprint reduction must not swallow it.
                 with pytest.raises(ApiError) as excinfo:
                     frontend.save_weights_for_sampler(
                         wire.SaveWeightsForSamplerRequest(model_id=model_id, seq_id=1, path="named")
@@ -151,10 +140,6 @@ class TestPublishRetryIdempotency:
 
 class TestSamplerIdentityRetention:
     def test_publish_cannot_overwrite_an_existing_base_sampler(self):
-        """A publish whose minted sampler id collides with a live sampling
-        session must fail typed at delivery — silently rebinding the id would
-        swap base weights for LoRA under an existing client."""
-
         async def main():
             backend, frontend, session_id = await make_frontend(StaticTransport())
             try:
@@ -168,7 +153,7 @@ class TestSamplerIdentityRetention:
                 backend.complete_control_operations({claimed[0]["operation_id"]: {"ok": True}})
                 body = await frontend.retrieve_future(wire.FutureRetrieveRequest(request_id=publish["request_id"]))
                 assert body["category"] == "user" and "already exists" in body["error"]
-                assert frontend.samplers.get(sampler_id).name is None  # base sampler survives
+                assert frontend.samplers.get(sampler_id).name is None
             finally:
                 await frontend.close()
                 await backend.close()
@@ -199,10 +184,6 @@ class TestSamplerIdentityRetention:
         asyncio.run(main())
 
     def test_sample_identity_does_not_reexecute_after_tombstone_rollover(self):
-        """Bounded retention forgets bytes and tombstones; the per-session
-        spent-sequence fence must still refuse to re-run a spent seq (a fresh
-        generation for a delivered identity breaks sampling idempotency)."""
-
         async def main():
             transport = StaticTransport()
             backend, frontend, session_id = await make_frontend(transport)
@@ -217,7 +198,7 @@ class TestSamplerIdentityRetention:
 
                 retried = frontend.sample(sample_request(sampler_id, seq=0))
                 body = await frontend.retrieve_future(wire.FutureRetrieveRequest(request_id=retried["request_id"]))
-                assert transport.calls == 3  # never re-executed
+                assert transport.calls == 3
                 assert body["category"] == "user" and "already executed" in body["error"]
             finally:
                 await frontend.close()
@@ -227,9 +208,6 @@ class TestSamplerIdentityRetention:
 
 
 class PartialFailureTransport:
-    """First generation fails once its sibling is in flight; the sibling
-    blocks until cancelled."""
-
     def __init__(self) -> None:
         self.calls = 0
         self.second_started = asyncio.Event()
@@ -274,10 +252,6 @@ class BlockingTransport:
 
 class TestAsyncLifecycle:
     def test_partial_multisample_failure_cancels_sibling_generation(self):
-        """The first sibling exception must not leave the others running
-        untracked: they are cancelled and AWAITED before the future turns
-        terminal, so no generation outlives its request's resolution."""
-
         async def main():
             transport = PartialFailureTransport()
             backend, frontend, session_id = await make_frontend(transport)
@@ -295,10 +269,6 @@ class TestAsyncLifecycle:
         asyncio.run(main())
 
     def test_close_awaits_inflight_sample_cancellation_and_gates_new_ones(self):
-        """close() is a barrier: it cancels AND awaits in-flight samples (the
-        transport observes cancellation before it is closed under it), gates
-        new samples with a typed 503, and is idempotent."""
-
         async def main():
             transport = BlockingTransport()
             backend, frontend, session_id = await make_frontend(transport)
@@ -309,13 +279,12 @@ class TestAsyncLifecycle:
                 await frontend.close()
                 assert transport.cancelled.is_set()
                 assert not frontend._sample_tasks
-                # The cancelled sample resolved typed, not dangling.
                 body = await frontend.retrieve_future(wire.FutureRetrieveRequest(request_id=future["request_id"]))
                 assert body["category"] == "server" and "shutting down" in body["error"]
                 with pytest.raises(ApiError) as excinfo:
                     frontend.sample(sample_request(sampler_id, seq=1))
                 assert excinfo.value.status_code == 503
-                await frontend.close()  # idempotent
+                await frontend.close()
             finally:
                 await backend.close()
 

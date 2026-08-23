@@ -409,7 +409,6 @@ class TestRejectOperation:
         backend = ready_backend()
         view = backend.reject_operation("X", "op1", 1, "optim_step", {"adam_params": {}}, "unsupported")
         assert view["state"] == "FAILED" and view["error_category"] == "user"
-        # The consumed ordinal keeps later operations claimable.
         backend.enqueue_operation("X", "op2", 2, "forward_backward", fb_payload())
         assert backend.operations.claim_data_operation("X", view["registration_id"])["operation_id"] == "op2"
         backend.registry.deregister("X")

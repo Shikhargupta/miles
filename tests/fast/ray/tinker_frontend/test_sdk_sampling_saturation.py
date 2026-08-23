@@ -36,14 +36,12 @@ from miles.ray.tinker_frontend.http_server import TinkerFrontendHTTPServer  # no
 API_KEY = "tml-test-key"
 BASE = "Qwen/Qwen3-0.6B"
 CLIENTS = 2
-PER_CLIENT = 64  # the SDK's own sample_max_concurrent_requests
-ROUTER_DELAY_S = 11.0  # longer than the old implicit 10s httpx pool deadline
-CAP = 64  # the deployment default under test (matches the H200 validation)
+PER_CLIENT = 64
+ROUTER_DELAY_S = 11.0
+CAP = 64
 
 
 class SlowRouter:
-    """SGLang-shaped /generate that holds every call, tracking concurrency."""
-
     def __init__(self, delay_s: float) -> None:
         self.delay_s = delay_s
         self.calls = 0
@@ -98,11 +96,11 @@ def test_aggregate_sdk_load_completes_within_the_bound_instead_of_the_pool_cliff
             tinker_api_key=API_KEY,
         )
         await backend.init()
-        FakeDriver(backend)  # flips trainer readiness; no training ops run here
+        FakeDriver(backend)
         server = TinkerFrontendHTTPServer(backend, host="127.0.0.1", api_port=0)
         await server.start()
         frontend = server.frontend
-        assert frontend.sampling_admission.capacity == CAP  # deployment default
+        assert frontend.sampling_admission.capacity == CAP
         try:
             base_url = f"http://127.0.0.1:{server.actual_api_port}"
             service = await asyncio.to_thread(tinker.ServiceClient, base_url=base_url, api_key=API_KEY)
@@ -127,27 +125,18 @@ def test_aggregate_sdk_load_completes_within_the_bound_instead_of_the_pool_cliff
             ]
             outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # The cliff is gone: 128/128, no terminal PoolTimeouts (the old
-            # failure mode was exactly 28 empty "sampling failed: " errors).
             failures = [item for item in outcomes if isinstance(item, BaseException)]
             assert not failures, [f"{type(item).__name__}: {item}" for item in failures[:3]]
             assert sum(isinstance(item, types.SampleResponse) for item in outcomes) == CLIENTS * PER_CLIENT
 
-            # Saturation actually happened and was answered with retryable
-            # backpressure, not silent queueing or terminal failures...
             assert frontend.sampling_admission.rejected > 0
-            # ...while the router never saw more than the configured bound,
-            # and every admitted generation ran exactly once.
             assert router.max_active <= CAP
             assert router.calls == CLIENTS * PER_CLIENT
 
-            # The 429 retries reused the SAME seq ids: each client's spent
-            # fence is exactly 0..63 with no sparse leftovers.
             for client in clients:
                 record = frontend.samplers.get(client._sampling_session_id)
                 assert record.spent_fence == PER_CLIENT - 1 and not record.spent_sparse
 
-            # Everything drains: permits and sample tasks return to zero.
             for _ in range(200):
                 if frontend.sampling_admission.in_use == 0 and not frontend._sample_tasks:
                     break
@@ -155,7 +144,6 @@ def test_aggregate_sdk_load_completes_within_the_bound_instead_of_the_pool_cliff
             assert frontend.sampling_admission.in_use == 0
             assert not frontend._sample_tasks
 
-            # Saturation never blocked the session heartbeat.
             assert session.last_heartbeat > heartbeat_before
             holder.close()
             await asyncio.sleep(0.05)

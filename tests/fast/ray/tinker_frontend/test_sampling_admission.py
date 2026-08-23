@@ -23,8 +23,6 @@ BASE = "Qwen/Qwen3-0.6B"
 
 
 class GatedTransport:
-    """Counts calls; holds every generation until released."""
-
     def __init__(self) -> None:
         self.calls = 0
         self.started = asyncio.Event()
@@ -46,8 +44,6 @@ class GatedTransport:
 
 
 class FailingTransport:
-    """Raises the given exception on every call; counts calls."""
-
     def __init__(self, exc: BaseException) -> None:
         self.calls = 0
         self.exc = exc
@@ -94,8 +90,6 @@ async def retrieve(frontend, request_id):
 
 
 async def drain_callbacks():
-    # Permit release rides task done-callbacks: one loop tick behind the
-    # terminal resolution a retriever can already observe.
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
@@ -108,11 +102,8 @@ class TestWeightedAdmission:
             try:
                 first = frontend.sample(sample_request(sampler_id, seq=0, num_samples=3))
                 assert frontend.sampling_admission.in_use == 3
-                # 2 more sub-generations would exceed 4: rejected by WEIGHT,
-                # not request count...
                 with pytest.raises(OperationBackpressure):
                     frontend.sample(sample_request(sampler_id, seq=1, num_samples=2))
-                # ...while weight 1 still fits.
                 second = frontend.sample(sample_request(sampler_id, seq=2, num_samples=1))
                 assert frontend.sampling_admission.in_use == 4
                 transport.release.set()
@@ -135,8 +126,6 @@ class TestWeightedAdmission:
                 first = frontend.sample(sample_request(sampler_id, seq=0))
                 with pytest.raises(OperationBackpressure):
                     frontend.sample(sample_request(sampler_id, seq=1))
-                # The 429 left NO trace of seq 1: no future record, no spent
-                # mark — the SDK's backoff retry of the same seq id is safe.
                 assert frontend.futures.get(f"{sampler_id}:s1") is None
                 assert not frontend.samplers.get(sampler_id).is_spent(1)
                 assert frontend.sampling_admission.rejected == 1
@@ -146,7 +135,7 @@ class TestWeightedAdmission:
                 await drain_callbacks()
                 retried = frontend.sample(sample_request(sampler_id, seq=1))
                 assert (await retrieve(frontend, retried["request_id"]))["type"] == "sample"
-                assert transport.calls == 2  # exactly once per admitted generation
+                assert transport.calls == 2
             finally:
                 transport.release.set()
                 await frontend.close()
@@ -167,16 +156,14 @@ class TestWeightedAdmission:
 
                 transport.release.clear()
                 transport.started.clear()
-                frontend.sample(sample_request(sampler_id, seq=1))  # quota now full
+                frontend.sample(sample_request(sampler_id, seq=1))
                 await transport.started.wait()
                 assert frontend.sampling_admission.in_use == 1
-                # An exact retry of the delivered seq 0 must replay its result
-                # regardless of load: no 429, no permit, no re-generation.
                 replay = frontend.sample(sample_request(sampler_id, seq=0))
                 assert replay["request_id"] == done["request_id"]
                 assert await retrieve(frontend, replay["request_id"]) == body
                 assert frontend.sampling_admission.in_use == 1
-                assert transport.calls == 2  # seq 0 once + seq 1 once
+                assert transport.calls == 2
             finally:
                 transport.release.set()
                 await frontend.close()
@@ -192,7 +179,7 @@ class TestWeightedAdmission:
             frontend.futures.max_delivered = 1
             frontend.futures.max_expired = 1
             try:
-                for seq in range(3):  # rolls seq 0's record AND tombstone off
+                for seq in range(3):
                     done = frontend.sample(sample_request(sampler_id, seq=seq))
                     await retrieve(frontend, done["request_id"])
                 await drain_callbacks()
@@ -200,13 +187,13 @@ class TestWeightedAdmission:
 
                 transport.release.clear()
                 transport.started.clear()
-                frontend.sample(sample_request(sampler_id, seq=3))  # quota now full
+                frontend.sample(sample_request(sampler_id, seq=3))
                 await transport.started.wait()
-                resent = frontend.sample(sample_request(sampler_id, seq=0))  # no 429
+                resent = frontend.sample(sample_request(sampler_id, seq=0))
                 body = await retrieve(frontend, resent["request_id"])
                 assert body["category"] == "user" and "already executed" in body["error"]
-                assert transport.calls == calls + 1  # only seq 3 ran
-                assert frontend.sampling_admission.in_use == 1  # no permit taken
+                assert transport.calls == calls + 1
+                assert frontend.sampling_admission.in_use == 1
             finally:
                 transport.release.set()
                 await frontend.close()
@@ -222,8 +209,6 @@ class TestWeightedAdmission:
             try:
                 with pytest.raises(ApiError) as excinfo:
                     frontend.sample(sample_request(sampler_id, seq=0, num_samples=5))
-                # A request that can never fit must not 429 forever (the SDK
-                # would retry indefinitely): typed 400, identity unconsumed.
                 assert excinfo.value.status_code == 400 and "exceeds" in excinfo.value.detail
                 assert not frontend.samplers.get(sampler_id).is_spent(0)
                 assert frontend.sampling_admission.rejected == 0
@@ -240,8 +225,6 @@ class TestWeightedAdmission:
 class TestPermitLifecycle:
     def test_transport_failure_releases_permits_and_names_the_exception_class(self):
         async def main():
-            # str(httpx.PoolTimeout("")) is empty: without the class name the
-            # old message was an undiagnosable "sampling failed: ".
             transport = FailingTransport(httpx.PoolTimeout(""))
             backend, frontend, sampler_id = await make_frontend(transport, cap=4)
             try:
@@ -250,7 +233,7 @@ class TestPermitLifecycle:
                 assert body["category"] == "server"
                 assert "sampling failed (PoolTimeout):" in body["error"]
                 await drain_callbacks()
-                assert frontend.sampling_admission.in_use == 0  # weight-2 release
+                assert frontend.sampling_admission.in_use == 0
             finally:
                 await frontend.close()
                 await backend.close()
@@ -259,8 +242,6 @@ class TestPermitLifecycle:
 
     def test_ambiguous_midbody_failure_is_terminal_and_never_reissued(self):
         async def main():
-            # Whether the router executed is unknowable after a mid-body
-            # reset: auto-resending could duplicate a stochastic generation.
             transport = FailingTransport(httpx.RemoteProtocolError("peer closed connection mid-body"))
             backend, frontend, sampler_id = await make_frontend(transport, cap=4)
             try:
@@ -268,7 +249,7 @@ class TestPermitLifecycle:
                 body = await retrieve(frontend, failed["request_id"])
                 assert body["category"] == "server" and "(RemoteProtocolError)" in body["error"]
                 await drain_callbacks()
-                assert transport.calls == 1  # exactly one attempt, no auto-retry
+                assert transport.calls == 1
                 assert frontend.sampling_admission.in_use == 0
             finally:
                 await frontend.close()
@@ -280,7 +261,6 @@ class TestPermitLifecycle:
         async def main():
             transport = GatedTransport()
             backend, frontend, sampler_id = await make_frontend(transport, cap=4)
-            # Simulate an ephemeral sampler whose registration was retired.
             record = frontend.samplers.get(sampler_id)
             record.name, record.registration_id = "ghost", "r-gone"
             try:
@@ -305,9 +285,6 @@ class TestPermitLifecycle:
             await transport.started.wait()
             assert frontend.sampling_admission.in_use == 3
             try:
-                # close() cancels AND awaits the sample tasks; the permits are
-                # verifiably back by the time it returns (a task cancelled
-                # before its first step still runs its done-callbacks).
                 await frontend.close()
                 assert frontend.sampling_admission.in_use == 0
                 body = await retrieve(frontend, future["request_id"])
@@ -324,8 +301,6 @@ class TestTransportBound:
         assert transport.base_url == "http://router:9"
         assert transport.limits.max_connections == 7
         assert transport.limits.max_keepalive_connections == 7
-        # pool=None is only legal because the gate bounds in-flight requests
-        # to max_connections: nothing ever queues on the pool itself.
         assert transport.timeout.pool is None
         assert transport._gate._value == 7
         assert transport.timeout.connect == 10.0
@@ -348,11 +323,9 @@ class TestTransportBound:
             transport._http = HangingClient()
             holder = asyncio.create_task(transport.generate({}))
             await started.wait()
-            waiter = asyncio.create_task(transport.generate({}))  # queued on the gate
+            waiter = asyncio.create_task(transport.generate({}))
             await asyncio.sleep(0)
             assert transport._gate.locked()
-            # The _run_sample failure path cancels siblings: one holding the
-            # permit, one still waiting for it — both must leave a clean gate.
             waiter.cancel()
             holder.cancel()
             await asyncio.gather(holder, waiter, return_exceptions=True)

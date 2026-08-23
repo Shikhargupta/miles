@@ -45,16 +45,12 @@ class TestDatumToSample:
             translation.datum_to_sample(0, datum([1, 2, 3], [9, 3, 4], weights=[1.0, 1.0, 1.0]), "cross_entropy")
 
     def test_negative_token_ids_are_rejected(self):
-        # No tokenizer has negative ids; they would reach the GPU embedding
-        # lookup otherwise. (Vocab upper bounds stay engine-side: the frontend
-        # never loads the tokenizer.)
         with pytest.raises(UserInputError, match="non-negative"):
             translation.datum_to_sample(0, datum([-1, 2, 3], [2, 3, 4], weights=[0.0, 1.0, 1.0]), "cross_entropy")
         with pytest.raises(UserInputError, match="non-negative"):
             translation.datum_to_sample(0, datum([1, 2, 3], [2, 3, -4], weights=[0.0, 1.0, 1.0]), "cross_entropy")
 
     def test_zero_weighted_mismatch_is_normalized_not_rejected(self):
-        # Canonical RL pads prompt targets with 0 under zero weight.
         sample = translation.datum_to_sample(0, datum([1, 2, 3], [0, 3, 4], weights=[0.0, 1.0, 1.0]), "cross_entropy")
         assert sample["tokens"] == [1, 2, 3, 4]
 
@@ -123,7 +119,7 @@ class TestResults:
     def test_forward_result_recomputes_metrics_from_the_request(self):
         payload = translation.fb_input_to_payload(fb_input([datum([1, 2, 3], [2, 3, 4], weights=[0.0, 1.0, 1.0])]))
         body = translation.fb_result_to_response({"logprobs": [[-0.5, -0.5, -0.5]]}, payload)
-        assert body["metrics"]["loss:sum"] == pytest.approx(1.0)  # -(-0.5) * 2 active weights
+        assert body["metrics"]["loss:sum"] == pytest.approx(1.0)
         assert body["metrics"]["unmasked_tokens:sum"] == pytest.approx(3.0)
 
     def test_optim_result_projects_numeric_metrics(self):
@@ -149,7 +145,6 @@ class TestSampling:
     def test_missing_max_tokens_is_rejected_and_seed_stays_out_of_base_params(self):
         with pytest.raises(UserInputError, match="max_tokens"):
             translation.sampling_params_to_sglang(wire.SamplingParams())
-        # seed is injected per fanned-out sample by the service, not here.
         assert "sampling_seed" not in translation.sampling_params_to_sglang(self.params(seed=1))
 
     @pytest.mark.parametrize(

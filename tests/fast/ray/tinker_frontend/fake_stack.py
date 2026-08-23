@@ -27,17 +27,11 @@ def make_backend(router_url: str = "http://127.0.0.1:9", save_root: str = "/tmp/
 
 
 class FakeDriver:
-    """The trainer/driver loop, minus the GPUs. Deterministic results:
-    logprob rows are ``base - 0.01 * step`` so weights visibly "move" after
-    an optim_step; named states are immutable; loads restore the step."""
-
     def __init__(self, backend: MultiLoraOperationBackend, base_logprob: float = -0.5) -> None:
         self.backend = backend
         self.base_logprob = base_logprob
         self.saved_states: dict[str, int] = {}
         self.paused = False
-        # The fake driver IS the trainer: constructing it mirrors the real
-        # driver flipping readiness once the training actors exist.
         backend.mark_trainer_ready()
 
     async def run(self, interval: float = 0.005) -> None:
@@ -64,25 +58,17 @@ class FakeDriver:
 
     def _run_data_operations(self) -> None:
         for name, run in list(self.backend.registry.ready_adapters().items()):
-            # Claim-and-bind, exactly like the rollout adapter's port.
             while (op := self.backend.claim_data_operation(name, run.registration_id)) is not None:
                 rows = [self._row(name, sample["response_length"]) for sample in op["payload"]["samples"]]
-                # Batch commits carry exact registration keys, never bare names.
                 accumulated = [(name, run.registration_id)] if op["kind"] == "forward_backward" else []
                 self.backend.commit_tinker_batch(accumulated, [op["operation_id"]], {op["operation_id"]: rows})
 
     def _run_control_operations(self) -> None:
-        # Control claims return one envelope per batch: the operations plus a
-        # BatchExecutionLease (the fake trainer has no local residency to
-        # validate, and release is a no-op under fixed residency).
         claimed = self.backend.claim_ready_control_operations()
         for op in claimed["operations"]:
             kind, name, payload = op["kind"], op["name"], op.get("payload") or {}
             if kind == "optim_step":
                 if op.get("poison"):
-                    # Mirror the trainer: discard the poisoned window (no real
-                    # grads here) and fail the step as a user error whose
-                    # outcome confirms the window was physically consumed.
                     result = dict(ok=False, error=op["poison"], category="user", gradient_window_consumed=True)
                 else:
                     adam = payload.get("adam_params") or {}
@@ -105,8 +91,6 @@ class FakeDriver:
                 else:
                     result = dict(ok=True, result=dict(step=self.saved_states[path], path=path))
             elif kind == "save_weights_for_sampler":
-                # The publish barrier: the version bump lands BEFORE the
-                # operation completes, like the driver's update_weights.
                 self.backend.registry.record_weight_update([name])
                 result = dict(ok=True)
             else:
@@ -117,14 +101,6 @@ class FakeDriver:
 
 
 class FakeRouter:
-    """Stands in for the sglang router's /generate contract (the shape the
-    real frontend consumes): echoes deterministic tokens/logprobs and records
-    every payload for assertions. Serves /get_server_info in the real
-    response shape (ServerArgs echo + scheduler_info) so the frontend's
-    context-limit discovery runs against it: ``context_length`` stays null —
-    the launch-derived default — forcing the ``max_req_input_len + 6``
-    reconstruction the scheduler math implies."""
-
     def __init__(self, max_req_input_len: int = 4090) -> None:
         self.requests: list[dict] = []
         self.max_req_input_len = max_req_input_len
@@ -158,7 +134,6 @@ class FakeRouter:
             "prompt_tokens": len(input_ids),
         }
         if payload.get("logprob_start_len") == 0:
-            # Real sglang shape: one entry per prompt token, first logprob None (no context).
             meta_info["input_token_logprobs"] = [
                 [None if i == 0 else -0.125 * i, token, None] for i, token in enumerate(input_ids)
             ]

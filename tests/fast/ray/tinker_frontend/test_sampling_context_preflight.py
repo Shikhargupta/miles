@@ -25,9 +25,6 @@ BASE = "Qwen/Qwen3-0.6B"
 
 
 class InfoTransport:
-    """Immediate one-token generations; server_info returns the given dict or
-    raises the given exception, counting calls."""
-
     def __init__(self, info: dict | None = None, info_exc: Exception | None = None) -> None:
         self.info = info
         self.info_exc = info_exc
@@ -54,8 +51,6 @@ class InfoTransport:
 
 
 class NoInfoTransport(InfoTransport):
-    """A transport predating the server_info seam (duck-typed injectors)."""
-
     server_info = None
 
 
@@ -111,16 +106,11 @@ class TestConfiguredLimit:
                     frontend.sample(sample_request(sampler_id, seq=0, prompt_len=60, max_tokens=8))
                 assert excinfo.value.status_code == 400
                 assert "context limit of 64" in excinfo.value.detail
-                # BEFORE identity consumption (like the num_samples cap): no
-                # future record, no spent mark, no admission side effects —
-                # the client can resubmit the SAME seq with a smaller budget.
                 assert frontend.futures.get(f"{sampler_id}:s0") is None
                 assert not frontend.samplers.get(sampler_id).is_spent(0)
                 assert frontend.sampling_admission.rejected == 0
                 assert transport.generate_calls == 0
 
-                # prompt + max_tokens == limit must be ADMITTED: the engine
-                # serves exactly context_len total tokens.
                 fits = frontend.sample(sample_request(sampler_id, seq=0, prompt_len=56, max_tokens=8))
                 assert (await retrieve(frontend, fits["request_id"]))["type"] == "sample"
                 assert transport.generate_calls == 1
@@ -165,15 +155,15 @@ class TestDiscovery:
             backend, frontend, sampler_id = await make_frontend(transport)
             try:
                 [model] = frontend.capabilities()["supported_models"]
-                assert model["max_context_length"] is None  # unknown until discovered
-                done = frontend.sample(sample_request(sampler_id, seq=0))  # triggers discovery
+                assert model["max_context_length"] is None
+                done = frontend.sample(sample_request(sampler_id, seq=0))
                 await wait_discovery(frontend)
                 assert frontend._context_limit == 106
                 await retrieve(frontend, done["request_id"])
 
                 with pytest.raises(ApiError, match="context limit of 106"):
                     frontend.sample(sample_request(sampler_id, seq=1, prompt_len=120, max_tokens=16))
-                assert transport.info_calls == 1  # discovered exactly once
+                assert transport.info_calls == 1
                 [model] = frontend.capabilities()["supported_models"]
                 assert model["max_context_length"] == 106
             finally:
@@ -183,10 +173,6 @@ class TestDiscovery:
         asyncio.run(main())
 
     def test_null_context_length_reconstructs_from_max_req_input_len(self):
-        # sglang launched WITHOUT --context-length echoes null and derives the
-        # limit from the model config; the scheduler still reports
-        # max_req_input_len = min(ctx - 1, kv - 1) - 5, so ctx comes back as
-        # max_req_input_len + 6 (folding in a tighter KV-pool bound).
         assert _context_limit_from_server_info({"context_length": None, "max_req_input_len": 122}) == 128
         assert _context_limit_from_server_info({"context_length": 256, "max_req_input_len": 122}) == 128
         assert _context_limit_from_server_info({"context_length": True, "max_req_input_len": True}) is None
@@ -206,8 +192,6 @@ class TestDiscovery:
             transport = SlowInfoTransport()
             backend, frontend, sampler_id = await make_frontend(transport)
             try:
-                # The limit (8) would reject this — but it is not known yet,
-                # and rejecting against a guess would break working clients.
                 admitted = frontend.sample(sample_request(sampler_id, seq=0, prompt_len=100, max_tokens=50))
                 assert (await retrieve(frontend, admitted["request_id"]))["type"] == "sample"
                 release.set()
@@ -230,9 +214,8 @@ class TestDiscovery:
                     done = frontend.sample(sample_request(sampler_id, seq=seq, prompt_len=100, max_tokens=100))
                     await wait_discovery(frontend)
                     assert (await retrieve(frontend, done["request_id"]))["type"] == "sample"
-                # Bounded: no per-sample hammering of a dead info endpoint.
                 assert transport.info_calls == TinkerFrontend._CONTEXT_DISCOVERY_MAX_ATTEMPTS
-                assert frontend._context_limit is None  # preflight stays off
+                assert frontend._context_limit is None
             finally:
                 await frontend.close()
                 await backend.close()
@@ -261,16 +244,11 @@ class TestLaunchResolution:
         assert resolve_sampling_max_context(flagged) == 32768
         deployed = SimpleNamespace(tinker_sampling_max_context=None, sglang_context_length=65536)
         assert resolve_sampling_max_context(deployed) == 65536
-        bare = SimpleNamespace(tinker_sampling_max_context=None)  # no sglang attr at all
+        bare = SimpleNamespace(tinker_sampling_max_context=None)
         assert resolve_sampling_max_context(bare) is None
 
 
 class TestTransportDiscoveryHop:
-    """The production transport's server_info against both live shapes
-    (verified on H200): a bare engine answers /get_server_info directly;
-    sglang-router >= 0.3 answers with router metadata and keeps the engine
-    one hop away behind /workers."""
-
     @staticmethod
     async def _serve(app):
         import uvicorn
@@ -301,14 +279,13 @@ class TestTransportDiscoveryHop:
 
             @router.get("/get_server_info")
             async def router_info() -> dict:
-                # sglang-router 0.3.x: router metadata, no engine fields.
                 return {"router_manager": True, "routers_count": 1, "workers_count": 1}
 
             @router.get("/workers")
             async def workers() -> dict:
                 return {
                     "workers": [
-                        {"url": "http://127.0.0.1:1", "is_healthy": False},  # skipped: unhealthy
+                        {"url": "http://127.0.0.1:1", "is_healthy": False},
                         {"url": f"http://127.0.0.1:{worker_port}", "is_healthy": True},
                     ]
                 }
@@ -337,8 +314,6 @@ class TestTransportDiscoveryHop:
 
             @engine.get("/get_server_info")
             async def engine_info() -> dict:
-                # A launch-derived engine: context_length null but the
-                # scheduler field present — must NOT trigger the hop.
                 return {"context_length": None, "max_req_input_len": 40954}
 
             @engine.get("/workers")
