@@ -70,6 +70,11 @@ def weight_push_session(
     still generating. ``announce=False`` skips the begin/end session markers for
     a push that sends no fresh base weights (the LoRA-only path), where the
     engine must not run its post-load step.
+
+    The session is deliberately *not* closed on an exception. Ending it runs the
+    engine's post-load step and resumes generation, which on a half-written model
+    means serving corrupt weights; leaving the engines paused and letting the
+    error propagate keeps the failure loud. The training step is dying either way.
     """
     is_driver = dist.get_rank() == 0
     mode = args.pause_generation_mode
@@ -84,15 +89,14 @@ def weight_push_session(
             begin_weight_update(rollout_engines, weight_update_selector(args))
     dist.barrier(group=get_gloo_group())
 
-    try:
-        yield
-    finally:
-        dist.barrier(group=get_gloo_group())
-        if is_driver:
-            if announce:
-                end_weight_update(rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in rollout_engines])
-        dist.barrier(group=get_gloo_group())
+    yield
+
+    dist.barrier(group=get_gloo_group())
+    if is_driver:
+        if announce:
+            end_weight_update(rollout_engines)
+        ray.get([engine.continue_generation.remote() for engine in rollout_engines])
+    dist.barrier(group=get_gloo_group())
 
 
 def connect_engines_if_stale(

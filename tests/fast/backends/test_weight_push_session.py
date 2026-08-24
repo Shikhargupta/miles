@@ -106,6 +106,28 @@ def test_non_driver_ranks_issue_no_engine_rpcs():
     assert calls == []
 
 
+def test_a_failed_push_leaves_the_engines_paused():
+    """Closing the session runs the engine's post-load step and resumes serving.
+    On a half-written model that would serve corrupt weights, so a failure must
+    propagate with the engines still paused."""
+    calls: list = []
+    engines = [_FakeEngine(calls)]
+    with (
+        patch("miles.backends.training_utils.weight_sync.dist") as dist,
+        patch("miles.backends.training_utils.weight_sync.ray.get", lambda x: x),
+        patch("miles.backends.training_utils.weight_sync.get_gloo_group", lambda: None),
+    ):
+        dist.get_rank.return_value = 0
+        with pytest.raises(RuntimeError, match="stream blew up"):
+            with weight_push_session(_args(), engines):
+                raise RuntimeError("stream blew up")
+
+    names = [name for name, _ in calls]
+    assert "pause_generation" in names
+    assert "end_weight_update" not in names
+    assert "continue_generation" not in names
+
+
 def test_selector_excludes_draft_only_without_an_mtp_block():
     speculative = dict(sglang_speculative_algorithm="EAGLE", megatron_to_hf_mode="raw")
     assert weight_update_selector(Namespace(mtp_num_layers=None, **speculative)) == "target"
