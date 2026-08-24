@@ -73,14 +73,17 @@ def run_fault_injection_loop(
             continue
 
         # Wait past the stale-status window after each injection, then inject only on a current
-        # snapshot with every known replica present and serving and a spare to survive the kill.
+        # snapshot with every known replica present and two serving candidates so one survives.
+        serving_cells_of_type = {
+            kind: [cell for cell in kind_cells if cell_is_alive(cell) and _cell_can_serve(cell)]
+            for kind, kind_cells in cells_of_type.items()
+        }
         ready_types = [
             kind
             for kind in due_types
             if polls_since_last_injection_of_cell_type[kind] >= quiescent_polls_required
             and len(cells_of_type[kind]) == max_num_cells_of_cell_type[kind]
-            and len(cells_of_type[kind]) > 1
-            and all(cell_is_alive(cell) and _cell_can_serve(cell) for cell in cells_of_type[kind])
+            and len(serving_cells_of_type[kind]) > 1
         ]
         if not ready_types:
             logger.info(
@@ -93,7 +96,7 @@ def run_fault_injection_loop(
             continue
 
         cell_type = rng.choice(ready_types)
-        target = rng.choice(cells_of_type[cell_type])
+        target = rng.choice(serving_cells_of_type[cell_type])
         cell_name = target["metadata"]["name"]
         form = _draw_form(cell_fault_forms[cell_type], events=event_log.events, cell_type=cell_type, rng=rng)
         try:

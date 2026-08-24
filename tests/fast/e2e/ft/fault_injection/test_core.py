@@ -470,6 +470,20 @@ def _do_nothing(cell: dict, rng: random.Random) -> None:
 
 
 class TestRolloutQuiescence:
+    def test_a_nonserving_engine_is_not_a_victim_when_two_siblings_serve(self) -> None:
+        """A serving spare permits injection, but the paused engine itself remains ineligible."""
+        injected = _run_typed_injection_loop(
+            [
+                typed_cell("rollout-engine-0", "rollout"),
+                typed_cell("rollout-engine-1", "rollout"),
+                typed_cell("rollout-engine-2", "rollout", serving=False),
+            ],
+            cell_types=("rollout",),
+        )
+
+        assert injected
+        assert set(injected) <= {"rollout-engine-0", "rollout-engine-1"}
+
     def test_a_serving_window_after_a_stable_alive_streak_allows_injection(self) -> None:
         """Normal rollout pauses must not erase the stale-health witness before the next serving window."""
         injected: list[str] = []
