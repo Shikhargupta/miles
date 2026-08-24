@@ -12,16 +12,29 @@ from tests.fast.launch_scripts.py_harness import (
 @pytest.mark.parametrize(
     ("overrides", "expected_size"),
     [
+        ({"hardware": "H200", "num_nodes": 8, "num_gpus_per_node": 4}, 4),
+        ({"hardware": "GB300", "num_nodes": 8, "num_gpus_per_node": 4}, 8),
         (
-            {"model_name": "DeepSeek-V4-Flash-FP8-4layer", "num_nodes": 1, "num_gpus_per_node": 4},
+            {
+                "hardware": "H200",
+                "model_name": "DeepSeek-V4-Flash-FP8-4layer",
+                "num_nodes": 1,
+                "num_gpus_per_node": 4,
+            },
             4,
         ),
-        ({"model_name": "DeepSeek-V4-Flash-FP8", "num_nodes": 8, "num_gpus_per_node": 4}, 8),
+        (
+            {
+                "hardware": "GB300",
+                "model_name": "DeepSeek-V4-Flash-FP8-4layer",
+                "num_nodes": 1,
+                "num_gpus_per_node": 4,
+            },
+            4,
+        ),
     ],
 )
-def test_four_gpu_node_rollout_topology_distinguishes_4layer_from_gb300(
-    monkeypatch, tmp_path, overrides, expected_size
-):
+def test_the_rollout_profile_follows_the_hardware(monkeypatch, tmp_path, overrides, expected_size):
     freeze_environment(monkeypatch)
     recording = install_command_recorder(monkeypatch)
     module = import_launch_script(REPO_ROOT / "scripts/run_deepseek_v4.py")
