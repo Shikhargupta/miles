@@ -188,7 +188,7 @@ def setup_model_and_optimizer(
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
-            use_gloo_process_groups=args.enable_gloo_process_groups,
+            use_gloo_process_groups=args.use_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif uses_multi_lora_operation_executor(args):
@@ -201,7 +201,7 @@ def setup_model_and_optimizer(
         optimizer = get_megatron_optimizer(
             config=config,
             model_chunks=model,
-            use_gloo_process_groups=args.enable_gloo_process_groups,
+            use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
     if args.stream_optimizer_state_to_disk:
@@ -542,9 +542,6 @@ def train_one_step(
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 
-            if args.enable_mtp_training:
-                forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
-
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
@@ -807,20 +804,20 @@ def train(
                 config.param_sync_func = param_sync_func
                 pre_hook_enabled = True
 
+        mtp_losses = None
         if args.enable_mtp_training:
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
-            mtp_loss_scale = 1 / num_microbatches[step_id]
+            mtp_loss_scale = 1.0 if args.calculate_per_token_loss else 1 / num_microbatches[step_id]
+            MTPLossLoggingHelper.reduce_loss_in_tracker()
             tracker = MTPLossLoggingHelper.tracker
-            mtp_losses = None
+            # here we assume only one mtp layer
             if "values" in tracker:
-                values = tracker["values"]
-                if (x := tracker.get("reduce_group")) is not None:
-                    torch.distributed.all_reduce(values, group=x)
-                if (x := tracker.get("avg_group")) is not None:
-                    torch.distributed.all_reduce(values, group=x, op=torch.distributed.ReduceOp.AVG)
-                # here we assume only one mtp layer
                 mtp_losses = (tracker["values"] * mtp_loss_scale).item()
+            elif "loss_values" in tracker:
+                mtp_losses = (tracker["loss_values"] * mtp_loss_scale).item()
+
+            if mtp_losses is not None:
                 MTPLossLoggingHelper.clean_loss_in_tracker()
 
                 # CI check: verify MTP loss is within expected bounds
