@@ -81,7 +81,10 @@ class TorchtitanTrainRayActor(TrainRayActor):
         self.hf_config = assets.hf_config
         self.tokenizer = assets.tokenizer
 
-        device = torch.device(f"cuda:{int(dist.get_rank() % args.num_gpus_per_node)}")
+        # TrainRayActor.init already selected this rank's device from LOCAL_RANK;
+        # deriving it from the global rank would assume a contiguous rank->GPU
+        # mapping, which Ray does not promise and multi-node breaks outright.
+        device = torch.device(torch.cuda.current_device())
         spec = resolve_model_spec(args)
         config = build_engine_config(args, spec)
         model_config, self.model = build_model(args, spec, config, parallel_dims, device)
