@@ -11,17 +11,19 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
-from miles.backends.training_utils.ci_utils import check_grad_norm
 from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import (
     aggregate_forward_results,
-    aggregate_train_losses,
     log_rollout_data,
-    log_train_step,
 )
-from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy
 from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.backends.training_utils.torch_native_loop import (
+    StepMetrics,
+    clip_and_report,
+    run_optimizer_steps,
+)
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -493,75 +495,16 @@ class FSDPTrainRayActor(TrainRayActor):
         log_rollout_data(rollout_id, self.args, rollout_data)
 
         with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
-            data_iterator.reset()
-            num_steps_per_rollout = len(num_microbatches)
-
-            for step_id in range(num_steps_per_rollout):
-                self.optimizer.zero_grad(set_to_none=True)
-
-                losses_reduced = []
-                for _ in self.prof.iterate_train_actor(
-                    tqdm(range(num_microbatches[step_id]), desc="actor_train", disable=dist.get_rank() != 0)
-                ):
-                    batch = get_batch(
-                        data_iterator,
-                        [
-                            "tokens",
-                            "loss_masks",
-                            "multimodal_train_inputs",
-                            "total_lengths",
-                            "response_lengths",
-                            "max_seq_lens",
-                            "log_probs",
-                            "advantages",
-                            "returns",
-                            "ref_log_probs",
-                            "rollout_log_probs",
-                        ],
-                        self.args.data_pad_size_multiplier,
-                        self.args.qkv_format,
-                        get_position_ids=True,
-                    )
-
-                    log_dict = self._train_step(
-                        batch=batch,
-                        step_id=step_id,
-                        num_microbatches=num_microbatches[step_id],
-                    )
-                    losses_reduced.append(log_dict)
-
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-                grad_norm = grad_norm.full_tensor().item()
-
-                self.optimizer.step()
-                self.lr_scheduler.step()
-
-                if self.args.ci_test:
-                    check_grad_norm(
-                        args=self.args,
-                        grad_norm=grad_norm,
-                        rollout_id=rollout_id,
-                        step_id=step_id,
-                        role="actor",
-                        rank=get_parallel_state().intra_dp_cp.rank,
-                    )
-
-                loss_dict = aggregate_train_losses(losses_reduced)
-
-                extra_metrics = {}
-                for param_group_id, param_group in enumerate(self.optimizer.param_groups):
-                    extra_metrics[f"lr-pg_{param_group_id}"] = param_group["lr"]
-
-                log_train_step(
-                    args=self.args,
-                    loss_dict=loss_dict,
-                    grad_norm=grad_norm,
-                    rollout_id=rollout_id,
-                    step_id=step_id,
-                    num_steps_per_rollout=num_steps_per_rollout,
-                    role="actor",
-                    extra_metrics=extra_metrics,
-                )
+            run_optimizer_steps(
+                self.args,
+                rollout_id,
+                data_iterator,
+                num_microbatches,
+                self._train_forward,
+                self._zero_grad,
+                self._apply_step,
+                profiler=self.prof,
+            )
 
         routing_replay.reset()
 
@@ -581,23 +524,31 @@ class FSDPTrainRayActor(TrainRayActor):
             self.ref_model.load_state_dict(actor_state)
             self.ref_model.cpu()
 
-    def _train_step(self, batch, step_id, num_microbatches):
+    def _train_forward(self, batch: dict) -> torch.Tensor:
+        """Grad-carrying forward for the training pass.
+
+        Keeps the routing-replay stage and precision context on the same
+        per-microbatch boundary they were on before, so a replay-enabled run sees
+        the identical sequence of stage transitions.
+        """
         model_args = self._get_model_inputs_args(batch)
         # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
         with routing_replay.stage(routing_replay.REPLAY_FORWARD), precision_forward_context(self.precision_policy):
-            logits = self.model(**model_args).logits
+            return self.model(**model_args).logits
 
-        loss, normalizer, log_dict = loss_function(
-            args=self.args,
-            batch=batch,
-            num_microbatches=num_microbatches,
-            logits=logits,
-            apply_megatron_loss_scaling=False,
+    def _zero_grad(self) -> None:
+        self.optimizer.zero_grad(set_to_none=True)
+
+    def _apply_step(self) -> StepMetrics:
+        grad_norm = clip_and_report(self.model.parameters(), self.args.clip_grad)
+        self.optimizer.step()
+        self.lr_scheduler.step()
+        return StepMetrics(
+            grad_norm=grad_norm,
+            extra_metrics={
+                f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)
+            },
         )
-
-        loss.backward()
-
-        return log_dict
 
     @timer
     def update_weights(self, info: "EnginesAndLock") -> None:  # type: ignore[override]
