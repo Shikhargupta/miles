@@ -9,10 +9,9 @@ from miles.utils.external_utils import command_utils
 from miles.utils.workers.types import ClusterBackend
 
 
-def note_injected(log: state.EventLog, cell_name: str, *, workers_hash: str = "generation-0") -> None:
+def note_injected(log: state.EventLog, cell_name: str) -> None:
     log.note_injection_attempt(
         cell_name=cell_name,
-        workers_hash=workers_hash,
         form_name="sigkill",
         succeeded=True,
     )

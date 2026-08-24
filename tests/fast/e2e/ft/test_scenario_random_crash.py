@@ -42,7 +42,6 @@ def _note_actor_injections(
         log.observe([_actor_cell(name)])
         log.note_injection_attempt(
             cell_name=name,
-            workers_hash="generation-0",
             form_name="inject_fault:sigkill",
             succeeded=True,
         )
@@ -55,7 +54,6 @@ def _note_form_attempts(
     for succeeded in outcomes:
         injector.event_log.note_injection_attempt(
             cell_name=name,
-            workers_hash="generation-0",
             form_name=form_name,
             succeeded=succeeded,
         )
@@ -64,7 +62,6 @@ def _note_form_attempts(
 def _note_rollout_injection(log: state.EventLog) -> None:
     log.note_injection_attempt(
         cell_name=_ROLLOUT_CELL_NAME,
-        workers_hash="generation-0",
         form_name="inject_fault:sigkill",
         succeeded=True,
     )
