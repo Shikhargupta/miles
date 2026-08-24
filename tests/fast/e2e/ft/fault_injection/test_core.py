@@ -93,7 +93,7 @@ def test_successive_injections_are_spaced_by_the_quiescence_gate() -> None:
 
 
 def test_a_kind_with_a_dead_replica_is_not_quiescent() -> None:
-    """A kill must be followed by an observed full recovery streak before that kind is due again."""
+    """A dead replica blocks injection until the current full roster has recovered."""
     injection_polls: list[int] = []
     stop_event = threading.Event()
     down = {"name": None, "polls_left": 0}
@@ -122,7 +122,7 @@ def test_a_kind_with_a_dead_replica_is_not_quiescent() -> None:
     )
 
     assert len(injection_polls) >= 2, injection_polls
-    assert injection_polls[1] - injection_polls[0] >= 3 + 2, injection_polls
+    assert injection_polls[1] - injection_polls[0] >= 4, injection_polls
 
 
 def test_a_vanished_replica_blocks_its_kind_even_when_the_survivors_serve() -> None:
