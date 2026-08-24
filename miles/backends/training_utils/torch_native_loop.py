@@ -13,6 +13,9 @@ Backends supply two callables and keep everything backend-specific inside them:
     multimodal inputs in here; torchtitan passes positions through to titan's
     attention. The loop never sees any of it.
 
+``zero_grad_fn()``
+    Clears gradients before each optimizer step's microbatches.
+
 ``step_fn() -> StepMetrics``
     Clips gradients, steps the optimizer and LR scheduler, and reports the
     grad norm plus any per-group LR metrics.
@@ -126,6 +129,7 @@ def run_optimizer_steps(
     data_iterator: DataIterator,
     num_microbatches: list[int],
     forward_fn: Callable[[dict], torch.Tensor],
+    zero_grad_fn: Callable[[], None],
     step_fn: Callable[[], StepMetrics],
     *,
     profiler,
@@ -141,6 +145,7 @@ def run_optimizer_steps(
     num_steps = len(num_microbatches)
 
     for step_id in range(num_steps):
+        zero_grad_fn()
         losses_reduced = []
         iterator = tqdm(range(num_microbatches[step_id]), desc=f"{role}_train", disable=dist.get_rank() != 0)
         for _ in profiler.iterate_train_actor(iterator):

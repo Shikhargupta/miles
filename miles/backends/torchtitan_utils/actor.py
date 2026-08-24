@@ -12,7 +12,6 @@ from argparse import Namespace
 
 import torch
 import torch.distributed as dist
-from tqdm import tqdm
 
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.model import (
@@ -23,17 +22,17 @@ from miles.backends.torchtitan_utils.model import (
 )
 from miles.backends.torchtitan_utils.parallel import build_parallel_dims, create_titan_parallel_state
 from miles.backends.torchtitan_utils.weight_bridge import TitanUpdateWeightFromTensor
-from miles.backends.training_utils.ci_utils import check_grad_norm
-from miles.backends.training_utils.data import get_batch, get_data_iterator, get_rollout_data
-from miles.backends.training_utils.log_utils import (
-    aggregate_forward_results,
-    aggregate_train_losses,
-    log_rollout_data,
-    log_train_step,
-)
-from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from miles.backends.training_utils.data import get_data_iterator, get_rollout_data
+from miles.backends.training_utils.log_utils import log_rollout_data
+from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.backends.training_utils.torch_native_loop import (
+    StepMetrics,
+    clip_and_report,
+    run_log_probs,
+    run_optimizer_steps,
+)
 from miles.backends.training_utils.weight_sync import connect_engines_if_stale, verify_engine_weight_version
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
@@ -45,22 +44,6 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
-
-_FORWARD_KEYS = [
-    "tokens",
-    "loss_masks",
-    "total_lengths",
-    "response_lengths",
-    "max_seq_lens",
-]
-_TRAIN_KEYS = _FORWARD_KEYS + [
-    "log_probs",
-    "advantages",
-    "returns",
-    "ref_log_probs",
-    "rollout_log_probs",
-]
-
 
 class TorchtitanTrainRayActor(TrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
@@ -170,105 +153,48 @@ class TorchtitanTrainRayActor(TrainRayActor):
         data_iterator = data_iterators[0]
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
 
-        rollout_data.update(self._compute_log_probs(data_iterator, num_microbatches))
+        rollout_data.update(
+            run_log_probs(
+                self.args,
+                data_iterator,
+                num_microbatches,
+                self._forward_logits,
+                profiler=self.prof,
+            )
+        )
         compute_advantages_and_returns(self.args, rollout_data)
         log_rollout_data(rollout_id, self.args, rollout_data)
 
         with timer("actor_train"):
-            self._run_optimizer_steps(rollout_id, data_iterator, num_microbatches)
+            run_optimizer_steps(
+                self.args,
+                rollout_id,
+                data_iterator,
+                num_microbatches,
+                self._forward_logits,
+                self._zero_grad,
+                self._apply_step,
+                profiler=self.prof,
+            )
 
         self.prof.step(rollout_id=rollout_id)
 
     def _forward_logits(self, batch: dict) -> torch.Tensor:
         """One model forward. ``positions`` restart per document, which is how
         torchtitan's masked attention backends identify document boundaries; the
-        sdpa backend ignores them beyond RoPE and applies a plain causal mask,
-        which is why a microbatch may hold only one document (see
+        sdpa backend uses them for RoPE only and applies a plain causal mask,
+        which is why a microbatch may hold just one document (see
         validate_torchtitan_args)."""
         return self.model(batch["tokens"], positions=batch["position_ids"])
 
-    @torch.no_grad()
-    def _compute_log_probs(self, data_iterator, num_microbatches: list[int]) -> dict:
-        forward_store = []
-        data_iterator.reset()
-        with timer("log_probs"):
-            for step_id in range(len(num_microbatches)):
-                for _ in self.prof.iterate_train_log_probs(
-                    tqdm(range(num_microbatches[step_id]), desc="log_probs", disable=dist.get_rank() != 0)
-                ):
-                    batch = get_batch(
-                        data_iterator,
-                        _FORWARD_KEYS,
-                        self.args.data_pad_size_multiplier,
-                        self.args.qkv_format,
-                        get_position_ids=True,
-                    )
-                    result = get_log_probs_and_entropy(
-                        logits=self._forward_logits(batch),
-                        args=self.args,
-                        unconcat_tokens=batch["unconcat_tokens"],
-                        total_lengths=batch["total_lengths"],
-                        response_lengths=batch["response_lengths"],
-                        with_entropy=True,
-                        max_seq_lens=batch.get("max_seq_lens"),
-                    )
-                    entry = {"log_probs": result["log_probs"]}
-                    if "entropy" in result:
-                        entry["entropy"] = result["entropy"]
-                    forward_store.append(entry)
-        return aggregate_forward_results(forward_store, data_iterator, self.args, "")
+    def _zero_grad(self) -> None:
+        self.optimizers.zero_grad(set_to_none=True)
 
-    def _run_optimizer_steps(self, rollout_id: int, data_iterator, num_microbatches: list[int]) -> None:
-        data_iterator.reset()
-        num_steps = len(num_microbatches)
-        for step_id in range(num_steps):
-            self.optimizers.zero_grad(set_to_none=True)
-            losses = []
-            for _ in self.prof.iterate_train_actor(
-                tqdm(range(num_microbatches[step_id]), desc="actor_train", disable=dist.get_rank() != 0)
-            ):
-                batch = get_batch(
-                    data_iterator,
-                    _TRAIN_KEYS,
-                    self.args.data_pad_size_multiplier,
-                    self.args.qkv_format,
-                    get_position_ids=True,
-                )
-                loss, _normalizer, log_dict = loss_function(
-                    args=self.args,
-                    batch=batch,
-                    num_microbatches=num_microbatches[step_id],
-                    logits=self._forward_logits(batch),
-                    apply_megatron_loss_scaling=False,
-                )
-                loss.backward()
-                losses.append(log_dict)
-
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-            grad_norm = grad_norm.full_tensor().item() if hasattr(grad_norm, "full_tensor") else grad_norm.item()
-            self.optimizers.step()
-            self.lr_schedulers.step()
-
-            if self.args.ci_test:
-                check_grad_norm(
-                    args=self.args,
-                    grad_norm=grad_norm,
-                    rollout_id=rollout_id,
-                    step_id=step_id,
-                    role="actor",
-                    rank=get_parallel_state().intra_dp_cp.rank,
-                )
-
-            log_train_step(
-                args=self.args,
-                loss_dict=aggregate_train_losses(losses),
-                grad_norm=grad_norm,
-                rollout_id=rollout_id,
-                step_id=step_id,
-                num_steps_per_rollout=num_steps,
-                role="actor",
-                extra_metrics=self.lr_schedulers.get_metrics(),
-            )
+    def _apply_step(self) -> StepMetrics:
+        grad_norm = clip_and_report(self.model.parameters(), self.args.clip_grad)
+        self.optimizers.step()
+        self.lr_schedulers.step()
+        return StepMetrics(grad_norm=grad_norm, extra_metrics=self.lr_schedulers.get_metrics())
 
     @timer
     def update_weights(self, info) -> None:  # type: ignore[override]
