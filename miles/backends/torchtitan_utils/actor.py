@@ -46,6 +46,7 @@ from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
 
+
 class TorchtitanTrainRayActor(TrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(

@@ -545,9 +545,7 @@ class FSDPTrainRayActor(TrainRayActor):
         self.lr_scheduler.step()
         return StepMetrics(
             grad_norm=grad_norm,
-            extra_metrics={
-                f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)
-            },
+            extra_metrics={f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)},
         )
 
     @timer
