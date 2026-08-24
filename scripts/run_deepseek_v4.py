@@ -554,12 +554,10 @@ def _train(args: ScriptArgs):
         sglang_tp_size = 32
         sglang_dp_size = 32
         sglang_ep_size = 32
-    elif _hardware(args) in ("GB200", "GB300") and args.rollout_num_gpus >= 8:
-        # Grace, use tp=8. tp=4 causes CPU OOM when colocate
-        sglang_world_size = 8
-        sglang_tp_size = 8
+    elif _hardware(args) in ("GB200", "GB300"):
+        # Grace, prefer tp=8. tp=4 causes CPU OOM when colocate
+        sglang_world_size = sglang_tp_size = sglang_ep_size = min(args.rollout_num_gpus, 8)
         sglang_dp_size = 1
-        sglang_ep_size = 8
     else:
         sglang_world_size = 4
         sglang_tp_size = 4
