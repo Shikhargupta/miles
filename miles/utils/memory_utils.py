@@ -15,6 +15,25 @@ def clear_memory(clear_host_memory: bool = False):
         torch._C._host_emptyCache()
 
 
+@torch.no_grad()
+def move_optimizer_state(optimizers, device) -> None:
+    """Move every optimizer state tensor to ``device``.
+
+    Takes an iterable so a backend can pass its one optimizer or the several a
+    container holds. Walking ``state.values()`` rather than indexing ``state``
+    per parameter matters: it is a defaultdict, so the per-parameter form
+    inserts an empty entry for every parameter that has no state yet.
+
+    ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
+    """
+    for optimizer in optimizers:
+        for state in optimizer.state.values():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(device, non_blocking=True)
+    torch.cuda.synchronize()
+
+
 def available_memory():
     device = torch.cuda.current_device()
     free, total = torch.cuda.mem_get_info(device)

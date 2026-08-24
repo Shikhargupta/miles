@@ -38,7 +38,7 @@ from miles.backends.training_utils.weight_sync import connect_engines_if_stale, 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import clear_memory, move_optimizer_state, print_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -113,7 +113,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
             return
         print_memory("before offload model")
         self.model.cpu()
-        _move_optimizer_state(self.optimizers, "cpu")
+        move_optimizer_state(self.optimizers.optimizers, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after offload model")
@@ -123,7 +123,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
         self.model.cuda()
-        _move_optimizer_state(self.optimizers, "cuda")
+        move_optimizer_state(self.optimizers.optimizers, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 
@@ -216,13 +216,3 @@ class TorchtitanTrainRayActor(TrainRayActor):
 
     def _get_parallel_config(self):
         return self.train_parallel_config
-
-
-@torch.no_grad()
-def _move_optimizer_state(optimizers, device: str) -> None:
-    for optimizer in optimizers.optimizers:
-        for state in optimizer.state.values():
-            for key, value in state.items():
-                if isinstance(value, torch.Tensor):
-                    state[key] = value.to(device, non_blocking=True)
-    torch.cuda.synchronize()

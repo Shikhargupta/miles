@@ -30,7 +30,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import clear_memory, move_optimizer_state, print_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -333,7 +333,7 @@ class FSDPTrainRayActor(TrainRayActor):
         print_memory("before offload model")
 
         self.model.cpu()
-        move_torch_optimizer(self.optimizer, "cpu")
+        move_optimizer_state([self.optimizer], "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after offload model")
@@ -345,7 +345,7 @@ class FSDPTrainRayActor(TrainRayActor):
             return
 
         self.model.cuda()
-        move_torch_optimizer(self.optimizer, "cuda")
+        move_optimizer_state([self.optimizer], "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 
@@ -619,21 +619,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
 
 @torch.no_grad()
-def move_torch_optimizer(optimizer, device):
-    """ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py"""
-    if not optimizer.state:
-        return
-
-    for param_group in optimizer.param_groups:
-        for param in param_group["params"]:
-            state = optimizer.state[param]
-            for key, value in state.items():
-                if isinstance(value, torch.Tensor):
-                    state[key] = value.to(device, non_blocking=True)
-
-    torch.cuda.synchronize()
-
-
 def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
     """Apply FSDP2 (fully_shard) to the model.
 
