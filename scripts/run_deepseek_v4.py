@@ -454,33 +454,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     )
 
 
-def _get_sglang_parallel_config(args: ScriptArgs) -> tuple[int, int, int, int]:
-    if args.model_name == "DeepSeek-V4-Pro-FP8":
-        config = (32, 32, 32, 32)
-    elif args.num_gpus_per_node == 4 and args.rollout_num_gpus >= 8:
-        # Span TP8 across GB300 nodes to avoid the colocated TP4 host-memory OOM.
-        config = (8, 8, 1, 8)
-    else:
-        config = (4, 4, 1, 4)
-
-    world_size, tp_size, dp_size, ep_size = config
-    if world_size > args.rollout_num_gpus:
-        raise ValueError(
-            f"SGLang rollout_num_gpus_per_engine={world_size} exceeds rollout_num_gpus={args.rollout_num_gpus}."
-        )
-    if args.rollout_num_gpus % world_size != 0:
-        raise ValueError(
-            f"rollout_num_gpus={args.rollout_num_gpus} must be divisible by "
-            f"SGLang rollout_num_gpus_per_engine={world_size}."
-        )
-    if tp_size > world_size or ep_size > world_size:
-        raise ValueError(
-            f"SGLang tp_size={tp_size} and ep_size={ep_size} must not exceed "
-            f"rollout_num_gpus_per_engine={world_size}."
-        )
-    return config
-
-
 def _train(args: ScriptArgs):
     if args.train_mxfp8 or args.rollout_mxfp8:
         assert _is_blackwell(args), "MXFP8 requires Blackwell (B200/B300/GB200/GB300)"
@@ -587,7 +560,24 @@ def _train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--use-precision-aware-optimizer " "--overlap-cpu-optimizer-d2h-h2d "
         )
 
-    sglang_world_size, sglang_tp_size, sglang_dp_size, sglang_ep_size = _get_sglang_parallel_config(args)
+    is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
+    is_gb300_profile = args.actor_num_gpus_per_node == 4 and not is_4layer
+    if args.model_name == "DeepSeek-V4-Pro-FP8":
+        sglang_world_size = 32
+        sglang_tp_size = 32
+        sglang_dp_size = 32
+        sglang_ep_size = 32
+    elif is_gb300_profile:
+        # GB300, use tp=8. tp=4 causes CPU OOM when colocate
+        sglang_world_size = 8
+        sglang_tp_size = 8
+        sglang_dp_size = 1
+        sglang_ep_size = 8
+    else:
+        sglang_world_size = 4
+        sglang_tp_size = 4
+        sglang_dp_size = 1
+        sglang_ep_size = 4
     # MXFP8 rollout dense GEMM uses the cutlass backend and routed MoE uses
     # FlashInfer's TRT-LLM kernel (mirrors the pre-rebase MXFP8 recipe).
     if args.rollout_mxfp8:
