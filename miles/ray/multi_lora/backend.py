@@ -36,6 +36,8 @@ class MultiLoraOperationBackend:
             gap_timeout=getattr(args, "tinker_operation_gap_timeout", 600.0),
             claimed_ttl=getattr(args, "tinker_operation_claimed_ttl", 1800.0),
         )
+        # Ledger lifetime rides the registry's completed ring: ring eviction purges the tenant's ledger state.
+        self.registry.on_completed_evicted = self.operations.drop_tenant
         self.gradient_windows = GradientWindowTracker()
         self.residency = FixedSlotResidency(self.registry)
         self.router_url = router_url.rstrip("/")
