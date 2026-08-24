@@ -367,13 +367,13 @@ class TestUpdateWeights:
         rollout_executor.set_weight_version.assert_not_awaited()
 
 
-def _make_trainer_handle(*, initialized: bool = False) -> MagicMock:
+def _make_trainer_handle(*, initialized: bool = False, deployment_identity: DeploymentIdentity | None = None) -> MagicMock:
     handle = MagicMock()
     handle.is_initialized = AsyncMock(return_value=initialized)
     handle.wait_idle = AsyncMock(return_value=None)
     handle.init = AsyncMock(return_value=[0])
     handle.load_state = AsyncMock(return_value=[0])
-    handle.get_deployment_identity = AsyncMock(return_value=None)
+    handle.get_deployment_identity = AsyncMock(return_value=deployment_identity)
     handle.get_train_parallel_config = AsyncMock(return_value=None)
     return handle
 
@@ -577,7 +577,9 @@ class TestTakeOverTrainers:
         discarded = self._recorded_discards(monkeypatch)
         args = self._args(requested_load=str(tmp_path / "ckpt"))
 
-        assert await take_over_trainers(args, handles={"alpha-actor": _make_trainer_handle(initialized=True)}) is True
+        handle = _make_trainer_handle(initialized=True, deployment_identity=self._identity())
+
+        assert await take_over_trainers(args, handles={"alpha-actor": handle}) is True
 
         assert discarded == [args]
 
@@ -591,7 +593,10 @@ class TestTakeOverTrainers:
 
         assert (
             await take_over_trainers(
-                self._args(requested_load=str(ckpt)), handles={"alpha-actor": _make_trainer_handle(initialized=True)}
+                self._args(requested_load=str(ckpt)),
+                handles={
+                    "alpha-actor": _make_trainer_handle(initialized=True, deployment_identity=self._identity())
+                },
             )
             is True
         )
@@ -605,7 +610,8 @@ class TestTakeOverTrainers:
 
         assert (
             await take_over_trainers(
-                self._args(requested_load=str(tmp_path / "ckpt")), handles={"alpha-actor": _make_trainer_handle()}
+                self._args(requested_load=str(tmp_path / "ckpt")),
+                handles={"alpha-actor": _make_trainer_handle(deployment_identity=self._identity())},
             )
             is False
         )
