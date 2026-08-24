@@ -28,6 +28,8 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_tensor impor
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
+# the engine handshake and its barriers live in the shared module now
+_WS_MODULE = "miles.backends.training_utils.weight_sync"
 _MIXIN_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin"
 _BROADCAST_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast"
 
@@ -179,12 +181,12 @@ class TestSendHfParamsEmptyLoraDetection:
 class TestUpdateWeightsZeroChunks:
     """When the weight iterator yields nothing for LoRA, raise instead of silently succeeding."""
 
-    @patch("miles.backends.megatron_utils.update_weight.common.ray")
-    @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
+    @patch(f"{_WS_MODULE}.get_gloo_group", return_value=MagicMock())
+    @patch(f"{_WS_MODULE}.dist")
     @patch(f"{_UW_MODULE}.ray")
     @patch(f"{_UW_MODULE}.dist")
     @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_raises_on_zero_lora_chunks(self, mock_iter_base, mock_dist, mock_ray, mock_gloo, mock_common_ray):
+    def test_raises_on_zero_lora_chunks(self, mock_iter_base, mock_dist, mock_ray, mock_ws_dist, mock_gloo):
         from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
         mock_dist.get_world_size.return_value = 1
@@ -210,8 +212,8 @@ class TestUpdateWeightsZeroChunks:
         with pytest.raises(RuntimeError, match="zero chunks"):
             updater.update_weights()
 
-    @patch("miles.backends.megatron_utils.update_weight.common.ray")
-    @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
+    @patch(f"{_WS_MODULE}.get_gloo_group", return_value=MagicMock())
+    @patch(f"{_WS_MODULE}.dist")
     @patch(f"{_UW_MODULE}.ray")
     @patch(f"{_UW_MODULE}.dist")
     @patch(f"{_UW_MODULE}.HfWeightIteratorBase")

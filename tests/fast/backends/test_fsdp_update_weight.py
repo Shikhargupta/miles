@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import torch
 
 from miles.backends.fsdp_utils import update_weight_utils
+from miles.backends.training_utils import weight_sync
 
 
 class _RemoteMethod:
@@ -34,7 +35,7 @@ class _SessionEngine:
         self.calls = []
         self.submissions = []
         self.session_open = False
-        self.pause_generation = self._remote(lambda: self._record("pause_generation"), "pause_generation")
+        self.pause_generation = self._remote(lambda **_kw: self._record("pause_generation"), "pause_generation")
         self.flush_cache = self._remote(lambda: self._record("flush_cache"), "flush_cache")
         self.begin_weight_update = self._remote(self._begin_weight_update, "begin_weight_update")
         self.update_weights_from_tensor = self._remote(
@@ -51,7 +52,7 @@ class _SessionEngine:
         self.calls.append(name)
         self.events.append(f"{self.name}.{name}")
 
-    def _begin_weight_update(self):
+    def _begin_weight_update(self, **_kwargs):
         self._record("begin_weight_update")
         assert not self.session_open
         self.session_open = True
@@ -94,7 +95,7 @@ def _resolve_refs(value):
 
 def _make_updater(model, rollout_engines):
     updater = _SessionAwareUpdater(
-        Namespace(update_weight_buffer_size=1024),
+        Namespace(update_weight_buffer_size=1024, pause_generation_mode="retract"),
         SimpleNamespace(config=SimpleNamespace(model_type=""), state_dict=lambda: model),
     )
     updater.connect_rollout_engines(rollout_engines, None)
@@ -106,10 +107,12 @@ def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
     engines = [_SessionEngine("engine0", events), _SessionEngine("engine1", events)]
     updater = _make_updater({"weight": torch.ones(1)}, engines)
 
+    monkeypatch.setattr(weight_sync.ray, "get", _resolve_refs)
+    monkeypatch.setattr(weight_sync.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(weight_sync.dist, "barrier", lambda **_kwargs: events.append("barrier"))
+    monkeypatch.setattr(weight_sync, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
-    monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
     updater.update_weights()
@@ -139,10 +142,12 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
     engine = _SessionEngine("engine0", events)
     updater = _make_updater({}, [engine])
 
+    monkeypatch.setattr(weight_sync.ray, "get", _resolve_refs)
+    monkeypatch.setattr(weight_sync.dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(weight_sync.dist, "barrier", lambda **_kwargs: events.append("barrier"))
+    monkeypatch.setattr(weight_sync, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 1)
-    monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
-    monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
 
     updater.update_weights()
 
@@ -166,10 +171,12 @@ def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
         "bf16_weight": torch.bfloat16,
     }
 
+    monkeypatch.setattr(weight_sync.ray, "get", _resolve_refs)
+    monkeypatch.setattr(weight_sync.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(weight_sync.dist, "barrier", lambda **_kwargs: None)
+    monkeypatch.setattr(weight_sync, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: None)
-    monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
     monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
 
     updater.update_weights()
