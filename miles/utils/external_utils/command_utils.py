@@ -160,8 +160,14 @@ def execute_train(
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
-    train_backend_fsdp = "--train-backend fsdp" in train_args
-    assert train_backend_fsdp == (megatron_model_type is None)
+    # Keyed on "is this Megatron", not "is this not FSDP": a Megatron checkpoint
+    # conversion and Megatron's TP-overlap env var belong to that backend
+    # specifically, and there are more than two backends.
+    train_backend_megatron = "--train-backend fsdp" not in train_args and "--train-backend torchtitan" not in train_args
+    assert train_backend_megatron == (megatron_model_type is not None), (
+        f"megatron_model_type must be set for a Megatron run and omitted otherwise "
+        f"(megatron={train_backend_megatron}, megatron_model_type={megatron_model_type!r})"
+    )
 
     exec_command_cpu(
         "pkill -9 sglang; "
@@ -193,14 +199,9 @@ def execute_train(
     runtime_env_vars = {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
-        # If setting this in FSDP, the computation communication overlapping may have issues
-        **(
-            {}
-            if train_backend_fsdp
-            else {
-                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            }
-        ),
+        # Megatron needs this for its TP overlap; on the torch-native backends it
+        # serializes copy engines and hurts compute/communication overlap.
+        **({"CUDA_DEVICE_MAX_CONNECTIONS": "1"} if train_backend_megatron else {}),
         # a get() default is evaluated eagerly, which would probe even when already decided
         "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(check_has_nvlink())),
         **{

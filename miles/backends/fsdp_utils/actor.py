@@ -20,6 +20,7 @@ from miles.backends.training_utils.log_utils import (
     log_train_step,
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
@@ -27,9 +28,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -106,15 +105,11 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.prof = TrainProfiler(args)
 
-        for i in range(dist.get_world_size()):
-            if i == dist.get_rank():
-                self.hf_config = load_hf_config(self.args.hf_checkpoint)
-                self.tokenizer = load_tokenizer(
-                    self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
-                )
-                if hasattr(self.hf_config, "vision_config"):
-                    self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
-            dist.barrier(group=get_gloo_group())
+        assets = load_model_assets(self.args, with_processor=True)
+        self.hf_config = assets.hf_config
+        self.tokenizer = assets.tokenizer
+        if assets.processor is not None:
+            self.processor = assets.processor
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
         try:

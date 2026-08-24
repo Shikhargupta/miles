@@ -22,10 +22,8 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
-from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
@@ -39,6 +37,7 @@ from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.data import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
+from ..training_utils.model_assets import load_model_assets
 from ..training_utils.loss import (
     compute_advantages_and_returns,
     get_log_probs_and_entropy,
@@ -138,14 +137,9 @@ class MegatronTrainRayActor(TrainRayActor):
             )
         self.prof = TrainProfiler(args)
 
-        # read config and tokenizer serialized to prevent concurrent writing bug.
-        for i in range(dist.get_world_size()):
-            if i == dist.get_rank():
-                self.hf_config = load_hf_config(args.hf_checkpoint)
-                self.tokenizer = load_tokenizer(
-                    self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
-                )
-            dist.barrier(group=get_gloo_group())
+        assets = load_model_assets(args)
+        self.hf_config = assets.hf_config
+        self.tokenizer = assets.tokenizer
 
         self.train_parallel_config = (
             {}

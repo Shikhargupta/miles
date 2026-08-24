@@ -32,14 +32,13 @@ from miles.backends.training_utils.log_utils import (
     log_train_step,
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.weight_sync import connect_engines_if_stale, verify_engine_weight_version
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.processing_utils import load_tokenizer
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -94,14 +93,9 @@ class TorchtitanTrainRayActor(TrainRayActor):
             init_tracking(args, primary=False)
         self.prof = TrainProfiler(args)
 
-        # serialized so concurrent ranks do not race on the HF cache
-        for i in range(dist.get_world_size()):
-            if i == dist.get_rank():
-                self.hf_config = load_hf_config(args.hf_checkpoint)
-                self.tokenizer = load_tokenizer(
-                    args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
-                )
-            dist.barrier(group=get_gloo_group())
+        assets = load_model_assets(args)
+        self.hf_config = assets.hf_config
+        self.tokenizer = assets.tokenizer
 
         device = torch.device(f"cuda:{int(dist.get_rank() % args.num_gpus_per_node)}")
         spec = resolve_model_spec(args)
