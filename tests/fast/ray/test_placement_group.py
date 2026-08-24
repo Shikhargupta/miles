@@ -367,7 +367,9 @@ class TestUpdateWeights:
         rollout_executor.set_weight_version.assert_not_awaited()
 
 
-def _make_trainer_handle(*, initialized: bool = False, deployment_identity: DeploymentIdentity | None = None) -> MagicMock:
+def _make_trainer_handle(
+    *, initialized: bool = False, deployment_identity: DeploymentIdentity | None = None
+) -> MagicMock:
     handle = MagicMock()
     handle.is_initialized = AsyncMock(return_value=initialized)
     handle.wait_idle = AsyncMock(return_value=None)
@@ -594,9 +596,7 @@ class TestTakeOverTrainers:
         assert (
             await take_over_trainers(
                 self._args(requested_load=str(ckpt)),
-                handles={
-                    "alpha-actor": _make_trainer_handle(initialized=True, deployment_identity=self._identity())
-                },
+                handles={"alpha-actor": _make_trainer_handle(initialized=True, deployment_identity=self._identity())},
             )
             is True
         )
