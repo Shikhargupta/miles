@@ -4,6 +4,7 @@ import dataclasses
 import gc
 import logging
 import math
+import os
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -178,6 +179,10 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if args.stream_optimizer_state_to_disk:
+            from miles_plugins.optimizers.muon_disk_state import install as install_muon_disk_state
+
+            install_muon_disk_state(os.path.join(args.offload_train_disk_dir, "optimizer_state"))
         if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
             if is_first_replica_megatron_main_rank():
                 logger.info(
@@ -201,7 +206,8 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
-    if args.stream_optimizer_state_to_disk:
+    if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
+        # Muon uses the chunked offloader installed above; this store is DistOpt-only.
         from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming
 
         setup_optimizer_state_streaming(args, optimizer)
