@@ -24,7 +24,7 @@ from miles.rollout.session.v2.session_state import (
     position_for_request,
     prepare_pretokenized,
 )
-from miles.rollout.session.v2.utils import NODE_SPEC_INFOS_METADATA_KEY, build_leaf_material, tree_metadata
+from miles.rollout.session.v2.utils import NODE_ADDITIVE_METRICS_METADATA_KEY, build_leaf_material, tree_metadata
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class SessionCoreV2(SessionCore):
                 )
             samples = self.sample_postprocessor(picked, metadata)
             for sample in samples:
-                sample.metadata.pop(NODE_SPEC_INFOS_METADATA_KEY, None)
+                sample.metadata.pop(NODE_ADDITIVE_METRICS_METADATA_KEY, None)
         except Exception as exc:
             body = (
                 f"session sample hook failed (picker={self.args.session_sample_picker_path}, "

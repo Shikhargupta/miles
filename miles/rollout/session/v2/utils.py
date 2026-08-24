@@ -1,5 +1,6 @@
 import logging
 from argparse import Namespace
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
@@ -14,7 +15,57 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-NODE_SPEC_INFOS_METADATA_KEY = "_node_spec_infos"
+NODE_ADDITIVE_METRICS_METADATA_KEY = "_node_additive_metrics"
+
+
+@dataclass(frozen=True)
+class AdditiveNodeMetrics:
+    """Explicit registry of metrics attributed exactly once per tree node."""
+
+    spec_info: Sample.SpecInfo = field(default_factory=Sample.SpecInfo)
+    prefix_cache_info: Sample.PrefixCacheInfo = field(default_factory=Sample.PrefixCacheInfo)
+
+    @classmethod
+    def from_sample(cls, sample: Sample) -> "AdditiveNodeMetrics":
+        return cls(**{metric.name: getattr(sample, metric.name) for metric in fields(cls)})
+
+    @classmethod
+    def from_dict(cls, data: dict[str, dict[str, int]]) -> "AdditiveNodeMetrics":
+        empty = cls()
+        metric_names = {metric.name for metric in fields(cls)}
+        assert set(data) == metric_names, f"node metric mismatch: expected {metric_names}, got {set(data)}"
+
+        values = {}
+        for metric in fields(cls):
+            metric_type = type(getattr(empty, metric.name))
+            counter_names = {counter.name for counter in fields(metric_type)}
+            counters = data[metric.name]
+            assert (
+                set(counters) == counter_names
+            ), f"{metric.name} counter mismatch: expected {counter_names}, got {set(counters)}"
+            values[metric.name] = metric_type(**counters)
+        return cls(**values)
+
+    def to_dict(self) -> dict[str, dict[str, int]]:
+        return {metric.name: getattr(self, metric.name).to_dict() for metric in fields(self)}
+
+    def __add__(self, other: "AdditiveNodeMetrics") -> "AdditiveNodeMetrics":
+        values = {}
+        for metric in fields(self):
+            left = getattr(self, metric.name)
+            right = getattr(other, metric.name)
+            assert type(left) is type(right)
+            values[metric.name] = type(left)(
+                **{
+                    counter.name: getattr(left, counter.name) + getattr(right, counter.name)
+                    for counter in fields(left)
+                }
+            )
+        return type(self)(**values)
+
+    def assign_to(self, sample: Sample) -> None:
+        for metric in fields(self):
+            setattr(sample, metric.name, getattr(self, metric.name))
 
 
 def tree_metadata(state: SessionStateV2) -> dict:
@@ -81,14 +132,16 @@ def build_leaf_material(
             sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer)
         else:
             sample = merge_samples(turns, registry.tokenizer)
+        # `merge_samples` may stop before the last turn on a status or replay gap;
+        # keep counters only for the source-turn prefix represented by `sample`.
         merged_turn_indexes = [i for i, turn in enumerate(turns) if turn.tokens == sample.tokens]
         assert merged_turn_indexes, "merged sample must end at one of its source turns"
         merged_turn_count = merged_turn_indexes[0] + 1
         tools = path[-1].record.request.get("tools")
         flat: dict[str, Any] = {
             "accumulated_token_ids": list(leaf.token_ids),
-            NODE_SPEC_INFOS_METADATA_KEY: [
-                {"node_id": node.seq, "spec_info": turn.spec_info.to_dict()}
+            NODE_ADDITIVE_METRICS_METADATA_KEY: [
+                {"node_id": node.seq, "metrics": AdditiveNodeMetrics.from_sample(turn).to_dict()}
                 for node, turn in zip(path[:merged_turn_count], turns[:merged_turn_count], strict=True)
             ],
             "leaf": {

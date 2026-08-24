@@ -18,6 +18,7 @@ import json
 import logging
 import uuid
 from copy import deepcopy
+from dataclasses import fields
 from types import SimpleNamespace
 
 import numpy as np
@@ -32,6 +33,7 @@ from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_sampl
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
 from miles.rollout.session.v2.session_state import SessionRegistryV2
+from miles.rollout.session.v2.utils import AdditiveNodeMetrics
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.misc import function_registry
 from miles.utils.processing_utils import load_tokenizer
@@ -423,12 +425,12 @@ async def test_broken_chain_returns_422_and_server_survives(core):
 # ── the tree data plane: branches, trims, exactly-once, rewards ──
 
 
-def _single_turn_record(prompt_ids, output_ids, weight_version="w1", spec_info=None):
+def _single_turn_record(prompt_ids, output_ids, weight_version="w1", spec_info=None, cached_tokens=0):
     record = _make_record(
         prompt_token_ids=list(prompt_ids),
         output_token_ids=list(output_ids),
         output_log_probs=[-0.1] * len(output_ids),
-        cached_tokens=0,
+        cached_tokens=cached_tokens,
         prompt_tokens=len(prompt_ids),
         weight_version=weight_version,
         routed_experts=_r3_b64(len(prompt_ids) + len(output_ids) - 1, seed=0),
@@ -533,7 +535,21 @@ async def test_deep_abandoned_branch_survives_and_masks_shared_prefix(core, traj
     assert [sample.metadata["reward"] for sample in reply.samples] == [trajectory_reward, trajectory_reward]
 
 
-async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
+def test_additive_node_metrics_registry_is_explicit():
+    assert {metric.name for metric in fields(AdditiveNodeMetrics)} == {"spec_info", "prefix_cache_info"}
+    assert {counter.name for counter in fields(Sample.SpecInfo)} == {
+        "spec_num_correct_drafts",
+        "spec_num_proposed_drafts",
+        "spec_verify_ct",
+        "completion_tokens",
+    }
+    assert {counter.name for counter in fields(Sample.PrefixCacheInfo)} == {
+        "cached_tokens",
+        "total_prompt_tokens",
+    }
+
+
+async def test_additive_node_metrics_count_each_kept_tree_node_once(core, monkeypatch):
     monkeypatch.setattr(core.args, "sglang_speculative_algorithm", "EAGLE")
     sid, state = await _fresh_state(core)
     root = _fabricate_node(
@@ -543,6 +559,7 @@ async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
             [1, 2, 3],
             [10, 11],
             spec_info={"spec_num_correct_drafts": 9, "spec_num_proposed_drafts": 10, "spec_verify_ct": 2},
+            cached_tokens=2,
         ),
         [1, 2, 3, 10, 11],
         completion_span=(3, 5),
@@ -554,6 +571,7 @@ async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
             [1, 2, 3, 10, 11, 19],
             [29],
             spec_info={"spec_num_correct_drafts": 100, "spec_num_proposed_drafts": 100, "spec_verify_ct": 1},
+            cached_tokens=6,
         ),
         [1, 2, 3, 10, 11, 19, 29],
         completion_span=(6, 7),
@@ -561,7 +579,7 @@ async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
     early_mid = _fabricate_node(
         state,
         root,
-        _single_turn_record([1, 2, 3, 10, 11, 20], [30]),
+        _single_turn_record([1, 2, 3, 10, 11, 20], [30], cached_tokens=4),
         [1, 2, 3, 10, 11, 20, 30],
         completion_span=(6, 7),
     )
@@ -572,6 +590,7 @@ async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
             [1, 2, 3, 10, 11, 20, 30, 40],
             [50],
             spec_info={"spec_num_correct_drafts": 0, "spec_num_proposed_drafts": 10, "spec_verify_ct": 1},
+            cached_tokens=5,
         ),
         [1, 2, 3, 10, 11, 20, 30, 40, 50],
         completion_span=(8, 9),
@@ -584,6 +603,7 @@ async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
             [1, 2, 3, 10, 11, 21],
             [31],
             spec_info={"spec_num_correct_drafts": 0, "spec_num_proposed_drafts": 10, "spec_verify_ct": 1},
+            cached_tokens=3,
         ),
         [1, 2, 3, 10, 11, 21, 31],
         completion_span=(6, 7),
@@ -612,9 +632,14 @@ async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
         "spec_verify_ct": 1,
         "completion_tokens": 1,
     }
+    assert early_sample.prefix_cache_info.to_dict() == {"cached_tokens": 11, "total_prompt_tokens": 17}
+    assert late_sample.prefix_cache_info.to_dict() == {"cached_tokens": 3, "total_prompt_tokens": 6}
     assert sum(sample.spec_info.spec_num_correct_drafts for sample in reply.samples) == 9
     assert sum(sample.spec_info.spec_num_proposed_drafts for sample in reply.samples) == 30
-    assert all("_node_spec_infos" not in sample.metadata for sample in reply.samples)
+    assert sum(sample.prefix_cache_info.cached_tokens for sample in reply.samples) == 14
+    assert sum(sample.prefix_cache_info.total_prompt_tokens for sample in reply.samples) == 23
+    assert b"_node_additive_metrics" not in payload
+    assert all("_node_additive_metrics" not in sample.metadata for sample in reply.samples)
 
 
 async def test_picker_warns_and_trims_longer_superseded_leaf(core, caplog):
@@ -755,6 +780,10 @@ def _reverse_picker(leaf_samples, session_metadata):
     return list(reversed(leaf_samples))
 
 
+def _pass_through_postprocessor(leaf_samples, session_metadata):
+    return leaf_samples
+
+
 def _duplicate_picker(leaf_samples, session_metadata):
     return [leaf_samples[0], leaf_samples[0]]
 
@@ -824,6 +853,8 @@ async def test_custom_picker_keeps_abandoned_leaf(core):
         # owns the shared root completion; the retry masks it.
         assert abandoned.loss_mask[:2] == [1, 1]
         assert retry.loss_mask[:2] == [0, 0]
+        assert abandoned.prefix_cache_info.total_prompt_tokens == 9
+        assert retry.prefix_cache_info.total_prompt_tokens == 6
 
 
 async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):
@@ -836,6 +867,18 @@ async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):
         retry, abandoned = reply.samples
         assert retry.loss_mask[:2] == [0, 0]
         assert abandoned.loss_mask[:2] == [1, 1]
+        assert retry.prefix_cache_info.total_prompt_tokens == 6
+        assert abandoned.prefix_cache_info.total_prompt_tokens == 9
+
+
+async def test_custom_postprocessor_private_node_metrics_do_not_cross_wire(core):
+    with function_registry.temporary("test_hooks.pass_through", _pass_through_postprocessor):
+        hooked = _build_core_with_hooks(session_sample_postprocessor_path="test_hooks.pass_through")
+        sid = await _retry_shaped_session(hooked)
+        response = await hooked.collect_samples(sid, max_seq_len=None)
+        assert response.status_code == 200
+        payload = bytes(response.body)
+        assert b"_node_additive_metrics" not in payload
 
 
 async def test_hook_exception_maps_to_422_with_identity(core):
