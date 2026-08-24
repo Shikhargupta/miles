@@ -52,7 +52,7 @@ class TestBuildTrainArgs:
             "--num-rollout": str(args.num_rollout),
             "--rollout-batch-size": "8",
             "--n-samples-per-prompt": "4",
-            "--rollout-max-response-len": "1024",
+            "--rollout-max-response-len": "250",
             "--rollout-temperature": "0.8",
             "--global-batch-size": "32",
             "--pause-generation-mode": "in_place",

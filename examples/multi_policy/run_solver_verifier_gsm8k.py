@@ -108,7 +108,7 @@ def build_train_args(
         f"--num-rollout {args.num_rollout} "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 4 "
-        "--rollout-max-response-len 1024 "
+        "--rollout-max-response-len 250 "
         "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
         # retract (default) can deadlock flush_cache in fully_async under load

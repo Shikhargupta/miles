@@ -20,6 +20,12 @@ from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 class TrainRewardBounds(NamedTuple):
     initial_max: float
     final_min: float
+    min_growth: float = 0.0
+
+
+class RewardWindowMeans(NamedTuple):
+    initial: float
+    final: float
 
 
 TRAIN_REWARD_BOUNDS = {
@@ -106,8 +112,9 @@ def assert_every_policy_reported_reward_in_bounds(events_dir: Path, *, bounds: d
             f"{model_id!r} never reported a training reward and nothing about its learning can be checked"
         )
 
-        initial = rewards[0]
-        final = statistics.mean(rewards[-max(1, len(rewards) // 3) :])
+        windows = _compute_reward_window_means(rewards)
+        initial = windows.initial
+        final = windows.final
         assert initial <= model_bounds.initial_max, (
             f"policy {model_id!r} starts at training reward {initial}, above {model_bounds.initial_max}; a run "
             f"that starts already solved cannot show that training moved it"
@@ -116,6 +123,18 @@ def assert_every_policy_reported_reward_in_bounds(events_dir: Path, *, bounds: d
             f"policy {model_id!r} ends at training reward {final}, below {model_bounds.final_min}; either its "
             f"reward function never fires, or training destroyed the model"
         )
+        assert final - initial >= model_bounds.min_growth, (
+            f"policy {model_id!r} raw reward grew by {final - initial}, below {model_bounds.min_growth}; "
+            f"its first three-step mean was {initial} and its final-window mean was {final}"
+        )
+
+
+def _compute_reward_window_means(rewards: list[float]) -> RewardWindowMeans:
+    assert len(rewards) >= 3, f"need at least three raw reward points to define the early window, got {len(rewards)}"
+    return RewardWindowMeans(
+        initial=statistics.mean(rewards[:3]),
+        final=statistics.mean(rewards[-max(1, len(rewards) // 3) :]),
+    )
 
 
 def _read_train_reward_series(events_dir: Path, *, model_id: str) -> list[float]:

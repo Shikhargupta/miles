@@ -26,8 +26,8 @@ NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "100"))
 
 # TODO: tighten these weak bounds once the e2e run has been observed.
 TRAIN_REWARD_BOUNDS = {
-    SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.6, final_min=0.5),
-    VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.1),
+    SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.6, final_min=0.5, min_growth=0.2),
+    VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.1, min_growth=0.2),
 }
 
 
