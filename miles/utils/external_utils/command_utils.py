@@ -141,6 +141,23 @@ def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainC
     }
 
 
+def resolve_train_backend(train_args: str) -> str:
+    """Which backend a launcher's argument string selects.
+
+    Named positively so a backend added later is not mistaken for Megatron: the
+    previous form asked "is this not FSDP", which handed the third backend
+    Megatron's checkpoint conversion and TP-overlap env var. Both the spaced and
+    the ``=`` spelling are accepted, and absence means the argparse default.
+    """
+    tokens = shlex.split(train_args)
+    for index, token in enumerate(tokens):
+        if token == "--train-backend" and index + 1 < len(tokens):
+            return tokens[index + 1]
+        if token.startswith("--train-backend="):
+            return token.split("=", 1)[1]
+    return "megatron"
+
+
 def execute_train(
     train_args: str,
     num_gpus_per_node: int,
@@ -160,10 +177,7 @@ def execute_train(
     external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
-    # Keyed on "is this Megatron", not "is this not FSDP": a Megatron checkpoint
-    # conversion and Megatron's TP-overlap env var belong to that backend
-    # specifically, and there are more than two backends.
-    train_backend_megatron = "--train-backend fsdp" not in train_args and "--train-backend torchtitan" not in train_args
+    train_backend_megatron = resolve_train_backend(train_args) == "megatron"
     assert train_backend_megatron == (megatron_model_type is not None), (
         f"megatron_model_type must be set for a Megatron run and omitted otherwise "
         f"(megatron={train_backend_megatron}, megatron_model_type={megatron_model_type!r})"
