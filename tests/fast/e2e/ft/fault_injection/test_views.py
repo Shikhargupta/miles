@@ -193,26 +193,10 @@ class TestWhichInjectionsCount:
         """A mixed soak draws several forms, and each one's own assertions count only its own draws."""
         log = state.EventLog()
         log.observe([staged("rollout-engine-0", SERVING)])
+        log.note_injection_attempt(cell_name="rollout-engine-0", form_name="hot_restart", succeeded=True, harmed=False)
+        log.note_injection_attempt(cell_name="rollout-engine-0", form_name="crash_pod", succeeded=True, harmed=True)
         log.note_injection_attempt(
-            cell_name="rollout-engine-0",
-            workers_hash="generation-0",
-            form_name="hot_restart",
-            succeeded=True,
-            harmed=False,
-        )
-        log.note_injection_attempt(
-            cell_name="rollout-engine-0",
-            workers_hash="generation-0",
-            form_name="crash_pod",
-            succeeded=True,
-            harmed=True,
-        )
-        log.note_injection_attempt(
-            cell_name="rollout-engine-0",
-            workers_hash="generation-0",
-            form_name="hot_restart",
-            succeeded=False,
-            harmed=False,
+            cell_name="rollout-engine-0", form_name="hot_restart", succeeded=False, harmed=False
         )
 
         assert views.compute_num_successful_injections_of_form(log.events, form_name="hot_restart") == 1
@@ -222,12 +206,6 @@ class TestWhichInjectionsCount:
 def _log_of_one_injection(*, form_name: str, succeeded: bool, harmed: bool) -> state.EventLog:
     log = state.EventLog()
     log.observe([staged("rollout-engine-0", SERVING)])
-    log.note_injection_attempt(
-        cell_name="rollout-engine-0",
-        workers_hash="generation-0",
-        form_name=form_name,
-        succeeded=succeeded,
-        harmed=harmed,
-    )
+    log.note_injection_attempt(cell_name="rollout-engine-0", form_name=form_name, succeeded=succeeded, harmed=harmed)
     log.observe([staged("rollout-engine-0", SERVING)])
     return log
