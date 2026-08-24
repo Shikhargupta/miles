@@ -1,5 +1,6 @@
 import random
 import threading
+from functools import partial
 from unittest.mock import patch
 
 import pytest
@@ -51,8 +52,15 @@ def test_an_injector_that_outlives_the_join_fails_instead_of_racing_the_log() ->
         cell_fault_forms=fixed_fault_forms([StubFaultForm("slow", slow_inject)]),
     )
 
-    with patch.object(core, "requests") as mock_requests, patch.object(
-        entrypoint, "STOP_AND_JOIN_TIMEOUT_SECONDS", 0.2
+    run_fault_injection_loop = partial(
+        core.run_fault_injection_loop,
+        poll_interval_seconds=0,
+        quiescent_polls_required=1,
+    )
+    with (
+        patch.object(core, "requests") as mock_requests,
+        patch.object(entrypoint, "run_fault_injection_loop", run_fault_injection_loop),
+        patch.object(entrypoint, "STOP_AND_JOIN_TIMEOUT_SECONDS", 0.2),
     ):
         mock_requests.get.side_effect = lambda url, timeout: mock_response(
             {"items": [typed_cell(f"actor-{i}", "actor") for i in range(3)]}
