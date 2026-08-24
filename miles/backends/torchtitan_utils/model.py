@@ -42,6 +42,24 @@ def _unwrapped_fqn(name: str) -> str:
     return ".".join(part for part in name.split(".") if part not in _WRAPPER_SEGMENTS)
 
 
+def unloaded_parameters(missing_keys, parameter_names) -> list[str]:
+    """Which of ``missing_keys`` name real parameters rather than runtime buffers.
+
+    An HF checkpoint carries parameters, not the model's runtime buffers: a
+    torchtitan MoE keeps its aux-loss-free load-balancing bias (``expert_bias_E``)
+    as a buffer that ``init_weights`` already set up, and no HF export contains
+    it. So a missing parameter is a real failure and a missing buffer is expected.
+
+    Both sides are unwrapped rather than assuming which convention
+    ``missing_keys`` uses: activation checkpointing inserts
+    ``_checkpoint_wrapped_module`` segments, and comparing a wrapped name against
+    an unwrapped one matches nothing in either direction, which would report
+    unloaded expert weights as skipped buffers and never fail.
+    """
+    unwrapped = {_unwrapped_fqn(name) for name in parameter_names}
+    return [key for key in missing_keys if _unwrapped_fqn(key) in unwrapped]
+
+
 def resolve_model_spec(args: Namespace):
     """Look up ``model_registry`` in ``torchtitan.models.<name>``.
 
@@ -179,15 +197,8 @@ def load_hf_weights(spec, model_config, model, hf_checkpoint: str):
         options=StateDictOptions(strict=False),
     )
 
-    # An HF checkpoint carries parameters, not the model's runtime buffers: a
-    # torchtitan MoE keeps its aux-loss-free load-balancing bias (expert_bias_E)
-    # as a buffer that init_weights already set up, and no HF export contains it.
-    # So a missing parameter is a real failure; a missing buffer is expected.
-    # Unwrap both sides rather than assume which convention missing_keys uses:
-    # comparing across the two silently matches nothing, which turns this check
-    # into a no-op that reports unloaded expert weights as skipped buffers.
-    parameter_names = {_unwrapped_fqn(name) for name, _ in model.named_parameters()}
-    unloaded = [key for key in result.missing_keys if _unwrapped_fqn(key) in parameter_names]
+    parameter_names = {name for name, _ in model.named_parameters()}
+    unloaded = unloaded_parameters(result.missing_keys, parameter_names)
     if unloaded:
         raise RuntimeError(
             f"HF checkpoint {hf_checkpoint} did not populate {len(unloaded)} parameter(s), e.g. {unloaded[:5]}"
