@@ -79,7 +79,6 @@ class TestGetCells:
                         "labels": {
                             "miles.io/cell-type": "actor",
                             "miles.io/cell-id": "actor-0",
-                            "miles.io/workers-hash": "pseudo-hash-1",
                         },
                     },
                     "spec": {"suspend": False},
@@ -111,7 +110,6 @@ class TestGetCells:
                         "labels": {
                             "miles.io/cell-type": "rollout",
                             "miles.io/cell-id": "rollout-0",
-                            "miles.io/workers-hash": "pseudo-hash-1",
                         },
                     },
                     "spec": {"suspend": True},
@@ -157,7 +155,6 @@ class TestGetCell:
                 "labels": {
                     "miles.io/cell-type": "actor",
                     "miles.io/cell-id": "actor-0",
-                    "miles.io/workers-hash": "pseudo-hash-1",
                 },
             },
             "spec": {"suspend": False},
