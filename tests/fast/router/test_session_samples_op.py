@@ -207,6 +207,27 @@ async def test_assembled_sample_golden(core):
     assert reply.empty_reason is None
 
 
+async def test_spec_info_crosses_samples_wire(core, monkeypatch):
+    output_token_ids = [10, 11, 12, 13, 14, 15, 16]
+    record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=output_token_ids)
+    record.response["choices"][0]["meta_info"].update(
+        {"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 2}
+    )
+    monkeypatch.setattr(core.args, "sglang_speculative_algorithm", "EAGLE")
+    sid = await _make_session(core, [record], [1, 2, 3, *output_token_ids])
+
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    (sample,), _ = _new_pipeline(payload, _input_sample())
+
+    assert sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 3,
+        "spec_num_proposed_drafts": 5,
+        "spec_verify_ct": 2,
+        "completion_tokens": 7,
+    }
+
+
 async def test_truncation_golden(core):
     """max_seq_len=8 strips one output token off the second turn (a turn-level
     budget applied before merge): the final sample ends TRUNCATED at 8 tokens
