@@ -76,6 +76,11 @@ def allocate_gpus_for_actor(
 
         actor_impl = MegatronTrainRayActor
 
+    elif backend == "torchtitan":
+        from miles.backends.torchtitan_utils import TorchtitanTrainRayActor
+
+        actor_impl = TorchtitanTrainRayActor
+
     else:
         from miles.backends.fsdp_utils import FSDPTrainRayActor
 
