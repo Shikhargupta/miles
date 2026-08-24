@@ -212,8 +212,18 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
+    def _has_image_text_to_text_impl(self) -> bool:
+        if not hasattr(self.hf_config, "vision_config"):
+            return False
+        # A remote-code checkpoint only implements the Auto classes its own auto_map declares, and a
+        # multimodal config does not imply AutoModelForImageTextToText is one of them: Kimi-K2.5 ships
+        # a vision_config but maps only AutoModelForCausalLM. Native archs carry no auto_map and keep
+        # resolving through the transformers registry.
+        auto_map = getattr(self.hf_config, "auto_map", None)
+        return not auto_map or "AutoModelForImageTextToText" in auto_map
+
     def get_model_cls(self):
-        if hasattr(self.hf_config, "vision_config"):
+        if self._has_image_text_to_text_impl():
             from transformers import AutoModelForImageTextToText
 
             return AutoModelForImageTextToText
