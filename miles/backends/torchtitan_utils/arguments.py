@@ -21,6 +21,12 @@ from miles.backends.fsdp_utils.arguments import (
 class TorchtitanArgs(FSDPArgs):
     # Which torchtitan model to build: resolved as
     # torchtitan.models.<name>.model_registry(<flavor>).
+    # Dense flavors only, for now. At the pinned torchtitan commit the qwen3
+    # state-dict adapter maps moe.experts.w1/w2/w3 while the model names those
+    # parameters w1_EFD/w2_EDF/w3_EFD, and the lookup miss is a silent `continue`
+    # -- so an MoE checkpoint's expert weights are never requested and the load
+    # fails on 15 unpopulated parameters. Upstream has since restructured this
+    # (main uses experts.inner_experts), which arrives with the torch 2.12 bump.
     titan_model_name: str = "qwen3"
     titan_model_flavor: str = "0.6B"
 
