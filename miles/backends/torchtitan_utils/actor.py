@@ -113,9 +113,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
 
         self.weight_updater = TitanUpdateWeightFromTensor(args, self.model, self.sd_adapter)
 
-        if args.vocab_size is None:
-            args.vocab_size = self.tokenizer.vocab_size
-
         clear_memory()
         if args.offload_train:
             self.sleep()

@@ -55,7 +55,37 @@ def build_engine_config(args: Namespace, spec):
     config.parallelism.expert_parallel_degree = args.titan_ep_size
     if args.fp16:
         config.training.dtype = "float16"
+
+    config.optimizer.param_groups = _param_groups(args)
     return config
+
+
+def _param_groups(args: Namespace) -> list:
+    """One catch-all group carrying miles' optimizer settings.
+
+    torchtitan's OptimizersContainer defaults to an empty group list and asserts
+    that every trainable parameter is claimed by exactly one group, so a group
+    is mandatory rather than optional. Per-group LR/weight-decay splits are a
+    torchtitan feature miles does not expose yet; a single ``.*`` group keeps the
+    behavior identical to the FSDP backend's single AdamW over all parameters.
+    """
+    from torchtitan.components.optimizer import ParamGroupConfig
+
+    if args.optimizer != "adam":
+        raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.optimizer!r}")
+
+    return [
+        ParamGroupConfig(
+            pattern=r".*",
+            optimizer_name="AdamW",
+            optimizer_kwargs={
+                "lr": args.lr,
+                "betas": (args.adam_beta1, args.adam_beta2),
+                "eps": args.adam_eps,
+                "weight_decay": args.weight_decay,
+            },
+        )
+    ]
 
 
 def build_model(args: Namespace, spec, config, parallel_dims, device: torch.device):
