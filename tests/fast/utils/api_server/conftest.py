@@ -65,7 +65,7 @@ class MockHandler(_CellHandler):
     async def get_cell(self, cell_id: str) -> Cell:
         state = self.cells[cell_id]
         return Cell(
-            metadata=self._compute_metadata(cell_id, workers_hash=state.workers_hash),
+            metadata=self._compute_metadata(cell_id),
             spec=CellSpec(suspend=state.is_suspended),
             status=CellStatus(
                 phase=state.phase,
