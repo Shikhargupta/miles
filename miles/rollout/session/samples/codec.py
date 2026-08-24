@@ -39,6 +39,7 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "status": ValueSpec("json"),
     "weight_versions": ValueSpec("json"),
+    "spec_info": ValueSpec("json"),
     "prefix_cache_info": ValueSpec("json"),
     "metadata": ValueSpec("json"),
 }
@@ -109,6 +110,8 @@ def encode_samples(
             if spec.codec == "json":
                 if field == "status":
                     value = value.value
+                elif field == "spec_info":
+                    value = value.to_dict()
                 elif field == "prefix_cache_info":
                     value = value.to_dict()
                 sample_meta[field] = value
@@ -166,6 +169,8 @@ def decode_samples_and_merge_input_sample(
                     value = Sample.Status(value)
                 elif field == "weight_versions":
                     value = list(value)
+                elif field == "spec_info":
+                    value = Sample.SpecInfo.from_dict(value)
                 elif field == "prefix_cache_info":
                     value = Sample.PrefixCacheInfo.from_dict(value)
                 elif field == "reward":
