@@ -4,6 +4,7 @@ Serving identity includes the registration ID to prevent same-name aliasing."""
 import logging
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -63,6 +64,8 @@ class AdapterRegistry:
         self.max_adapters = max_adapters
         self.slot_pool = SlotPool(max_adapters)
         self.records: dict[str, AdapterRecord] = {}
+        # Fires (name, registration_id) when a COMPLETED record leaves the ring; the backend wires ledger purging.
+        self.on_completed_evicted: Callable[[str, str], None] | None = None
 
     def in_state(self, *states: AdapterState) -> dict[str, AdapterRecord]:
         return {name: r for name, r in self.records.items() if r.state in states}
@@ -92,7 +95,8 @@ class AdapterRegistry:
         # Fixed residency: a full pool queues the registration unbound;
         # bootstrap_pending binds it when a slot frees at retirement.
         record.slot = self.slot_pool.bind_immediately(record.tenant)
-        self.records.pop(name, None)
+        if name in self.records:
+            self._evict_completed(name)
         self.records[name] = record
         if record.slot is None:
             logger.info(f"[tinker] adapter '{name}' queued unbound: all {self.max_adapters} slots busy")
@@ -136,9 +140,14 @@ class AdapterRegistry:
         record.state = AdapterState.COMPLETED
         self.records[name] = self.records.pop(name)
         completed = self.in_state(AdapterState.COMPLETED)
-        for oldest in list(completed)[: len(completed) - MAX_COMPLETED_RECORDS]:
-            self.records.pop(oldest)
+        for oldest in list(completed)[: max(0, len(completed) - MAX_COMPLETED_RECORDS)]:
+            self._evict_completed(oldest)
         return record.slot
+
+    def _evict_completed(self, name: str) -> None:
+        evicted = self.records.pop(name)
+        if self.on_completed_evicted is not None:
+            self.on_completed_evicted(evicted.name, evicted.registration_id)
 
     def adapter_state(self, name: str) -> AdapterState | None:
         record = self.records.get(name)

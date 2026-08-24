@@ -516,3 +516,21 @@ class TestClaimedTimeout:
         ledger, clock = self.claimed()
         clock.now += 1000
         assert ledger.gap_stalls() == [] and ledger.sweep_gap_timeouts() == []
+
+
+class TestTenantEviction:
+    def test_drop_tenant_purges_the_dead_registration_only(self):
+        ledger = OperationLedger()
+        enqueue(ledger, "old1", 1, payload={"samples": ["x" * 64]}, name="A", reg="ra")
+        ledger.complete("old1", {"kept": True})
+        ledger.fence("A", "ra")
+        assert ledger.by_id["old1"].payload == {}
+        assert ledger.get("old1")["result"] == {"kept": True}
+        enqueue(ledger, "young1", 1, name="B", reg="rb")
+        ledger.complete("young1", {})
+        ledger.fence("B", "rb")
+        ledger.drop_tenant("A", "ra")
+        assert ledger.get("old1") is None and ("A", "ra") not in ledger.queues
+        assert not any(op.tenant == ("A", "ra") for op in ledger.by_id.values())
+        assert ledger.get("young1")["state"] == "SUCCEEDED"
+        ledger.drop_tenant("A", "ra")

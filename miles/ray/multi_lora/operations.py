@@ -537,7 +537,17 @@ class OperationLedger:
                 op.error = "registration retired before the operation ran"
                 op.error_category = "user"
                 failed.append(op.operation_id)
+            # Fenced ops are never claimed: release the payload now (the fingerprint alone carries retry identity).
+            op.payload = {}
         return failed
+
+    def drop_tenant(self, name: str, registration_id: str) -> None:
+        """Purge a dead registration the registry evicted from its completed ring; its results stop being pollable."""
+        queue = self.queues.pop((name, registration_id), None)
+        if queue is None:
+            return
+        for op in queue.operations:
+            self.by_id.pop(op.operation_id, None)
 
     def queue_view(self, name: str, registration_id: str) -> list[dict]:
         queue = self.queues.get((name, registration_id))
