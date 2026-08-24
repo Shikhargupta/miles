@@ -18,11 +18,11 @@ from miles.backends.megatron_utils.lora_utils import (
     lora_base_cpu_backup_enabled,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.distributed_utils import get_gloo_group
+from miles.backends.training_utils.weight_sync import weight_push_session
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
+from .common import _check_weight_sync_results, weight_update_selector
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 from .update_weight_from_distributed.broadcast import (
@@ -240,8 +240,6 @@ class UpdateWeightFromTensor:
         """
         self.weight_version += 1
 
-        rank = dist.get_rank()
-
         # TODO: implement lora weight checker
         colocate_base_persistent = getattr(self.args, "colocate", False) and not getattr(
             self.args, "offload_rollout", True
@@ -252,14 +250,11 @@ class UpdateWeightFromTensor:
             and not getattr(self.args, "check_weight_update_equal", False)
         )
 
-        if rank == 0:
-            mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            if not skip_base_sync:
-                begin_weight_update(self.rollout_engines, weight_update_selector(self.args))
-        dist.barrier(group=get_gloo_group())
+        with weight_push_session(self.args, self.rollout_engines, announce=not skip_base_sync):
+            self._stream_weights(skip_base_sync=skip_base_sync)
 
+    @torch.no_grad()
+    def _stream_weights(self, *, skip_base_sync: bool) -> None:
         megatron_local_weights = self.weights_getter()
 
         if not skip_base_sync:
@@ -310,15 +305,6 @@ class UpdateWeightFromTensor:
 
             if not self._lora_base_synced:
                 self._lora_base_synced = True
-
-        dist.barrier(group=get_gloo_group())
-
-        if rank == 0:
-            # Skip when no fresh base bytes landed (skip_base_sync).
-            if not skip_base_sync:
-                end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
-        dist.barrier(group=get_gloo_group())
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
         """Frozen vision/audio tower tensors to append to every base sync (see

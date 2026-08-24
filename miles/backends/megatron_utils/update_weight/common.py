@@ -5,14 +5,15 @@ import re
 from argparse import Namespace
 from collections.abc import Iterator, Mapping, Sequence
 
-import ray
 import torch
 import torch.distributed as dist
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_sync import begin_weight_update as _begin_weight_update
+from miles.backends.training_utils.weight_sync import end_weight_update as _end_weight_update
+from miles.backends.training_utils.weight_sync import weight_update_selector as _weight_update_selector
 from miles.utils.types import ParamInfo
 
 logger = logging.getLogger(__name__)
@@ -408,25 +409,12 @@ def collect_named_tensors_for_weight_transfer(
             yield name, tensor
 
 
-def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
-    """Open a weight-update session on the selected rollout engines (restore packed weights)."""
-    ray.get([engine.begin_weight_update.remote(selector=selector) for engine in rollout_engines])
-
-
-def weight_update_selector(args) -> str:
-    """Exclude the draft only when the trainer provably has no MTP block to send it."""
-    if (
-        getattr(args, "sglang_speculative_algorithm", None)
-        and not getattr(args, "mtp_num_layers", None)
-        and getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
-    ):
-        return "target"
-    return "all"
-
-
-def end_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Close the weight-update session (post-load + quant post-process on the full model)."""
-    ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
+# The engine-side session protocol is backend-independent and lives in
+# training_utils.weight_sync; re-exported here so this module stays the import
+# site Megatron's updaters already use.
+begin_weight_update = _begin_weight_update
+end_weight_update = _end_weight_update
+weight_update_selector = _weight_update_selector
 
 
 def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:

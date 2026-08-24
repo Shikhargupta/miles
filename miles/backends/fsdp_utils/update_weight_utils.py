@@ -17,7 +17,8 @@ except ImportError:
 
 from sglang.srt.utils import MultiprocessingSerializer
 
-from miles.utils.distributed_utils import get_gloo_group, init_process_group
+from miles.backends.training_utils.weight_sync import weight_push_session
+from miles.utils.distributed_utils import init_process_group
 
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
@@ -70,13 +71,10 @@ class UpdateWeight(abc.ABC):
     def update_weights(self) -> None:
         self.weight_version += 1
 
-        if dist.get_rank() == 0:
-            futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
-            futures.extend([engine.flush_cache.remote() for engine in self.rollout_engines])
-            ray.get(futures)
-            ray.get([engine.begin_weight_update.remote() for engine in self.rollout_engines])
-        dist.barrier(group=get_gloo_group())
+        with weight_push_session(self.args, self.rollout_engines):
+            self._stream_weights()
 
+    def _stream_weights(self) -> None:
         bucket = []
         bucket_size = 0
         model_type = getattr(getattr(self.model, "config", None), "model_type", "")
@@ -99,14 +97,6 @@ class UpdateWeight(abc.ABC):
         if bucket:
             self.wait_and_update_bucket_weights(bucket)
             del bucket
-            bucket = []
-            bucket_size = 0
-
-        dist.barrier(group=get_gloo_group())
-        if dist.get_rank() == 0:
-            ray.get([engine.end_weight_update.remote() for engine in self.rollout_engines])
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
-        dist.barrier(group=get_gloo_group())
 
     def wait_and_update_bucket_weights(self, bucket):
         resolved = []
