@@ -20,6 +20,7 @@ from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native_loop import (
+    LinearStepRunner,
     StepMetrics,
     clip_and_report,
     run_log_probs,
@@ -370,7 +371,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.args,
                 data_iterator,
                 num_microbatches,
-                partial(self._logprob_forward, model),
+                LinearStepRunner(partial(self._logprob_forward, model)),
                 profiler=self.prof,
                 store_prefix=store_prefix,
             )
@@ -476,9 +477,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 rollout_id,
                 data_iterator,
                 num_microbatches,
-                self._train_forward,
-                self._zero_grad,
-                self._apply_step,
+                LinearStepRunner(self._train_forward, self._zero_grad, self._apply_step),
                 profiler=self.prof,
             )
 

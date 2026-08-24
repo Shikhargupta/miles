@@ -1,24 +1,28 @@
-"""The microbatch loops shared by the torch-native training backends.
+"""The optimizer-step loops shared by the torch-native training backends.
 
-FSDP and torchtitan both drive their own microbatch loop: fetch a microbatch,
-call the model, hand the logits to miles' loss hub, and step. Megatron does not
-appear here on purpose -- its loop lives inside the pipeline schedule
-(``get_forward_backward_func``), which owns the microbatch ordering under
-1F1B/interleaving, so the smallest thing it can expose is a whole optimizer step.
+The unit a backend implements is one optimizer step's worth of microbatches,
+not one forward: under pipeline parallelism the schedule owns the microbatch
+ordering, so a per-microbatch hook cannot exist there (torchtitan settled on
+the same seam for its trainer in pytorch/torchtitan#3856). Backends supply a
+*step runner*:
 
-Backends supply two callables and keep everything backend-specific inside them:
+``forward_only_step(batches, compute) -> list``
+    No-grad pass; calls ``compute(logits, batch)`` per microbatch and returns
+    the results (under PP, only where logits exist).
 
-``forward_fn(batch) -> logits``
-    Runs the model. FSDP wraps its precision context, routing-replay stage, and
-    multimodal inputs in here; torchtitan passes positions through to titan's
-    attention. The loop never sees any of it.
+``forward_backward_step(batches, loss_closure) -> list[dict]``
+    Forward+backward for one optimizer step; ``loss_closure(logits, batch) ->
+    (loss, log_dict)``. Returns the log dicts.
 
-``zero_grad_fn()``
-    Clears gradients before each optimizer step's microbatches.
+``zero_grad()`` / ``apply_step() -> StepMetrics``
+    Bracket the step: clear grads before, then clip + optimizer + LR after.
 
-``step_fn() -> StepMetrics``
-    Clips gradients, steps the optimizer and LR scheduler, and reports the
-    grad norm plus any per-group LR metrics.
+``batches`` is passed as an iterator so a linear runner can keep fetch and
+compute interleaved (a schedule-based runner drains it up front instead).
+``LinearStepRunner`` is the no-schedule implementation FSDP uses and
+schedule-owning backends fall back to when their schedule is off. Megatron does
+not appear here on purpose: its whole step lives inside
+``get_forward_backward_func``.
 """
 
 import logging
@@ -68,6 +72,38 @@ class StepMetrics:
     extra_metrics: dict[str, float] = field(default_factory=dict)
 
 
+class LinearStepRunner:
+    """The step runner for backends without a schedule: microbatches one after
+    another, ``loss.backward()`` accumulating grads across them."""
+
+    def __init__(
+        self,
+        forward_fn: Callable[[dict], torch.Tensor],
+        zero_grad_fn: Callable[[], None] | None = None,
+        step_fn: Callable[[], StepMetrics] | None = None,
+    ):
+        self._forward = forward_fn
+        self._zero_grad = zero_grad_fn
+        self._step = step_fn
+
+    def forward_only_step(self, batches, compute: Callable) -> list:
+        return [compute(self._forward(batch), batch) for batch in batches]
+
+    def forward_backward_step(self, batches, loss_closure: Callable) -> list[dict]:
+        logs = []
+        for batch in batches:
+            loss, log_dict = loss_closure(self._forward(batch), batch)
+            loss.backward()
+            logs.append(log_dict)
+        return logs
+
+    def zero_grad(self) -> None:
+        self._zero_grad()
+
+    def apply_step(self) -> StepMetrics:
+        return self._step()
+
+
 def _fetch(args: Namespace, data_iterator: DataIterator, keys: list[str]) -> dict:
     return get_batch(
         data_iterator,
@@ -83,7 +119,7 @@ def run_log_probs(
     args: Namespace,
     data_iterator: DataIterator,
     num_microbatches: list[int],
-    forward_fn: Callable[[dict], torch.Tensor],
+    runner,
     *,
     profiler,
     store_prefix: str = "",
@@ -97,6 +133,21 @@ def run_log_probs(
     forward_store: list[dict] = []
     data_iterator.reset()
 
+    def compute(logits: torch.Tensor, batch: dict) -> dict:
+        result = get_log_probs_and_entropy(
+            logits=logits,
+            args=args,
+            unconcat_tokens=batch["unconcat_tokens"],
+            total_lengths=batch["total_lengths"],
+            response_lengths=batch["response_lengths"],
+            with_entropy=(store_prefix == ""),
+            max_seq_lens=batch.get("max_seq_lens"),
+        )
+        entry = {f"{store_prefix}log_probs": result["log_probs"]}
+        if store_prefix == "" and "entropy" in result:
+            entry["entropy"] = result["entropy"]
+        return entry
+
     with timer(f"{store_prefix}log_probs"):
         for step_id in range(len(num_microbatches)):
             iterator = tqdm(
@@ -104,21 +155,12 @@ def run_log_probs(
                 desc=f"{store_prefix}log_probs",
                 disable=dist.get_rank() != 0,
             )
-            for _ in profiler.iterate_train_log_probs(iterator):
-                batch = _fetch(args, data_iterator, FORWARD_ONLY_KEYS)
-                result = get_log_probs_and_entropy(
-                    logits=forward_fn(batch),
-                    args=args,
-                    unconcat_tokens=batch["unconcat_tokens"],
-                    total_lengths=batch["total_lengths"],
-                    response_lengths=batch["response_lengths"],
-                    with_entropy=(store_prefix == ""),
-                    max_seq_lens=batch.get("max_seq_lens"),
-                )
-                entry = {f"{store_prefix}log_probs": result["log_probs"]}
-                if store_prefix == "" and "entropy" in result:
-                    entry["entropy"] = result["entropy"]
-                forward_store.append(entry)
+
+            def batches():
+                for _ in profiler.iterate_train_log_probs(iterator):
+                    yield _fetch(args, data_iterator, FORWARD_ONLY_KEYS)
+
+            forward_store.extend(runner.forward_only_step(batches(), compute))
 
     return aggregate_forward_results(forward_store, data_iterator, args, store_prefix)
 
@@ -128,9 +170,7 @@ def run_optimizer_steps(
     rollout_id: int,
     data_iterator: DataIterator,
     num_microbatches: list[int],
-    forward_fn: Callable[[dict], torch.Tensor],
-    zero_grad_fn: Callable[[], None],
-    step_fn: Callable[[], StepMetrics],
+    runner,
     *,
     profiler,
     role: str = "actor",
@@ -138,29 +178,34 @@ def run_optimizer_steps(
     """Run one optimizer step per entry in ``num_microbatches``.
 
     ``apply_megatron_loss_scaling`` is False throughout: that scaling exists to
-    cancel the reduction Megatron's pipeline schedule applies, and nothing here
-    goes through a schedule.
+    cancel the reduction Megatron's pipeline schedule applies, and the loss
+    normalization here is already whole-step (``num_microbatches``-aware) so a
+    schedule-based runner needs no extra scaling either.
     """
     data_iterator.reset()
     num_steps = len(num_microbatches)
 
     for step_id in range(num_steps):
-        zero_grad_fn()
-        losses_reduced = []
+        runner.zero_grad()
         iterator = tqdm(range(num_microbatches[step_id]), desc=f"{role}_train", disable=dist.get_rank() != 0)
-        for _ in profiler.iterate_train_actor(iterator):
-            batch = _fetch(args, data_iterator, TRAIN_KEYS)
+
+        def loss_closure(logits: torch.Tensor, batch: dict, step_id: int = step_id) -> tuple:
             loss, _normalizer, log_dict = loss_function(
                 args=args,
                 batch=batch,
                 num_microbatches=num_microbatches[step_id],
-                logits=forward_fn(batch),
+                logits=logits,
                 apply_megatron_loss_scaling=False,
             )
-            loss.backward()
-            losses_reduced.append(log_dict)
+            return loss, log_dict
 
-        metrics = step_fn()
+        def batches():
+            for _ in profiler.iterate_train_actor(iterator):
+                yield _fetch(args, data_iterator, TRAIN_KEYS)
+
+        losses_reduced = runner.forward_backward_step(batches(), loss_closure)
+
+        metrics = runner.apply_step()
 
         if args.ci_test:
             check_grad_norm(

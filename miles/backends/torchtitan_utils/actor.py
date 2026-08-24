@@ -1,10 +1,11 @@
 """TrainRayActor over a torchtitan model.
 
 Deliberately shaped like FSDPTrainRayActor: the RL flow (rollout data in ->
-reference/actor log probs -> advantages -> optimizer steps -> weight sync) is the
-shared code in ``training_utils``, and this class supplies only what is
-torchtitan-specific -- model construction, its optimizer/LR containers, its
-checkpointer, and its HF state-dict mapping.
+reference/actor log probs -> advantages -> optimizer steps -> weight sync) is
+the shared code in ``training_utils``, and everything torchtitan lives behind
+``TitanEngine``. This class never imports torchtitan: it hands the engine to
+the shared loop as a step runner and wires miles' checkpointing, offload, and
+weight-sync around it.
 """
 
 import logging
@@ -14,29 +15,16 @@ import ray
 import torch
 import torch.distributed as dist
 
-from miles.backends.torchtitan_utils import compat
-from miles.backends.torchtitan_utils.model import (
-    build_engine_config,
-    build_model,
-    build_ref_model,
-    load_hf_weights,
-    resolve_model_spec,
-)
+from miles.backends.torchtitan_utils.engine import TitanEngine
 from miles.backends.torchtitan_utils.parallel import build_parallel_dims, create_titan_parallel_state
 from miles.backends.torchtitan_utils.weight_bridge import TitanUpdateWeightFromTensor
 from miles.backends.training_utils import checkpoint
-from miles.backends.training_utils.checkpoint import ModelState
 from miles.backends.training_utils.data import get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import log_rollout_data
 from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
-from miles.backends.training_utils.torch_native_loop import (
-    StepMetrics,
-    clip_and_report,
-    run_log_probs,
-    run_optimizer_steps,
-)
+from miles.backends.training_utils.torch_native_loop import run_log_probs, run_optimizer_steps
 from miles.backends.training_utils.weight_sync import connect_engines_if_stale, verify_engine_weight_version
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
@@ -48,6 +36,17 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
+
+
+def _lr_total_steps(args: Namespace) -> int:
+    """Optimizer steps over the whole run, for the LR schedule's horizon.
+
+    Each rollout contributes ``rollout_batch_size * n_samples_per_prompt``
+    samples consumed in optimizer steps of ``global_batch_size``. Using
+    ``num_rollout`` alone would compress the schedule by that factor.
+    """
+    steps_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    return args.num_rollout * max(steps_per_rollout, 1)
 
 
 class TorchtitanTrainRayActor(TrainRayActor):
@@ -62,7 +61,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info=None,
     ) -> int | None:  # type: ignore[override]
-        compat.install()
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         assert recv_ckpt_src_rank is None, "torchtitan backend does not support checkpoint healing"
@@ -73,7 +71,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
         torch.manual_seed(args.seed)
 
         self.train_parallel_config = {"dp_size": get_parallel_state().intra_dp.size}
-        self.ref_model = None
+        self.ref_runner = None
         if args.debug_rollout_only:
             return 0
 
@@ -89,25 +87,17 @@ class TorchtitanTrainRayActor(TrainRayActor):
         # deriving it from the global rank would assume a contiguous rank->GPU
         # mapping, which Ray does not promise and multi-node breaks outright.
         device = torch.device(torch.cuda.current_device())
-        spec = resolve_model_spec(args)
-        config = build_engine_config(args, spec)
-        model_config, self.model = build_model(args, spec, config, parallel_dims, device)
-        self.sd_adapter = load_hf_weights(spec, model_config, self.model, args.hf_checkpoint)
-
-        self.optimizers = config.optimizer.build(model_parts=[self.model])
-        if spec.post_optimizer_build_fn is not None:
-            spec.post_optimizer_build_fn(self.optimizers, [self.model], parallel_dims)
-        self.lr_schedulers = config.lr_scheduler.build(
-            optimizers=self.optimizers, training_steps=max(args.num_rollout, 1)
+        self.engine = TitanEngine(
+            args, device, lr_total_steps=_lr_total_steps(args), parallel_dims=parallel_dims
         )
-        self.titan_config = config
+        self.engine.load_hf(args.hf_checkpoint)
 
         # Built after the actor so the two never race for HBM during init; it is
         # CPU-offloaded, so it costs host memory rather than device memory.
         if with_ref:
-            self.ref_model = build_ref_model(args, spec, config, parallel_dims, device)
+            self.ref_runner = self.engine.build_ref_runner(args.ref_load)
 
-        self.weight_updater = TitanUpdateWeightFromTensor(args, self.model, self.sd_adapter)
+        self.weight_updater = TitanUpdateWeightFromTensor(args, self.engine)
 
         self.global_step = 0
         self.micro_step = 0
@@ -124,8 +114,9 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
         print_memory("before offload model")
-        self.model.cpu()
-        move_optimizer_state(self.optimizers.optimizers, "cpu")
+        for part in self.engine.model_parts:
+            part.cpu()
+        move_optimizer_state(self.engine.optimizers.optimizers, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after offload model")
@@ -134,18 +125,14 @@ class TorchtitanTrainRayActor(TrainRayActor):
     def wake_up(self) -> None:
         if not self.args.offload_train:
             return
-        self.model.cuda()
-        move_optimizer_state(self.optimizers.optimizers, "cuda")
+        for part in self.engine.model_parts:
+            part.cuda()
+        move_optimizer_state(self.engine.optimizers.optimizers, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 
     def checkpoint_parts(self):
-        """torchtitan's optimizer and LR-scheduler containers are already Stateful."""
-        return {
-            "model": ModelState(self.model),
-            "optimizer": self.optimizers,
-            "lr_scheduler": self.lr_schedulers,
-        }
+        return self.engine.checkpoint_parts()
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only or self.args.save is None:
@@ -175,17 +162,17 @@ class TorchtitanTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
-        data_iterators, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+        data_iterators, num_microbatches = get_data_iterator(self.args, self.engine.model_parts, rollout_data)
         data_iterator = data_iterators[0]
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
 
-        if self.ref_model is not None:
+        if self.ref_runner is not None:
             rollout_data.update(
                 run_log_probs(
                     self.args,
                     data_iterator,
                     num_microbatches,
-                    self._ref_forward_logits,
+                    self.ref_runner,
                     profiler=self.prof,
                     store_prefix="ref_",
                 )
@@ -196,7 +183,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
                 self.args,
                 data_iterator,
                 num_microbatches,
-                self._forward_logits,
+                self.engine,
                 profiler=self.prof,
             )
         )
@@ -209,35 +196,11 @@ class TorchtitanTrainRayActor(TrainRayActor):
                 rollout_id,
                 data_iterator,
                 num_microbatches,
-                self._forward_logits,
-                self._zero_grad,
-                self._apply_step,
+                self.engine,
                 profiler=self.prof,
             )
 
         self.prof.step(rollout_id=rollout_id)
-
-    def _ref_forward_logits(self, batch: dict) -> torch.Tensor:
-        """The frozen reference model's forward. It is CPU-offloaded, so FSDP2
-        stages each shard onto the device for this pass and releases it after."""
-        return self.ref_model(batch["tokens"], positions=batch["position_ids"])
-
-    def _forward_logits(self, batch: dict) -> torch.Tensor:
-        """One model forward. ``positions`` restart per document, which is how
-        torchtitan's masked attention backends identify document boundaries; the
-        sdpa backend uses them for RoPE only and applies a plain causal mask,
-        which is why a microbatch may hold just one document (see
-        validate_torchtitan_args)."""
-        return self.model(batch["tokens"], positions=batch["position_ids"])
-
-    def _zero_grad(self) -> None:
-        self.optimizers.zero_grad(set_to_none=True)
-
-    def _apply_step(self) -> StepMetrics:
-        grad_norm = clip_and_report(self.model.parameters(), self.args.clip_grad)
-        self.optimizers.step()
-        self.lr_schedulers.step()
-        return StepMetrics(grad_norm=grad_norm, extra_metrics=self.lr_schedulers.get_metrics())
 
     @timer
     def update_weights(self, info) -> None:  # type: ignore[override]

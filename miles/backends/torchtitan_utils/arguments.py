@@ -21,20 +21,14 @@ from miles.backends.fsdp_utils.arguments import (
 class TorchtitanArgs(FSDPArgs):
     # Which torchtitan model to build: resolved as
     # torchtitan.models.<name>.model_registry(<flavor>).
-    # Dense flavors only, for now. At the pinned torchtitan commit the qwen3
-    # state-dict adapter maps moe.experts.w1/w2/w3 while the model names those
-    # parameters w1_EFD/w2_EDF/w3_EFD, and the lookup miss is a silent `continue`
-    # -- so an MoE checkpoint's expert weights are never requested and the load
-    # fails on 15 unpopulated parameters. Upstream has since restructured this
-    # (main uses experts.inner_experts), which arrives with the torch 2.12 bump.
     titan_model_name: str = "qwen3"
     titan_model_flavor: str = "0.6B"
 
-    # "sdpa" | "flex" | "flex_flash" | "varlen". Only sdpa works on torch 2.11:
-    # varlen needs 2.12 for varlen_attn(enable_gqa=), flex needs 2.13 for
-    # create_block_mask(separate_full_blocks=). sdpa is causal-only, so packed
-    # multi-document microbatches wait on that bump -- see compat.py.
-    titan_attn_backend: str = "sdpa"
+    # "flex" | "flex_flash" | "varlen". flex is torchtitan's default training
+    # path for these models and masks document boundaries from ``positions``,
+    # which is what allows packed microbatches. sdpa is not offered: the pinned
+    # torchtitan removed it for language models.
+    titan_attn_backend: str = "flex"
 
     # Sequence length titan sizes its RoPE caches for; must cover the longest
     # packed microbatch (prompt + response).
@@ -64,27 +58,31 @@ def load_torchtitan_args(extra_args_provider=None):
 
 
 def validate_torchtitan_args(args) -> None:
-    if args.titan_attn_backend != "sdpa":
-        # The two non-sdpa backends do not share a threshold, and getting this
-        # wrong is how someone bumps to 2.12, drops this gate and breaks flex:
-        # varlen_attn(enable_gqa=) is in 2.12, but create_block_mask's
-        # separate_full_blocks kwarg is only public from 2.13 (verified against
-        # the v2.12.0 and v2.13.0 tags).
-        needed = "2.13" if args.titan_attn_backend.startswith("flex") else "2.12"
+    import torch
+
+    torch_version = tuple(int(part) for part in torch.__version__.split(".")[:2])
+    if args.titan_attn_backend == "sdpa":
         raise ValueError(
-            f"--titan-attn-backend {args.titan_attn_backend} needs torch>={needed}; this image "
-            "runs torch 2.11.0. Use sdpa."
+            "--titan-attn-backend sdpa: the pinned torchtitan removed sdpa for language models; use flex"
         )
-    # sdpa applies a plain causal mask, so a microbatch holding more than one
-    # document would let tokens attend across the document boundary.
-    if args.use_dynamic_batch_size or args.micro_batch_size != 1:
+    # The two remaining backends do not share a threshold, and getting this
+    # wrong is how a torch bump silently breaks one of them: varlen_attn's
+    # enable_gqa= is in 2.12, but create_block_mask's separate_full_blocks
+    # kwarg is only public from 2.13 (verified against the v2.12.0/v2.13.0 tags).
+    needed = (2, 13) if args.titan_attn_backend.startswith("flex") else (2, 12)
+    if torch_version < needed:
         raise ValueError(
-            "The torchtitan backend currently requires --micro-batch-size 1 and no "
-            "--use-dynamic-batch-size: its only torch-2.11-compatible attention backend (sdpa) "
-            "is causal-only and cannot mask document boundaries within a packed microbatch."
+            f"--titan-attn-backend {args.titan_attn_backend} needs "
+            f"torch>={'.'.join(map(str, needed))}; this environment runs {torch.__version__}"
         )
-    if args.titan_pp_size != 1:
-        raise ValueError("--titan-pp-size > 1 is not supported yet (the PP schedule owns the microbatch loop)")
+    if args.titan_cp_size != 1:
+        # The engine's forward hands miles' loss full-sequence logits; under CP
+        # they come back sequence-sharded and the loss-side gather is not wired.
+        # (For qwen3_5 torchtitan itself rejects CP: GatedDeltaNet needs the
+        # full sequence.)
+        raise ValueError("--titan-cp-size > 1 is not supported yet (loss-side CP integration pending)")
+    if args.titan_ep_size != 1:
+        raise ValueError("--titan-ep-size > 1 waits on MoE support for this backend")
     # The reference model is built once from --ref-load; refreshing it mid-run
     # would need the actor-to-ref copy FSDP does, which this backend has not
     # wired up. Silently ignoring the interval would quietly train against a
