@@ -159,7 +159,7 @@ class TestBuildGuards:
     def make(self, **overrides):
         config = SimpleNamespace(use_distributed_optimizer=False, fp16=False, bf16=True, optimizer="adam")
         config.__dict__.update(overrides)
-        args = SimpleNamespace(multi_lora_n_adapters=2, enable_gloo_process_groups=False)
+        args = SimpleNamespace(multi_lora_n_adapters=2, use_gloo_process_groups=False)
         return args, config
 
     def test_rejects_distributed_optimizer_fp16_and_non_adam(self):
