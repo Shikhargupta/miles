@@ -17,6 +17,7 @@ import miles.utils.external_utils.command_utils as command_utils
 from miles.utils.external_utils.model_args_utils import import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
+FROZEN_HARDWARE = "H200"
 
 _GPU_COUNT_ANY_WAIT_LOOP_ACCEPTS = "1000000"
 _FROZEN_PID = 1000
@@ -111,6 +112,7 @@ def freeze_environment(monkeypatch) -> None:
         monkeypatch.setenv(key, value)
     for key in CLEARED_ENV:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(command_utils, "detect_hardware", lambda: FROZEN_HARDWARE)
 
 
 def install_command_recorder(monkeypatch) -> Recording:
