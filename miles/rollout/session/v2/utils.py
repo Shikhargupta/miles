@@ -14,6 +14,8 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
+NODE_SPEC_INFOS_METADATA_KEY = "_node_spec_infos"
+
 
 def tree_metadata(state: SessionStateV2) -> dict:
     """The structural layer: node and leaf tables, index-aligned with commits.
@@ -79,9 +81,16 @@ def build_leaf_material(
             sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer)
         else:
             sample = merge_samples(turns, registry.tokenizer)
+        merged_turn_indexes = [i for i, turn in enumerate(turns) if turn.tokens == sample.tokens]
+        assert merged_turn_indexes, "merged sample must end at one of its source turns"
+        merged_turn_count = merged_turn_indexes[0] + 1
         tools = path[-1].record.request.get("tools")
         flat: dict[str, Any] = {
             "accumulated_token_ids": list(leaf.token_ids),
+            NODE_SPEC_INFOS_METADATA_KEY: [
+                {"node_id": node.seq, "spec_info": turn.spec_info.to_dict()}
+                for node, turn in zip(path[:merged_turn_count], turns[:merged_turn_count], strict=True)
+            ],
             "leaf": {
                 "node_id": leaf.seq,
                 "parent": leaf.parent.seq if leaf.parent is not None else None,

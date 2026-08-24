@@ -423,8 +423,8 @@ async def test_broken_chain_returns_422_and_server_survives(core):
 # ── the tree data plane: branches, trims, exactly-once, rewards ──
 
 
-def _single_turn_record(prompt_ids, output_ids, weight_version="w1"):
-    return _make_record(
+def _single_turn_record(prompt_ids, output_ids, weight_version="w1", spec_info=None):
+    record = _make_record(
         prompt_token_ids=list(prompt_ids),
         output_token_ids=list(output_ids),
         output_log_probs=[-0.1] * len(output_ids),
@@ -433,6 +433,9 @@ def _single_turn_record(prompt_ids, output_ids, weight_version="w1"):
         weight_version=weight_version,
         routed_experts=_r3_b64(len(prompt_ids) + len(output_ids) - 1, seed=0),
     )
+    if spec_info is not None:
+        record.response["choices"][0]["meta_info"].update(spec_info)
+    return record
 
 
 def _fabricate_node(state, parent, record, token_ids, *, completion_span, response_id="", committed_at=None):
@@ -528,6 +531,90 @@ async def test_deep_abandoned_branch_survives_and_masks_shared_prefix(core, traj
     assert late_sample.loss_mask[-1] == 1  # its own completion still trains
     assert [sample.reward for sample in reply.samples] == [trajectory_reward, trajectory_reward]
     assert [sample.metadata["reward"] for sample in reply.samples] == [trajectory_reward, trajectory_reward]
+
+
+async def test_spec_info_counts_each_kept_tree_node_once(core, monkeypatch):
+    monkeypatch.setattr(core.args, "sglang_speculative_algorithm", "EAGLE")
+    sid, state = await _fresh_state(core)
+    root = _fabricate_node(
+        state,
+        None,
+        _single_turn_record(
+            [1, 2, 3],
+            [10, 11],
+            spec_info={"spec_num_correct_drafts": 9, "spec_num_proposed_drafts": 10, "spec_verify_ct": 2},
+        ),
+        [1, 2, 3, 10, 11],
+        completion_span=(3, 5),
+    )
+    _fabricate_node(
+        state,
+        root,
+        _single_turn_record(
+            [1, 2, 3, 10, 11, 19],
+            [29],
+            spec_info={"spec_num_correct_drafts": 100, "spec_num_proposed_drafts": 100, "spec_verify_ct": 1},
+        ),
+        [1, 2, 3, 10, 11, 19, 29],
+        completion_span=(6, 7),
+    )
+    early_mid = _fabricate_node(
+        state,
+        root,
+        _single_turn_record([1, 2, 3, 10, 11, 20], [30]),
+        [1, 2, 3, 10, 11, 20, 30],
+        completion_span=(6, 7),
+    )
+    early_leaf = _fabricate_node(
+        state,
+        early_mid,
+        _single_turn_record(
+            [1, 2, 3, 10, 11, 20, 30, 40],
+            [50],
+            spec_info={"spec_num_correct_drafts": 0, "spec_num_proposed_drafts": 10, "spec_verify_ct": 1},
+        ),
+        [1, 2, 3, 10, 11, 20, 30, 40, 50],
+        completion_span=(8, 9),
+        response_id="early",
+    )
+    late_leaf = _fabricate_node(
+        state,
+        root,
+        _single_turn_record(
+            [1, 2, 3, 10, 11, 21],
+            [31],
+            spec_info={"spec_num_correct_drafts": 0, "spec_num_proposed_drafts": 10, "spec_verify_ct": 1},
+        ),
+        [1, 2, 3, 10, 11, 21, 31],
+        completion_span=(6, 7),
+        response_id="late",
+    )
+    state.active_leaf = late_leaf
+
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    early_sample, late_sample = reply.samples
+
+    assert early_sample.tokens == early_leaf.token_ids
+    assert late_sample.tokens == late_leaf.token_ids
+    assert early_sample.loss_mask[:2] == [1, 1]
+    assert late_sample.loss_mask[:2] == [0, 0]
+    assert early_sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 9,
+        "spec_num_proposed_drafts": 20,
+        "spec_verify_ct": 3,
+        "completion_tokens": 3,
+    }
+    assert late_sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 0,
+        "spec_num_proposed_drafts": 10,
+        "spec_verify_ct": 1,
+        "completion_tokens": 1,
+    }
+    assert sum(sample.spec_info.spec_num_correct_drafts for sample in reply.samples) == 9
+    assert sum(sample.spec_info.spec_num_proposed_drafts for sample in reply.samples) == 30
+    assert all("_node_spec_infos" not in sample.metadata for sample in reply.samples)
 
 
 async def test_picker_warns_and_trims_longer_superseded_leaf(core, caplog):

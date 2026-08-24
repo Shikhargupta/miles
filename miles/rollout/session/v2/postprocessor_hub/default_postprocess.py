@@ -1,3 +1,4 @@
+from miles.rollout.session.v2.utils import NODE_SPEC_INFOS_METADATA_KEY
 from miles.utils.types import Sample
 
 _SERVER_OWNED_METADATA_KEYS = ("accumulated_token_ids", "tito_session_mismatch", "leaf")
@@ -15,8 +16,7 @@ def assign_reward(samples: list[Sample], trajectory_reward: float) -> None:
 def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> list[Sample]:
     """Finalize the leaf samples kept by the picker.
 
-    A shared completion is trainable only in the earliest committed kept leaf.
-    Ownership is computed after picking, so a dropped leaf cannot own it.
+    A shared completion and its speculative counters belong only to the earliest committed kept leaf. Ownership is computed after picking, so a dropped leaf cannot own either.
 
     Agent metadata cannot replace server-owned fields. A provided trajectory reward is assigned to every kept sample.
 
@@ -39,6 +39,16 @@ def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> l
     for sample in leaf_samples:
         leaf = sample.metadata["leaf"]
         response_start = len(sample.tokens) - sample.response_length
+        owned_spec_info = Sample.SpecInfo()
+        for node_spec_info in sample.metadata.pop(NODE_SPEC_INFOS_METADATA_KEY):
+            if owner_by_node_id[node_spec_info["node_id"]] != leaf["node_id"]:
+                continue
+            spec_info = node_spec_info["spec_info"]
+            owned_spec_info.spec_num_correct_drafts += spec_info["spec_num_correct_drafts"]
+            owned_spec_info.spec_num_proposed_drafts += spec_info["spec_num_proposed_drafts"]
+            owned_spec_info.spec_verify_ct += spec_info["spec_verify_ct"]
+            owned_spec_info.completion_tokens += spec_info["completion_tokens"]
+        sample.spec_info = owned_spec_info
         # Spans index all tokens; `loss_mask` indexes only the response.
         # Clamp when early-stop or truncation shortens the sample.
         for node_id in leaf["path_node_ids"]:
