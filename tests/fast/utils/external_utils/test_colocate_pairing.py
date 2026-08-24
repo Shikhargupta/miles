@@ -1273,6 +1273,19 @@ class FakeCoreV1:
             raise client.ApiException(status=status, reason="rejected by the fake apiserver")
         self.patched.append((name, body))
 
+    async def read_namespaced_pod(self, *, name: str, namespace: str) -> Any:
+        return _pod(INFERENCE_POOL_ID, 0)
+
+
+class _StaleReleaseCoreV1(FakeCoreV1):
+    async def patch_namespaced_pod(self, *, name: str, namespace: str, body: list[dict[str, Any]]) -> None:
+        if self.patched:
+            raise client.ApiException(status=422, reason="the scheduling gate is already gone")
+        await super().patch_namespaced_pod(name=name, namespace=namespace, body=body)
+
+    async def read_namespaced_pod(self, *, name: str, namespace: str) -> Any:
+        return _pod(INFERENCE_POOL_ID, 0, node_name="gpu-3", gated=False)
+
 
 class PairingHarness:
     def __init__(self, *, layout: PairingLayout | None = None, rejects: dict[str, int] | None = None) -> None:
@@ -1390,6 +1403,19 @@ class TestEventSequences:
             await harness.upsert(_pod(INFERENCE_POOL_ID, 0, node_name="gpu-3", gated=False))
 
             assert harness.patched_names() == [_pod_name(INFERENCE_POOL_ID, 0)]
+
+    async def test_a_stale_reconcile_accepts_a_release_the_apiserver_already_applied(self):
+        """A queued pass may retain the old gate after the preceding patch already removed it."""
+        core_v1 = _StaleReleaseCoreV1()
+        controller = _attached(
+            _controller(core_v1),
+            [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)],
+        )
+
+        await controller.reconcile(_key(TRAINER_POOL_ID, 0))
+        await controller.reconcile(_key(TRAINER_POOL_ID, 0))
+
+        assert [name for name, _ in core_v1.patched] == [_pod_name(INFERENCE_POOL_ID, 0)]
 
     async def test_re_enters_safely_after_a_crash_before_the_patch_landed(self):
         """A controller that died before patching sees the same gated pod again and finishes the job."""

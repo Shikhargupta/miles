@@ -99,17 +99,30 @@ class PairingController:
             node_name,
             trainer_key,
         )
-        await self._core_v1.patch_namespaced_pod(
-            name=inference_pod.metadata.name,
-            namespace=self._config.namespace,
-            body=release_patch(
-                node_name=node_name,
-                base_gpu_id=base_gpu_id,
-                gates=gate_names(inference_pod),
-                has_node_selector=bool(inference_pod.spec.node_selector),
-                annotations=inference_pod.metadata.annotations,
-            ),
-        )
+        try:
+            await self._core_v1.patch_namespaced_pod(
+                name=inference_pod.metadata.name,
+                namespace=self._config.namespace,
+                body=release_patch(
+                    node_name=node_name,
+                    base_gpu_id=base_gpu_id,
+                    gates=gate_names(inference_pod),
+                    has_node_selector=bool(inference_pod.spec.node_selector),
+                    annotations=inference_pod.metadata.annotations,
+                ),
+            )
+        except client.ApiException as error:
+            if error.status != 422:
+                raise
+            try:
+                current = await self._core_v1.read_namespaced_pod(
+                    name=inference_pod.metadata.name,
+                    namespace=self._config.namespace,
+                )
+            except client.ApiException:
+                raise error
+            if is_gated(current):
+                raise error
 
     def key_of(self, pod: Pod) -> str:
         if (coord := coordinate_of(pod)) is not None and (key := self._trainer_key_of_coord.get(coord)) is not None:
