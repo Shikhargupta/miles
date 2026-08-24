@@ -21,6 +21,9 @@ def _args(**overrides) -> Namespace:
         titan_pp_size=1,
         use_dynamic_batch_size=False,
         micro_batch_size=1,
+        kl_coef=0.0,
+        use_kl_loss=False,
+        save_debug_train_data=None,
     )
     return Namespace(**{**base, **overrides})
 
@@ -48,6 +51,20 @@ def test_multi_document_microbatches_are_rejected():
 def test_pipeline_parallelism_is_rejected():
     with pytest.raises(ValueError, match="titan-pp-size"):
         validate_torchtitan_args(_args(titan_pp_size=2))
+
+
+def test_kl_options_are_rejected_while_there_is_no_reference_model():
+    """placement_group.py builds a ref model iff kl_coef != 0 or use_kl_loss, and the
+    torchtitan actor has none, so accepting either would train a different objective."""
+    with pytest.raises(ValueError, match="reference model"):
+        validate_torchtitan_args(_args(use_kl_loss=True))
+    with pytest.raises(ValueError, match="reference model"):
+        validate_torchtitan_args(_args(kl_coef=0.01))
+
+
+def test_debug_train_dump_is_rejected_rather_than_ignored():
+    with pytest.raises(ValueError, match="save-debug-train-data"):
+        validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
 def test_args_extend_rather_than_restate_the_common_training_options():
