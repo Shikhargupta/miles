@@ -1,12 +1,20 @@
 """torch API shims needed to import torchtitan in this image.
 
-torchtitan tracks a newer torch than miles can run: sglang pins ``torch==2.11.0``
-exactly, and the symbols below landed in 2.12. Each shim covers a symbol that
-torchtitan imports at module scope but only *uses* on a code path this backend
-never takes, and each raises if it is actually exercised -- so a future titan
-version that really needs one fails loudly instead of silently misbehaving.
+torchtitan tracks a newer torch than this image runs. Each shim covers a symbol
+that torchtitan imports at module scope but only *uses* on a code path this
+backend never takes, and each raises if it is actually exercised -- so a future
+titan version that really needs one fails loudly instead of silently misbehaving.
 
-Delete this module once the image moves to torch>=2.12 (gated on sglang).
+The image is on torch 2.11.0. Moving off it is ours to schedule rather than
+upstream's to deliver: sglang v0.5.18 already requires ``torch==2.13.0``, while
+``docker/build.py`` pins the base image to v0.5.16 and the Dockerfile layers the
+sglang-miles fork on it. Relaxing the version constraint alone would not work --
+``sgl_kernel``'s extensions link libtorch directly, so the whole image moves or
+nothing does.
+
+Delete this module once the image is on torch>=2.12, which is where
+``DataParallelMeshDims`` landed. Note that is *not* the same threshold as the
+attention backends -- see validate_torchtitan_args.
 """
 
 import logging

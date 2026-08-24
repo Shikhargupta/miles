@@ -31,9 +31,15 @@ def test_the_supported_configuration_passes():
     validate_torchtitan_args(_args())
 
 
-@pytest.mark.parametrize("backend", ["flex", "flex_flash", "varlen"])
-def test_attention_backends_needing_a_newer_torch_are_rejected(backend):
-    with pytest.raises(ValueError, match="torch>=2.12"):
+@pytest.mark.parametrize(
+    ("backend", "needed"),
+    [("flex", "2.13"), ("flex_flash", "2.13"), ("varlen", "2.12")],
+)
+def test_attention_backends_are_rejected_with_their_own_torch_threshold(backend, needed):
+    """flex and varlen do not unblock at the same torch version: varlen_attn(enable_gqa=)
+    is public from 2.12, create_block_mask(separate_full_blocks=) only from 2.13. Quoting
+    one threshold for both is how a 2.12 bump would drop the gate and break flex."""
+    with pytest.raises(ValueError, match=f"torch>={needed}"):
         validate_torchtitan_args(_args(titan_attn_backend=backend))
 
 

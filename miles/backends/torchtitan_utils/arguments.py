@@ -30,9 +30,10 @@ class TorchtitanArgs(FSDPArgs):
     titan_model_name: str = "qwen3"
     titan_model_flavor: str = "0.6B"
 
-    # "sdpa" | "flex" | "flex_flash" | "varlen". Only sdpa works on torch 2.11
-    # (flex/varlen call torch 2.12 APIs), and sdpa is causal-only, so packed
-    # multi-document microbatches need the torch bump -- see compat.py.
+    # "sdpa" | "flex" | "flex_flash" | "varlen". Only sdpa works on torch 2.11:
+    # varlen needs 2.12 for varlen_attn(enable_gqa=), flex needs 2.13 for
+    # create_block_mask(separate_full_blocks=). sdpa is causal-only, so packed
+    # multi-document microbatches wait on that bump -- see compat.py.
     titan_attn_backend: str = "sdpa"
 
     # Sequence length titan sizes its RoPE caches for; must cover the longest
@@ -64,9 +65,15 @@ def load_torchtitan_args(extra_args_provider=None):
 
 def validate_torchtitan_args(args) -> None:
     if args.titan_attn_backend != "sdpa":
+        # The two non-sdpa backends do not share a threshold, and getting this
+        # wrong is how someone bumps to 2.12, drops this gate and breaks flex:
+        # varlen_attn(enable_gqa=) is in 2.12, but create_block_mask's
+        # separate_full_blocks kwarg is only public from 2.13 (verified against
+        # the v2.12.0 and v2.13.0 tags).
+        needed = "2.13" if args.titan_attn_backend.startswith("flex") else "2.12"
         raise ValueError(
-            f"--titan-attn-backend {args.titan_attn_backend} needs torch>=2.12; this image pins "
-            "torch==2.11.0 (sglang requirement). Use sdpa."
+            f"--titan-attn-backend {args.titan_attn_backend} needs torch>={needed}; this image "
+            "runs torch 2.11.0. Use sdpa."
         )
     # sdpa applies a plain causal mask, so a microbatch holding more than one
     # document would let tokens attend across the document boundary.
