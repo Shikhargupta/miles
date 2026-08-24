@@ -10,6 +10,7 @@ checkpointer, and its HF state-dict mapping.
 import logging
 from argparse import Namespace
 
+import ray
 import torch
 import torch.distributed as dist
 
@@ -204,8 +205,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
         connect_engines_if_stale(self.weight_updater, self.rollout_manager, info)
         self.weight_updater.update_weights()
         if dist.get_rank() == 0:
-            import ray
-
             ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
         if self.args.ci_test:
             verify_engine_weight_version(self.weight_updater, info.rollout_engines)
