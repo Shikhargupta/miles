@@ -78,14 +78,12 @@ def validate_torchtitan_args(args) -> None:
         )
     if args.titan_pp_size != 1:
         raise ValueError("--titan-pp-size > 1 is not supported yet (the PP schedule owns the microbatch loop)")
-    # Mirrors placement_group.py's with_ref. The actor asserts this too, but from
-    # inside a Ray actor, where it surfaces as a wrapped RayTaskError after the
-    # engines have already started.
-    if args.kl_coef != 0 or args.use_kl_loss:
-        raise ValueError(
-            "The torchtitan backend has no reference model yet, so --use-kl-loss or a non-zero "
-            "--kl-coef would train a different objective than the one requested."
-        )
+    # The reference model is built once from --ref-load; refreshing it mid-run
+    # would need the actor-to-ref copy FSDP does, which this backend has not
+    # wired up. Silently ignoring the interval would quietly train against a
+    # stale reference.
+    if getattr(args, "ref_update_interval", None) is not None:
+        raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.save_debug_train_data is not None:
         raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
 

@@ -21,8 +21,7 @@ def _args(**overrides) -> Namespace:
         titan_pp_size=1,
         use_dynamic_batch_size=False,
         micro_batch_size=1,
-        kl_coef=0.0,
-        use_kl_loss=False,
+        ref_update_interval=None,
         save_debug_train_data=None,
     )
     return Namespace(**{**base, **overrides})
@@ -53,13 +52,12 @@ def test_pipeline_parallelism_is_rejected():
         validate_torchtitan_args(_args(titan_pp_size=2))
 
 
-def test_kl_options_are_rejected_while_there_is_no_reference_model():
-    """placement_group.py builds a ref model iff kl_coef != 0 or use_kl_loss, and the
-    torchtitan actor has none, so accepting either would train a different objective."""
-    with pytest.raises(ValueError, match="reference model"):
-        validate_torchtitan_args(_args(use_kl_loss=True))
-    with pytest.raises(ValueError, match="reference model"):
-        validate_torchtitan_args(_args(kl_coef=0.01))
+def test_periodic_reference_refresh_is_rejected_rather_than_ignored():
+    """The reference model is built once from --ref-load; the actor-to-ref copy FSDP
+    does on an interval is not wired up, and ignoring the flag would train against a
+    reference the user believes is being refreshed."""
+    with pytest.raises(ValueError, match="ref-update-interval"):
+        validate_torchtitan_args(_args(ref_update_interval=4))
 
 
 def test_debug_train_dump_is_rejected_rather_than_ignored():

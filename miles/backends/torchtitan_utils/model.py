@@ -168,11 +168,45 @@ def build_model(args: Namespace, spec, config, parallel_dims, device: torch.devi
         ac_config=config.activation_checkpoint,
         dump_folder=config.dump_folder,
     )
-    model.to_empty(device=device)
+    # Same split torchtitan's own trainer makes: an offloaded model materializes
+    # on CPU and takes its buffers on the accelerator, so hardcoding the
+    # non-offload branch would put the shards in the wrong place.
+    if config.training.enable_cpu_offload:
+        init_device, buffer_device = torch.device("cpu"), device
+    else:
+        init_device, buffer_device = device, None
+
+    model.to_empty(device=init_device)
     with torch.no_grad():
-        model.init_weights(buffer_device=None)
+        model.init_weights(buffer_device=buffer_device)
     model.train()
     return model_config, model
+
+
+def build_ref_model(args: Namespace, spec, config, parallel_dims, device: torch.device):
+    """A frozen second copy of the model, for reference log probs.
+
+    Parallelized with torchtitan's own ``enable_cpu_offload`` so the two models
+    do not both hold HBM: FSDP2 brings each shard up for the forward and puts it
+    back. The flag lives on the training config that ``parallelize_fn`` reads, so
+    it is set for this build and restored afterwards rather than copied -- the
+    config tree holds the model spec, which is not safe to deep-copy.
+    """
+    if not args.ref_load:
+        raise ValueError("--ref-load is required to build a torchtitan reference model")
+
+    was_offloaded = config.training.enable_cpu_offload
+    config.training.enable_cpu_offload = True
+    try:
+        ref_model_config, ref_model = build_model(args, spec, config, parallel_dims, device)
+    finally:
+        config.training.enable_cpu_offload = was_offloaded
+
+    load_hf_weights(spec, ref_model_config, ref_model, args.ref_load)
+    ref_model.eval()
+    ref_model.requires_grad_(False)
+    logger.info(f"Built a CPU-offloaded torchtitan reference model from {args.ref_load}")
+    return ref_model
 
 
 def load_hf_weights(spec, model_config, model, hf_checkpoint: str):

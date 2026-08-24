@@ -18,11 +18,14 @@ from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.model import (
     build_engine_config,
     build_model,
+    build_ref_model,
     load_hf_weights,
     resolve_model_spec,
 )
 from miles.backends.torchtitan_utils.parallel import build_parallel_dims, create_titan_parallel_state
 from miles.backends.torchtitan_utils.weight_bridge import TitanUpdateWeightFromTensor
+from miles.backends.training_utils import checkpoint
+from miles.backends.training_utils.checkpoint import ModelState
 from miles.backends.training_utils.data import get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import log_rollout_data
 from miles.backends.training_utils.loss import compute_advantages_and_returns
@@ -34,8 +37,6 @@ from miles.backends.training_utils.torch_native_loop import (
     run_log_probs,
     run_optimizer_steps,
 )
-from miles.backends.training_utils import checkpoint
-from miles.backends.training_utils.checkpoint import ModelState
 from miles.backends.training_utils.weight_sync import connect_engines_if_stale, verify_engine_weight_version
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
@@ -65,7 +66,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         assert recv_ckpt_src_rank is None, "torchtitan backend does not support checkpoint healing"
-        assert not with_ref, "torchtitan backend does not support a reference model yet"
         assert not with_opd_teacher, "torchtitan backend does not support on-policy distillation yet"
 
         parallel_dims = build_parallel_dims(args)
@@ -73,6 +73,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
         torch.manual_seed(args.seed)
 
         self.train_parallel_config = {"dp_size": get_parallel_state().intra_dp.size}
+        self.ref_model = None
         if args.debug_rollout_only:
             return 0
 
@@ -100,6 +101,11 @@ class TorchtitanTrainRayActor(TrainRayActor):
             optimizers=self.optimizers, training_steps=max(args.num_rollout, 1)
         )
         self.titan_config = config
+
+        # Built after the actor so the two never race for HBM during init; it is
+        # CPU-offloaded, so it costs host memory rather than device memory.
+        if with_ref:
+            self.ref_model = build_ref_model(args, spec, config, parallel_dims, device)
 
         self.weight_updater = TitanUpdateWeightFromTensor(args, self.model, self.sd_adapter)
 
@@ -173,6 +179,18 @@ class TorchtitanTrainRayActor(TrainRayActor):
         data_iterator = data_iterators[0]
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
 
+        if self.ref_model is not None:
+            rollout_data.update(
+                run_log_probs(
+                    self.args,
+                    data_iterator,
+                    num_microbatches,
+                    self._ref_forward_logits,
+                    profiler=self.prof,
+                    store_prefix="ref_",
+                )
+            )
+
         rollout_data.update(
             run_log_probs(
                 self.args,
@@ -198,6 +216,11 @@ class TorchtitanTrainRayActor(TrainRayActor):
             )
 
         self.prof.step(rollout_id=rollout_id)
+
+    def _ref_forward_logits(self, batch: dict) -> torch.Tensor:
+        """The frozen reference model's forward. It is CPU-offloaded, so FSDP2
+        stages each shard onto the device for this pass and releases it after."""
+        return self.ref_model(batch["tokens"], positions=batch["position_ids"])
 
     def _forward_logits(self, batch: dict) -> torch.Tensor:
         """One model forward. ``positions`` restart per document, which is how
