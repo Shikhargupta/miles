@@ -96,6 +96,16 @@ def build_model(args: Namespace, spec, config, parallel_dims, device: torch.devi
     model_config = spec.model
     model_config.update_from_config(config=config)
 
+    if args.titan_num_layers:
+        available = len(model_config.layers)
+        if args.titan_num_layers > available:
+            raise ValueError(
+                f"--titan-num-layers {args.titan_num_layers} exceeds the "
+                f"{args.titan_model_flavor} flavor's {available} blocks"
+            )
+        model_config.layers = model_config.layers[: args.titan_num_layers]
+        logger.info(f"Truncated {args.titan_model_flavor} to {args.titan_num_layers} of {available} blocks")
+
     with torch.device("meta"), utils.set_default_dtype(TORCH_DTYPE_MAP[config.training.dtype]):
         model = model_config.build()
 

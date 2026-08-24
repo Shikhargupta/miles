@@ -33,6 +33,13 @@ class TorchtitanArgs(FSDPArgs):
     # packed microbatch (prompt + response).
     titan_seq_len: int = 4096
 
+    # Truncate the built model to the first N transformer blocks (0 = keep all).
+    # For loading a few-layer cutdown of a large checkpoint, whose depth has to
+    # match exactly. Structural validation only: per-block init scaling was
+    # already computed for the full depth, which is harmless because real weights
+    # overwrite it, but it makes a from-scratch run with this flag meaningless.
+    titan_num_layers: int = 0
+
     titan_tp_size: int = 1
     titan_pp_size: int = 1
     titan_cp_size: int = 1
