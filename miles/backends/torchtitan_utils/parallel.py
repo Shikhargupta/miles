@@ -56,6 +56,25 @@ def build_parallel_dims(args: Namespace):
     )
 
 
+def _dp_cp_gloo_group(dp_cp_size: int):
+    """The gloo group covering the DP-CP ranks.
+
+    Only the world-wide gloo group exists (``init_gloo_group`` creates one), and
+    ``GroupInfo`` checks that an attached group's size matches. That holds while
+    DP-CP spans every rank, which is any topology without model parallelism.
+    A narrower DP-CP group would need a matching gloo subgroup, and building one
+    per mesh is a collective every rank has to participate in for every mesh --
+    not yet done, so refuse it rather than attach a mismatched group.
+    """
+    if dp_cp_size == dist.get_world_size():
+        return get_gloo_group()
+    raise NotImplementedError(
+        f"torchtitan backend: DP-CP spans {dp_cp_size} of {dist.get_world_size()} ranks, which needs a "
+        "gloo subgroup over those ranks. Model parallelism (--titan-tp-size / --titan-pp-size / "
+        "--titan-ep-size) is not supported yet."
+    )
+
+
 def create_titan_parallel_state(parallel_dims) -> ParallelState:
     """Map titan's meshes onto ParallelState.
 
@@ -73,13 +92,14 @@ def create_titan_parallel_state(parallel_dims) -> ParallelState:
             fields[field] = trivial
             continue
         group = mesh.get_group()
+        size = dist.get_world_size(group=group)
         fields[field] = GroupInfo(
             rank=dist.get_rank(group=group),
-            size=dist.get_world_size(group=group),
+            size=size,
             group=group,
-            # the DP-CP group is the one shared helpers reduce metrics over, and
-            # some of those reductions are object-based (gloo, not nccl).
-            gloo_group=get_gloo_group() if field == "intra_dp_cp" else None,
+            # Shared helpers reduce metrics over the DP-CP group, and some of
+            # those reductions are object-based, which needs a gloo group.
+            gloo_group=_dp_cp_gloo_group(size) if field == "intra_dp_cp" else None,
         )
 
     meshes = {name: parallel_dims.get_mesh(name) for name in ("fsdp",) if parallel_dims.get_optional_mesh(name)}
