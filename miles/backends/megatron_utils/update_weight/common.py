@@ -13,6 +13,8 @@ from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_sync import begin_weight_update as _begin_weight_update
 from miles.backends.training_utils.weight_sync import end_weight_update as _end_weight_update
+from miles.backends.training_utils.weight_sync import pause_engines as _pause_engines
+from miles.backends.training_utils.weight_sync import resume_engines as _resume_engines
 from miles.backends.training_utils.weight_sync import weight_update_selector as _weight_update_selector
 from miles.utils.types import ParamInfo
 
@@ -414,6 +416,8 @@ def collect_named_tensors_for_weight_transfer(
 # site Megatron's updaters already use.
 begin_weight_update = _begin_weight_update
 end_weight_update = _end_weight_update
+pause_engines = _pause_engines
+resume_engines = _resume_engines
 weight_update_selector = _weight_update_selector
 
 

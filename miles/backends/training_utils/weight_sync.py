@@ -45,6 +45,23 @@ def end_weight_update(rollout_engines: Sequence[ActorHandle]) -> None:
     ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
 
 
+def pause_engines(args: Namespace, rollout_engines: Sequence[ActorHandle]) -> None:
+    """Quiesce the engines for a weight write, honoring ``--pause-generation-mode``.
+
+    in_place freezes requests and resumes them against their existing KV cache, so
+    flushing here would discard exactly what that mode preserves.
+    """
+    mode = args.pause_generation_mode
+    ray.get([engine.pause_generation.remote(mode=mode) for engine in rollout_engines])
+    if mode != "in_place":
+        ray.get([engine.flush_cache.remote() for engine in rollout_engines])
+
+
+def resume_engines(rollout_engines: Sequence[ActorHandle]) -> None:
+    """Let the engines serve again."""
+    ray.get([engine.continue_generation.remote() for engine in rollout_engines])
+
+
 def weight_update_selector(args: Namespace) -> str:
     """Exclude the draft model only when the trainer provably has no MTP block to send."""
     if (
@@ -77,14 +94,9 @@ def weight_push_session(
     error propagate keeps the failure loud. The training step is dying either way.
     """
     is_driver = dist.get_rank() == 0
-    mode = args.pause_generation_mode
 
     if is_driver:
-        ray.get([engine.pause_generation.remote(mode=mode) for engine in rollout_engines])
-        # in_place freezes requests and resumes them against their existing KV
-        # cache, so flushing here would discard exactly what that mode preserves.
-        if mode != "in_place":
-            ray.get([engine.flush_cache.remote() for engine in rollout_engines])
+        pause_engines(args, rollout_engines)
         if announce:
             begin_weight_update(rollout_engines, weight_update_selector(args))
     dist.barrier(group=get_gloo_group())
@@ -95,7 +107,7 @@ def weight_push_session(
     if is_driver:
         if announce:
             end_weight_update(rollout_engines)
-        ray.get([engine.continue_generation.remote() for engine in rollout_engines])
+        resume_engines(rollout_engines)
     dist.barrier(group=get_gloo_group())
 
 

@@ -23,7 +23,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
-from ..common import _check_weight_sync_results
+from ..common import _check_weight_sync_results, pause_engines, resume_engines
 from .mixin import DistBucketedWeightUpdateMixin
 
 logger = logging.getLogger(__name__)
@@ -249,10 +249,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         if dist.get_rank() == 0:
             pulls = ray.get([engine.pull_weights.remote(self.weight_version) for engine in self.rollout_engines])
             _check_weight_sync_results(pulls, is_lora=False)
-            mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            if mode != "in_place":
-                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            pause_engines(self.args, self.rollout_engines)
             results = ray.get(
                 [
                     engine.update_weights_from_disk.remote(
@@ -263,7 +260,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 ]
             )
             _check_weight_sync_results(results, is_lora=False)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            resume_engines(self.rollout_engines)
         dist.barrier(group=get_gloo_group())
 
     def _encode_delta(self) -> None:

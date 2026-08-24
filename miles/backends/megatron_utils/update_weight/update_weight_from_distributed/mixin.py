@@ -22,6 +22,8 @@ from ..common import (
     get_atomic_update_groups,
     get_named_value_update_units,
     is_routed_expert_param,
+    pause_engines,
+    resume_engines,
     weight_update_selector,
 )
 from ..hf_weight_iterator_base import HfWeightIteratorBase
@@ -310,11 +312,7 @@ class DistBucketedWeightUpdateMixin:
         """Pause rollout engines, flush cache, and open the weight-update session."""
         self._weight_update_selector = weight_update_selector(self.args)
         if dist.get_rank() == 0:
-            mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            if mode != "in_place":
-                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-
+            pause_engines(self.args, self.rollout_engines)
             begin_weight_update(self.rollout_engines, self._weight_update_selector)
 
     def _finalize_and_resume_engines(self) -> None:
@@ -328,7 +326,7 @@ class DistBucketedWeightUpdateMixin:
                 ]
             )
             end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            resume_engines(self.rollout_engines)
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear ``update_weight_metrics``. Drained by the actor onto the step log;
