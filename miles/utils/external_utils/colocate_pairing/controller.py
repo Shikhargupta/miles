@@ -120,7 +120,7 @@ class PairingController:
                     namespace=self._config.namespace,
                 )
             except client.ApiException:
-                raise error
+                raise error from None
             if is_gated(current):
                 raise error
 
