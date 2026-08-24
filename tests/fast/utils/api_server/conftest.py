@@ -23,6 +23,7 @@ class MockCellState:
         is_suspended: bool = False,
         suspend_error: Exception | None = None,
         resume_error: Exception | None = None,
+        workers_hash: str = "pseudo-hash-1",
     ) -> None:
         self.phase = phase
         self.conditions = conditions or [
@@ -32,6 +33,7 @@ class MockCellState:
         self.is_suspended = is_suspended
         self.suspend_error = suspend_error
         self.resume_error = resume_error
+        self.workers_hash = workers_hash
         self.suspend_calls: int = 0
         self.resume_calls: int = 0
 
@@ -63,7 +65,7 @@ class MockHandler(_CellHandler):
     async def get_cell(self, cell_id: str) -> Cell:
         state = self.cells[cell_id]
         return Cell(
-            metadata=self._compute_metadata(cell_id),
+            metadata=self._compute_metadata(cell_id, workers_hash=state.workers_hash),
             spec=CellSpec(suspend=state.is_suspended),
             status=CellStatus(
                 phase=state.phase,
