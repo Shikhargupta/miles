@@ -146,10 +146,18 @@ def load_hf_weights(spec, model_config, model, hf_checkpoint: str):
     dcp.load(hf_state_dict, storage_reader=sd_adapter.get_hf_storage_reader(hf_checkpoint, False))
     result = model.load_state_dict(sd_adapter.from_hf(hf_state_dict), strict=False)
 
-    if result.missing_keys:
+    # An HF checkpoint carries parameters, not the model's runtime buffers: a
+    # torchtitan MoE keeps its aux-loss-free load-balancing bias (expert_bias_E)
+    # as a buffer that init_weights already set up, and no HF export contains it.
+    # So a missing parameter is a real failure; a missing buffer is expected.
+    parameter_names = {name for name, _ in model.named_parameters()}
+    unloaded = [key for key in result.missing_keys if key in parameter_names]
+    if unloaded:
         raise RuntimeError(
-            f"HF checkpoint {hf_checkpoint} did not populate {len(result.missing_keys)} parameter(s), "
-            f"e.g. {result.missing_keys[:5]}"
+            f"HF checkpoint {hf_checkpoint} did not populate {len(unloaded)} parameter(s), e.g. {unloaded[:5]}"
         )
+    skipped_buffers = len(result.missing_keys) - len(unloaded)
+    if skipped_buffers:
+        logger.info(f"{skipped_buffers} runtime buffer(s) kept their initialized values (absent from the HF export)")
     logger.info(f"Loaded HF weights from {hf_checkpoint} ({len(hf_state_dict)} tensors)")
     return sd_adapter
