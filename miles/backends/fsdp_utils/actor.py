@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.training_utils import checkpoint
 from miles.backends.training_utils.data import DataIterator, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import (
     log_rollout_data,
@@ -36,7 +37,6 @@ from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
-from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
 from .adaptations.packing import apply_packing
 from .adaptations.post_load_fixups import apply_post_load_fixups

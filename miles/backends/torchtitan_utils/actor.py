@@ -34,6 +34,8 @@ from miles.backends.training_utils.torch_native_loop import (
     run_log_probs,
     run_optimizer_steps,
 )
+from miles.backends.training_utils import checkpoint
+from miles.backends.training_utils.checkpoint import ModelState
 from miles.backends.training_utils.weight_sync import connect_engines_if_stale, verify_engine_weight_version
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
@@ -101,6 +103,10 @@ class TorchtitanTrainRayActor(TrainRayActor):
 
         self.weight_updater = TitanUpdateWeightFromTensor(args, self.model, self.sd_adapter)
 
+        self.global_step = 0
+        self.micro_step = 0
+        checkpoint.finalize_load(self, checkpoint.load(self))
+
         clear_memory()
         if args.offload_train:
             self.sleep()
@@ -127,10 +133,19 @@ class TorchtitanTrainRayActor(TrainRayActor):
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 
+    def checkpoint_parts(self):
+        """torchtitan's optimizer and LR-scheduler containers are already Stateful."""
+        return {
+            "model": ModelState(self.model),
+            "optimizer": self.optimizers,
+            "lr_scheduler": self.lr_schedulers,
+        }
+
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only or self.args.save is None:
             return
-        raise NotImplementedError("torchtitan checkpoint saving is not wired up yet")
+        assert not self.args.async_save, "TorchtitanTrainRayActor does not support async_save yet."
+        checkpoint.save(self, rollout_id)
 
     def train(
         self,

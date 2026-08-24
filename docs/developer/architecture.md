@@ -50,7 +50,8 @@ miles/
 │   ├── sglang_utils/     # SGLang engine wrapper + argument glue
 │   └── training_utils/   # what the backends share: loss.py / loss_hub/, ParallelState,
 │                         # weight_sync.py (engine handshake), torch_native_loop.py,
-│                         # model_assets.py, log + CI checkers
+│                         # checkpoint.py (DCP save/resume), model_assets.py,
+│                         # log + CI checkers
 ├── ray/                  # Ray actors, placement groups, train/ and rollout/ groups
 ├── rollout/
 │   ├── sglang_rollout.py # legacy v1 rollout function
