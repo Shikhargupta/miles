@@ -470,6 +470,40 @@ def _do_nothing(cell: dict, rng: random.Random) -> None:
 
 
 class TestRolloutQuiescence:
+    def test_a_serving_window_after_a_stable_alive_streak_allows_injection(self) -> None:
+        """Normal rollout pauses must not erase the stale-health witness before the next serving window."""
+        injected: list[str] = []
+        stop_event = threading.Event()
+        polls = {"n": 0}
+
+        def fake_get(url: str, timeout: float) -> MagicMock:
+            polls["n"] += 1
+            serving = polls["n"] == 4
+            if polls["n"] >= 5:
+                stop_event.set()
+            return mock_response(
+                {
+                    "items": [
+                        typed_cell("rollout-engine-0", "rollout", serving=serving),
+                        typed_cell("rollout-engine-1", "rollout", serving=serving),
+                    ]
+                }
+            )
+
+        def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+            injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+            return mock_response({})
+
+        _run_injection_loop(
+            fake_get=fake_get,
+            fake_post=fake_post,
+            cell_types=("rollout",),
+            quiescent_polls_required=3,
+            stop_event=stop_event,
+        )
+
+        assert len(injected) == 1
+
     def test_an_engine_that_is_not_in_the_router_blocks_its_kind(self) -> None:
         """A relaunched engine reads Healthy long before it can answer, so its kind is still recovering."""
         injected = _run_typed_injection_loop(

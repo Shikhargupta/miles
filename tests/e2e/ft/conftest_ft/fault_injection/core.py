@@ -65,7 +65,7 @@ def run_fault_injection_loop(
             cells_of_type[cell_type_of(cell)].append(cell)
         for cell_type, kind_cells in sorted(cells_of_type.items()):
             max_num_cells_of_cell_type[cell_type] = max(max_num_cells_of_cell_type[cell_type], len(kind_cells))
-            if _kind_is_quiescent(kind_cells, expected_num_cells=max_num_cells_of_cell_type[cell_type]):
+            if _kind_is_stably_alive(kind_cells, expected_num_cells=max_num_cells_of_cell_type[cell_type]):
                 quiescent_polls_of_cell_type[cell_type] += 1
             else:
                 quiescent_polls_of_cell_type[cell_type] = 0
@@ -81,7 +81,9 @@ def run_fault_injection_loop(
         ready_types = [
             kind
             for kind in due_types
-            if quiescent_polls_of_cell_type[kind] >= quiescent_polls_required and len(cells_of_type[kind]) > 1
+            if quiescent_polls_of_cell_type[kind] >= quiescent_polls_required
+            and len(cells_of_type[kind]) > 1
+            and all(_cell_can_serve(cell) for cell in cells_of_type[kind])
         ]
         if not ready_types:
             logger.info(
@@ -117,10 +119,10 @@ def run_fault_injection_loop(
         logger.info("Injected fault %s into %s", form.name, cell_name)
 
 
-def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:
+def _kind_is_stably_alive(kind_cells: list[dict], *, expected_num_cells: int) -> bool:
     if not kind_cells or len(kind_cells) < expected_num_cells:
         return False
-    return all(cell_is_alive(cell) and _cell_can_serve(cell) for cell in kind_cells)
+    return all(cell_is_alive(cell) for cell in kind_cells)
 
 
 def _cell_can_serve(cell: dict) -> bool:
