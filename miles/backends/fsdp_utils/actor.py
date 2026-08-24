@@ -1,27 +1,27 @@
 import logging
+from functools import partial
 import os
 import random
 from argparse import Namespace
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from typing import TYPE_CHECKING
 
 import ray
 import torch
 import torch.distributed as dist
-from tqdm import tqdm
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
-from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
+from miles.backends.training_utils.data import DataIterator, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import (
-    aggregate_forward_results,
     log_rollout_data,
 )
-from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy
+from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native_loop import (
     StepMetrics,
     clip_and_report,
+    run_log_probs,
     run_optimizer_steps,
 )
 from miles.ray.train_actor import TrainRayActor
@@ -354,84 +354,50 @@ class FSDPTrainRayActor(TrainRayActor):
         num_microbatches: list[int],
         store_prefix: str = "",
     ) -> dict[str, list[torch.Tensor]]:
-        """Compute token log-probabilities over the data iterator. Uses the separate ref model when
-        ``model_tag == "ref"`` (loaded CPU->GPU on demand, offloaded after); keyed by f"{store_prefix}log_probs"."""
-        if model_tag == "ref" and self.ref_model is not None:
-            if not self.fsdp_cpu_offload:
-                self.model.cpu()
-                torch.cuda.empty_cache()
-                dist.barrier(group=get_gloo_group())
+        """Token log-probabilities over the rollout, from the actor or the reference model."""
+        with self._active_model(model_tag) as model:
+            return run_log_probs(
+                self.args,
+                data_iterator,
+                num_microbatches,
+                partial(self._logprob_forward, model),
+                profiler=self.prof,
+                store_prefix=store_prefix,
+            )
 
-            active_model = self.ref_model
-            active_model.eval()
-        else:
-            active_model = self.model
+    @contextmanager
+    def _active_model(self, model_tag: str):
+        """Yield the model that owns this pass.
 
+        The reference model is a separate FSDP2 module, so both cannot be
+        resident at once unless FSDP is already offloading: park the actor on the
+        host for the duration of the reference pass and bring it back after. The
+        barriers keep the ranks from racing each other's device moves.
+        """
+        if model_tag != "ref" or self.ref_model is None:
+            yield self.model
+            return
+
+        if not self.fsdp_cpu_offload:
+            self.model.cpu()
+            torch.cuda.empty_cache()
+            dist.barrier(group=get_gloo_group())
+        self.ref_model.eval()
         try:
-            forward_data_store = []
-            data_iterator.reset()
-
-            with timer(f"{store_prefix}log_probs"), torch.no_grad():
-                num_steps_per_rollout = len(num_microbatches)
-                for step_id in range(num_steps_per_rollout):
-                    for _ in self.prof.iterate_train_log_probs(
-                        tqdm(
-                            range(num_microbatches[step_id]),
-                            desc=f"{store_prefix}log_probs",
-                            disable=dist.get_rank() != 0,
-                        )
-                    ):
-                        forward_only_keys = [
-                            "tokens",
-                            "loss_masks",
-                            "multimodal_train_inputs",
-                            "total_lengths",
-                            "response_lengths",
-                            "max_seq_lens",
-                        ]
-                        batch = get_batch(
-                            data_iterator,
-                            forward_only_keys,
-                            self.args.data_pad_size_multiplier,
-                            self.args.qkv_format,
-                            get_position_ids=True,
-                        )
-
-                        model_args = self._get_model_inputs_args(batch)
-                        # keep logits in native bf16 (chunks upcast to fp32 downstream); avoids a full-vocab fp32 tensor (~5GB)
-                        with precision_forward_context(self.precision_policy):
-                            logits = active_model(**model_args).logits
-
-                        result = get_log_probs_and_entropy(
-                            logits=logits,
-                            args=self.args,
-                            unconcat_tokens=batch["unconcat_tokens"],
-                            total_lengths=batch["total_lengths"],
-                            response_lengths=batch["response_lengths"],
-                            with_entropy=(store_prefix == ""),
-                            max_seq_lens=batch.get("max_seq_lens", None),
-                        )
-
-                        batch_result = {
-                            f"{store_prefix}log_probs": result["log_probs"],
-                        }
-                        if store_prefix == "" and "entropy" in result:
-                            batch_result["entropy"] = result["entropy"]
-                        forward_data_store.append(batch_result)
-
-            rollout_data = aggregate_forward_results(forward_data_store, data_iterator, self.args, store_prefix)
-
-            return rollout_data
-
+            yield self.ref_model
         finally:
-            # Restore actor model if it was offloaded
-            if model_tag == "ref" and self.ref_model is not None:
-                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
+            dist.barrier(group=get_gloo_group())
+            if not self.fsdp_cpu_offload:
+                self.model.cuda()
                 dist.barrier(group=get_gloo_group())
 
-                if not self.fsdp_cpu_offload:
-                    self.model.cuda()
-                    dist.barrier(group=get_gloo_group())
+    def _logprob_forward(self, model: torch.nn.Module, batch: dict) -> torch.Tensor:
+        """No-grad forward. Logits stay in native bf16; the loss path upcasts
+        per-response chunks, which avoids a full-vocab fp32 tensor."""
+        model_args = self._get_model_inputs_args(batch)
+        with precision_forward_context(self.precision_policy):
+            return model(**model_args).logits
 
     def train(
         self,
