@@ -183,8 +183,11 @@ def load_hf_weights(spec, model_config, model, hf_checkpoint: str):
     # torchtitan MoE keeps its aux-loss-free load-balancing bias (expert_bias_E)
     # as a buffer that init_weights already set up, and no HF export contains it.
     # So a missing parameter is a real failure; a missing buffer is expected.
+    # Unwrap both sides rather than assume which convention missing_keys uses:
+    # comparing across the two silently matches nothing, which turns this check
+    # into a no-op that reports unloaded expert weights as skipped buffers.
     parameter_names = {_unwrapped_fqn(name) for name, _ in model.named_parameters()}
-    unloaded = [key for key in result.missing_keys if key in parameter_names]
+    unloaded = [key for key in result.missing_keys if _unwrapped_fqn(key) in parameter_names]
     if unloaded:
         raise RuntimeError(
             f"HF checkpoint {hf_checkpoint} did not populate {len(unloaded)} parameter(s), e.g. {unloaded[:5]}"
@@ -192,5 +195,8 @@ def load_hf_weights(spec, model_config, model, hf_checkpoint: str):
     skipped_buffers = len(result.missing_keys) - len(unloaded)
     if skipped_buffers:
         logger.info(f"{skipped_buffers} runtime buffer(s) kept their initialized values (absent from the HF export)")
-    logger.info(f"Loaded HF weights from {hf_checkpoint} ({len(hf_state_dict)} tensors)")
+    logger.info(
+        f"Loaded HF weights from {hf_checkpoint}: {len(hf_state_dict)} tensors requested, "
+        f"{len(parameter_names)} model parameters, {len(result.missing_keys)} keys unfilled"
+    )
     return sd_adapter
