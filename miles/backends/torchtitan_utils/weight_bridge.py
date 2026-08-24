@@ -52,12 +52,18 @@ class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
             self.wait_and_update_bucket_weights(bucket)
 
     def _iter_hf_weights(self):
-        """HF-named, fully materialized tensors.
+        """HF-named tensors, materialized one at a time.
 
-        ``to_hf`` may fuse or split tensors relative to the titan layout, so the
-        shards are gathered before the adapter sees them. Gathering goes through
-        the shared FSDP2 helper, which moves to CUDA first -- ``full_tensor()``
-        on a CPU DTensor selects a collective backend that is not registered.
+        ``to_hf`` runs on the sharded DTensors -- that is how torchtitan's own
+        checkpoint path calls it, since DCP consumes the shards directly. Only
+        the tensors handed to the transport are materialized, and the bucketing
+        in ``_stream_weights`` bounds how many are resident at once. Gathering the
+        whole state dict up front instead would put a full unsharded copy of the
+        model on every rank, which is fine for a 0.6B and fatal for a 30B.
+
+        Gathering goes through the shared FSDP2 helper, which moves to CUDA
+        first: ``full_tensor()`` on a CPU DTensor selects a collective backend
+        that is not registered.
         """
-        full_state = {name: gather_full_param(tensor) for name, tensor in self.model.state_dict().items()}
-        yield from self._sd_adapter.to_hf(full_state).items()
+        for name, tensor in self._sd_adapter.to_hf(self.model.state_dict()).items():
+            yield name, gather_full_param(tensor)
