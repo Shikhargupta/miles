@@ -12,8 +12,22 @@ from argparse import Namespace
 
 import torch
 import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.state_dict import get_model_state_dict
 
 logger = logging.getLogger(__name__)
+
+
+def titan_state_dict(model: torch.nn.Module) -> dict:
+    """The model's state dict under the FQNs torchtitan's adapters expect.
+
+    ``model.state_dict()`` keeps the wrapper prefixes that activation
+    checkpointing and FSDP insert (``layers.0._checkpoint_wrapped_module.moe...``),
+    and the state-dict adapters match on the unwrapped names. torchtitan reaches
+    them through DCP's ModelWrapper for the same reason. Dense models hid this:
+    they come back unwrapped, so only an AC-wrapped block (the MoE layers) shows
+    the mismatch.
+    """
+    return get_model_state_dict(model)
 
 
 def resolve_model_spec(args: Namespace):
@@ -142,7 +156,7 @@ def load_hf_weights(spec, model_config, model, hf_checkpoint: str):
         raise ValueError(f"torchtitan model {spec.name!r} has no state_dict_adapter; cannot load an HF checkpoint")
 
     sd_adapter = spec.state_dict_adapter(model_config, hf_checkpoint)
-    hf_state_dict = sd_adapter.to_hf(model.state_dict())
+    hf_state_dict = sd_adapter.to_hf(titan_state_dict(model))
     dcp.load(hf_state_dict, storage_reader=sd_adapter.get_hf_storage_reader(hf_checkpoint, False))
     result = model.load_state_dict(sd_adapter.from_hf(hf_state_dict), strict=False)
 

@@ -12,6 +12,7 @@ import torch
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.fsdp_utils.update_weight_utils import UpdateWeightFromTensor
+from miles.backends.torchtitan_utils.model import titan_state_dict
 from miles.backends.training_utils.weight_sync import weight_push_session
 
 logger = logging.getLogger(__name__)
@@ -65,5 +66,5 @@ class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
         first: ``full_tensor()`` on a CPU DTensor selects a collective backend
         that is not registered.
         """
-        for name, tensor in self._sd_adapter.to_hf(self.model.state_dict()).items():
+        for name, tensor in self._sd_adapter.to_hf(titan_state_dict(self.model)).items():
             yield name, gather_full_param(tensor)
