@@ -43,7 +43,7 @@ def run_fault_injection_loop(
         cell_type: _compute_next_injection_time(rng, mean_interval_seconds)
         for cell_type, mean_interval_seconds in sorted(mean_interval_seconds_of_cell_type.items())
     }
-    quiescent_polls_of_cell_type: dict[str, int] = dict.fromkeys(next_injection_time_of_cell_type, 0)
+    polls_since_last_injection_of_cell_type: dict[str, int] = dict.fromkeys(next_injection_time_of_cell_type, 0)
     max_num_cells_of_cell_type: dict[str, int] = dict.fromkeys(next_injection_time_of_cell_type, 0)
 
     while not stop_event.is_set():
@@ -65,32 +65,29 @@ def run_fault_injection_loop(
             cells_of_type[cell_type_of(cell)].append(cell)
         for cell_type, kind_cells in sorted(cells_of_type.items()):
             max_num_cells_of_cell_type[cell_type] = max(max_num_cells_of_cell_type[cell_type], len(kind_cells))
-            if _kind_is_stably_alive(kind_cells, expected_num_cells=max_num_cells_of_cell_type[cell_type]):
-                quiescent_polls_of_cell_type[cell_type] += 1
-            else:
-                quiescent_polls_of_cell_type[cell_type] = 0
+            polls_since_last_injection_of_cell_type[cell_type] += 1
 
         now: float = time.monotonic()
         due_types = sorted(kind for kind, due_at in next_injection_time_of_cell_type.items() if now >= due_at)
         if not due_types:
             continue
 
-        # Inject only at a quiescent point: every replica of the kind present and serving for long
-        # enough that the readings cannot all be stale. A due kind that is still recovering (or has
-        # no spare replica to survive the kill) waits for a later poll.
+        # Wait past the stale-status window after each injection, then inject only on a current
+        # snapshot with every known replica present and serving and a spare to survive the kill.
         ready_types = [
             kind
             for kind in due_types
-            if quiescent_polls_of_cell_type[kind] >= quiescent_polls_required
+            if polls_since_last_injection_of_cell_type[kind] >= quiescent_polls_required
+            and len(cells_of_type[kind]) == max_num_cells_of_cell_type[kind]
             and len(cells_of_type[kind]) > 1
-            and all(_cell_can_serve(cell) for cell in cells_of_type[kind])
+            and all(cell_is_alive(cell) and _cell_can_serve(cell) for cell in cells_of_type[kind])
         ]
         if not ready_types:
             logger.info(
-                "Deferring injection: no due cell kind is quiescent with a spare replica (due %s, "
-                "quiescent polls %s, replicas %s)",
+                "Deferring injection: no due cell kind has completed its cooldown with every replica ready "
+                "(due %s, cooldown polls %s, replicas %s)",
                 due_types,
-                {kind: quiescent_polls_of_cell_type[kind] for kind in due_types},
+                {kind: polls_since_last_injection_of_cell_type[kind] for kind in due_types},
                 {kind: len(cells_of_type[kind]) for kind in due_types},
             )
             continue
@@ -105,24 +102,18 @@ def run_fault_injection_loop(
             event_log.note_injection_attempt(
                 cell_name=cell_name, form_name=form.name, succeeded=False, harmed=form.harms_the_cell
             )
-            quiescent_polls_of_cell_type[cell_type] = 0
+            polls_since_last_injection_of_cell_type[cell_type] = 0
             logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
             continue
 
         event_log.note_injection_attempt(
             cell_name=cell_name, form_name=form.name, succeeded=True, harmed=form.harms_the_cell
         )
-        quiescent_polls_of_cell_type[cell_type] = 0
+        polls_since_last_injection_of_cell_type[cell_type] = 0
         next_injection_time_of_cell_type[cell_type] = _compute_next_injection_time(
             rng, mean_interval_seconds_of_cell_type[cell_type]
         )
         logger.info("Injected fault %s into %s", form.name, cell_name)
-
-
-def _kind_is_stably_alive(kind_cells: list[dict], *, expected_num_cells: int) -> bool:
-    if not kind_cells or len(kind_cells) < expected_num_cells:
-        return False
-    return all(cell_is_alive(cell) for cell in kind_cells)
 
 
 def _cell_can_serve(cell: dict) -> bool:
