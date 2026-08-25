@@ -469,32 +469,48 @@ class TitanTrainer(Trainer):
         if sd_adapter is None:
             sd_adapter = self.config.model_spec.state_dict_adapter(self.model_config, self.config.hf_assets_path)
         local = sd_adapter.to_hf({k: v for part in self.model_parts for k, v in part.state_dict().items()})
-        if not self.parallel_dims.pp_enabled:
-            for name, tensor in local.items():
-                yield name, gather_full_param(tensor)
+
+        # Which ranks hold which key. Two parallelisms make the export
+        # rank-partial: a pipeline stage exports only its own layers, and under
+        # expert parallelism the adapter names each rank's experts by their
+        # global index, so every rank exports a different slice of them.
+        # DTensor.shape is already the global shape, so the metadata describes
+        # the post-gather tensor.
+        world = dist.get_world_size()
+        local_meta = {name: (tuple(t.shape), str(t.dtype)) for name, t in local.items()}
+        gathered: list = [None] * world
+        dist.all_gather_object(gathered, local_meta)
+
+        if all(meta.keys() == local_meta.keys() for meta in gathered):
+            # Every rank exports the same keys: dp/tp/fsdp sharding is internal
+            # to each tensor and gather_full_param resolves it.
+            for name in sorted(local):
+                yield name, gather_full_param(local[name])
             return
 
-        pp_group = self.parallel_dims.get_mesh("pp").get_group()
-        my_index = dist.get_rank(pp_group)
-        # DTensor.shape is the global shape, so the metadata already describes
-        # the post-gather tensor.
-        local_meta = {name: (my_index, tuple(t.shape), t.dtype) for name, t in local.items()}
-        gathered: list = [None] * dist.get_world_size(pp_group)
-        dist.all_gather_object(gathered, local_meta, group=pp_group)
-        merged: dict = {}
-        for meta in gathered:
-            for name, entry in meta.items():
-                if name in merged:
-                    raise RuntimeError(f"{name} is owned by two pipeline stages")
-                merged[name] = entry
+        owners: dict[str, list[int]] = {}
+        specs: dict[str, tuple] = {}
+        for rank, meta in enumerate(gathered):
+            for name, (shape, dtype) in meta.items():
+                owners.setdefault(name, []).append(rank)
+                if specs.setdefault(name, (shape, dtype)) != (shape, dtype):
+                    raise RuntimeError(f"ranks disagree on the shape/dtype of {name}")
 
-        for name in sorted(merged):
-            owner, shape, dtype = merged[name]
-            if owner == my_index:
-                tensor = gather_full_param(local[name])
+        my_rank = dist.get_rank()
+        for name in sorted(owners):
+            shape, dtype = specs[name]
+            holders = owners[name]
+            # Every holder joins the gather -- they are exactly the ranks the
+            # tensor's own mesh spans, so the collective is complete. The
+            # lowest of them then broadcasts to the ranks that lack it;
+            # replicas (data parallelism) hold identical values after a step,
+            # so which holder broadcasts does not matter, only that it is
+            # agreed on.
+            if my_rank in holders:
+                tensor = gather_full_param(local[name]).contiguous()
             else:
-                tensor = torch.empty(shape, dtype=dtype, device=self.device)
-            dist.broadcast(tensor, src=dist.get_global_rank(pp_group, owner), group=pp_group)
+                tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=self.device)
+            dist.broadcast(tensor, src=holders[0])
             yield name, tensor
 
 

@@ -91,8 +91,7 @@ def validate_torchtitan_args(args) -> None:
         raise ValueError(
             "--titan-context-parallel-degree > 1 is not supported yet (loss-side CP integration pending)"
         )
-    if args.titan_expert_parallel_degree != 1:
-        raise ValueError("--titan-expert-parallel-degree > 1 waits on MoE support for this backend")
+
     # The reference model is built once from --ref-load; refreshing it mid-run
     # would need the actor-to-ref copy FSDP does, which this backend has not
     # wired up. Silently ignoring the interval would quietly train against a

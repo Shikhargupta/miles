@@ -16,6 +16,7 @@ import ray
 import torch
 import torch.distributed as dist
 
+from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.trainer import TitanTrainer, build_trainer_config
 from miles.backends.torchtitan_utils.weight_bridge import TitanUpdateWeightFromTensor
@@ -67,6 +68,8 @@ class TorchtitanTrainRayActor(TrainRayActor):
             dump_subdir="actor",
         )
 
+        routing_replay.enable(args)
+
         self.ref_runner = None
         if args.debug_rollout_only:
             set_parallel_state(create_titan_parallel_state(parallel_dims_from_config(config.parallelism)))
@@ -86,6 +89,8 @@ class TorchtitanTrainRayActor(TrainRayActor):
             )
         )
         self.train_parallel_config = {"dp_size": get_parallel_state().intra_dp.size}
+        # Actor only: registering twice would double the manager's stream list.
+        routing_replay.install(self.trainer.model_parts)
 
         # Tracking must live on the rank that produces the training metrics:
         # the loss (and with it ppo_kl and the train-rollout mismatch numbers)
@@ -190,36 +195,45 @@ class TorchtitanTrainRayActor(TrainRayActor):
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterators, num_microbatches = get_data_iterator(self.args, self.trainer.model_parts, rollout_data)
+        # Before unwrapping: fill_replay_data resets every iterator in the list.
+        routing_replay.fill(self.args, self.trainer.model_parts, data_iterators, num_microbatches, rollout_data)
         data_iterator = data_iterators[0]
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
 
         runner = self.trainer.step_runner()
 
         if self.ref_runner is not None:
+            # The reference model routes on its own weights: replaying the
+            # actor's routing into it would make the KL term measure routing
+            # rather than the policy.
+            with routing_replay.stage(routing_replay.FALLTHROUGH):
+                rollout_data.update(
+                    run_log_probs(
+                        self.args,
+                        data_iterator,
+                        num_microbatches,
+                        self.ref_runner,
+                        profiler=self.prof,
+                        store_prefix="ref_",
+                    )
+                )
+
+        with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
             rollout_data.update(
                 run_log_probs(
                     self.args,
                     data_iterator,
                     num_microbatches,
-                    self.ref_runner,
+                    runner,
                     profiler=self.prof,
-                    store_prefix="ref_",
                 )
             )
+        routing_replay.rewind()
 
-        rollout_data.update(
-            run_log_probs(
-                self.args,
-                data_iterator,
-                num_microbatches,
-                runner,
-                profiler=self.prof,
-            )
-        )
         compute_advantages_and_returns(self.args, rollout_data)
         log_rollout_data(rollout_id, self.args, rollout_data)
 
-        with timer("actor_train"):
+        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
             run_optimizer_steps(
                 self.args,
                 rollout_id,
@@ -228,6 +242,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
                 runner,
                 profiler=self.prof,
             )
+        routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
 
