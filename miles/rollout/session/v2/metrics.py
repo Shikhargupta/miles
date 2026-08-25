@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from miles.rollout.session.v2.tree_trajectory import TrajectoryNode
 
 
-def assign_session_rollout_metrics(args: Namespace, samples: list[Sample], nodes: list[TrajectoryNode]) -> None:
+def assign_node_metrics_to_sample_0(args: Namespace, samples: list[Sample], nodes: list[TrajectoryNode]) -> None:
     """Assign every committed generation's telemetry exactly once.
 
     The first returned sample is only a wire carrier. Consumers must aggregate
