@@ -6,8 +6,8 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
-from miles.backends.training_utils.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 

@@ -7,7 +7,7 @@ import torch
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
-from miles.backends.training_utils.hf_weight_iterator import (
+from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     HfWeightIteratorBase,
     WeightUpdatePlacement,
     resolve_placement,

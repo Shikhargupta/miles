@@ -21,8 +21,8 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from miles.backends.megatron_utils.lora_utils import is_lora_model, save_lora_checkpoint
 from miles.backends.megatron_utils.update_weight.common import named_params_and_buffers
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
-from miles.backends.training_utils.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER, load_hf_config
 from miles.utils.megatron_bridge_utils import patch_megatron_model
 

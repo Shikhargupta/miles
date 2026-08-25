@@ -16,13 +16,13 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from miles.backends.training_utils.hf_weight_iterator import (
+from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     HfWeightIteratorBase,
     WeightUpdatePlacement,
     resolve_placement,
 )
 
-_MODULE = "miles.backends.training_utils.hf_weight_iterator"
+_MODULE = "miles.backends.training_utils.weight_update.hf_weight_iterator"
 
 SAMPLE_LORA_WEIGHTS = [
     ("model.layers.0.self_attn.q_proj.lora_A.weight", torch.randn(4, 2)),

@@ -12,15 +12,14 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import build_lora_sync_config, lora_base_cpu_backup_enabled
-from miles.backends.training_utils.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
 from .hf_weight_iterator import get_hf_weight_iterator
-
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.backends.training_utils.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
 
 class TestHfWeightIteratorFactory:

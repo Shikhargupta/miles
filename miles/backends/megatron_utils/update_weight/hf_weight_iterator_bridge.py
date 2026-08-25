@@ -2,7 +2,7 @@ import dataclasses
 import json
 import os
 
-from miles.backends.training_utils.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.utils import megatron_bridge_utils
 from miles.utils.lora import is_lora_weight_name
 
