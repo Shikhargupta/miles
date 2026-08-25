@@ -23,9 +23,27 @@ class _RunOutcome(FrozenStrictBaseModel):
     reason: str
 
 
-def wait_for_run(*, state_file: str | Path, read_pod_phase: Callable[[], str | None]) -> _RunOutcome:
+def wait_for_run(
+    *,
+    state_file: str | Path,
+    read_pod_phase: Callable[[], str | None],
+    read_active_state_file: Callable[[], Path | None],
+) -> _RunOutcome:
+    state_file = Path(state_file)
     missing_polls = 0
     while True:
+        try:
+            active_state_file = read_active_state_file()
+        except Exception:
+            logger.warning("Could not read the active orchestrator generation; retrying", exc_info=True)
+            time.sleep(_POLL_INTERVAL_SECONDS)
+            continue
+
+        if active_state_file is not None and active_state_file != state_file:
+            logger.info(f"The active orchestrator generation moved from {state_file} to {active_state_file}")
+            state_file = active_state_file
+            missing_polls = 0
+
         try:
             phase = read_pod_phase()
         except Exception:

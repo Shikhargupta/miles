@@ -249,6 +249,7 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
         outcome = wait_for_run(
             state_file=state_file,
             read_pod_phase=lambda: pod_phase(namespace, orchestrator_workload),
+            read_active_state_file=lambda: _active_state_file(release=release, namespace=namespace),
         )
 
     if outcome.exit_code != 0:
@@ -327,6 +328,21 @@ def _carried_state_file(*, installed_manifest: Manifest | None, release: str) ->
         f"is watching; uninstall it, or launch under a new run id"
     )
     return attached_state_file
+
+
+def _active_state_file(*, release: str, namespace: str) -> Path | None:
+    object_name = RunNames.orchestrator_object(release=release)
+    result = Kubectl.run_raw("get", "statefulset", object_name, "--namespace", namespace, "--output", "yaml")
+    if result.returncode != 0:
+        if "not found" in (result.stderr + result.stdout).lower():
+            return None
+        raise RuntimeError(
+            f"Cannot read the active orchestrator generation of {release}: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+    manifest = Manifest.parse(result.stdout, namespace=namespace)
+    return _carried_state_file(installed_manifest=manifest, release=release)
 
 
 def _assert_upgrade_is_allowed(

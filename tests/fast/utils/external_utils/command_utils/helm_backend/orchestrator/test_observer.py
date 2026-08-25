@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 
 from miles.utils.external_utils.command_utils.helm_backend.naming import _orchestrator_state_path
@@ -111,6 +112,49 @@ class TestComputeRunOutcome:
 
 
 class TestWaitForRun:
+    def test_follows_the_replacement_orchestrator_generation(self, tmp_path, monkeypatch):
+        """A hot restart's old SIGTERM verdict must not finish the replacement generation."""
+        old_path = _orchestrator_state_path(tmp_path, "old")
+        new_path = _orchestrator_state_path(tmp_path, "new")
+        _write(old_path, OrchestratorStatus.EXITED, exit_code=143)
+        _write(new_path, OrchestratorStatus.STARTED)
+        active_paths = iter((new_path, new_path))
+
+        def sleep(seconds: float) -> None:
+            _write(new_path, OrchestratorStatus.EXITED, exit_code=0)
+
+        monkeypatch.setattr(observer.time, "sleep", sleep)
+        outcome = observer.wait_for_run(
+            state_file=old_path,
+            read_pod_phase=lambda: "Running",
+            read_active_state_file=lambda: next(active_paths),
+        )
+
+        assert outcome.exit_code == 0
+
+    def test_does_not_accept_a_verdict_without_confirming_the_active_generation(self, tmp_path, monkeypatch):
+        """A failed identity lookup cannot turn a replaced orchestrator's verdict into the run verdict."""
+        old_path = _orchestrator_state_path(tmp_path, "old")
+        new_path = _orchestrator_state_path(tmp_path, "new")
+        _write(old_path, OrchestratorStatus.EXITED, exit_code=143)
+        _write(new_path, OrchestratorStatus.EXITED, exit_code=0)
+        reads = iter((RuntimeError("unreachable"), new_path))
+
+        def read_active_state_file() -> Path:
+            result = next(reads)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
+        outcome = observer.wait_for_run(
+            state_file=old_path,
+            read_pod_phase=lambda: "Running",
+            read_active_state_file=read_active_state_file,
+        )
+
+        assert outcome.exit_code == 0
+
     def test_polls_until_an_outcome_appears(self, tmp_path, monkeypatch):
         """The launcher blocks like ray submit does, so it must keep looking rather than check once."""
         path = _state_file(tmp_path)
@@ -123,7 +167,11 @@ class TestWaitForRun:
                 _write(path, OrchestratorStatus.EXITED, exit_code=0)
 
         monkeypatch.setattr(observer.time, "sleep", sleep)
-        outcome = observer.wait_for_run(state_file=path, read_pod_phase=lambda: "Running")
+        outcome = observer.wait_for_run(
+            state_file=path,
+            read_pod_phase=lambda: "Running",
+            read_active_state_file=lambda: path,
+        )
 
         assert outcome.exit_code == 0
         assert sleeps == [observer._POLL_INTERVAL_SECONDS] * 3
@@ -141,7 +189,11 @@ class TestWaitForRun:
             raise RuntimeError("the api server is unreachable")
 
         monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
-        outcome = observer.wait_for_run(state_file=path, read_pod_phase=unreachable_until_the_run_finishes)
+        outcome = observer.wait_for_run(
+            state_file=path,
+            read_pod_phase=unreachable_until_the_run_finishes,
+            read_active_state_file=lambda: path,
+        )
 
         assert outcome.exit_code == 0
 
@@ -152,6 +204,10 @@ class TestWaitForRun:
 
         monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
         with caplog.at_level(logging.INFO, logger=observer.__name__):
-            observer.wait_for_run(state_file=path, read_pod_phase=lambda: "Failed")
+            observer.wait_for_run(
+                state_file=path,
+                read_pod_phase=lambda: "Failed",
+                read_active_state_file=lambda: path,
+            )
 
         assert "exit code 1" in caplog.text

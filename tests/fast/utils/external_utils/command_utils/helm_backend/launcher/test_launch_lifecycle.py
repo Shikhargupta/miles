@@ -10,7 +10,7 @@ from tests.fast.charts.utils import REPO_ROOT
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
-from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
     RESTART_AT_ANNOTATION,
     Manifest,
@@ -120,6 +120,7 @@ class TestBackgroundLogOrdering:
         monkeypatch.setattr(log_follower, "selected_pods", lambda namespace, selector: pods)
         monkeypatch.setattr(cluster_info, "pod_events", lambda *, namespace, pods: [])
         monkeypatch.setattr(entrypoint, "pod_phase", lambda namespace, workload: "Running")
+        monkeypatch.setattr(entrypoint, "_active_state_file", lambda *, release, namespace: state_file)
         with pytest.raises(SystemExit) as raised:
             entrypoint._follow_until_finished(release="myrun", namespace="myns", state_file=state_file)
 
@@ -286,6 +287,32 @@ class TestTheCarriedStateFile:
         carried = entrypoint._carried_state_file(installed_manifest=manifest, release=_RELEASE)
 
         assert carried == Path("/shared/attached.state")
+
+
+class TestTheActiveStateFile:
+    def test_reads_the_generation_from_the_live_statefulset(self, monkeypatch, tmp_path):
+        """The live template changes before Kubernetes terminates the orchestrator it replaces."""
+        state_file = tmp_path / "replacement.state"
+        manifest = _orchestrator_manifest(state_file=str(state_file), restart_at=_STAMP)
+        monkeypatch.setattr(
+            Kubectl,
+            "run_raw",
+            staticmethod(lambda *arguments: subprocess.CompletedProcess(arguments, 0, stdout=manifest, stderr="")),
+        )
+
+        assert entrypoint._active_state_file(release=_RELEASE, namespace="rl") == state_file
+
+    def test_a_deleted_release_has_no_active_generation(self, monkeypatch):
+        """A finished auto-uninstalled release must still leave its state file as the final verdict."""
+        monkeypatch.setattr(
+            Kubectl,
+            "run_raw",
+            staticmethod(
+                lambda *arguments: subprocess.CompletedProcess(arguments, 1, stdout="", stderr="NotFound")
+            ),
+        )
+
+        assert entrypoint._active_state_file(release=_RELEASE, namespace="rl") is None
 
 
 class TestAHotRestartOfARunThatIsUp:
