@@ -1,4 +1,4 @@
-"""Shared helpers for transfer protocols. Pairing decisions stay protocol-owned."""
+"""Shared helpers for weight-update protocols. Pairing decisions stay protocol-owned."""
 
 import torch.distributed as dist
 
@@ -6,7 +6,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
 
-def derive_replica_position(parallel_state: ParallelState, placement: WeightUpdatePlacement) -> tuple[int, int]:
+def get_data_replica_rank_and_size(parallel_state: ParallelState, placement: WeightUpdatePlacement) -> tuple[int, int]:
     """(replica_rank, replica_size): this rank's index among the ranks that hold
     identical data after gathering per ``placement``, and their count. Collective."""
     if placement.gather_pp:

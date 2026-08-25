@@ -17,7 +17,7 @@ from miles.backends.training_utils.weight_update.session import (
     unload_lora_adapter,
     weight_update_selector,
 )
-from miles.backends.training_utils.weight_update.transfer import derive_replica_position
+from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils.distributed_utils import init_process_group
 
 
@@ -53,7 +53,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         self._engine_gpu_counts = engine_gpu_counts
 
         # One sender per replica set; one NCCL group (sender + all engines) per shard.
-        replica_rank, _ = derive_replica_position(parallel_state, placement)
+        replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0
         shard = 0 if placement.gather_pp else parallel_state.pp.rank
         self.is_lora_sender = self.is_sender and shard == 0
