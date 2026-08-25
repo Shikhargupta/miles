@@ -62,6 +62,10 @@ from miles.backends.training_utils.torch_native_loop import StepMetrics  # noqa:
 
 logger = logging.getLogger(__name__)
 
+# FlexAttention's block size: torchtitan's context-parallel sharding requires the
+# query length to be divisible by cp_degree * this.
+_FLEX_BLOCK = 128
+
 
 def resolve_model_spec(args: Namespace):
     """The single model entry point: ``torchtitan.models.<name>.model_registry``."""
@@ -200,19 +204,34 @@ class RLLossAdapter(BaseLoss):
         self._mode = "train"
         self._results: dict[int, object] = {}
         self._cp_mesh = None
-        self._cp_restore: torch.Tensor | None = None
+        self._cp_restore: dict[int, torch.Tensor] = {}
 
-    def set_context_parallel(self, mesh, restore_indices: torch.Tensor) -> None:
+    def set_context_parallel(self, mesh) -> None:
         """Gather CP-sharded logits before the RL loss sees them.
 
         Context parallelism is internal to the trainer: miles' loss hub is
         handed full-length logits, so the memory it needs is the same as at
-        cp=1 while attention keeps CP's shorter sequences. ``restore_indices``
-        is torchtitan's own inverse of the load-balancing permutation, so the
-        gathered sequence comes back in natural order.
+        cp=1 while attention keeps CP's shorter sequences.
         """
         self._cp_mesh = mesh
-        self._cp_restore = restore_indices
+        self._cp_restore = {}
+
+    def _restore_indices(self, seq_len: int, device) -> torch.Tensor:
+        """torchtitan's inverse of its load-balancing permutation, per length.
+
+        Cached per sequence length rather than built once: without pipeline
+        parallelism microbatches keep their own lengths, so one set of indices
+        cannot cover them all. The permutation still comes from torchtitan's own
+        balancer, so an upstream change cannot silently drift.
+        """
+        cached = self._cp_restore.get(seq_len)
+        if cached is None:
+            from torch.distributed.tensor.experimental._attention import _HeadTailLoadBalancer
+
+            balancer = _HeadTailLoadBalancer(seq_len, self._cp_mesh.size(), device)
+            cached = balancer._generate_indices(restore=True).flatten().to(device)
+            self._cp_restore[seq_len] = cached
+        return cached
 
     def arm(self, batches: list, closure: Callable, mode: str) -> None:
         self._batches, self._closure, self._mode = batches, closure, mode
@@ -225,17 +244,20 @@ class RLLossAdapter(BaseLoss):
         return [self._results[i] for i in range(len(self._batches))]
 
     def _gather_context_parallel(self, pred: torch.Tensor) -> torch.Tensor:
-        """All-gather sequence-sharded logits and undo the CP permutation."""
-        group = self._cp_mesh.get_group()
-        shards = [torch.empty_like(pred) for _ in range(dist.get_world_size(group))]
-        dist.all_gather(shards, pred.contiguous(), group=group)
-        gathered = torch.cat(shards, dim=1)
-        restore = self._cp_restore.to(gathered.device)
-        if restore.numel() != gathered.shape[1]:
-            raise RuntimeError(
-                f"CP restore indices cover {restore.numel()} positions but the gathered "
-                f"sequence is {gathered.shape[1]} long"
-            )
+        """All-gather sequence-sharded logits and undo the CP permutation.
+
+        The gather has to carry gradients: the loss is taken on the full
+        sequence, so each rank's shard needs its slice of the gradient back.
+        Plain ``dist.all_gather`` produces a tensor with no autograd history
+        and ``loss.backward()`` fails on it. The functional-collectives variant
+        gathers along dim 0 only, hence the transpose.
+        """
+        from torch.distributed._functional_collectives import all_gather_single_autograd
+
+        seq_first = pred.transpose(0, 1).contiguous()
+        gathered = all_gather_single_autograd(seq_first, 0, self._cp_mesh.get_group())
+        gathered = gathered.transpose(0, 1)
+        restore = self._restore_indices(gathered.shape[1], gathered.device)
         return gathered.index_select(1, restore)
 
     def __call__(self, pred, target, global_valid_tokens=None, **kwargs):
@@ -382,6 +404,17 @@ class TitanTrainer(Trainer):
 
         def _model_inputs(batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
             tokens, positions = batch["tokens"], batch["position_ids"]
+            if not self.parallel_dims.pp_enabled and self.parallel_dims.cp_enabled:
+                # Context parallelism splits the sequence across the cp mesh and
+                # flex attention works in 128-token blocks, so the length has to
+                # be a multiple of cp * 128; miles pads only to 128. Under PP the
+                # fixed shape below already satisfies it.
+                align = self.parallel_dims.cp * _FLEX_BLOCK
+                pad = (align - tokens.shape[1] % align) % align
+                if pad:
+                    tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
+                    extra = torch.arange(pad, device=positions.device, dtype=positions.dtype)
+                    positions = torch.cat([positions, extra.unsqueeze(0)], dim=1)
             if self.parallel_dims.pp_enabled:
                 # The pipeline stages' send/recv buffers are shape-inferred once
                 # and reused, so every microbatch of the whole run must have one
@@ -494,19 +527,13 @@ class TitanTrainer(Trainer):
         """
         if not self.parallel_dims.cp_enabled:
             return
-        from torch.distributed.tensor.experimental._attention import _HeadTailLoadBalancer
-
         balancer_type = self.config.parallelism.context_parallel_load_balancer
         if balancer_type != "headtail":
             raise ValueError(
                 f"context_parallel_load_balancer={balancer_type!r} is not supported yet: the "
                 "logit gather inverts the headtail permutation specifically"
             )
-        mesh = self.parallel_dims.get_mesh("cp")
-        balancer = _HeadTailLoadBalancer(
-            self.config.training.seq_len, mesh.size(), self.device
-        )
-        self.loss_fn.set_context_parallel(mesh, balancer._generate_indices(restore=True).flatten())
+        self.loss_fn.set_context_parallel(self.parallel_dims.get_mesh("cp"))
 
     def has_last_stage(self) -> bool:
         return (not self.parallel_dims.pp_enabled) or self.pp_has_last_stage
