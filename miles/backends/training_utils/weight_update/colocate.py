@@ -49,6 +49,8 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         super().__init__(args)
         self._selector = weight_update_selector(args)
         self._model_update_groups = None
+        # Overwritten with "miles" when connect finds a distributed engine tail.
+        self._group_name = "miles-colocate"
 
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = min(start_rank + self.args.rollout_num_gpus_per_engine, dist.get_world_size())
