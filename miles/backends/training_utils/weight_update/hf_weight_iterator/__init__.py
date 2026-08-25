@@ -8,7 +8,7 @@ from typing import ClassVar
 
 import torch
 
-from miles.backends.training_utils.weight_update.bucketing import (
+from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing import (
     AtomicUpdateGroup,
     assemble_atomic_update_groups,
     pack_units_by_size,

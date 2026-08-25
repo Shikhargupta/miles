@@ -1,7 +1,7 @@
 """HF-namespace atomic update groups: HF weights an sglang loader fuses into
 one engine parameter, which therefore must arrive in the same load call."""
 
-from miles.backends.training_utils.weight_update.bucketing import AtomicUpdateGroup
+from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing import AtomicUpdateGroup
 
 # sglang's deepseek_v4 load_weights cache-and-concats each pair into one engine
 # param (wqkv_a / compressor.wkv_gate / indexer.compressor.wkv_gate) and
