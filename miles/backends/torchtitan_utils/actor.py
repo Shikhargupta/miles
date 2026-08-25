@@ -120,15 +120,11 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if with_ref:
             self.ref_runner = self._build_ref_runner(args)
 
-        if args.colocate:
-            self.weight_updater = TitanUpdateWeightFromTensor(args, self.trainer)
-        else:
-            if args.update_weight_transfer_mode != "broadcast":
-                raise ValueError(
-                    f"--update-weight-transfer-mode {args.update_weight_transfer_mode} is not "
-                    "implemented for the torchtitan backend; disaggregated rollout uses broadcast"
-                )
-            self.weight_updater = TitanUpdateWeightFromDistributed(args, self.trainer)
+        # Colocated engines share the rank's device, so weights go over IPC;
+        # engines on their own GPUs are reached by broadcast. The argument gate
+        # has already rejected any other transfer mode.
+        updater = TitanUpdateWeightFromTensor if args.colocate else TitanUpdateWeightFromDistributed
+        self.weight_updater = updater(args, self.trainer)
 
         clear_memory()
         if args.offload_train:
