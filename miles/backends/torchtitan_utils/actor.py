@@ -105,7 +105,14 @@ class TorchtitanTrainRayActor(TrainRayActor):
         # gate on exactly this predicate. Global rank 0 is a FIRST-stage rank
         # under PP, so keying tracking off it loses every train metric.
         state = get_parallel_state()
-        if state.effective_dp_cp.rank == 0 and state.tp.rank == 0 and state.is_pp_last_stage:
+        # ParallelState reports cp=1 on purpose (see parallel.py), so the shared
+        # predicate cannot tell two context-parallel peers apart and both would
+        # write every metric. Their values are identical -- the loss is taken on
+        # the gathered full sequence -- so one of them reports and the other
+        # never initializes tracking, which makes its log calls no-ops.
+        cp_mesh = self.trainer.parallel_dims.get_optional_mesh("cp")
+        reports = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
+        if reports and state.effective_dp_cp.rank == 0 and state.tp.rank == 0 and state.is_pp_last_stage:
             init_tracking(args, primary=False)
 
         # Fresh runs fall through to the HF assets load (from_hf via the
