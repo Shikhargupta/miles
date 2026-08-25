@@ -1,5 +1,3 @@
-"""Shared helpers for weight-update protocols. Pairing decisions stay protocol-owned."""
-
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import ParallelState
