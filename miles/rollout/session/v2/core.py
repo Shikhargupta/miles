@@ -18,7 +18,7 @@ from miles.rollout.session.core import (
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
-from miles.rollout.session.v2.metrics import NODE_ADDITIVE_METRICS_METADATA_KEY
+from miles.rollout.session.v2.metrics import assign_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     commit_generation,
@@ -115,14 +115,13 @@ class SessionCoreV2(SessionCore):
                     "pick hook must return a subset of its input samples without duplicates (pure selection)"
                 )
             samples = self.sample_postprocessor(picked, metadata)
-            for sample in samples:
-                sample.metadata.pop(NODE_ADDITIVE_METRICS_METADATA_KEY, None)
         except Exception as exc:
             body = (
                 f"session sample hook failed (picker={self.args.session_sample_picker_path}, "
                 f"postprocessor={self.args.session_sample_postprocessor_path}): {exc}"
             )
             return Response(content=body.encode(), status_code=422, media_type="text/plain")
+        assign_session_rollout_metrics(self.args, samples, session.tree.nodes)
         if not samples:
             return _samples_response(
                 encode_samples([], metadata, empty_reason="all_truncated", fields=COMPUTED_FIELDS_V2)

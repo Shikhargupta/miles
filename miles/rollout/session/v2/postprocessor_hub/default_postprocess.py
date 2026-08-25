@@ -1,4 +1,3 @@
-from miles.rollout.session.v2.metrics import NODE_ADDITIVE_METRICS_METADATA_KEY, AdditiveNodeMetrics
 from miles.utils.types import Sample
 
 _SERVER_OWNED_METADATA_KEYS = ("accumulated_token_ids", "tito_session_mismatch", "leaf")
@@ -16,9 +15,8 @@ def assign_reward(samples: list[Sample], trajectory_reward: float) -> None:
 def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> list[Sample]:
     """Finalize the leaf samples kept by the picker.
 
-    A shared completion and its additive generation metrics belong only to the
-    earliest committed kept leaf. Ownership is computed after picking, so a
-    dropped leaf cannot own either.
+    A shared completion belongs only to the earliest committed kept leaf.
+    Ownership is computed after picking, so a dropped leaf cannot own it.
 
     Agent metadata cannot replace server-owned fields. A provided trajectory reward is assigned to every kept sample.
 
@@ -30,27 +28,21 @@ def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> l
     agent_sample_metadata = check_input_metadata(agent_metadata)
 
     # Picker order may change; `node_id` preserves commit order.
-    owner_by_node_id: dict[int, int] = {}
+    loss_owner_by_node_id: dict[int, int] = {}
     for sample in leaf_samples:
         leaf = sample.metadata["leaf"]
         leaf_id = leaf["node_id"]
         for node_id in leaf["path_node_ids"]:
-            owner_by_node_id[node_id] = min(leaf_id, owner_by_node_id.get(node_id, leaf_id))
+            loss_owner_by_node_id[node_id] = min(leaf_id, loss_owner_by_node_id.get(node_id, leaf_id))
 
     processed_samples: list[Sample] = []
     for sample in leaf_samples:
         leaf = sample.metadata["leaf"]
         response_start = len(sample.tokens) - sample.response_length
-        owned_metrics = AdditiveNodeMetrics()
-        for node_metrics in sample.metadata.pop(NODE_ADDITIVE_METRICS_METADATA_KEY):
-            if owner_by_node_id[node_metrics["node_id"]] != leaf["node_id"]:
-                continue
-            owned_metrics += AdditiveNodeMetrics.from_dict(node_metrics["metrics"])
-        owned_metrics.assign_to(sample)
         # Spans index all tokens; `loss_mask` indexes only the response.
         # Clamp when early-stop or truncation shortens the sample.
         for node_id in leaf["path_node_ids"]:
-            if owner_by_node_id[node_id] == leaf["node_id"]:
+            if loss_owner_by_node_id[node_id] == leaf["node_id"]:
                 continue
             completion_start, completion_end = nodes_by_id[node_id]["completion_span"]
             mask_start = max(completion_start - response_start, 0)

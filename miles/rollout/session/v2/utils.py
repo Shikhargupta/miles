@@ -9,7 +9,6 @@ from miles.rollout.session.samples.merge import (
     merge_samples_with_addition_r3,
     truncate_samples_by_total_tokens,
 )
-from miles.rollout.session.v2.metrics import NODE_ADDITIVE_METRICS_METADATA_KEY, AdditiveNodeMetrics
 from miles.rollout.session.v2.session_state import SessionRegistryV2, SessionStateV2
 from miles.utils.types import Sample
 
@@ -80,18 +79,9 @@ def build_leaf_material(
             sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer)
         else:
             sample = merge_samples(turns, registry.tokenizer)
-        # `merge_samples` may stop before the last turn on a status or replay gap;
-        # keep counters only for the source-turn prefix represented by `sample`.
-        merged_turn_indexes = [i for i, turn in enumerate(turns) if turn.tokens == sample.tokens]
-        assert merged_turn_indexes, "merged sample must end at one of its source turns"
-        merged_turn_count = merged_turn_indexes[0] + 1
         tools = path[-1].record.request.get("tools")
         flat: dict[str, Any] = {
             "accumulated_token_ids": list(leaf.token_ids),
-            NODE_ADDITIVE_METRICS_METADATA_KEY: [
-                {"node_id": node.seq, "metrics": AdditiveNodeMetrics.from_sample(turn).to_dict()}
-                for node, turn in zip(path[:merged_turn_count], turns[:merged_turn_count], strict=True)
-            ],
             "leaf": {
                 "node_id": leaf.seq,
                 "parent": leaf.parent.seq if leaf.parent is not None else None,

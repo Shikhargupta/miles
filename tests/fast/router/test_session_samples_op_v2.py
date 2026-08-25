@@ -18,7 +18,6 @@ import json
 import logging
 import uuid
 from copy import deepcopy
-from dataclasses import fields
 from types import SimpleNamespace
 
 import numpy as np
@@ -32,7 +31,6 @@ from miles.rollout.session.errors import TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
-from miles.rollout.session.v2.metrics import AdditiveNodeMetrics
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.misc import function_registry
@@ -241,6 +239,23 @@ async def test_spec_info_crosses_samples_wire(core, monkeypatch):
     }
 
 
+async def test_session_rollout_metrics_ignore_spec_when_disabled(core):
+    record = _single_turn_record(
+        [1, 2, 3],
+        [10, 11],
+        spec_info={"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 2},
+        cached_tokens=2,
+    )
+    sid = await _make_session(core, [record], [1, 2, 3, 10, 11])
+
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    (sample,), _ = _new_pipeline(payload, _input_sample())
+
+    assert sample.spec_info == Sample.SpecInfo()
+    assert sample.prefix_cache_info.to_dict() == {"cached_tokens": 2, "total_prompt_tokens": 3}
+
+
 async def test_truncation_golden(core):
     """max_seq_len=8 strips one output token off the second turn (a turn-level
     budget applied before merge): the merged sample ends TRUNCATED at 8 tokens
@@ -440,7 +455,17 @@ def _single_turn_record(prompt_ids, output_ids, weight_version="w1", spec_info=N
     return record
 
 
-def _fabricate_node(state, parent, record, token_ids, *, completion_span, response_id="", committed_at=None):
+def _fabricate_node(
+    state,
+    parent,
+    record,
+    token_ids,
+    *,
+    completion_span,
+    response_id="",
+    committed_at=None,
+    finish_reason="stop",
+):
     return state.tree.create_node(
         parent,
         delta_messages=[],
@@ -449,7 +474,7 @@ def _fabricate_node(state, parent, record, token_ids, *, completion_span, respon
         committed_at=float(len(state.tree.nodes)) if committed_at is None else committed_at,
         response_id=response_id,
         record=record,
-        finish_reason="stop",
+        finish_reason=finish_reason,
     )
 
 
@@ -535,21 +560,7 @@ async def test_deep_abandoned_branch_survives_and_masks_shared_prefix(core, traj
     assert [sample.metadata["reward"] for sample in reply.samples] == [trajectory_reward, trajectory_reward]
 
 
-def test_additive_node_metrics_registry_is_explicit():
-    assert {metric.name for metric in fields(AdditiveNodeMetrics)} == {"spec_info", "prefix_cache_info"}
-    assert {counter.name for counter in fields(Sample.SpecInfo)} == {
-        "spec_num_correct_drafts",
-        "spec_num_proposed_drafts",
-        "spec_verify_ct",
-        "completion_tokens",
-    }
-    assert {counter.name for counter in fields(Sample.PrefixCacheInfo)} == {
-        "cached_tokens",
-        "total_prompt_tokens",
-    }
-
-
-async def test_additive_node_metrics_count_each_kept_tree_node_once(core, monkeypatch):
+async def test_session_rollout_metrics_count_every_tree_node_once(core, monkeypatch):
     monkeypatch.setattr(core.args, "sglang_speculative_algorithm", "EAGLE")
     sid, state = await _fresh_state(core)
     root = _fabricate_node(
@@ -621,25 +632,63 @@ async def test_additive_node_metrics_count_each_kept_tree_node_once(core, monkey
     assert early_sample.loss_mask[:2] == [1, 1]
     assert late_sample.loss_mask[:2] == [0, 0]
     assert early_sample.spec_info.to_dict() == {
-        "spec_num_correct_drafts": 9,
-        "spec_num_proposed_drafts": 20,
-        "spec_verify_ct": 3,
+        "spec_num_correct_drafts": 109,
+        "spec_num_proposed_drafts": 130,
+        "spec_verify_ct": 5,
+        "completion_tokens": 5,
+    }
+    assert late_sample.spec_info == Sample.SpecInfo()
+    assert early_sample.prefix_cache_info.to_dict() == {"cached_tokens": 20, "total_prompt_tokens": 29}
+    assert late_sample.prefix_cache_info == Sample.PrefixCacheInfo()
+
+
+async def test_session_rollout_metrics_include_node_excluded_by_merge(core, monkeypatch):
+    monkeypatch.setattr(core.args, "sglang_speculative_algorithm", "EAGLE")
+    sid, state = await _fresh_state(core)
+    root_record = _single_turn_record(
+        [1, 2, 3],
+        [10, 11],
+        spec_info={"spec_num_correct_drafts": 1, "spec_num_proposed_drafts": 2, "spec_verify_ct": 1},
+        cached_tokens=2,
+    )
+    root_record.response["choices"][0]["finish_reason"] = "length"
+    root = _fabricate_node(
+        state,
+        None,
+        root_record,
+        [1, 2, 3, 10, 11],
+        completion_span=(3, 5),
+        finish_reason="length",
+    )
+    leaf = _fabricate_node(
+        state,
+        root,
+        _single_turn_record(
+            [1, 2, 3, 10, 11, 20],
+            [30],
+            spec_info={"spec_num_correct_drafts": 3, "spec_num_proposed_drafts": 5, "spec_verify_ct": 1},
+            cached_tokens=4,
+        ),
+        [1, 2, 3, 10, 11, 20, 30],
+        completion_span=(6, 7),
+    )
+    state.active_leaf = leaf
+
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    (sample,) = reply.samples
+
+    # Training merge stops at the truncated root, but both generations happened.
+    assert sample.tokens == root.token_ids
+    assert sample.status == Sample.Status.TRUNCATED
+    assert sample.spec_info.to_dict() == {
+        "spec_num_correct_drafts": 4,
+        "spec_num_proposed_drafts": 7,
+        "spec_verify_ct": 2,
         "completion_tokens": 3,
     }
-    assert late_sample.spec_info.to_dict() == {
-        "spec_num_correct_drafts": 0,
-        "spec_num_proposed_drafts": 10,
-        "spec_verify_ct": 1,
-        "completion_tokens": 1,
-    }
-    assert early_sample.prefix_cache_info.to_dict() == {"cached_tokens": 11, "total_prompt_tokens": 17}
-    assert late_sample.prefix_cache_info.to_dict() == {"cached_tokens": 3, "total_prompt_tokens": 6}
-    assert sum(sample.spec_info.spec_num_correct_drafts for sample in reply.samples) == 9
-    assert sum(sample.spec_info.spec_num_proposed_drafts for sample in reply.samples) == 30
-    assert sum(sample.prefix_cache_info.cached_tokens for sample in reply.samples) == 14
-    assert sum(sample.prefix_cache_info.total_prompt_tokens for sample in reply.samples) == 23
-    assert b"_node_additive_metrics" not in payload
-    assert all("_node_additive_metrics" not in sample.metadata for sample in reply.samples)
+    assert sample.prefix_cache_info.to_dict() == {"cached_tokens": 6, "total_prompt_tokens": 9}
 
 
 async def test_picker_warns_and_trims_longer_superseded_leaf(core, caplog):
@@ -849,12 +898,12 @@ async def test_custom_picker_keeps_abandoned_leaf(core):
         abandoned, retry = reply.samples
         assert abandoned.tokens == [1, 2, 3, 10, 11, 20, 30]
         assert retry.tokens == [1, 2, 3, 10, 11, 21, 31]
-        # Exactly-once over the SURVIVING set: the abandoned (earlier) leaf now
-        # owns the shared root completion; the retry masks it.
+        # Training ownership is over the surviving leaves: the abandoned
+        # (earlier) leaf owns the shared root completion; the retry masks it.
         assert abandoned.loss_mask[:2] == [1, 1]
         assert retry.loss_mask[:2] == [0, 0]
-        assert abandoned.prefix_cache_info.total_prompt_tokens == 9
-        assert retry.prefix_cache_info.total_prompt_tokens == 6
+        assert abandoned.prefix_cache_info.total_prompt_tokens == 15
+        assert retry.prefix_cache_info == Sample.PrefixCacheInfo()
 
 
 async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):
@@ -867,18 +916,19 @@ async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):
         retry, abandoned = reply.samples
         assert retry.loss_mask[:2] == [0, 0]
         assert abandoned.loss_mask[:2] == [1, 1]
-        assert retry.prefix_cache_info.total_prompt_tokens == 6
-        assert abandoned.prefix_cache_info.total_prompt_tokens == 9
+        assert retry.prefix_cache_info.total_prompt_tokens == 15
+        assert abandoned.prefix_cache_info == Sample.PrefixCacheInfo()
 
 
-async def test_custom_postprocessor_private_node_metrics_do_not_cross_wire(core):
+async def test_custom_postprocessor_does_not_change_rollout_metric_total(core):
     with function_registry.temporary("test_hooks.pass_through", _pass_through_postprocessor):
         hooked = _build_core_with_hooks(session_sample_postprocessor_path="test_hooks.pass_through")
         sid = await _retry_shaped_session(hooked)
         response = await hooked.collect_samples(sid, max_seq_len=None)
         assert response.status_code == 200
         payload = bytes(response.body)
-        assert b"_node_additive_metrics" not in payload
+        reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+        assert sum(sample.prefix_cache_info.total_prompt_tokens for sample in reply.samples) == 15
 
 
 async def test_hook_exception_maps_to_422_with_identity(core):
