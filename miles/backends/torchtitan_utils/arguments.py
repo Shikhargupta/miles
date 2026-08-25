@@ -87,6 +87,19 @@ def validate_torchtitan_args(args) -> None:
         # Upstream rejects it: GatedDeltaNet needs the full sequence.
         raise ValueError("torchtitan does not support context parallelism for qwen3_5")
 
+    # torchtitan sizes its rotary tables from training.seq_len, and the kernels
+    # assert on a position beyond them -- device-side, with a traceback pointing
+    # at rope rather than at the setting that caused it. A packed microbatch
+    # restarts positions per document, so the bound that matters is the longest
+    # single sequence, not the packed length.
+    if args.titan_seq_len < args.rollout_max_context_len:
+        raise ValueError(
+            f"--titan-seq-len {args.titan_seq_len} is shorter than "
+            f"--rollout-max-context-len {args.rollout_max_context_len}: torchtitan builds its "
+            "rotary embeddings for the former, so a longer prompt-plus-response would index "
+            "past them"
+        )
+
     # The reference model is built once from --ref-load; refreshing it mid-run
     # would need the actor-to-ref copy FSDP does, which this backend has not
     # wired up. Silently ignoring the interval would quietly train against a

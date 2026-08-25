@@ -19,7 +19,10 @@ import torch.distributed as dist
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.trainer import TitanTrainer, build_trainer_config
-from miles.backends.torchtitan_utils.weight_bridge import TitanUpdateWeightFromTensor
+from miles.backends.torchtitan_utils.weight_bridge import (
+    TitanUpdateWeightFromDistributed,
+    TitanUpdateWeightFromTensor,
+)
 from miles.backends.training_utils.data import get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import log_rollout_data
 from miles.backends.training_utils.loss import compute_advantages_and_returns
@@ -117,7 +120,15 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if with_ref:
             self.ref_runner = self._build_ref_runner(args)
 
-        self.weight_updater = TitanUpdateWeightFromTensor(args, self.trainer)
+        if args.colocate:
+            self.weight_updater = TitanUpdateWeightFromTensor(args, self.trainer)
+        else:
+            if args.update_weight_transfer_mode != "broadcast":
+                raise ValueError(
+                    f"--update-weight-transfer-mode {args.update_weight_transfer_mode} is not "
+                    "implemented for the torchtitan backend; disaggregated rollout uses broadcast"
+                )
+            self.weight_updater = TitanUpdateWeightFromDistributed(args, self.trainer)
 
         clear_memory()
         if args.offload_train:

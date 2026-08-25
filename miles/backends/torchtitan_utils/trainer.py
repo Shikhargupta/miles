@@ -57,6 +57,7 @@ from torchtitan.distributed.activation_checkpoint import FullAC  # noqa: E402
 from torchtitan.trainer import Trainer  # noqa: E402
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param  # noqa: E402
+from miles.backends.torchtitan_utils import routing_replay  # noqa: E402
 from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config  # noqa: E402
 from miles.backends.training_utils.torch_native_loop import StepMetrics  # noqa: E402
 
@@ -452,6 +453,32 @@ class TitanTrainer(Trainer):
 
     # -------------------------------------------------------- RL step surface
 
+    def _pipeline_will_infer_metadata(self, *, has_backward: bool) -> bool:
+        """Whether the next schedule call runs its metadata-inference forward.
+
+        The schedule learns the shapes its stages exchange by running one
+        forward per stage over microbatch 0, and repeats that whenever the pass
+        changes direction -- which in RL is every log-prob-then-train pair. The
+        forward is a real one through the model, so anything that consumes state
+        per forward (routing replay) has to be told to sit it out. Mirrors
+        ``_initialize_pp_stages``' own condition; the attribute check makes a
+        rename in torch a loud failure instead of a silent replay corruption.
+        """
+        schedule = self.pp_schedule
+        missing = [
+            attr
+            for attr in ("_stages_forward_initialized", "_stages_backward_initialized")
+            if not hasattr(schedule, attr)
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{type(schedule).__name__} no longer exposes {missing}; the pipeline "
+                "schedule's metadata-inference forward can no longer be anticipated"
+            )
+        if not schedule._stages_forward_initialized:
+            return True
+        return has_backward != schedule._stages_backward_initialized
+
     def run_forward_backward(self, batches, loss_closure: Callable) -> list[dict]:
         """One optimizer step's microbatches through the trainer's own
         forward_backward_step. Under PP only the last stage returns log
@@ -461,7 +488,10 @@ class TitanTrainer(Trainer):
         input_dicts, labels = self._microbatch_inputs(batches)
         ones = torch.ones((), device=self.device)
         if self.parallel_dims.pp_enabled:
+            if self._pipeline_will_infer_metadata(has_backward=True):
+                routing_replay.bypass_next_forward(self.model_parts)
             self.forward_backward_step(input_dict=input_dicts, labels=labels, global_valid_tokens=ones)
+            routing_replay.check_consumption(len(batches))
         else:
             for input_dict, label in zip(input_dicts, labels, strict=True):
                 self.forward_backward_step(input_dict=input_dict, labels=label, global_valid_tokens=ones)
@@ -481,6 +511,8 @@ class TitanTrainer(Trainer):
                 kwarg_mbs.append(extra)
                 target_mbs.append(label)
             losses = [] if self.pp_has_last_stage else None
+            if self._pipeline_will_infer_metadata(has_backward=False):
+                routing_replay.bypass_next_forward(self.model_parts)
             # return_outputs=False matters: the last stage otherwise retains
             # every microbatch's full-vocab logits until the merge -- at RL
             # sequence lengths that alone exceeds device memory. The loss
@@ -492,6 +524,7 @@ class TitanTrainer(Trainer):
                 losses=losses,
                 return_outputs=False,
             )
+            routing_replay.check_consumption(len(batches))
         else:
             for input_dict, label in zip(input_dicts, labels, strict=True):
                 inputs, label, extra = self.post_dataloading_process(input_dict, label)

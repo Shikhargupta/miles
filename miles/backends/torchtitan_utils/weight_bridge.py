@@ -11,7 +11,7 @@ import logging
 
 import torch
 
-from miles.backends.fsdp_utils.update_weight_utils import UpdateWeightFromTensor
+from miles.backends.fsdp_utils.update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
 from miles.backends.training_utils.weight_sync import weight_push_session
 
 logger = logging.getLogger(__name__)
@@ -36,8 +36,8 @@ def _fused_group_key(name: str) -> str | None:
     return None
 
 
-class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
-    """Reuses FSDP's colocated IPC transport; only weight production differs.
+class _TitanWeightProducer:
+    """Weight production for torchtitan, independent of how they are shipped.
 
     FSDP streams ``model.state_dict()`` under HF names because it trains stock
     HF modeling. torchtitan's parameter names are its own, so the trainer maps
@@ -47,6 +47,10 @@ class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
     bounds how many are resident at once; gathering the whole state dict up
     front would put a full unsharded copy of the model on every rank, fine for
     a 0.6B and fatal for a 30B.
+
+    Mixed in ahead of a transport class, so ``_stream_weights`` is titan's
+    while ``connect_rollout_engines`` and ``update_bucket_weights`` stay the
+    shared implementations.
     """
 
     def __init__(self, args, trainer) -> None:
@@ -92,3 +96,18 @@ class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
             )
         if bucket:
             self.wait_and_update_bucket_weights(bucket)
+
+
+class TitanUpdateWeightFromTensor(_TitanWeightProducer, UpdateWeightFromTensor):
+    """Colocated: the engine shares the rank's device, so buckets go over IPC."""
+
+
+class TitanUpdateWeightFromDistributed(_TitanWeightProducer, UpdateWeightFromDistributed):
+    """Disaggregated: the engines are on their own GPUs, so rank 0 broadcasts
+    each bucket over a temporary NCCL group.
+
+    Every rank still walks the whole weight stream: producing a tensor takes
+    collectives (the DTensor gather, and the owner broadcast that completes the
+    stream under PP or EP), so a rank that skipped ahead would hang the others.
+    Only the final push is rank 0's.
+    """

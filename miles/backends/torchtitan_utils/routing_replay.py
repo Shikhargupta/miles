@@ -136,6 +136,49 @@ def install(model_parts: list[nn.Module]) -> int:
     return len(routers)
 
 
+_BYPASS_ATTR = "_miles_replay_bypass_next"
+
+
+def bypass_next_forward(model_parts: list[nn.Module]) -> None:
+    """Let each part's next forward compute its own routing instead of replaying.
+
+    The pipeline schedule infers its send/recv metadata by running one real
+    forward per stage over microbatch 0's shapes, discarding everything but the
+    output shapes. That forward reaches the routers, and a queue is consumed by
+    whoever asks -- so it would take microbatch 0's routing and leave every real
+    microbatch reading its predecessor's. Adjacent microbatches inside a GRPO
+    group share a prompt, which is why the damage looked like "the prompt
+    replays correctly and the response does not".
+
+    Torch reruns the inference on every eval-to-train switch, so this is not a
+    once-per-job event: an RL step does a log-prob pass and then a training
+    pass, and each one re-infers.
+    """
+    if not routing_replay_manager.enabled:
+        return
+    for part in model_parts:
+        setattr(part, _BYPASS_ATTR, True)
+
+
+def check_consumption(expected: int) -> None:
+    """Assert every queue advanced exactly once per microbatch.
+
+    The replay is only correct if entry k is read by microbatch k, and nothing
+    in the mechanism enforces that: a stray forward silently shifts every
+    subsequent lookup. This turns that shift into a failure at the end of the
+    pass that caused it.
+    """
+    if not routing_replay_manager.enabled:
+        return
+    for replay in routing_replay_manager.replays:
+        if replay.forward_index != expected:
+            raise RuntimeError(
+                f"routing replay stream {replay.stream_idx} advanced "
+                f"{replay.forward_index} times over a pass of {expected} microbatches; "
+                "the queues no longer line up with the microbatches"
+            )
+
+
 def _bracket_real_forward(part: nn.Module) -> None:
     """Make a model part's own forward draw from the forward cursor.
 
@@ -159,6 +202,10 @@ def _bracket_real_forward(part: nn.Module) -> None:
 
     @functools.wraps(inner)
     def forward(*args, **kwargs):
+        if getattr(part, _BYPASS_ATTR, False):
+            setattr(part, _BYPASS_ATTR, False)
+            with stage(FALLTHROUGH):
+                return inner(*args, **kwargs)
         if routing_replay_manager.stage == REPLAY_BACKWARD:
             with stage(REPLAY_FORWARD):
                 return inner(*args, **kwargs)
