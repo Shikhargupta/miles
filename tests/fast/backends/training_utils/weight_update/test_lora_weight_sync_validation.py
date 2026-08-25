@@ -233,7 +233,7 @@ class TestFlattenedTensorBucketRoundTrip:
         not align across heterogeneous element sizes.
 
         This is a latent production landmine: ``_send_to_colocated_engine`` in
-        ``miles/backends/megatron_utils/update_weight/update_weight_from_tensor.py``
+        ``miles/backends/training_utils/weight_update/colocate.py``
         reads the flag and packs mixed dtypes into a single bucket. In practice
         LoRA weights are uniform dtype, but FP8 / INT4 mixed-precision base
         weight sync would crash on sglang's receiver.
