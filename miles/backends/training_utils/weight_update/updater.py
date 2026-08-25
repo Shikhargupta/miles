@@ -6,9 +6,7 @@ buckets (senders transmit, other ranks join the gathers), and orchestrates
 LoRA adapter pushes.
 """
 
-import json
 import logging
-import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 
@@ -68,7 +66,6 @@ class WeightUpdater:
         if is_lora:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
-        self._mm_tower_cache: list[tuple[str, torch.Tensor]] | None = None
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
 
@@ -124,8 +121,6 @@ class WeightUpdater:
                     if protocol.is_sender:
                         protocol.send_bucket(bucket, self.weight_version)
                         pbar.update(1)
-                if protocol.is_sender and (towers := self._mm_tower_bucket()) is not None:
-                    protocol.send_bucket(towers, self.weight_version)
                 protocol.after_base_weights()
             if self.is_lora:
                 if is_multi_lora_enabled(self.args):
@@ -145,38 +140,6 @@ class WeightUpdater:
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_base_weights(self.weights_getter(), materialize=materialize)
-
-    def _mm_tower_bucket(self) -> list[tuple[str, torch.Tensor]] | None:
-        """Frozen vision/audio tower tensors appended to every base sync, read once
-        from the local HF checkpoint (the same bytes the engine loaded at boot).
-        None when the run has no MM towers. Sender ranks only; loads idempotently."""
-        provider = self.args.custom_model_provider_path or ""
-        if "inkling_mm_model_provider" not in provider:
-            return None
-        if self._mm_tower_cache is None:
-            from safetensors import safe_open
-
-            ckpt_dir = self.args.hf_checkpoint
-            with open(os.path.join(ckpt_dir, "model.safetensors.index.json"), encoding="utf-8") as f:
-                weight_map = json.load(f)["weight_map"]
-            tower_keys = sorted(
-                k
-                for k in weight_map
-                if ".visual." in f".{k}" or ".audio." in f".{k}" or k.startswith(("visual.", "audio."))
-            )
-            by_shard: dict[str, list[str]] = {}
-            for k in tower_keys:
-                by_shard.setdefault(weight_map[k], []).append(k)
-            cache = []
-            for shard, keys in by_shard.items():
-                with safe_open(os.path.join(ckpt_dir, shard), framework="pt", device="cpu") as f:
-                    for k in keys:
-                        cache.append((k, f.get_tensor(k)))
-            logger.info(
-                "mm tower sync: caching %d tower tensors from %s: %s", len(cache), ckpt_dir, [k for k, _ in cache]
-            )
-            self._mm_tower_cache = cache
-        return [(name, tensor.to(torch.cuda.current_device())) for name, tensor in self._mm_tower_cache]
 
     def _send_lora_adapter(self) -> None:
         """All ranks call the iterator (TP collectives); only the source ranks transmit.

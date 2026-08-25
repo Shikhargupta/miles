@@ -3,7 +3,10 @@ import itertools
 import json
 import os
 
-from miles.backends.megatron_utils.update_weight.hf_weight_iterator import MegatronHfWeightIteratorBase
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
+    MegatronHfWeightIteratorBase,
+    _iter_mm_tower_units,
+)
 from miles.utils import megatron_bridge_utils
 from miles.utils.lora import is_lora_weight_name
 
@@ -64,6 +67,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 unit = [(h, w) for h, w, _m in group if not is_lora_weight_name(h)]
                 if unit:
                     yield unit
+        yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
     def _export_pp_local_lora(self, adapter):
         if adapter is None:
