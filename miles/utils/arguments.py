@@ -835,7 +835,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta", "rdt", "custom"],
+                choices=["broadcast", "p2p", "disk-delta", "rdt"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
@@ -843,17 +843,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "'rdt' = Ray Direct Transport (NIXL RDMA pull, requires sglang use_ray=True). "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                    "them into a host-local checkpoint that the engine reloads from. "
-                    "'custom' loads a WeightTransferProtocol from --custom-weight-transfer-path."
-                ),
-            )
-            parser.add_argument(
-                "--custom-weight-transfer-path",
-                type=str,
-                default=None,
-                help=(
-                    "Import path (module.attr) of a WeightTransferProtocol subclass used when "
-                    "--update-weight-transfer-mode=custom. Constructed as cls(args)."
+                    "them into a host-local checkpoint that the engine reloads from."
                 ),
             )
             parser.add_argument(
@@ -3312,16 +3302,6 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )
-
-    if args.update_weight_transfer_mode == "custom":
-        assert args.custom_weight_transfer_path, (
-            "--update-weight-transfer-mode=custom requires --custom-weight-transfer-path "
-            "(import path of a WeightTransferProtocol subclass)."
-        )
-        assert args.train_backend == "megatron", (
-            "Custom weight transfer protocols are only supported with --train-backend megatron."
-        )
-        assert not args.colocate, "Custom weight transfer protocols run on the distributed updater, not colocate."
 
     if args.colocate:
         if args.offload_train is None:

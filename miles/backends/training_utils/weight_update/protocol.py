@@ -78,10 +78,6 @@ class WeightTransferProtocol(ABC):
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     # Local: protocol modules import megatron/sglang-heavy deps.
-    if args.update_weight_transfer_mode == "custom":
-        from miles.utils.misc import load_function
-
-        return load_function(args.custom_weight_transfer_path)(args)
     if args.update_weight_transfer_mode == "broadcast":
         from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
             UpdateWeightFromDistributed,
