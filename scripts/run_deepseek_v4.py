@@ -112,6 +112,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_num_gpus: int = field(init=False)
     enable_mtp: bool = False
     dsv4_impl: Literal["miles", "megatron"] = "miles"
+    # None lets Megatron resolve it: tilelang for --dsv4-impl miles, cuDNN for megatron.
+    dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
     use_fault_tolerance: bool = True
     cp_size: int = 1
@@ -307,6 +309,8 @@ def _prepare_spmd(args: ScriptArgs):
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
     extra_args = f"--dsv4-impl {args.dsv4_impl} --expert-tensor-parallel-size 1 --context-parallel-size 1 "
+    if args.dsa_kernel_backend is not None:
+        extra_args += f"--dsa-kernel-backend {args.dsa_kernel_backend} "
     if actor_num_nodes == 1 and is_4layer:
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
@@ -645,6 +649,7 @@ def _train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         "--accumulate-allreduce-grads-in-fp32 "
         f"--dsv4-impl {args.dsv4_impl} "
+        f"{f'--dsa-kernel-backend {args.dsa_kernel_backend} ' if args.dsa_kernel_backend else ''}"
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
         "--moe-router-freeze-gate "
