@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 def install() -> None:
     _patch_fsdp2_grad_accumulation_attr_error()
     _patch_pipeline_schedule_microbatch_api()
+    _shim_dist_set_timeout()
+
+
+def _shim_dist_set_timeout() -> None:
+    """nightly's public ``torch.distributed.set_timeout`` on released torch.
+
+    torchtitan's ``set_pg_timeouts`` (called from its train loop after the
+    first step) uses the public name; torch 2.13.0 only has the private
+    ``_set_pg_timeout`` with the identical signature.
+    """
+    import torch.distributed as dist
+
+    if hasattr(dist, "set_timeout"):
+        return  # this torch already has the public API
+    from torch.distributed.distributed_c10d import _set_pg_timeout
+
+    dist.set_timeout = _set_pg_timeout
+    logger.info("Aliased torch.distributed.set_timeout to _set_pg_timeout")
 
 
 def _patch_pipeline_schedule_microbatch_api() -> None:
