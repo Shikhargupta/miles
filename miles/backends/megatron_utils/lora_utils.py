@@ -110,11 +110,6 @@ _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 # ---------------------------------------------------------------------------
 
 
-def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
-    """LoRA + --colocate + --lora-base-cpu-backup all set."""
-    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
-
-
 def sglang_lora_target_all_sentinel(args) -> bool:
     """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
     from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
