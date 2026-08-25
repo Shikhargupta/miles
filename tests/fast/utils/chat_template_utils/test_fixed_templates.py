@@ -19,6 +19,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
     Qwen36TITOTokenizer,
+    Qwen38TITOTokenizer,
     TITOTokenizer,
 )
 
@@ -26,6 +27,7 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.QWEN3: ("qwen3_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.QWEN35: ("qwen3.5_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.QWEN36: ("qwen3.6_fixed.jinja", {"preserve_thinking": True}),
+    TITOTokenizerType.QWEN38: ("qwen3.8_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),
@@ -82,6 +84,7 @@ def test_fixed_template_rejects_unknown_role():
         DeepSeekV4TITOTokenizer,
         Qwen35TITOTokenizer,
         Qwen36TITOTokenizer,
+        Qwen38TITOTokenizer,
         MinimaxM25TITOTokenizer,
         MinimaxM27TITOTokenizer,
     ],

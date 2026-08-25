@@ -84,6 +84,7 @@ class TITOTokenizer:
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
     chat_template_kwarg_aliases: frozenset[str] = frozenset()
+    top_level_chat_template_kwargs: frozenset[str] = frozenset()
 
     # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
@@ -126,6 +127,10 @@ class TITOTokenizer:
             ),
             assistant_start_str=self._assistant_start_str,
         )
+
+    def session_chat_template_config(self) -> tuple[tuple[str, Any], ...] | None:
+        """Return render settings that must stay fixed after a session prefix is tokenized."""
+        return None
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -314,6 +319,26 @@ class Qwen36TITOTokenizer(Qwen3TITOTokenizer):
         extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
+
+
+class Qwen38TITOTokenizer(Qwen3TITOTokenizer):
+    """Qwen3.8-27B — Qwen3 boundary with its reasoning-effort template."""
+
+    tool_call_parser = "qwen3_coder"
+    top_level_chat_template_kwargs = frozenset({"reasoning_effort"})
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template="qwen3.8_fixed.jinja",
+        extra_kwargs={"preserve_thinking": True},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+    )
+
+    def session_chat_template_config(self) -> tuple[tuple[str, Any], ...]:
+        enable_thinking = self.chat_template_kwargs.get("enable_thinking", True)
+        config = (("enable_thinking", enable_thinking),)
+        if enable_thinking is True:
+            config += (("reasoning_effort", self.chat_template_kwargs.get("reasoning_effort", "xhigh")),)
+        return config
 
 
 class QwenNextTITOTokenizer(Qwen3TITOTokenizer):
@@ -777,6 +802,7 @@ class TITOTokenizerType(StrEnum):
     QWEN3 = "qwen3"
     QWEN35 = "qwen35"
     QWEN36 = "qwen36"
+    QWEN38 = "qwen38"
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
     NEMOTRON3 = "nemotron3"
@@ -800,6 +826,8 @@ class TITOTokenizerType(StrEnum):
                 return Qwen35TITOTokenizer
             case cls.QWEN36:
                 return Qwen36TITOTokenizer
+            case cls.QWEN38:
+                return Qwen38TITOTokenizer
             case cls.QWENNEXT:
                 return QwenNextTITOTokenizer
             case cls.GLM47:

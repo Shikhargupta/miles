@@ -67,6 +67,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
     Qwen36TITOTokenizer,
+    Qwen38TITOTokenizer,
     QwenNextTITOTokenizer,
     TITOTokenizer,
     TITOTokenizerType,
@@ -233,6 +234,31 @@ class TestConfig:
     def test_default(self, default_tito: TITOTokenizer):
         assert default_tito._assistant_start_str is None
         assert default_tito.trailing_token_ids == frozenset()
+
+    def test_qwen38_normalizes_prefix_sensitive_template_config(self):
+        tokenizer = MagicMock()
+        tokenizer.encode.return_value = [198]
+        tokenizer.convert_tokens_to_ids.return_value = 151645
+
+        default = Qwen38TITOTokenizer(tokenizer)
+        low = default.clone_with_chat_template_kwargs({"reasoning_effort": "low"})
+        disabled_low = default.clone_with_chat_template_kwargs(
+            {"enable_thinking": False, "reasoning_effort": "low"}
+        )
+        disabled_medium = default.clone_with_chat_template_kwargs(
+            {"enable_thinking": False, "reasoning_effort": "medium"}
+        )
+
+        assert default.session_chat_template_config() == (
+            ("enable_thinking", True),
+            ("reasoning_effort", "xhigh"),
+        )
+        assert low.session_chat_template_config() == (
+            ("enable_thinking", True),
+            ("reasoning_effort", "low"),
+        )
+        assert disabled_low.session_chat_template_config() == (("enable_thinking", False),)
+        assert disabled_medium.session_chat_template_config() == disabled_low.session_chat_template_config()
 
     @pytest.mark.parametrize(
         "chat_template_kwargs, expected",
@@ -676,6 +702,7 @@ class TestFactory:
             ("qwen3", "Qwen/Qwen3-4B", Qwen3TITOTokenizer),
             ("qwen35", "Qwen/Qwen3-4B", Qwen35TITOTokenizer),
             ("qwen36", "Qwen/Qwen3-4B", Qwen36TITOTokenizer),
+            ("qwen38", "Qwen/Qwen3-4B", Qwen38TITOTokenizer),
             ("qwennext", "Qwen/Qwen3-4B", QwenNextTITOTokenizer),
             ("glm47", "zai-org/GLM-4.7-Flash", GLM47TITOTokenizer),
             ("default", "Qwen/Qwen3-4B", TITOTokenizer),
@@ -696,6 +723,7 @@ class TestFactory:
         [
             ("qwen35", Qwen35TITOTokenizer),
             ("qwen36", Qwen36TITOTokenizer),
+            ("qwen38", Qwen38TITOTokenizer),
             ("qwennext", QwenNextTITOTokenizer),
         ],
     )
@@ -730,6 +758,7 @@ class TestParserBinding:
             (TITOTokenizerType.QWEN3, "qwen3", "qwen25"),
             (TITOTokenizerType.QWEN35, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWEN36, "qwen3", "qwen3_coder"),
+            (TITOTokenizerType.QWEN38, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
@@ -754,6 +783,7 @@ class TestParserBinding:
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN3) == ("qwen3", "qwen25")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN36) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN38) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47) == ("glm45", "glm47")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEEPSEEKV4) == ("deepseek-v4", "deepseekv4")
         # DEFAULT family has no binding for either parser; both come back None.
