@@ -48,7 +48,7 @@ from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-from transformers import AutoConfig
+from miles.utils.hf_config import load_hf_config, register_hf_config_aliases
 
 from miles_plugins.models.qwen3_5 import Attention as Qwen35LinearAttention
 from miles_plugins.models.qwen3_5 import _get_text_config
@@ -92,15 +92,78 @@ def _strip_block_layernorms(layer_spec, config):
     submodules.pre_mlp_layernorm = IdentityOp
 
 
+def _apply_qwen3_8_next_config(config, text_config) -> None:
+    """Put the Qwen3.8-Next fields on a TransformerConfig built from argparse.
+
+    Megatron exposes no CLI flags for these, and ``convert_hf_to_torch_dist`` builds
+    its config from ``parse_args``, so without this the spec would see
+    ``enable_hyper_connections=False`` and quietly emit a plain ``TransformerLayer``
+    stack with no hyper-connections at all -- a model that loads and runs and is
+    simply wrong. Mirrors ``Qwen38NextBridge._build_config`` so the two paths agree.
+    """
+    config.enable_hyper_connections = True
+    config.num_residual_streams = getattr(text_config, "hc_count", 4)
+    config.qwen3_8_next_hc_lowrank = getattr(text_config, "hc_lowrank", 320)
+
+    config.qwen3_8_next_ple_layer_ids = sorted(
+        {int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []}
+    )
+    config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
+    config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
+    config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
+    config.qwen3_8_next_ngram_vocab_size_base = getattr(
+        text_config, "ngram_vocab_size_base", 20000000
+    )
+    config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
+    config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
+    config.qwen3_8_next_ple_conv_dilation = getattr(text_config, "ple_conv_dilation", 3)
+    config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
+
+    config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
+    config.qwen3_8_next_indexer_compress_ratio = getattr(text_config, "indexer_compress_ratio", 4)
+    config.qwen3_8_next_indexer_n_heads = getattr(text_config, "indexer_n_heads", 4)
+    config.qwen3_8_next_indexer_head_dim = getattr(text_config, "indexer_head_dim", 128)
+    config.qwen3_8_next_indexer_kv_heads = getattr(text_config, "indexer_kv_heads", 1)
+
+
 def get_qwen3_8_next_spec(args, config, vp_stage=None):
     """Transformer block spec for Qwen3.8-Next."""
-    assert config.enable_hyper_connections, (
-        "Qwen3.8-Next needs enable_hyper_connections=True; the bridge's _build_config "
-        "sets it, so this means the model was not loaded through Qwen38NextBridge."
-    )
-    assert getattr(config, "qwen3_8_next_hc_lowrank", None), (
-        "config.qwen3_8_next_hc_lowrank is unset; load through Qwen38NextBridge."
-    )
+    # transformers 5.12 does not know model_type qwen4_exp (nor the nested
+    # qwen4_exp_text), and the checkpoint carries no remote code, so a bare
+    # AutoConfig raises before anything else runs. load_hf_config registers miles'
+    # aliases first. Registering explicitly as well because the converter builds the
+    # model through this spec *before* it constructs mbridge's AutoBridge, which
+    # calls AutoConfig itself -- relying on that ordering silently would be fragile.
+    register_hf_config_aliases()
+    hf_config = load_hf_config(args.hf_checkpoint)
+    text_config = _get_text_config(hf_config)
+
+    # Megatron has no CLI flag for the hyper-connection fields, and the converter
+    # builds its TransformerConfig from argparse rather than from the bridge, so
+    # derive them here from the checkpoint's own config. Idempotent with
+    # Qwen38NextBridge._build_config, which sets the same values on the paths that
+    # do go through the bridge.
+    _apply_qwen3_8_next_config(config, text_config)
+
+    # Pipeline parallelism does account for the widened hidden state: with
+    # enable_hyper_connections set, schedules.get_tensor_shapes multiplies
+    # hidden_size by num_residual_streams for exactly the boundaries that carry it
+    # (a stage receives wide unless it is the first, and sends wide unless it is the
+    # last), which lines up with input_expand living on pre_process and the
+    # contraction on has_final_layernorm_in_this_stage.
+    #
+    # Interleaved PP is a different story. That path applies the widened dimension
+    # to every intermediate communication uniformly and carries its own note that
+    # "proper VPP support may need more complex logic". A wrong P2P buffer width
+    # there is a shape crash at best and silently transposed data at worst, so
+    # refuse it rather than find out during a training run.
+    if getattr(config, "virtual_pipeline_model_parallel_size", None):
+        raise NotImplementedError(
+            "Qwen3.8-Next + interleaved pipeline parallelism is unverified: "
+            "megatron/core/pipeline_parallel/schedules.py widens every intermediate "
+            "P2P buffer uniformly on the VPP path and flags its own logic as "
+            "simplified. Run with --num-layers-per-virtual-pipeline-stage unset."
+        )
 
     # Always take the MoE path for MoE checkpoints, matching Qwen3.5.
     if not args.num_experts:
@@ -116,8 +179,6 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
 
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
-    text_config = _get_text_config(hf_config)
     layer_types = _layer_types(text_config)
 
     for layer_id in range(num_layers_to_build):
