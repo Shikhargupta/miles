@@ -92,12 +92,22 @@ def validate_torchtitan_args(args) -> None:
     # at rope rather than at the setting that caused it. A packed microbatch
     # restarts positions per document, so the bound that matters is the longest
     # single sequence, not the packed length.
-    if args.titan_seq_len < args.rollout_max_context_len:
+    if args.rollout_max_context_len is not None:
+        if args.titan_seq_len < args.rollout_max_context_len:
+            raise ValueError(
+                f"--titan-seq-len {args.titan_seq_len} is shorter than "
+                f"--rollout-max-context-len {args.rollout_max_context_len}: torchtitan builds its "
+                "rotary embeddings for the former, so a longer sequence would index past them"
+            )
+    elif args.titan_seq_len <= args.rollout_max_response_len:
+        # Without an explicit context bound the prompt length is unknown, but a
+        # sequence is at least one prompt token plus the response, so equality
+        # already overflows the tables.
         raise ValueError(
-            f"--titan-seq-len {args.titan_seq_len} is shorter than "
-            f"--rollout-max-context-len {args.rollout_max_context_len}: torchtitan builds its "
-            "rotary embeddings for the former, so a longer prompt-plus-response would index "
-            "past them"
+            f"--titan-seq-len {args.titan_seq_len} leaves no room for a prompt ahead of "
+            f"--rollout-max-response-len {args.rollout_max_response_len}: torchtitan builds its "
+            "rotary embeddings for the former, and a prompt-plus-response beyond them asserts "
+            "inside the rope kernel"
         )
 
     # The reference model is built once from --ref-load; refreshing it mid-run

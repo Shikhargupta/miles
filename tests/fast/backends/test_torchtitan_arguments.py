@@ -25,6 +25,7 @@ def _args(**overrides) -> Namespace:
         titan_context_parallel_degree=1,
         titan_expert_parallel_degree=1,
         rollout_max_context_len=8192,
+        rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
     )
@@ -96,6 +97,20 @@ def test_a_sequence_longer_than_the_rotary_tables_is_rejected(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
     with pytest.raises(ValueError, match="titan-seq-len"):
         validate_torchtitan_args(_args(titan_seq_len=8192, rollout_max_context_len=16384))
+
+
+def test_without_a_context_bound_the_response_must_leave_room_for_a_prompt(monkeypatch):
+    """--rollout-max-context-len is optional, and then the prompt length is
+    unknown -- but a sequence is at least one prompt token plus the response, so
+    a seq_len merely equal to the response length already overflows."""
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="no room for a prompt"):
+        validate_torchtitan_args(
+            _args(titan_seq_len=8192, rollout_max_context_len=None, rollout_max_response_len=8192)
+        )
+    validate_torchtitan_args(
+        _args(titan_seq_len=16384, rollout_max_context_len=None, rollout_max_response_len=8192)
+    )
 
 
 def test_periodic_reference_refresh_is_rejected_rather_than_ignored(monkeypatch):
