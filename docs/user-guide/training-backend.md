@@ -541,11 +541,19 @@ moves, and the disagreement compounds over rollouts rather than staying flat.
 ### Try it
 
 ```bash
-python3 tests/e2e/torchtitan/test_qwen3_0.6B_torchtitan_colocated_2xGPU.py
+export WANDB_API_KEY=<key>
+
+# downloads model + datasets itself, no conversion step
+python3 scripts/run_qwen3_0_6b_torchtitan.py
+
+# same recipe with tensor parallelism
+python3 scripts/run_qwen3_0_6b_torchtitan.py --tp-size 2
 ```
 
-The cases in `tests/e2e/torchtitan/` double as recipes: one per topology, each naming the
-mechanism it exercises.
+That launcher mirrors `scripts/run_qwen3_0_6b_fsdp.py` flag for flag, so the two backends'
+training curves can be read against each other on one model. The cases in
+`tests/e2e/torchtitan/` are the other reference: one per topology, each naming the mechanism
+it exercises.
 
 ---
 
