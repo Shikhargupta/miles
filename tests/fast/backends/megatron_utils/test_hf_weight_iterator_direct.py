@@ -71,7 +71,7 @@ def direct_module(monkeypatch):
         "miles.backends.megatron_utils.megatron_to_hf.processors",
         "miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_fp8",
         "miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_mxfp8",
-        "miles.backends.megatron_utils.update_weight.common",
+        "miles.backends.megatron_utils.named_weights",
         "miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct",
     ]
     saved_modules = {name: sys.modules.get(name) for name in module_names}
