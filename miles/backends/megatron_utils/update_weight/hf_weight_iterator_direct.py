@@ -24,8 +24,6 @@ from .common import (
 
 
 class HfWeightIteratorDirect(HfWeightIteratorBase):
-    # Plan-ahead gather over every parallel dim; gather_pp=False support lands
-    # with the distributed-path migration.
     forced_placement = WeightUpdatePlacement(gather_pp=True)
 
     def __init__(self, *args, **kwargs):
