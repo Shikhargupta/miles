@@ -257,8 +257,19 @@ def compute_policy_loss(
     eps_clip: float,
     eps_clip_high: float,
     eps_clip_c: float | None = None,
+    gate_out_of_range: bool = False,
 ):
     ratio = _safe_exp_neg_ppo_kl(ppo_kl)
+
+    if gate_out_of_range:
+        # DIS (arXiv:2607.07508): drop out-of-trust-region tokens instead of clamping them.
+        # PPO's `maximum` deliberately keeps the unclipped term whenever it is the more
+        # pessimistic of the two, so a badly stale token still contributes gradient. Under
+        # async policy lag that is exactly the instability we want removed, so gate the
+        # token to zero on both sides regardless of the sign of the advantage.
+        in_range = ((ratio > 1 - eps_clip) & (ratio < 1 + eps_clip_high)).to(ratio.dtype)
+        return -ratio * advantages * in_range, 1.0 - in_range
+
     pg_losses1 = -ratio * advantages
     pg_losses2 = -ratio.clamp(1 - eps_clip, 1 + eps_clip_high) * advantages
     clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)

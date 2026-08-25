@@ -205,7 +205,12 @@ def policy_loss_function(
     )
 
     pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
+        ppo_kl,
+        advantages,
+        args.eps_clip,
+        args.eps_clip_high,
+        getattr(args, "eps_clip_c", None),
+        gate_out_of_range=getattr(args, "eps_clip_mode", "clamp") == "mask",
     )
 
     if getattr(args, "dump_details", None) is not None:

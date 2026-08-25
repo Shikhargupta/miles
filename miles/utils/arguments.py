@@ -1363,6 +1363,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of initial rollout steps where only the critic trains (value-function warmup) "
                 "while the actor stays frozen. Only takes effect when --advantage-estimator is ppo.",
             )
+            parser.add_argument(
+                "--critic-updates-per-policy-update",
+                type=int,
+                default=1,
+                help="Number of critic optimizer updates per policy update on the same rollout batch "
+                "(the K of the two-timescale update rule in arXiv:2607.07508, which uses K=2). The "
+                "critic is what turns rewards into advantages, so letting it track the current policy "
+                "before the actor consumes its values reduces advantage noise. Only takes effect when "
+                "--advantage-estimator is ppo.",
+            )
             parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
             parser.add_argument(
                 "--critic-save",
@@ -1386,6 +1396,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=None,
                 help="lower bound of the value for Dual-clip PPO from https://arxiv.org/pdf/1912.09729",
+            )
+            parser.add_argument(
+                "--eps-clip-mode",
+                type=str,
+                choices=["clamp", "mask"],
+                default="clamp",
+                help=(
+                    "How --eps-clip / --eps-clip-high bound the importance ratio. 'clamp' is standard "
+                    "PPO clipping. 'mask' is the double-sided gate from DIS (arXiv:2607.07508): tokens "
+                    "whose ratio falls outside (1-eps_clip, 1+eps_clip_high) get zero gradient instead "
+                    "of a clamped one. Pair with --use-rollout-logprobs so the ratio is measured "
+                    "against the rollout policy."
+                ),
             )
             parser.add_argument("--value-clip", type=float, default=0.2, help="the clip for value loss")
             parser.add_argument(

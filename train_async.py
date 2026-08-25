@@ -81,7 +81,11 @@ async def train(args):
             rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
 
         if args.use_critic:
-            values = await critic_model.train(rollout_id, rollout_data_curr_ref)
+            # Two-timescale update: run K critic updates on this batch before the actor
+            # consumes the values, so the advantages the actor sees come from a critic that
+            # has already tracked the current policy. Offload once, after the last update.
+            for _ in range(args.critic_updates_per_policy_update):
+                values = await critic_model.train(rollout_id, rollout_data_curr_ref)
             if args.offload_train:
                 await critic_model.offload()
             if rollout_id >= args.num_critic_only_steps:
