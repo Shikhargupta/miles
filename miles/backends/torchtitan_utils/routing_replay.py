@@ -19,6 +19,7 @@ normalization, scaling) is unchanged, so replayed routing stays differentiable
 through the gate exactly as recorded routing is.
 """
 
+import functools
 import logging
 import types
 
@@ -148,9 +149,15 @@ def _bracket_real_forward(part: nn.Module) -> None:
 
     Only ``replay_backward`` is promoted; ``fallthrough`` (the reference model)
     and ``record`` must reach the routers unchanged.
+
+    ``functools.wraps`` is load-bearing, not cosmetic: callers introspect the
+    model's forward signature to decide which family kwargs to pass (qwen3_5
+    dereferences ``special_tokens`` unconditionally), and a bare
+    ``*args, **kwargs`` wrapper hides those parameters.
     """
     inner = part.forward
 
+    @functools.wraps(inner)
     def forward(*args, **kwargs):
         if routing_replay_manager.stage == REPLAY_BACKWARD:
             with stage(REPLAY_FORWARD):
