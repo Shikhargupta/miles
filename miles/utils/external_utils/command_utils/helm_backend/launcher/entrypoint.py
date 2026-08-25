@@ -334,7 +334,8 @@ def _active_state_file(*, release: str, namespace: str) -> Path | None:
     object_name = RunNames.orchestrator_object(release=release)
     result = Kubectl.run_raw("get", "statefulset", object_name, "--namespace", namespace, "--output", "yaml")
     if result.returncode != 0:
-        if "not found" in (result.stderr + result.stdout).lower():
+        error = (result.stderr + result.stdout).lower()
+        if "not found" in error or "notfound" in error:
             return None
         raise RuntimeError(
             f"Cannot read the active orchestrator generation of {release}: "

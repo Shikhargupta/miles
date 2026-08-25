@@ -307,9 +307,7 @@ class TestTheActiveStateFile:
         monkeypatch.setattr(
             Kubectl,
             "run_raw",
-            staticmethod(
-                lambda *arguments: subprocess.CompletedProcess(arguments, 1, stdout="", stderr="NotFound")
-            ),
+            staticmethod(lambda *arguments: subprocess.CompletedProcess(arguments, 1, stdout="", stderr="NotFound")),
         )
 
         assert entrypoint._active_state_file(release=_RELEASE, namespace="rl") is None
