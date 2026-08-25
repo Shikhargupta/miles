@@ -112,6 +112,11 @@ def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
     batches = direct_module._pack_param_infos_by_size(Namespace(update_weight_buffer_size=6), params)
     assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b", "layer.c"]]
 
+    batches = direct_module._pack_param_infos_by_size(
+        Namespace(update_weight_buffer_size=6), params, size_multiplier=2
+    )
+    assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b"], ["layer.c"]]
+
 
 def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
     from miles.backends.megatron_utils.update_weight.common import get_atomic_update_groups, get_named_update_units

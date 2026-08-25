@@ -1,4 +1,3 @@
-import dataclasses
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -19,18 +18,32 @@ from .common import all_gather_params_async, is_routed_expert_param, named_param
 class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model)
+        non_expert_infos, expert_infos = _get_megatron_local_param_infos(self.args, self.model)
+        ep_size = get_parallel_state().ep.size
+        self._non_expert_batches = _pack_param_infos_by_size(self.args, non_expert_infos)
+        # An expert batch materializes ep_size x its metadata size after the EP all_gather.
+        self._expert_batches = _pack_param_infos_by_size(self.args, expert_infos, size_multiplier=ep_size)
 
     def _iter_hf_param_units(self, weights, *, materialize):
         assert materialize, "non-materializing iteration lands with the distributed-path migration"
         rank = dist.get_rank()
 
-        for megatron_local_param_infos in tqdm(
-            self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
-        ):
-            megatron_full_params = _get_megatron_full_params(self.args, megatron_local_param_infos, weights)
-            yield from self._convert_to_hf_param_units(megatron_local_param_infos, megatron_full_params)
-            del megatron_full_params
+        pbar = tqdm(
+            total=len(self._non_expert_batches) + len(self._expert_batches),
+            disable=rank != 0,
+            desc="Update weights",
+        )
+        for param_infos in self._non_expert_batches:
+            named_params = _materialize_non_expert_batch(self.args, param_infos, weights)
+            yield from self._convert_to_hf_param_units(named_params)
+            del named_params
+            pbar.update(1)
+        for param_infos in self._expert_batches:
+            named_params = _materialize_expert_batch(self.args, param_infos, weights)
+            yield from self._convert_to_hf_param_units(named_params)
+            del named_params
+            pbar.update(1)
+        pbar.close()
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
@@ -39,23 +52,15 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
         return export_inkling_lora_hf_named(self.model)
 
-    def _convert_to_hf_param_units(self, param_infos: Sequence[ParamInfo], params: Sequence[torch.Tensor]):
-        for info, param in zip(param_infos, params, strict=True):
-            yield list(convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config))
+    def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
+        for name, param in named_params:
+            yield list(convert_to_hf(self.args, self.model_name, name, param, self.quantization_config))
 
 
-def _get_megatron_full_params(
-    args: Namespace,
-    megatron_local_param_infos: Sequence[ParamInfo],
-    megatron_local_weights,
-) -> Sequence[torch.Tensor]:
-    monkey_patch_torch_reductions()
-    pp_size = get_parallel_state().pp.size
-    ep_size = get_parallel_state().ep.size
-    rank = dist.get_rank()
-    # init params:
+def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_weights) -> list[torch.Tensor]:
+    """Owners load from the weight source; other ranks allocate receive buffers."""
     params = []
-    for info in megatron_local_param_infos:
+    for info in param_infos:
         if dist.get_rank() == info.src_rank:
             params.append(
                 torch.nn.Parameter(
@@ -66,53 +71,97 @@ def _get_megatron_full_params(
         else:
             params.append(torch.empty(info.shape, dtype=info.dtype, device=torch.cuda.current_device()))
     torch.cuda.synchronize()
+    return params
 
-    # broadcast params across pp ranks
-    if pp_size > 1:
-        handles = []
-        for info, param in zip(megatron_local_param_infos, params, strict=False):
-            if info.src_rank in dist.get_process_group_ranks(get_parallel_state().pp.group):
-                handles.append(
-                    torch.distributed.broadcast(
-                        param, src=info.src_rank, group=get_parallel_state().pp.group, async_op=True
-                    )
-                )
-        for handle in handles:
-            handle.wait()
 
-    # broadcast params across ep ranks
-    if ep_size > 1:
-        handles = []
-        for info, param in zip(megatron_local_param_infos, params, strict=False):
-            if is_routed_expert_param(info.name):
-                src_rank = (
-                    info.src_rank
-                    if info.src_rank in dist.get_process_group_ranks(get_parallel_state().ep.group)
-                    else rank
-                )
-                handles.append(
-                    torch.distributed.broadcast(
-                        param, src=src_rank, group=get_parallel_state().ep.group, async_op=True
-                    )
-                )
-        for handle in handles:
-            handle.wait()
+def _broadcast_across_pp(param_infos: Sequence[ParamInfo], params: Sequence[torch.Tensor]) -> None:
+    pp = get_parallel_state().pp
+    if pp.size == 1:
+        return
+    pp_ranks = dist.get_process_group_ranks(pp.group)
+    handles = []
+    for info, param in zip(param_infos, params, strict=True):
+        if info.src_rank in pp_ranks:
+            handles.append(dist.broadcast(param, src=info.src_rank, group=pp.group, async_op=True))
+    for handle in handles:
+        handle.wait()
 
-    # Set tp attrs for all params
-    for info, param in zip(megatron_local_param_infos, params, strict=False):
+
+def _set_tp_attrs(param_infos: Sequence[ParamInfo], params: Sequence[torch.Tensor]) -> None:
+    for info, param in zip(param_infos, params, strict=True):
         for key, value in info.attrs.items():
             setattr(param, key, value)
 
-    # Batch async all_gather for all parameters
-    gathered_params = all_gather_params_async(args, list(zip(megatron_local_param_infos, params, strict=False)))
 
-    return gathered_params
+def _materialize_non_expert_batch(
+    args: Namespace,
+    param_infos: Sequence[ParamInfo],
+    megatron_local_weights,
+) -> list[tuple[str, torch.Tensor]]:
+    """Load -> PP broadcast -> TP all_gather."""
+    monkey_patch_torch_reductions()
+    params = _load_or_allocate_params(param_infos, megatron_local_weights)
+    _broadcast_across_pp(param_infos, params)
+    _set_tp_attrs(param_infos, params)
+    gathered = all_gather_params_async(args, list(zip(param_infos, params, strict=True)))
+    return [(info.name, param) for info, param in zip(param_infos, gathered, strict=True)]
 
 
-def _get_megatron_local_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
-    """Partition params into gather batches ≤ update_weight_buffer_size."""
-    param_infos = _get_megatron_local_param_infos(args, model)
-    return _pack_param_infos_by_size(args, param_infos)
+def _materialize_expert_batch(
+    args: Namespace,
+    param_infos: Sequence[ParamInfo],
+    megatron_local_weights,
+) -> list[tuple[str, torch.Tensor]]:
+    """Load -> PP broadcast -> ETP all_gather -> EP all_gather.
+
+    Expert metadata is EP-local; the full expert set is materialized by a
+    symmetric EP all_gather with a name exchange.
+    """
+    monkey_patch_torch_reductions()
+    params = _load_or_allocate_params(param_infos, megatron_local_weights)
+    _broadcast_across_pp(param_infos, params)
+    _set_tp_attrs(param_infos, params)
+    etp_gathered = all_gather_params_async(args, list(zip(param_infos, params, strict=True)))
+
+    ep = get_parallel_state().ep
+    if ep.size == 1:
+        return [(info.name, param) for info, param in zip(param_infos, etp_gathered, strict=True)]
+
+    names = [info.name for info in param_infos]
+    all_names: list = [None] * ep.size
+    dist.all_gather_object(all_names, names, group=ep.group)
+    for ep_names in all_names:
+        assert len(ep_names) == len(
+            names
+        ), f"EP-asymmetric expert batch: {len(names)} params locally vs {len(ep_names)} on a peer rank"
+
+    all_gathered: list[list[tuple[str, torch.Tensor]]] = [[] for _ in range(ep.size)]
+    handles = []
+    for i, param in enumerate(etp_gathered):
+        buffers = [torch.empty_like(param, device=torch.cuda.current_device()) for _ in range(ep.size)]
+        handles.append(dist.all_gather(buffers, param, group=ep.group, async_op=True))
+        for ep_rank, ep_names in enumerate(all_names):
+            all_gathered[ep_rank].append((ep_names[i], buffers[ep_rank]))
+    for handle in handles:
+        handle.wait()
+
+    return [named for per_rank in all_gathered for named in per_rank]
+
+
+def _pack_param_infos_by_size(
+    args: Namespace, param_infos: list[ParamInfo], *, size_multiplier: int = 1
+) -> list[list[ParamInfo]]:
+    """Greedy size packing into gather batches ≤ update_weight_buffer_size."""
+    batches: list[list[ParamInfo]] = [[]]
+    buffer_size = 0
+    for info in param_infos:
+        size = _get_param_full_size(info) * size_multiplier
+        if buffer_size + size > args.update_weight_buffer_size and batches[-1]:
+            batches.append([])
+            buffer_size = 0
+        batches[-1].append(info)
+        buffer_size += size
+    return [batch for batch in batches if batch]
 
 
 def _get_param_full_size(info: ParamInfo) -> int:
@@ -123,28 +172,18 @@ def _get_param_full_size(info: ParamInfo) -> int:
     return info.size * tp_size
 
 
-def _pack_param_infos_by_size(args: Namespace, param_infos: list[ParamInfo]) -> list[list[ParamInfo]]:
-    """Greedy size packing into gather batches ≤ update_weight_buffer_size."""
-    batches: list[list[ParamInfo]] = [[]]
-    buffer_size = 0
-    for info in param_infos:
-        size = _get_param_full_size(info)
-        if buffer_size + size > args.update_weight_buffer_size and batches[-1]:
-            batches.append([])
-            buffer_size = 0
-        batches[-1].append(info)
-        buffer_size += size
-    return [batch for batch in batches if batch]
+def _get_megatron_local_param_infos(
+    args: Namespace, model: Sequence[torch.nn.Module]
+) -> tuple[list[ParamInfo], list[ParamInfo]]:
+    """Collect param metadata, exchanged across PP.
 
-
-def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Module]) -> list[ParamInfo]:
-    """Collect param metadata, exchanged across PP and EP; identical on every rank."""
+    Returns (non_expert_infos, expert_infos); expert infos stay EP-local.
+    """
     pp_size = get_parallel_state().pp.size
-    ep_size = get_parallel_state().ep.size
 
     from ..lora_utils import _is_adapter_param_name
 
-    param_infos = {}
+    param_infos: dict[str, ParamInfo] = {}
     rank = dist.get_rank()
     for name, param in named_params_and_buffers(args, model):
         if _is_adapter_param_name(name):
@@ -180,25 +219,17 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
                 else:
                     param_infos[name] = info
 
-    if ep_size > 1:
-        param_infos_list = [None] * ep_size
-        dist.all_gather_object(
-            obj=(rank, param_infos), object_list=param_infos_list, group=get_parallel_state().ep.group
-        )
-        for src_rank, infos in param_infos_list:
-            for name, info in infos.items():
-                if name not in param_infos:
-                    # src_rank must be the rank within the expert model parallel group
-                    info = dataclasses.replace(info, src_rank=src_rank)
-                    param_infos[name] = info
+    infos = sorted(param_infos.values(), key=lambda info: info.name)
+    non_expert_infos = [info for info in infos if not is_routed_expert_param(info.name)]
+    expert_infos = [info for info in infos if is_routed_expert_param(info.name)]
 
-    param_infos = sorted(param_infos.values(), key=lambda info: info.name)
-    _check_param_infos_consistent(param_infos)
-    return param_infos
+    _check_param_infos_consistent(non_expert_infos)
+
+    return non_expert_infos, expert_infos
 
 
 def _check_param_infos_consistent(param_infos: list[ParamInfo]) -> None:
-    """Every rank must hold identical param metadata."""
+    """Every rank must hold identical non-expert metadata once PP is gathered."""
     all_param_info_list = [None] * dist.get_world_size()
     dist.all_gather_object(obj=param_infos, object_list=all_param_info_list, group=get_gloo_group())
     for i, param_info in enumerate(param_infos):
