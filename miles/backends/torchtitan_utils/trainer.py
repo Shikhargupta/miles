@@ -388,11 +388,16 @@ class TitanTrainer(Trainer):
                 kwarg_mbs.append(extra)
                 target_mbs.append(label)
             losses = [] if self.pp_has_last_stage else None
+            # return_outputs=False matters: the last stage otherwise retains
+            # every microbatch's full-vocab logits until the merge -- at RL
+            # sequence lengths that alone exceeds device memory. The loss
+            # adapter has already consumed each microbatch's logits by then.
             self.pp_schedule.eval(
                 arg_mbs=arg_mbs if self.pp_has_first_stage else None,
                 kwarg_mbs=kwarg_mbs,
                 target_mbs=target_mbs if self.pp_has_last_stage else None,
                 losses=losses,
+                return_outputs=False,
             )
         else:
             for input_dict, label in zip(input_dicts, labels, strict=True):
