@@ -180,11 +180,6 @@ def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     return False
 
 
-def is_lora_weight_name(name: str) -> bool:
-    """Check if a weight name corresponds to a LoRA adapter weight."""
-    return ".lora_A." in name or ".lora_B." in name
-
-
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
+from miles.utils.lora import is_lora_weight_name
 
 # ---------------------------------------------------------------------------
 # LoRA / base weight separation (pure logic, no distributed deps)
@@ -75,14 +75,13 @@ class TestUpdateWeightFromTensorLoraConfig:
         )
 
     @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_lora_true_sets_config(self, mock_iter_base, mock_dist):
+    @patch(f"{_UW_MODULE}.get_hf_weight_iterator")
+    def test_lora_true_sets_config(self, mock_get_iter, mock_dist):
         from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
         mock_dist.get_world_size.return_value = 2
         mock_dist.get_rank.return_value = 0
         mock_dist.new_group.return_value = MagicMock()
-        mock_iter_base.create.return_value = MagicMock()
 
         args = self._make_args()
         updater = UpdateWeightFromTensor(
@@ -98,14 +97,13 @@ class TestUpdateWeightFromTensorLoraConfig:
         assert updater._lora_config["r"] == 32
 
     @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_lora_false_no_config(self, mock_iter_base, mock_dist):
+    @patch(f"{_UW_MODULE}.get_hf_weight_iterator")
+    def test_lora_false_no_config(self, mock_get_iter, mock_dist):
         from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
         mock_dist.get_world_size.return_value = 2
         mock_dist.get_rank.return_value = 0
         mock_dist.new_group.return_value = MagicMock()
-        mock_iter_base.create.return_value = MagicMock()
 
         args = self._make_args()
         updater = UpdateWeightFromTensor(

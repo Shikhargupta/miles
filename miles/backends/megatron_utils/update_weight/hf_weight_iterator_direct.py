@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.training_utils.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
@@ -20,34 +21,37 @@ from .common import (
     is_routed_expert_param,
     named_params_and_buffers,
 )
-from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
 class HfWeightIteratorDirect(HfWeightIteratorBase):
+    # Plan-ahead gather over every parallel dim; KEEP_PP support lands with the
+    # distributed-path migration.
+    forced_placement = WeightUpdatePlacement.FULL
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(
             self.args, self.model, self.model_name
         )
 
-    def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
+    def iter_hf_base_weights(self, weights, *, materialize=True):
+        assert materialize, "non-materializing iteration lands with the distributed-path migration"
         rank = dist.get_rank()
-
-        if weight_type == "lora":
-            from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
-
-            yield export_inkling_lora_hf_named(self.model)
-            return
 
         for megatron_local_param_infos in tqdm(
             self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
         ):
-            megatron_full_params = _get_megatron_full_params(
-                self.args, megatron_local_param_infos, megatron_local_weights
-            )
+            megatron_full_params = _get_megatron_full_params(self.args, megatron_local_param_infos, weights)
             hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, megatron_local_param_infos)
             yield hf_named_tensors
             del megatron_full_params
+
+    def _export_lora_named_tensors(self, adapter):
+        assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
+        # Local: raw-mode adapter export only exists for the inkling plugin.
+        from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
+
+        return export_inkling_lora_hf_named(self.model)
 
     def _convert_to_hf_named_tensors(self, megatron_full_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
         hf_named_tensors = []

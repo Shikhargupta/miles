@@ -7,12 +7,13 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.training_utils.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.timer import timer
 
-from ...lora_utils import _is_adapter_param_name, build_lora_sync_config, is_lora_weight_name
+from ...lora_utils import _is_adapter_param_name, build_lora_sync_config
 from ...megatron_to_hf import convert_to_hf
 from ..common import (
     all_gather_param,
@@ -24,7 +25,7 @@ from ..common import (
     is_routed_expert_param,
     weight_update_selector,
 )
-from ..hf_weight_iterator_base import HfWeightIteratorBase
+from ..hf_weight_iterator import get_hf_weight_iterator
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +88,13 @@ class DistBucketedWeightUpdateMixin:
             )
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
-            self._hf_weight_iterator = HfWeightIteratorBase.create(
-                args=args,
-                model=model,
+            # KEEP_PP is the distributed protocols' true requirement; bridge forces FULL today.
+            self._hf_weight_iterator = get_hf_weight_iterator(
+                args,
+                model,
+                required_placement=WeightUpdatePlacement.KEEP_PP,
                 model_name=model_name,
                 quantization_config=quantization_config,
-                is_lora=True,
             )
 
     def _gather_and_update_non_expert_weights(
@@ -229,40 +231,23 @@ class DistBucketedWeightUpdateMixin:
         """Orchestrate the LoRA adapter update; delegate transmit to the subclass.
 
         Mirrors the base path's split: this method owns the transport-agnostic
-        steps (bridge iteration, validation, source gating, and the
-        unload-before-reload), and hands the gathered adapter to
-        ``self._update_lora_weight_implementation`` — broadcast (NCCL) or p2p
-        provide their own.
+        steps (source gating and the unload-before-reload), and hands the
+        gathered adapter to ``self._update_lora_weight_implementation`` —
+        broadcast (NCCL) or p2p provide their own.
 
-        All TP ranks iterate the bridge (required for internal TP collectives),
-        but only the source rank transmits.
+        All ranks call the iterator (required for internal TP collectives), but
+        only the source rank transmits.
         """
-        # All ranks must iterate the bridge for TP collective participation.
-        accumulated_named_tensors: list[tuple[str, torch.Tensor]] = []
-        for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks({}, weight_type="lora"):
-            accumulated_named_tensors.extend(hf_named_tensors)
-
-        if not accumulated_named_tensors:
-            raise RuntimeError(
-                "LoRA weight sync failed: the weight iterator produced zero chunks. "
-                "No adapter weights were sent to the rollout engine. This usually means "
-                "the Megatron-Bridge or SGLang version is incompatible."
-            )
+        named_tensors = self._hf_weight_iterator.get_hf_lora_weights()
 
         if not self._is_lora_source:
             return
-
-        if not any(is_lora_weight_name(n) for n, _ in accumulated_named_tensors):
-            raise RuntimeError(
-                "LoRA weight sync failed: chunk contains no LoRA weights "
-                "(no lora_A/lora_B names found). Check weight iterator."
-            )
 
         if self._lora_loaded:
             ray.get(
                 [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
             )
-        self._update_lora_weight_implementation(accumulated_named_tensors)
+        self._update_lora_weight_implementation(named_tensors)
         self._lora_loaded = True
 
     def _update_multi_lora_weights(self) -> None:
@@ -273,35 +258,22 @@ class DistBucketedWeightUpdateMixin:
             self._send_one_multi_lora_adapter(adapters[name])
 
     def _send_one_multi_lora_adapter(self, adapter) -> None:
-        """All ranks iterate the bridge (TP collectives); only the source
+        """All ranks call the iterator (TP collectives); only the source
         rank transmits."""
-        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
-
         from miles.utils.multi_lora import slot_lora_name
 
-        from ...multi_lora_utils import slice_lora_to_rank
+        lora_config = build_lora_sync_config(self.args) | {
+            "r": adapter.config.rank,
+            "lora_alpha": adapter.config.alpha,
+        }
 
-        adapter_rank = adapter.config.rank
-        lora_config = build_lora_sync_config(self.args) | {"r": adapter_rank, "lora_alpha": adapter.config.alpha}
-
-        accumulated_named_tensors: list[tuple[str, torch.Tensor]] = []
-        with expose_adapter_slot(self.model, adapter.slot):
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks({}, weight_type="lora"):
-                accumulated_named_tensors.extend(
-                    (n, slice_lora_to_rank(n, t, adapter_rank)) for n, t in hf_named_tensors if is_lora_weight_name(n)
-                )
+        named_tensors = self._hf_weight_iterator.get_hf_lora_weights(adapter)
 
         if not self._is_lora_source:
             return
 
-        if not accumulated_named_tensors:
-            raise RuntimeError(
-                f"Multi-LoRA weight sync for adapter {adapter.name!r} yielded no lora_A/lora_B weights; "
-                "likely an incompatible Megatron-Bridge or SGLang version."
-            )
-
         self._update_multi_lora_weight_implementation(
-            accumulated_named_tensors,
+            named_tensors,
             lora_name=slot_lora_name(adapter.slot),
             lora_config=lora_config,
         )

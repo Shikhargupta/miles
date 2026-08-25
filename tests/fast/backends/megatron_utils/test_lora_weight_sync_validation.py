@@ -2,8 +2,9 @@
 
 Verifies that silent failures are caught:
 - Engine returning success=False raises RuntimeError
-- Empty LoRA weights after filtering raises RuntimeError
-- Zero weight chunks from iterator raises RuntimeError
+- Iterator validation errors (empty export / no lora names) propagate through
+  the orchestration (the guards themselves are covered in
+  tests/fast/backends/training_utils/test_hf_weight_iterator.py)
 - FlattenedTensorBucket round-trip preserves tensor values
 - Distributed (disaggregate) sync broadcasts the adapter over NCCL (no CUDA IPC)
 """
@@ -16,7 +17,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.backends.megatron_utils.update_weight.common import _check_weight_sync_results
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
     UpdateWeightFromDistributed,
@@ -25,7 +25,7 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.
     DistBucketedWeightUpdateMixin,
 )
 from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
 _MIXIN_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin"
@@ -40,11 +40,6 @@ SAMPLE_LORA_WEIGHTS = [
     ("model.layers.0.self_attn.q_proj.lora_B.weight", torch.randn(2, 4)),
     ("model.layers.0.mlp.gate_proj.lora_A.weight", torch.randn(8, 2)),
     ("model.layers.0.mlp.gate_proj.lora_B.weight", torch.randn(2, 8)),
-]
-
-SAMPLE_BASE_ONLY_WEIGHTS = [
-    ("model.layers.0.self_attn.q_proj.weight", torch.randn(4, 4)),
-    ("model.layers.0.mlp.gate_proj.weight", torch.randn(8, 4)),
 ]
 
 
@@ -111,46 +106,19 @@ class TestCheckWeightSyncResults:
 
 
 # ---------------------------------------------------------------------------
-# _send_hf_params: empty LoRA weight detection
+# _send_lora_params: transport pass-through (export guards are covered in
+# tests/fast/backends/training_utils/test_hf_weight_iterator.py)
 # ---------------------------------------------------------------------------
 
 
-class TestSendHfParamsEmptyLoraDetection:
-    """When is_lora=True but HF chunk has no lora_A/lora_B names, raise immediately."""
-
-    @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_raises_when_no_lora_weights_in_chunk(self, mock_iter_base, mock_dist):
-        mock_dist.get_world_size.return_value = 1
-        mock_dist.get_rank.return_value = 0
-        mock_dist.new_group.return_value = MagicMock()
-        mock_iter_base.create.return_value = MagicMock()
-
-        args = _make_args()
-        updater = UpdateWeightFromTensor(
-            args=args,
-            model=[MagicMock()],
-            weights_getter=lambda: {},
-            model_name="qwen",
-            quantization_config=None,
-            is_lora=True,
-        )
-        updater._ipc_engine = MagicMock()
-        updater._ipc_gather_src = 0
-        updater._ipc_gather_group = MagicMock()
-        updater.use_distribute = False
-
-        with pytest.raises(RuntimeError, match="no LoRA weights"):
-            updater._send_lora_params(SAMPLE_BASE_ONLY_WEIGHTS)
-
+class TestSendLoraParams:
     @patch(f"{_UW_MODULE}._send_to_colocated_engine", return_value=([], []))
     @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_passes_when_lora_weights_present(self, mock_iter_base, mock_dist, mock_send):
+    @patch(f"{_UW_MODULE}.get_hf_weight_iterator")
+    def test_passes_when_lora_weights_present(self, mock_get_iter, mock_dist, mock_send):
         mock_dist.get_world_size.return_value = 1
         mock_dist.get_rank.return_value = 0
         mock_dist.new_group.return_value = MagicMock()
-        mock_iter_base.create.return_value = MagicMock()
 
         args = _make_args()
         updater = UpdateWeightFromTensor(
@@ -172,60 +140,27 @@ class TestSendHfParamsEmptyLoraDetection:
 
 
 # ---------------------------------------------------------------------------
-# update_weights: zero-chunk detection
+# update_weights: empty base iteration
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateWeightsZeroChunks:
-    """When the weight iterator yields nothing for LoRA, raise instead of silently succeeding."""
-
+class TestUpdateWeightsEmptyBaseIteration:
     @patch("miles.backends.megatron_utils.update_weight.common.ray")
     @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
     @patch(f"{_UW_MODULE}.ray")
     @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_raises_on_zero_lora_chunks(self, mock_iter_base, mock_dist, mock_ray, mock_gloo, mock_common_ray):
-        from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
-
-        mock_dist.get_world_size.return_value = 1
-        mock_dist.get_rank.return_value = 0
-        mock_dist.new_group.return_value = MagicMock()
-
-        empty_iterator = MagicMock()
-        empty_iterator.get_hf_weight_chunks.return_value = iter([])
-        mock_iter_base.create.return_value = empty_iterator
-
-        args = _make_args()
-        updater = UpdateWeightFromTensor(
-            args=args,
-            model=[MagicMock()],
-            weights_getter=lambda: {},
-            model_name="qwen",
-            quantization_config=None,
-            is_lora=True,
-        )
-        updater.rollout_engines = [MagicMock()]
-        updater.use_distribute = False
-
-        with pytest.raises(RuntimeError, match="zero chunks"):
-            updater.update_weights()
-
-    @patch("miles.backends.megatron_utils.update_weight.common.ray")
-    @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
-    @patch(f"{_UW_MODULE}.ray")
-    @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
-    def test_no_raise_for_base_model_zero_chunks(
-        self, mock_iter_base, mock_dist, mock_ray, mock_gloo, mock_common_ray
+    @patch(f"{_UW_MODULE}.get_hf_weight_iterator")
+    def test_no_raise_for_base_model_zero_buckets(
+        self, mock_get_iter, mock_dist, mock_ray, mock_gloo, mock_common_ray
     ):
-        """Base model weight sync with zero chunks is valid (e.g. empty model state)."""
+        """Base model weight sync with zero buckets is valid (e.g. empty model state)."""
         mock_dist.get_world_size.return_value = 1
         mock_dist.get_rank.return_value = 0
         mock_dist.new_group.return_value = MagicMock()
 
         empty_iterator = MagicMock()
-        empty_iterator.get_hf_weight_chunks.return_value = iter([])
-        mock_iter_base.create.return_value = empty_iterator
+        empty_iterator.iter_hf_base_weights.return_value = iter([])
+        mock_get_iter.return_value = empty_iterator
 
         args = _make_args()
         updater = UpdateWeightFromTensor(
@@ -383,11 +318,11 @@ class TestDistLoraUpdateOrchestration:
     """
 
     @staticmethod
-    def _make_self(*, engines, chunks=None, is_source=True, lora_loaded=False):
-        if chunks is None:
-            chunks = [SAMPLE_LORA_WEIGHTS]
+    def _make_self(*, engines, named_tensors=None, is_source=True, lora_loaded=False):
+        if named_tensors is None:
+            named_tensors = SAMPLE_LORA_WEIGHTS
         return SimpleNamespace(
-            _hf_weight_iterator=SimpleNamespace(get_hf_weight_chunks=lambda *a, **k: iter(chunks)),
+            _hf_weight_iterator=SimpleNamespace(get_hf_lora_weights=lambda *a, **k: named_tensors),
             _is_lora_source=is_source,
             _lora_loaded=lora_loaded,
             rollout_engines=engines,
@@ -410,25 +345,22 @@ class TestDistLoraUpdateOrchestration:
         assert fake_self._lora_loaded is True
 
     def test_non_source_rank_does_not_transmit(self):
-        # Non-source ranks still iterate the bridge (TP collectives) but must not
-        # transmit. They also must not short-circuit the zero-chunk guard.
+        # Non-source ranks still call the iterator (TP collectives) but must not
+        # transmit.
         engines = [_FakeEngine()]
         fake_self = self._make_self(engines=engines, is_source=False)
         self._run(fake_self)
         fake_self._update_lora_weight_implementation.assert_not_called()
         assert engines[0].unload_lora_adapter.calls == []
 
-    def test_raises_on_zero_chunks(self):
-        # Mirror of TestUpdateWeightsZeroChunks: empty iterator must not silently succeed.
-        fake_self = self._make_self(engines=[_FakeEngine()], chunks=[])
-        with pytest.raises(RuntimeError, match="zero chunks"):
-            self._run(fake_self)
-        fake_self._update_lora_weight_implementation.assert_not_called()
+    def test_iterator_validation_errors_propagate(self):
+        # The export guards live in get_hf_lora_weights; orchestration must not swallow them.
+        def _raise(*_a, **_k):
+            raise RuntimeError("LoRA weight sync failed: the weight iterator produced zero chunks.")
 
-    def test_raises_when_chunk_has_no_lora_weights(self):
-        # Mirror of TestSendHfParamsEmptyLoraDetection: base-only names => raise.
-        fake_self = self._make_self(engines=[_FakeEngine()], chunks=[SAMPLE_BASE_ONLY_WEIGHTS])
-        with pytest.raises(RuntimeError, match="no LoRA weights"):
+        fake_self = self._make_self(engines=[_FakeEngine()])
+        fake_self._hf_weight_iterator = SimpleNamespace(get_hf_lora_weights=_raise)
+        with pytest.raises(RuntimeError, match="zero chunks"):
             self._run(fake_self)
         fake_self._update_lora_weight_implementation.assert_not_called()
 

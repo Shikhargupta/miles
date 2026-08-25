@@ -1,6 +1,5 @@
 import hashlib
 import logging
-import math
 import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -12,18 +11,15 @@ import torch.distributed as dist
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
-from miles.backends.megatron_utils.lora_utils import (
-    build_lora_sync_config,
-    is_lora_weight_name,
-    lora_base_cpu_backup_enabled,
-)
+from miles.backends.megatron_utils.lora_utils import build_lora_sync_config, lora_base_cpu_backup_enabled
+from miles.backends.training_utils.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
-from .hf_weight_iterator_base import HfWeightIteratorBase
+from .hf_weight_iterator import get_hf_weight_iterator
 
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -32,46 +28,6 @@ from .update_weight_from_distributed.broadcast import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _pp_assemble_full_adapter(
-    hf_named_tensors: list[tuple[str, torch.Tensor]],
-) -> list[tuple[str, torch.Tensor]]:
-    """Assemble the complete adapter on every PP rank (exporter gathers TP/EP but not PP)."""
-    pp_group = get_parallel_state().pp.group
-    pp_size = dist.get_world_size(group=pp_group)
-    if pp_size == 1:
-        return hf_named_tensors
-    pp_rank = dist.get_rank(group=pp_group)
-    global_ranks = dist.get_process_group_ranks(pp_group)
-    device = torch.cuda.current_device()
-
-    local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
-    all_meta: list = [None] * pp_size
-    dist.all_gather_object(all_meta, local_meta, group=pp_group)
-
-    local_by_name = {n: t for n, t in hf_named_tensors}
-    merged: dict[str, torch.Tensor] = {}
-    for src_pp, meta in enumerate(all_meta):
-        by_dtype: dict = {}
-        for n, shape, dtype in meta:
-            by_dtype.setdefault(dtype, []).append((n, shape))
-        for dtype, entries in by_dtype.items():
-            numel = sum(math.prod(shape) for _, shape in entries)
-            flat = torch.empty(numel, dtype=dtype, device=device)
-            if src_pp == pp_rank:
-                off = 0
-                for n, shape in entries:
-                    k = math.prod(shape)
-                    flat[off : off + k].copy_(local_by_name[n].reshape(-1))
-                    off += k
-            dist.broadcast(flat, src=global_ranks[src_pp], group=pp_group)
-            off = 0
-            for n, shape in entries:
-                k = math.prod(shape)
-                merged[n] = flat[off : off + k].view(shape)
-                off += k
-    return sorted(merged.items())
 
 
 class UpdateWeightFromTensor:
@@ -102,12 +58,12 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.is_lora = is_lora
-        self._hf_weight_iterator = HfWeightIteratorBase.create(
-            args=args,
-            model=model,
+        self._hf_weight_iterator = get_hf_weight_iterator(
+            args,
+            model,
+            required_placement=WeightUpdatePlacement.FULL,
             model_name=model_name,
             quantization_config=quantization_config,
-            is_lora=self.is_lora,
         )
         if self.is_lora:
             self._lora_config = build_lora_sync_config(args)
@@ -263,9 +219,7 @@ class UpdateWeightFromTensor:
         megatron_local_weights = self.weights_getter()
 
         if not skip_base_sync:
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
-                megatron_local_weights, weight_type="base"
-            ):
+            for hf_named_tensors in self._hf_weight_iterator.iter_hf_base_weights(megatron_local_weights):
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
@@ -282,29 +236,13 @@ class UpdateWeightFromTensor:
                 del long_lived_tensors, mm_tower_tensors
 
         if self.is_lora:
-            # SGLang's load_lora_adapter_from_tensors expects the full adapter in
-            # one call; drain the bridge's chunker so --update-weight-buffer-size
-            # only bounds the base path.
-            accumulated_named_tensors: list = []
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
-                megatron_local_weights, weight_type="lora"
-            ):
-                accumulated_named_tensors.extend(hf_named_tensors)
+            lora_named_tensors = self._hf_weight_iterator.get_hf_lora_weights()
 
-            if not accumulated_named_tensors:
-                raise RuntimeError(
-                    "LoRA weight sync failed: the weight iterator produced zero chunks. "
-                    "No adapter weights were sent to the rollout engine. This usually means "
-                    "the Megatron-Bridge or SGLang version is incompatible."
-                )
-
-            accumulated_named_tensors = _pp_assemble_full_adapter(accumulated_named_tensors)
-
-            refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
+            refs, long_lived_tensors = self._send_lora_params(lora_named_tensors)
             results = ray.get(refs)
             _check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
-            del accumulated_named_tensors
+            del lora_named_tensors
             torch.cuda.ipc_collect()
             torch.cuda.empty_cache()
 
@@ -387,11 +325,6 @@ class UpdateWeightFromTensor:
         return refs or [], long_lived_tensors
 
     def _send_lora_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
-        if not any(is_lora_weight_name(n) for n, _ in hf_named_tensors):
-            raise RuntimeError(
-                "LoRA weight sync failed: chunk contains no LoRA weights "
-                "(no lora_A/lora_B names found). Check weight iterator configuration."
-            )
         if self.use_distribute and self._is_distributed_src_rank:
             raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
 

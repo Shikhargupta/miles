@@ -2,17 +2,20 @@ import dataclasses
 import json
 import os
 
-from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
+from miles.backends.training_utils.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.utils import megatron_bridge_utils
+from miles.utils.lora import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
 from .common import get_atomic_update_groups
-from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
 class HfWeightIteratorBridge(HfWeightIteratorBase):
+    # megatron-bridge gathers every parallel dim internally.
+    forced_placement = WeightUpdatePlacement.FULL
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -35,39 +38,48 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     "_miles_quantized_basenames": quantized_basenames,
                 }
 
-    def get_hf_weight_chunks(self, megatron_local_weights, weight_type: str = "base"):
-        renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
+    def iter_hf_base_weights(self, weights, *, materialize=True):
+        assert materialize, "non-materializing iteration lands with the distributed-path migration"
+        renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
-            if weight_type == "lora":
-                named_weights = self._bridge.export_adapter_weights(
-                    self.model,
-                    cpu=False,
-                    show_progress=False,
-                )
-            elif weight_type == "base":
-                conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-                conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
-                named_weights = self._bridge.export_hf_weights(
-                    self.model,
-                    cpu=False,
-                    conversion_tasks=conversion_tasks,
-                    merge_adapter_weights=False,
-                )
+            conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+            conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+            named_weights = self._bridge.export_hf_weights(
+                self.model,
+                cpu=False,
+                conversion_tasks=conversion_tasks,
+                merge_adapter_weights=False,
+            )
 
             # Apply postprocess + quantization (when targeting a quantized rollout,
-            # e.g. FP8 sglang). Base weights are quantized to match the rollout's
+            # e.g. FP8 sglang): base weights are quantized to match the rollout's
             # storage format so update_weights_from_tensor lands real weight + scale
-            # pairs; LoRA adapters are passed through unchanged.
-            named_weights = self._postprocess_and_quantize(named_weights, weight_type)
-
-            if weight_type == "base":
-                named_weights = ((h, w, m) for h, w, m in named_weights if not is_lora_weight_name(h))
-            elif weight_type == "lora":
-                named_weights = ((h, w, m) for h, w, m in named_weights if is_lora_weight_name(h))
+            # pairs.
+            named_weights = self._postprocess_and_quantize(named_weights, "base")
+            named_weights = ((h, w, m) for h, w, m in named_weights if not is_lora_weight_name(h))
 
             groups = get_atomic_update_groups(self.args, self.model_name)
             units = _stream_atomic_units(named_weights, groups)
             yield from _chunk_atomic_units_by_size(units, chunk_size=self.args.update_weight_buffer_size)
+
+    def _export_lora_named_tensors(self, adapter):
+        if adapter is None:
+            return self._export_current_adapter()
+
+        # Local: multi-LoRA deps stay off the single-LoRA path.
+        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
+
+        from ..multi_lora_utils import slice_lora_to_rank
+
+        with expose_adapter_slot(self.model, adapter.slot):
+            named_tensors = self._export_current_adapter()
+        return [(h, slice_lora_to_rank(h, w, adapter.config.rank)) for h, w in named_tensors]
+
+    def _export_current_adapter(self) -> list:
+        with megatron_bridge_utils.patch_megatron_model(self.model):
+            named_weights = self._bridge.export_adapter_weights(self.model, cpu=False, show_progress=False)
+            named_weights = self._postprocess_and_quantize(named_weights, "lora")
+            return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
 
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
         for hf_param_name, weight, megatron_param_name in named_weights:

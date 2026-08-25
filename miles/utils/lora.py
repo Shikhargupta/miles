@@ -3,6 +3,11 @@ from argparse import Namespace
 LORA_ADAPTER_NAME = "miles_lora"
 
 
+def is_lora_weight_name(name: str) -> bool:
+    """Check if an HF weight name corresponds to a LoRA adapter weight."""
+    return ".lora_A." in name or ".lora_B." in name
+
+
 def is_lora_enabled(args: Namespace) -> bool:
     """Check if LoRA is enabled based on arguments."""
     return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
