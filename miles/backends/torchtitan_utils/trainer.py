@@ -453,18 +453,32 @@ class TitanTrainer(Trainer):
                 (missing, *tensor.shape[1:]), pad_value, dtype=tensor.dtype, device=tensor.device
             )
             tensor = torch.cat([tensor, pad], dim=0)
-        if not self.parallel_dims.cp_enabled:
-            return tensor
-        # cp_shard speaks [batch, seq, ...]; the round trip through the device
-        # is because the mesh has no CPU backend and these are kilobytes.
-        (local,), _ = cp_shard(
-            self.parallel_dims.get_mesh("cp"),
-            (tensor.unsqueeze(0).to(self.device),),
-            None,
-            self.config.parallelism.context_parallel_load_balancer,
-            input_seq_dim=1,
-        )
-        return local.squeeze(0).to(tensor.device)
+        if self.parallel_dims.cp_enabled:
+            # cp_shard speaks [batch, seq, ...]; the round trip through the
+            # device is because the mesh has no CPU backend and these are
+            # kilobytes.
+            (local,), _ = cp_shard(
+                self.parallel_dims.get_mesh("cp"),
+                (tensor.unsqueeze(0).to(self.device),),
+                None,
+                self.config.parallelism.context_parallel_load_balancer,
+                input_seq_dim=1,
+            )
+            tensor = local.squeeze(0).to(tensor.device)
+        if self.parallel_dims.tp_enabled:
+            # torchtitan's tensor-parallel plan shards the block input along the
+            # sequence as well, so by the time a layer runs, its share of the
+            # tokens is a contiguous chunk of what context parallelism already
+            # left this rank. DTensor's Shard splits in rank order.
+            mesh = self.parallel_dims.get_mesh("tp")
+            tp = mesh.size()
+            if tensor.shape[0] % tp:
+                raise ValueError(
+                    f"a {tensor.shape[0]}-token side channel does not divide across "
+                    f"{tp} tensor-parallel ranks"
+                )
+            tensor = tensor.chunk(tp, dim=0)[dist.get_rank(mesh.get_group())]
+        return tensor
 
     def _microbatch_inputs(self, batches: list) -> tuple[list[dict], list[torch.Tensor]]:
         if self.parallel_dims.pp_enabled:
