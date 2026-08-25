@@ -16,6 +16,25 @@ from miles.backends.training_utils.weight_sync import weight_push_session
 
 logger = logging.getLogger(__name__)
 
+# Names sglang fuses into a single parameter by caching the halves and writing
+# only once both have arrived. The cache lives inside one
+# update_weights_from_tensor call, so a bucket boundary between them leaves the
+# fused parameter holding stale values -- silently, since nothing errors. The
+# halves must therefore share a bucket. Only DeepSeek's MLA down-projections
+# work this way: sglang's other fusions (gate_proj/up_proj -> gate_up_proj) go
+# through a weight loader that takes a shard id and writes its slice directly,
+# so their halves are independent.
+_FUSED_SIBLINGS = (("q_a_proj", "kv_a_proj_with_mqa"),)
+
+
+def _fused_group_key(name: str) -> str | None:
+    """The key naming the fused parameter this tensor is half of, or None."""
+    for first, second in _FUSED_SIBLINGS:
+        for token in (first, second):
+            if token in name:
+                return name.replace(token, "<fused>")
+    return None
+
 
 class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
     """Reuses FSDP's colocated IPC transport; only weight production differs.
@@ -42,15 +61,34 @@ class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
     def _stream_weights(self) -> None:
         bucket: list[tuple[str, torch.Tensor, None]] = []
         bucket_size = 0
+        pending: dict[str, list[tuple[str, torch.Tensor]]] = {}
 
         for name, tensor in self._trainer.hf_weights():
-            size = tensor.numel() * tensor.element_size()
+            group_key = _fused_group_key(name)
+            if group_key is not None:
+                # Hold the first half until its sibling shows up, then place
+                # both in one bucket. The stream is name-sorted, so siblings
+                # are not adjacent and a boundary between them is likely.
+                half = pending.setdefault(group_key, [])
+                half.append((name, tensor))
+                if len(half) < 2:
+                    continue
+                group = pending.pop(group_key)
+            else:
+                group = [(name, tensor)]
+
+            size = sum(t.numel() * t.element_size() for _, t in group)
             if bucket and bucket_size + size >= self.args.update_weight_buffer_size:
                 self.wait_and_update_bucket_weights(bucket)
                 bucket = []
                 bucket_size = 0
-            bucket.append((name, tensor, None))
+            bucket.extend((n, t, None) for n, t in group)
             bucket_size += size
 
+        if pending:
+            raise RuntimeError(
+                f"fused-parameter halves never completed: {sorted(pending)} -- sglang would leave "
+                "those parameters stale, so fail rather than push a partial update"
+            )
         if bucket:
             self.wait_and_update_bucket_weights(bucket)
