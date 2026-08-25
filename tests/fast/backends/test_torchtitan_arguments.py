@@ -19,9 +19,9 @@ from miles.backends.torchtitan_utils.arguments import TorchtitanArgs, validate_t
 def _args(**overrides) -> Namespace:
     base = dict(
         titan_attn_backend="flex",
-        titan_pp_size=1,
-        titan_cp_size=1,
-        titan_ep_size=1,
+        titan_pipeline_parallel_degree=1,
+        titan_context_parallel_degree=1,
+        titan_expert_parallel_degree=1,
         ref_update_interval=None,
         save_debug_train_data=None,
     )
@@ -66,19 +66,19 @@ def test_pipeline_parallelism_is_accepted(monkeypatch):
     in the shared loop conditions on it, so nothing rejects it here. (torchtitan
     itself rejects PP for weight-tied flavors at build time.)"""
     monkeypatch.setattr(torch, "__version__", "2.13.0")
-    validate_torchtitan_args(_args(titan_pp_size=2))
+    validate_torchtitan_args(_args(titan_pipeline_parallel_degree=2))
 
 
 def test_context_parallelism_is_rejected(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
-    with pytest.raises(ValueError, match="titan-cp-size"):
-        validate_torchtitan_args(_args(titan_cp_size=2))
+    with pytest.raises(ValueError, match="titan-context-parallel-degree"):
+        validate_torchtitan_args(_args(titan_context_parallel_degree=2))
 
 
 def test_expert_parallelism_is_rejected(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
-    with pytest.raises(ValueError, match="titan-ep-size"):
-        validate_torchtitan_args(_args(titan_ep_size=2))
+    with pytest.raises(ValueError, match="titan-expert-parallel-degree"):
+        validate_torchtitan_args(_args(titan_expert_parallel_degree=2))
 
 
 def test_periodic_reference_refresh_is_rejected_rather_than_ignored(monkeypatch):

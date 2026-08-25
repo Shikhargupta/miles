@@ -93,11 +93,17 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     config.hf_assets_path = hf_assets_path
     config.dump_folder = os.path.join(args.save or "./outputs", "torchtitan", dump_subdir)
 
-    config.parallelism.data_parallel_replicate_degree = args.dp_replicate_size
-    config.parallelism.tensor_parallel_degree = args.titan_tp_size
-    config.parallelism.pipeline_parallel_degree = args.titan_pp_size
-    config.parallelism.context_parallel_degree = args.titan_cp_size
-    config.parallelism.expert_parallel_degree = args.titan_ep_size
+    # Parallelism settings pass through verbatim: the miles flags are
+    # torchtitan's own ParallelismConfig fields (names, defaults, semantics),
+    # so the config tree carries exactly what a torchtitan user would write.
+    config.parallelism.data_parallel_replicate_degree = args.titan_data_parallel_replicate_degree
+    config.parallelism.data_parallel_shard_degree = args.titan_data_parallel_shard_degree
+    config.parallelism.tensor_parallel_degree = args.titan_tensor_parallel_degree
+    config.parallelism.pipeline_parallel_degree = args.titan_pipeline_parallel_degree
+    config.parallelism.context_parallel_degree = args.titan_context_parallel_degree
+    config.parallelism.expert_parallel_degree = args.titan_expert_parallel_degree
+    if args.titan_pipeline_parallel_schedule:
+        config.parallelism.pipeline_parallel_schedule = args.titan_pipeline_parallel_schedule
     config.parallelism.pipeline_parallel_microbatch_size = 1
     parallel_dims = parallel_dims_from_config(config.parallelism)
     dp_size = parallel_dims.dp_replicate * parallel_dims.dp_shard

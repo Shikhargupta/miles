@@ -41,10 +41,18 @@ class TorchtitanArgs(FSDPArgs):
     # overwrite it, but it makes a from-scratch run with this flag meaningless.
     titan_num_layers: int = 0
 
-    titan_tp_size: int = 1
-    titan_pp_size: int = 1
-    titan_cp_size: int = 1
-    titan_ep_size: int = 1
+    # Parallelism, verbatim from torchtitan's ParallelismConfig: same names,
+    # same defaults, same semantics. The FSDP axis is data_parallel_shard_degree
+    # with -1 meaning "infer from world size / the other degrees", exactly as
+    # torchtitan runs it; miles adds no renamed aliases of its own.
+    titan_data_parallel_replicate_degree: int = 1
+    titan_data_parallel_shard_degree: int = -1
+    titan_tensor_parallel_degree: int = 1
+    titan_pipeline_parallel_degree: int = 1
+    titan_context_parallel_degree: int = 1
+    titan_expert_parallel_degree: int = 1
+    # Empty string keeps torchtitan's own default schedule.
+    titan_pipeline_parallel_schedule: str = ""
 
     wandb_project: str = "miles-torchtitan"
 
@@ -75,14 +83,16 @@ def validate_torchtitan_args(args) -> None:
             f"--titan-attn-backend {args.titan_attn_backend} needs "
             f"torch>={'.'.join(map(str, needed))}; this environment runs {torch.__version__}"
         )
-    if args.titan_cp_size != 1:
+    if args.titan_context_parallel_degree != 1:
         # The trainer's forward hands miles' loss full-sequence logits; under CP
         # they come back sequence-sharded and the loss-side gather is not wired.
         # (For qwen3_5 torchtitan itself rejects CP: GatedDeltaNet needs the
         # full sequence.)
-        raise ValueError("--titan-cp-size > 1 is not supported yet (loss-side CP integration pending)")
-    if args.titan_ep_size != 1:
-        raise ValueError("--titan-ep-size > 1 waits on MoE support for this backend")
+        raise ValueError(
+            "--titan-context-parallel-degree > 1 is not supported yet (loss-side CP integration pending)"
+        )
+    if args.titan_expert_parallel_degree != 1:
+        raise ValueError("--titan-expert-parallel-degree > 1 waits on MoE support for this backend")
     # The reference model is built once from --ref-load; refreshing it mid-run
     # would need the actor-to-ref copy FSDP does, which this backend has not
     # wired up. Silently ignoring the interval would quietly train against a
