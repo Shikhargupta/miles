@@ -413,6 +413,59 @@ class TitanTrainer(Trainer):
                 }
         return self._family_kwargs
 
+    def padded_length(self, n_tokens: int) -> int:
+        """The length a microbatch of ``n_tokens`` is padded to before the model.
+
+        Two reasons to pad, and pipeline parallelism's subsumes the other. Its
+        stages' send/recv buffers are shape-inferred once and reused, so every
+        microbatch of the whole run must have one shape. Context parallelism
+        splits the sequence across the cp mesh and flex attention works in
+        128-token blocks, so the length has to be a multiple of cp * 128, while
+        miles pads only to 128.
+        """
+        if self.parallel_dims.pp_enabled:
+            target = self.config.training.seq_len
+            if n_tokens > target:
+                raise ValueError(
+                    f"packed microbatch of {n_tokens} tokens exceeds --titan-seq-len "
+                    f"{target}, which is the fixed shape PP stages exchange"
+                )
+            return target
+        if self.parallel_dims.cp_enabled:
+            align = self.parallel_dims.cp * _FLEX_BLOCK
+            return n_tokens + (align - n_tokens % align) % align
+        return n_tokens
+
+    def align_token_side_channel(self, tensor: torch.Tensor, pad_value: int) -> torch.Tensor:
+        """Reshape a per-token side channel exactly as the input is reshaped.
+
+        Anything indexed by token position -- the rollout's routing, say -- has
+        to follow the tokens: it is padded to the same length and then, under
+        context parallelism, sharded across the cp mesh by the same balancer.
+        A channel that skipped either step would be read at positions the model
+        is not looking at, which is not a crash but a silently wrong answer.
+
+        Takes and returns ``[tokens, ...]`` on whatever device it was given.
+        """
+        missing = self.padded_length(tensor.shape[0]) - tensor.shape[0]
+        if missing:
+            pad = torch.full(
+                (missing, *tensor.shape[1:]), pad_value, dtype=tensor.dtype, device=tensor.device
+            )
+            tensor = torch.cat([tensor, pad], dim=0)
+        if not self.parallel_dims.cp_enabled:
+            return tensor
+        # cp_shard speaks [batch, seq, ...]; the round trip through the device
+        # is because the mesh has no CPU backend and these are kilobytes.
+        (local,), _ = cp_shard(
+            self.parallel_dims.get_mesh("cp"),
+            (tensor.unsqueeze(0).to(self.device),),
+            None,
+            self.config.parallelism.context_parallel_load_balancer,
+            input_seq_dim=1,
+        )
+        return local.squeeze(0).to(tensor.device)
+
     def _microbatch_inputs(self, batches: list) -> tuple[list[dict], list[torch.Tensor]]:
         if self.parallel_dims.pp_enabled:
             expected = self.num_pipeline_parallel_microbatches
@@ -425,37 +478,17 @@ class TitanTrainer(Trainer):
 
         def _model_inputs(batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
             tokens, positions = batch["tokens"], batch["position_ids"]
-            if not self.parallel_dims.pp_enabled and self.parallel_dims.cp_enabled:
-                # Context parallelism splits the sequence across the cp mesh and
-                # flex attention works in 128-token blocks, so the length has to
-                # be a multiple of cp * 128; miles pads only to 128. Under PP the
-                # fixed shape below already satisfies it.
-                align = self.parallel_dims.cp * _FLEX_BLOCK
-                pad = (align - tokens.shape[1] % align) % align
-                if pad:
-                    tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
-                    extra = torch.arange(pad, device=positions.device, dtype=positions.dtype)
-                    positions = torch.cat([positions, extra.unsqueeze(0)], dim=1)
-            if self.parallel_dims.pp_enabled:
-                # The pipeline stages' send/recv buffers are shape-inferred once
-                # and reused, so every microbatch of the whole run must have one
-                # shape: pad to the configured sequence length. The pad region
-                # gets consecutive positions starting at 0, making it a single
-                # extra document the loss never reads -- all-zero positions
-                # (miles' usual pad fill) would read as thousands of one-token
-                # documents, which blows up the per-document state allocation
-                # of linear-attention kernels (qwen3_5's GatedDeltaNet).
-                target = self.config.training.seq_len
-                if tokens.shape[1] > target:
-                    raise ValueError(
-                        f"packed microbatch of {tokens.shape[1]} tokens exceeds --titan-seq-len "
-                        f"{target}, which is the fixed shape PP stages exchange"
-                    )
-                pad = target - tokens.shape[1]
-                if pad:
-                    tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
-                    pad_positions = torch.arange(pad, device=positions.device, dtype=positions.dtype)
-                    positions = torch.cat([positions, pad_positions.unsqueeze(0)], dim=1)
+            pad = self.padded_length(tokens.shape[1]) - tokens.shape[1]
+            if pad:
+                # The pad region gets consecutive positions starting at 0, making
+                # it a single extra document the loss never reads -- all-zero
+                # positions (miles' usual pad fill) would read as thousands of
+                # one-token documents, which blows up the per-document state
+                # allocation of linear-attention kernels (qwen3_5's
+                # GatedDeltaNet).
+                tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
+                extra = torch.arange(pad, device=positions.device, dtype=positions.dtype)
+                positions = torch.cat([positions, extra.unsqueeze(0)], dim=1)
             return tokens, positions
 
         input_dicts = []

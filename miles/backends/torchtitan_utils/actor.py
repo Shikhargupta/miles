@@ -213,9 +213,10 @@ class TorchtitanTrainRayActor(TrainRayActor):
             data_iterators,
             num_microbatches,
             rollout_data,
-            # Under PP the trainer pads every microbatch to this length, so the
-            # routing queues have to describe the padded sequence too.
-            pad_to=self.trainer.config.training.seq_len if self.trainer.parallel_dims.pp_enabled else None,
+            # The queues describe the sequence the routers actually see, which
+            # is the trainer's, not the rollout's: padded under PP, sharded
+            # under CP.
+            align=self.trainer.align_token_side_channel,
         )
         data_iterator = data_iterators[0]
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"

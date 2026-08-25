@@ -272,20 +272,21 @@ def _bracket_real_forward(part: nn.Module) -> None:
     part.forward = forward
 
 
-def fill(args, model_parts, data_iterators, num_microbatches, rollout_data, pad_to: int | None = None) -> None:
+def fill(args, model_parts, data_iterators, num_microbatches, rollout_data, align=None) -> None:
     """Load the rollout's routing into the per-layer replay queues.
 
     Takes the iterator list rather than a single iterator: ``fill_replay_data``
     resets every element and reads through element 0, so call before the caller
     unwraps it.
 
-    ``pad_to`` extends every queued entry to that many tokens. Pipeline
-    parallelism needs one shape for the whole run, so the trainer pads each
-    microbatch to the configured sequence length; the routing queues are filled
-    from the rollout at the microbatch's own length and would otherwise be
-    shorter than the scores the routers see. The extension is -1, which the
-    replay manager already treats as padding (it substitutes arange so the
-    lookup stays in range) and which the loss never reads.
+    ``align`` is the trainer's own reshaping of a per-token channel, applied to
+    every queued entry. The queues are filled from the rollout at each
+    microbatch's natural length, while the routers see whatever the trainer
+    hands the model: padded to one shape under pipeline parallelism, and then
+    sharded across the cp mesh under context parallelism. Routing that skipped
+    either step is read at positions the model is not looking at. Padding is
+    -1, which the replay manager already treats as padding (it substitutes
+    arange so the lookup stays in range) and which the loss never reads.
     """
     if not uses_rollout_replay(args):
         return
@@ -303,19 +304,11 @@ def fill(args, model_parts, data_iterators, num_microbatches, rollout_data, pad_
         indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
     )
 
-    if pad_to is None:
+    if align is None:
         return
     for replay in routing_replay_manager.replays:
         for i, entry in enumerate(replay.top_indices_list):
-            missing = pad_to - entry.shape[0]
-            if missing < 0:
-                raise ValueError(
-                    f"routing queue entry has {entry.shape[0]} tokens, more than the "
-                    f"{pad_to}-token shape the pipeline schedule exchanges"
-                )
-            if missing:
-                pad = torch.full((missing, *entry.shape[1:]), -1, dtype=entry.dtype)
-                replay.top_indices_list[i] = torch.cat([entry, pad], dim=0)
+            replay.top_indices_list[i] = align(entry, -1)
 
 
 def log_prob_stage(args) -> str:
