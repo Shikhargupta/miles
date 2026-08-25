@@ -28,6 +28,7 @@ from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SimpleTicker
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
@@ -91,6 +92,17 @@ class InferenceController:
     @with_lock
     async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
         await self._engine_provider.stop_cells(cell_ids=[cell_id])
+
+    # TEMPORARY: exists only so fault injection can take this lock, reverted with the weight-update fault tolerance work
+    @with_lock
+    async def inject_fault_between_weight_updates(
+        self, cell_id: str, *, mode: FailureMode, sub_index: int
+    ) -> None:
+        await self._engine_provider._worker_manager_handle.inject_fault.remote(
+            cell_id,
+            mode=mode.value,
+            worker_in_cell_index=sub_index,
+        )
 
     # -------------------------- take over -----------------------------
 
