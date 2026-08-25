@@ -1,10 +1,5 @@
-"""HF-namespace atomic update group registry.
-
-Groups are rollout-consumer contracts: each one exists because a specific
-sglang loader fuses those HF weights into one engine parameter, so they must
-arrive in the same load call. Backend-neutral by construction — callers supply
-model facts (model_name, q_lora_rank) from their own config.
-"""
+"""HF-namespace atomic update groups: HF weights an sglang loader fuses into
+one engine parameter, which therefore must arrive in the same load call."""
 
 from miles.backends.training_utils.weight_update.bucketing import AtomicUpdateGroup
 
@@ -31,13 +26,8 @@ _DEEPSEEK_V4_GROUPS = [
 
 
 def get_hf_atomic_update_groups(model_name: str, *, q_lora_rank: int | None = None) -> list[AtomicUpdateGroup]:
-    """HF-namespace atomic groups for a model, matched against conversion-unit
-    members.
-
-    inkling registers none: its multi-param fusions happen inside the converter
-    (module-global accumulator), and the engine loads its fused tensors through
-    slice-disjoint weight loaders that are safe to split across calls.
-    """
+    """Atomic groups for a model. inkling registers none: its fusions happen
+    inside the converter, and its engine-side loads are split-safe."""
     model_name = model_name.lower()
     if "deepseekv4" in model_name:
         return list(_DEEPSEEK_V4_GROUPS)

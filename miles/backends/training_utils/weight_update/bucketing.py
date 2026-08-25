@@ -1,14 +1,7 @@
 """Bucketing for weight update: atomic grouping + size-bounded packing.
 
-Backend-neutral, operating on a stream of *units* — the HF-named tensors one
-training-side parameter converted into (a plain weight, or weight + quant
-scales). A unit is indivisible by construction, so scale tensors can never land
-in a different bucket than their weight.
-
-Atomic update groups are specified in HF namespace: they exist because rollout
-engine loaders fuse related HF weights into one engine parameter, so those
-weights must arrive in the same load call. The constraint belongs to the
-consumer, not to any training backend.
+A unit is the HF-named tensors one training-side parameter converted into
+(a plain weight, or weight + quant scales); units are indivisible.
 """
 
 import dataclasses
@@ -30,13 +23,8 @@ def assemble_atomic_update_groups(
     hf_param_units: Iterable[list[tuple[str, torch.Tensor]]],
     atomic_update_groups: list[AtomicUpdateGroup],
 ) -> Iterator[list[tuple[str, torch.Tensor]]]:
-    """Merge units whose members match an AtomicUpdateGroup into one unit.
-
-    A unit joins a group when any member name ends with one of the group's
-    suffixes; the group instance is keyed by the matching member's name prefix.
-    Buffered until every suffix of the (prefix, group) arrived, then yielded as
-    one merged unit. Units matching no group stream through unchanged.
-    """
+    """Merge units whose members match an AtomicUpdateGroup into one unit,
+    keyed by the matching member's name prefix; other units pass through."""
     for group in atomic_update_groups:
         assert group.suffixes, f"Atomic update group {group.key} has no suffixes"
         assert all(group.suffixes), f"Atomic update group {group.key} contains empty suffix"
