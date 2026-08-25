@@ -35,6 +35,13 @@ per_layer.update(B._ATTENTION_MAPPING)
 per_layer.update(B._MLP_MAPPING)
 per_layer.update(B._OTHER_MAPPING)
 
+# Mappings the model never asks for on this checkpoint. mbridge resolves names
+# only for parameters the model actually creates, so declaring these is harmless --
+# they are inherited from Qwen3_5Bridge, which also covers dense and biased
+# variants. Excluded here so "mapped but not in ckpt" stays a real signal.
+DENSE_MLP = ("mlp.linear_fc1.weight", "mlp.linear_fc2.weight")
+BIASED = ("self_attention.linear_qkv.bias",)
+
 for layer in range(num_layers):
     is_linear = layer_types[layer] == "linear_attention"
     for key, targets in per_layer.items():
@@ -46,12 +53,35 @@ for layer in range(num_layers):
             continue
         if key.startswith("self_attention.linear_attn.") and not is_linear:
             continue
+        # On a linear-attention layer the whole standard attention block is
+        # replaced by the gated-delta-net module, so Megatron's fused names
+        # (linear_qkv / linear_proj) and the QK norms are never requested there.
+        if is_linear and key in (
+            "self_attention.linear_qkv.weight",
+            "self_attention.linear_proj.weight",
+            "self_attention.q_layernorm.weight",
+            "self_attention.k_layernorm.weight",
+        ):
+            continue
+        # a MoE checkpoint has no dense MLP, and attention_bias is False here
+        if num_experts and key in DENSE_MLP:
+            continue
+        if key in BIASED:
+            continue
         for t in (targets if isinstance(targets, list) else [targets]):
             if "{expert_id}" in t:
                 for e in range(num_experts):
                     add(t, layer_number=layer, expert_id=e)
             else:
                 add(t, layer_number=layer)
+
+vision_depth = cfg.get("vision_config", {}).get("depth", 0)
+for target in B._VISION_DIRECT_MAPPING.values():
+    produced.add(target)
+for layer in range(vision_depth):
+    for targets in B._VISION_LAYER_MAPPING.values():
+        for t in targets:
+            produced.add(t.format(layer_number=layer))
 
 for layer in ple_layers:
     for shard in range(num_shards):
