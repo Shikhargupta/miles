@@ -13,24 +13,15 @@ from miles.utils.types import ParamInfo
 
 from ..megatron_to_hf import convert_to_hf
 from ..sglang import monkey_patch_torch_reductions
-from .common import (
-    NamedUpdateUnit,
-    all_gather_params_async,
-    get_atomic_update_groups,
-    get_named_update_units,
-    is_routed_expert_param,
-    named_params_and_buffers,
-)
+from .common import all_gather_params_async, is_routed_expert_param, named_params_and_buffers
 
 
 class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(
-            self.args, self.model, self.model_name
-        )
+        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model)
 
-    def iter_hf_base_weights(self, weights, *, materialize=True):
+    def _iter_hf_param_units(self, weights, *, materialize):
         assert materialize, "non-materializing iteration lands with the distributed-path migration"
         rank = dist.get_rank()
 
@@ -38,8 +29,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
         ):
             megatron_full_params = _get_megatron_full_params(self.args, megatron_local_param_infos, weights)
-            hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, megatron_local_param_infos)
-            yield hf_named_tensors
+            yield from self._convert_to_hf_param_units(megatron_local_param_infos, megatron_full_params)
             del megatron_full_params
 
     def _export_pp_local_lora(self, adapter):
@@ -49,13 +39,9 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
         return export_inkling_lora_hf_named(self.model)
 
-    def _convert_to_hf_named_tensors(self, megatron_full_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
-        hf_named_tensors = []
-        for info, param in zip(param_infos, megatron_full_params, strict=False):
-            hf_named_tensors.extend(
-                convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
-            )
-        return hf_named_tensors
+    def _convert_to_hf_param_units(self, param_infos: Sequence[ParamInfo], params: Sequence[torch.Tensor]):
+        for info, param in zip(param_infos, params, strict=True):
+            yield list(convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config))
 
 
 def _get_megatron_full_params(
@@ -123,20 +109,10 @@ def _get_megatron_full_params(
     return gathered_params
 
 
-def _get_megatron_local_param_info_buckets(
-    args: Namespace, model: Sequence[torch.nn.Module], model_name: str
-) -> list[list[ParamInfo]]:
-    """
-    Partition params into buckets ≤ update_weight_buffer_size (with TP replication).
-
-    Model-specific atomic update groups are kept in the same bucket because
-    some rollout loaders must see related tensors in the same load_weights call.
-    """
+def _get_megatron_local_param_info_buckets(args: Namespace, model: Sequence[torch.nn.Module]) -> list[list[ParamInfo]]:
+    """Partition params into gather batches ≤ update_weight_buffer_size."""
     param_infos = _get_megatron_local_param_infos(args, model)
-    param_names = [info.name for info in param_infos]
-    atomic_update_groups = get_atomic_update_groups(args, model_name)
-    update_units = get_named_update_units(param_names, atomic_update_groups)
-    return _pack_update_units(args, param_infos, update_units)
+    return _pack_param_infos_by_size(args, param_infos)
 
 
 def _get_param_full_size(info: ParamInfo) -> int:
@@ -147,30 +123,22 @@ def _get_param_full_size(info: ParamInfo) -> int:
     return info.size * tp_size
 
 
-def _pack_update_units(
-    args: Namespace, param_infos: list[ParamInfo], update_units: list[NamedUpdateUnit]
-) -> list[list[ParamInfo]]:
-    by_name = {info.name: info for info in param_infos}
-    param_info_buckets: list[list[ParamInfo]] = [[]]
+def _pack_param_infos_by_size(args: Namespace, param_infos: list[ParamInfo]) -> list[list[ParamInfo]]:
+    """Greedy size packing into gather batches ≤ update_weight_buffer_size."""
+    batches: list[list[ParamInfo]] = [[]]
     buffer_size = 0
-
-    for unit in update_units:
-        params = [by_name[name] for name in unit.names]
-        unit_size = sum(_get_param_full_size(param) for param in params)
-        if buffer_size + unit_size > args.update_weight_buffer_size and param_info_buckets[-1]:
-            param_info_buckets.append([])
+    for info in param_infos:
+        size = _get_param_full_size(info)
+        if buffer_size + size > args.update_weight_buffer_size and batches[-1]:
+            batches.append([])
             buffer_size = 0
-        param_info_buckets[-1].extend(params)
-        buffer_size += unit_size
-
-    return param_info_buckets
+        batches[-1].append(info)
+        buffer_size += size
+    return [batch for batch in batches if batch]
 
 
 def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Module]) -> list[ParamInfo]:
-    """
-    Build global param metadata: collect → exchange PP/EP → resolve duplicates (MTP virtual PP)
-    by min src_rank → validate. Returns sorted ParamInfo identical across all ranks.
-    """
+    """Collect param metadata, exchanged across PP and EP; identical on every rank."""
     pp_size = get_parallel_state().pp.size
     ep_size = get_parallel_state().ep.size
 
@@ -205,9 +173,9 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
                 continue
             for name, info in infos.items():
                 if name in param_infos:
+                    # Duplicates across PP only exist for MTP virtual-PP layers.
                     assert args.mtp_num_layers is not None
-                    old_info = param_infos[name]
-                    if old_info.src_rank > src_rank:
+                    if param_infos[name].src_rank > src_rank:
                         param_infos[name] = info
                 else:
                     param_infos[name] = info
@@ -220,20 +188,19 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
         for src_rank, infos in param_infos_list:
             for name, info in infos.items():
                 if name not in param_infos:
-                    # here we need to set the src_rank to the rank within the expert model parallel group
+                    # src_rank must be the rank within the expert model parallel group
                     info = dataclasses.replace(info, src_rank=src_rank)
                     param_infos[name] = info
 
-    param_infos = list(param_infos.values())
-    param_infos = sorted(param_infos, key=lambda info: info.name)
+    param_infos = sorted(param_infos.values(), key=lambda info: info.name)
+    _check_param_infos_consistent(param_infos)
+    return param_infos
 
-    # Check all ranks has the same parameter info
+
+def _check_param_infos_consistent(param_infos: list[ParamInfo]) -> None:
+    """Every rank must hold identical param metadata."""
     all_param_info_list = [None] * dist.get_world_size()
-    dist.all_gather_object(
-        obj=param_infos,
-        object_list=all_param_info_list,
-        group=get_gloo_group(),
-    )
+    dist.all_gather_object(obj=param_infos, object_list=all_param_info_list, group=get_gloo_group())
     for i, param_info in enumerate(param_infos):
         for infos in all_param_info_list:
             assert infos[i].name == param_info.name, f"Parameter name mismatch: {infos[i].name} != {param_info.name}"
@@ -243,5 +210,3 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
             assert (
                 infos[i].dtype == param_info.dtype
             ), f"Parameter dtype mismatch: {infos[i].dtype} != {param_info.dtype}"
-
-    return param_infos

@@ -104,23 +104,17 @@ def _param(name: str, size: int) -> ParamInfo:
     )
 
 
-def test_atomic_group_is_single_update_unit_and_packed_together(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
-
+def test_gather_batches_pack_by_size_only(direct_module, monkeypatch):
+    # Atomicity is the base template's job; gather batches are pure size packing.
     params = [_param("layer.a", 4), _param("layer.b", 4), _param("layer.c", 4)]
     monkeypatch.setattr(direct_module, "_get_param_full_size", lambda info: info.size)
 
-    update_units = direct_module.get_named_update_units(
-        [param.name for param in params], [AtomicUpdateGroup("pair", (".b", ".c"))]
-    )
-    assert [unit.names for unit in update_units] == [("layer.a",), ("layer.b", "layer.c")]
-
-    buckets = direct_module._pack_update_units(Namespace(update_weight_buffer_size=6), params, update_units)
-    assert [[param.name for param in bucket] for bucket in buckets] == [["layer.a"], ["layer.b", "layer.c"]]
+    batches = direct_module._pack_param_infos_by_size(Namespace(update_weight_buffer_size=6), params)
+    assert [[param.name for param in batch] for batch in batches] == [["layer.a"], ["layer.b", "layer.c"]]
 
 
 def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
-    from miles.backends.megatron_utils.update_weight.common import get_atomic_update_groups
+    from miles.backends.megatron_utils.update_weight.common import get_atomic_update_groups, get_named_update_units
 
     param_names = [
         "module.module.decoder.layers.0.input_layernorm.weight",
@@ -132,7 +126,7 @@ def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
         "module.module.decoder.layers.0.self_attention.indexer.compressor.wgate.weight",
     ]
 
-    update_units = direct_module.get_named_update_units(
+    update_units = get_named_update_units(
         param_names, get_atomic_update_groups(Namespace(q_lora_rank=1024), "deepseekv4")
     )
 
@@ -154,7 +148,7 @@ def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
 
 
 def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
-    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
+    from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup, get_named_update_units
 
     params = [_param("layer.a", 4), _param("layer.b", 4)]
 
@@ -173,7 +167,7 @@ def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
 
     for groups, error in invalid_groups:
         with pytest.raises(AssertionError, match=error):
-            direct_module.get_named_update_units([param.name for param in params], groups)
+            get_named_update_units([param.name for param in params], groups)
 
 
 def _tensor(size: int) -> torch.Tensor:

@@ -8,6 +8,11 @@ from typing import ClassVar
 
 import torch
 
+from miles.backends.training_utils.weight_update.bucketing import (
+    AtomicUpdateGroup,
+    assemble_atomic_update_groups,
+    pack_units_by_size,
+)
 from miles.utils.lora import is_lora_weight_name
 
 
@@ -64,7 +69,6 @@ class HfWeightIteratorBase(ABC):
         self.model_name = model_name
         self.quantization_config = quantization_config
 
-    @abstractmethod
     def iter_hf_base_weights(
         self,
         weights: Mapping[str, torch.Tensor] | None,
@@ -78,6 +82,25 @@ class HfWeightIteratorBase(ABC):
         model parameters. ``materialize=False`` joins every collective but
         yields nothing.
         """
+        hf_param_units = self._iter_hf_param_units(weights, materialize=materialize)
+        hf_param_units = assemble_atomic_update_groups(hf_param_units, self._hf_atomic_update_groups())
+        yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
+
+    @abstractmethod
+    def _iter_hf_param_units(
+        self,
+        weights: Mapping[str, torch.Tensor] | None,
+        *,
+        materialize: bool,
+    ) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        """Backend hook: one unit per training-side parameter, holding every HF
+        tensor it converted into (a weight, or weight + quant scales), honoring
+        ``self.placement``. Collectives must run lockstep on every rank;
+        ``materialize=False`` joins them but yields nothing."""
+
+    def _hf_atomic_update_groups(self) -> list[AtomicUpdateGroup]:
+        """Backend hook: HF-namespace atomic groups for this model. Default none."""
+        return []
 
     def get_hf_lora_weights(self, adapter=None) -> list[tuple[str, torch.Tensor]]:
         """The complete adapter in HF PEFT naming (lora_A/lora_B), fully
