@@ -19,12 +19,16 @@ from miles.utils.ft_utils.process_group_utils import GroupInfo
 logger = logging.getLogger(__name__)
 
 # titan mesh name -> miles ParallelState field. titan's "batch" mesh is
-# dp_replicate x dp_shard (the sample-parallel view) and "loss" additionally
-# folds in cp, which is exactly miles' intra_dp / intra_dp_cp split.
+# dp_replicate x dp_shard, the sample-parallel view.
+#
+# Context parallelism is deliberately absent: it stays internal to the trainer,
+# which shards the sequence itself and gathers the logits back before the loss
+# sees them. So the shared helpers must believe cp is 1 -- they would otherwise
+# slice the rollout a second time (in get_batch) and reduce metrics over ranks
+# that hold identical values. That is also why intra_dp_cp maps to "batch"
+# rather than titan's "loss" mesh, which folds cp in.
 _MESH_TO_FIELD = {
     "batch": "intra_dp",
-    "loss": "intra_dp_cp",
-    "cp": "cp",
     "tp": "tp",
     "pp": "pp",
     "ep": "ep",
@@ -76,14 +80,14 @@ def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True)
     self_group = dist.new_group([rank])
     trivial = GroupInfo(rank=0, size=1, group=self_group)
 
-    fields: dict[str, GroupInfo] = {}
+    fields: dict[str, GroupInfo] = {"intra_dp_cp": trivial, "cp": trivial}
     for mesh_name, field in _MESH_TO_FIELD.items():
         mesh = parallel_dims.get_optional_mesh(mesh_name)
-        if mesh is None and field != "intra_dp_cp":
+        if mesh is None:
             fields[field] = trivial
             continue
-        group = mesh.get_group() if mesh is not None else self_group
-        member_ranks = dist.get_process_group_ranks(mesh.get_group()) if mesh is not None else [rank]
+        group = mesh.get_group()
+        member_ranks = dist.get_process_group_ranks(group)
         fields[field] = GroupInfo(
             rank=dist.get_rank(group=group),
             size=dist.get_world_size(group=group),
@@ -91,8 +95,10 @@ def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True)
             # Shared helpers reduce metrics over the DP-CP group, and some of
             # those reductions are object-based, which needs a gloo group --
             # a degree-1 DP-CP included (log gathering runs regardless).
-            gloo_group=_gloo_subgroup(member_ranks) if field == "intra_dp_cp" else None,
+            gloo_group=_gloo_subgroup(member_ranks) if field == "intra_dp" else None,
         )
+    # The metric-reduction axis is the sample-parallel one (see _MESH_TO_FIELD).
+    fields["intra_dp_cp"] = fields["intra_dp"]
 
     meshes = {name: parallel_dims.get_mesh(name) for name in ("fsdp",) if parallel_dims.get_optional_mesh(name)}
 

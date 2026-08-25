@@ -83,6 +83,10 @@ class TorchtitanTrainRayActor(TrainRayActor):
         self.tokenizer = assets.tokenizer
 
         self.trainer = TitanTrainer(config)
+        # CP is internal to the trainer: it gathers logits back to full length
+        # before miles' loss hub sees them (see parallel.py on why the shared
+        # helpers are told cp is 1).
+        self.trainer.enable_context_parallel_gather()
         set_parallel_state(
             create_titan_parallel_state(
                 self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage()

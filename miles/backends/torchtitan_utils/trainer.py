@@ -199,6 +199,20 @@ class RLLossAdapter(BaseLoss):
         self._closure: Callable | None = None
         self._mode = "train"
         self._results: dict[int, object] = {}
+        self._cp_mesh = None
+        self._cp_restore: torch.Tensor | None = None
+
+    def set_context_parallel(self, mesh, restore_indices: torch.Tensor) -> None:
+        """Gather CP-sharded logits before the RL loss sees them.
+
+        Context parallelism is internal to the trainer: miles' loss hub is
+        handed full-length logits, so the memory it needs is the same as at
+        cp=1 while attention keeps CP's shorter sequences. ``restore_indices``
+        is torchtitan's own inverse of the load-balancing permutation, so the
+        gathered sequence comes back in natural order.
+        """
+        self._cp_mesh = mesh
+        self._cp_restore = restore_indices
 
     def arm(self, batches: list, closure: Callable, mode: str) -> None:
         self._batches, self._closure, self._mode = batches, closure, mode
@@ -210,8 +224,25 @@ class RLLossAdapter(BaseLoss):
             raise RuntimeError(f"the schedule never ran microbatch(es) {missing}")
         return [self._results[i] for i in range(len(self._batches))]
 
+    def _gather_context_parallel(self, pred: torch.Tensor) -> torch.Tensor:
+        """All-gather sequence-sharded logits and undo the CP permutation."""
+        group = self._cp_mesh.get_group()
+        shards = [torch.empty_like(pred) for _ in range(dist.get_world_size(group))]
+        dist.all_gather(shards, pred.contiguous(), group=group)
+        gathered = torch.cat(shards, dim=1)
+        restore = self._cp_restore.to(gathered.device)
+        if restore.numel() != gathered.shape[1]:
+            raise RuntimeError(
+                f"CP restore indices cover {restore.numel()} positions but the gathered "
+                f"sequence is {gathered.shape[1]} long"
+            )
+        return gathered.index_select(1, restore)
+
     def __call__(self, pred, target, global_valid_tokens=None, **kwargs):
         from torch.distributed.tensor import DTensor
+
+        if self._cp_mesh is not None:
+            pred = self._gather_context_parallel(pred)
 
         if isinstance(pred, DTensor):
             # Under TP titan shards the lm_head output over the vocab dim
@@ -441,6 +472,30 @@ class TitanTrainer(Trainer):
         if hasattr(grad_norm, "full_tensor"):
             grad_norm = grad_norm.full_tensor()
         return StepMetrics(grad_norm=float(grad_norm.item()), extra_metrics=self.lr_schedulers.get_metrics())
+
+    def enable_context_parallel_gather(self) -> None:
+        """Point the loss adapter at the CP mesh and torchtitan's restore order.
+
+        Called once after construction. torchtitan's own load balancer produces
+        the permutation, so the inverse comes from the same source rather than
+        being re-derived here -- the two would drift the moment upstream
+        changes balancer.
+        """
+        if not self.parallel_dims.cp_enabled:
+            return
+        from torch.distributed.tensor.experimental._attention import _HeadTailLoadBalancer
+
+        balancer_type = self.config.parallelism.context_parallel_load_balancer
+        if balancer_type != "headtail":
+            raise ValueError(
+                f"context_parallel_load_balancer={balancer_type!r} is not supported yet: the "
+                "logit gather inverts the headtail permutation specifically"
+            )
+        mesh = self.parallel_dims.get_mesh("cp")
+        balancer = _HeadTailLoadBalancer(
+            self.config.training.seq_len, mesh.size(), self.device
+        )
+        self.loss_fn.set_context_parallel(mesh, balancer._generate_indices(restore=True).flatten())
 
     def has_last_stage(self) -> bool:
         return (not self.parallel_dims.pp_enabled) or self.pp_has_last_stage

@@ -83,14 +83,9 @@ def validate_torchtitan_args(args) -> None:
             f"--titan-attn-backend {args.titan_attn_backend} needs "
             f"torch>={'.'.join(map(str, needed))}; this environment runs {torch.__version__}"
         )
-    if args.titan_context_parallel_degree != 1:
-        # The trainer's forward hands miles' loss full-sequence logits; under CP
-        # they come back sequence-sharded and the loss-side gather is not wired.
-        # (For qwen3_5 torchtitan itself rejects CP: GatedDeltaNet needs the
-        # full sequence.)
-        raise ValueError(
-            "--titan-context-parallel-degree > 1 is not supported yet (loss-side CP integration pending)"
-        )
+    if args.titan_context_parallel_degree != 1 and args.titan_model_name == "qwen3_5":
+        # Upstream rejects it: GatedDeltaNet needs the full sequence.
+        raise ValueError("torchtitan does not support context parallelism for qwen3_5")
 
     # The reference model is built once from --ref-load; refreshing it mid-run
     # would need the actor-to-ref copy FSDP does, which this backend has not
