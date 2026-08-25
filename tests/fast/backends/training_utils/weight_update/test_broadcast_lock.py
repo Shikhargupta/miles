@@ -13,9 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from miles.backends.training_utils.weight_update.broadcast import (
-    UpdateWeightFromDistributed,
-)
+from miles.backends.training_utils.weight_update.broadcast import UpdateWeightFromDistributed
 
 _MODULE = "miles.backends.training_utils.weight_update.broadcast"
 
