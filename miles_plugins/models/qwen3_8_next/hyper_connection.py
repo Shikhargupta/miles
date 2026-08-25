@@ -232,3 +232,40 @@ class Qwen38NextHCHeadContraction(MegatronModule):
             self.hidden_size,
             out_dtype=hidden_states.dtype,
         )
+
+class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
+    """Attention-site hyper-connection for the one layer that carries PLE.
+
+    PLE's increment goes onto the widened residual *before* the read gate sees it
+    (the design has ``X = X + PLE(X)`` then the HC mix), and it is the HC's own
+    ``hc_state`` that PLE uses as its query. Doing it here rather than in the layer
+    keeps the injection at exactly the right point without needing a second
+    extension point in Megatron: the attention HC slot is already pluggable, and
+    this is the first thing that slot's forward does.
+
+    Returning the updated residual as the 4th tuple element matters -- that is what
+    ``fused_h_res_h_post_bda`` later adds the block output to, so the increment has
+    to be part of the residual, not just of the mix input.
+    """
+
+    def __init__(self, config: TransformerConfig, layer_number: int, **kwargs):
+        super().__init__(config, layer_number, **kwargs)
+        from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE
+
+        self.ple = Qwen38NextPLE(config, layer_number=layer_number)
+
+    def forward(
+        self,
+        hidden_states: Tensor,
+        mhc_recompute_manager=None,
+        output_slot=None,
+    ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
+        from miles_plugins.models.qwen3_8_next.ops.ple_context import current_ple_batch
+
+        ngram_ids, cu_seqlens = current_ple_batch()
+        hidden_states = hidden_states + self.ple(hidden_states, ngram_ids, cu_seqlens)
+        return super().forward(
+            hidden_states,
+            mhc_recompute_manager=mhc_recompute_manager,
+            output_slot=output_slot,
+        )

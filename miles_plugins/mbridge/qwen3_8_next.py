@@ -88,17 +88,21 @@ class Qwen38NextBridge(Qwen3_5Bridge):
     _MLP_MAPPING.pop("mlp.linear_fc1.layer_norm_weight", None)
     _MLP_MAPPING.pop("pre_mlp_layernorm", None)
 
+    # The mcore names come from TransformerLayerSubmodules' slot names --
+    # self_attention_hyper_connection and mlp_hyper_connection -- while HF calls the
+    # first one attn_hyper_connection. Only the attention side differs, which is why
+    # mlp_hyper_connection looks like an identity mapping.
     _OTHER_MAPPING = {
-        "attn_hyper_connection.hc_norm_weight": [
+        "self_attention_hyper_connection.hc_norm_weight": [
             "model.language_model.layers.{layer_number}.attn_hyper_connection.hc_norm.weight"
         ],
-        "attn_hyper_connection.input_mix_weight_down": [
+        "self_attention_hyper_connection.input_mix_weight_down": [
             "model.language_model.layers.{layer_number}.attn_hyper_connection.input_mix_weight_down.weight"
         ],
-        "attn_hyper_connection.input_mix_weight_up": [
+        "self_attention_hyper_connection.input_mix_weight_up": [
             "model.language_model.layers.{layer_number}.attn_hyper_connection.input_mix_weight_up.weight"
         ],
-        "attn_hyper_connection.block_inject_weight": [
+        "self_attention_hyper_connection.block_inject_weight": [
             "model.language_model.layers.{layer_number}.attn_hyper_connection.block_inject_weight.weight"
         ],
         "mlp_hyper_connection.hc_norm_weight": [
@@ -113,25 +117,19 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         "mlp_hyper_connection.block_inject_weight": [
             "model.language_model.layers.{layer_number}.mlp_hyper_connection.block_inject_weight.weight"
         ],
-        "ple.key_proj.weight": ["model.language_model.layers.{layer_number}.ple.key_proj.weight"],
-        "ple.value_proj.weight": ["model.language_model.layers.{layer_number}.ple.value_proj.weight"],
+        "self_attention_hyper_connection.ple.key_proj.weight": ["model.language_model.layers.{layer_number}.ple.key_proj.weight"],
+        "self_attention_hyper_connection.ple.value_proj.weight": ["model.language_model.layers.{layer_number}.ple.value_proj.weight"],
         # HF wraps each of these in a submodule holding a .weight; on our side they
         # are plain nn.Parameters, so the names differ by that one level.
-        "ple.conv1d_weight": ["model.language_model.layers.{layer_number}.ple.conv1d.weight"],
-        "ple.norm_conv": ["model.language_model.layers.{layer_number}.ple.norm_conv.weight"],
-        "ple.norm_key": ["model.language_model.layers.{layer_number}.ple.norm_key.weight"],
-        "ple.norm_query": ["model.language_model.layers.{layer_number}.ple.norm_query.weight"],
-        # Integer hash metadata: buffers, not parameters, but they still have to be
-        # carried across from the checkpoint or the table gets read at wrong rows.
-        "ple.ple_embedding.layer_multipliers": [
-            "model.language_model.layers.{layer_number}.ple.ple_embedding.layer_multipliers"
-        ],
-        "ple.ple_embedding.ngram_heads_offsets": [
-            "model.language_model.layers.{layer_number}.ple.ple_embedding.ngram_heads_offsets"
-        ],
-        "ple.ple_embedding.ngram_heads_vocab_sizes": [
-            "model.language_model.layers.{layer_number}.ple.ple_embedding.ngram_heads_vocab_sizes"
-        ],
+        "self_attention_hyper_connection.ple.conv1d_weight": ["model.language_model.layers.{layer_number}.ple.conv1d.weight"],
+        "self_attention_hyper_connection.ple.norm_conv": ["model.language_model.layers.{layer_number}.ple.norm_conv.weight"],
+        "self_attention_hyper_connection.ple.norm_key": ["model.language_model.layers.{layer_number}.ple.norm_key.weight"],
+        "self_attention_hyper_connection.ple.norm_query": ["model.language_model.layers.{layer_number}.ple.norm_query.weight"],
+        # The n-gram table and its hash metadata are deliberately absent here: the
+        # table is a non-persistent buffer read straight from the HF safetensors on
+        # first use (so it never enters the torch_dist checkpoint and never needs
+        # resharding when TP changes), and load_from_hf pulls the three metadata
+        # tensors along with it.
     }
 
     # Vision tower. A standard ViT, so this is a plain name translation rather than
@@ -235,14 +233,6 @@ class Qwen38NextBridge(Qwen3_5Bridge):
             parts = name.split(".")
             layer_number = int(parts[2])
             name = ".".join(parts[3:])
-
-        shard_prefix = "ple.ple_embedding.shard_"
-        if name.startswith(shard_prefix) and layer_number is not None:
-            shard_id = name[len(shard_prefix) :].split(".")[0]
-            return [
-                f"model.language_model.layers.{layer_number}.ple.ple_embedding."
-                f"ngram_embedding.shard_{shard_id}.weight"
-            ]
 
         if name in self._OTHER_MAPPING:
             if layer_number is None:

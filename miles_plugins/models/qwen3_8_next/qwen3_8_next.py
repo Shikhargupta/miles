@@ -50,12 +50,16 @@ from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from miles.utils.hf_config import load_hf_config, register_hf_config_aliases
 
+import torch
+
 from miles_plugins.models.qwen3_5 import Attention as Qwen35LinearAttention
 from miles_plugins.models.qwen3_5 import _get_text_config
 from miles_plugins.models.qwen3_8_next.hyper_connection import (
     Qwen38NextHCHeadContraction,
     Qwen38NextHyperConnection,
+    Qwen38NextPLEHyperConnection,
 )
+from miles_plugins.models.qwen3_8_next.ops.attention import Qwen38NextAttention
 
 
 def _layer_types(text_config):
@@ -73,8 +77,15 @@ def _layer_types(text_config):
     return ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)]
 
 
-def _hc_spec(config):
-    return ModuleSpec(module=Qwen38NextHyperConnection)
+def _hc_spec(config, *, with_ple: bool = False):
+    """The attention-site HC on the PLE layer also owns the PLE module.
+
+    PLE's increment has to land on the widened residual before the read gate sees
+    it, and the HC's own state is PLE's query, so the attention HC slot is exactly
+    the right place -- and it is already pluggable, so this needs no further
+    extension point in Megatron.
+    """
+    return ModuleSpec(module=Qwen38NextPLEHyperConnection if with_ple else Qwen38NextHyperConnection)
 
 
 def _strip_block_layernorms(layer_spec, config):
@@ -90,6 +101,30 @@ def _strip_block_layernorms(layer_spec, config):
         attn.submodules.linear_qkv = TEColumnParallelLinear
     submodules.input_layernorm = IdentityOp
     submodules.pre_mlp_layernorm = IdentityOp
+
+
+class Qwen38NextLinearAttention(Qwen35LinearAttention):
+    """Qwen3.5's gated-delta-net wrapper with its input layernorm removed.
+
+    Qwen3.5's wrapper normalises before the GDN:
+
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self.linear_attn(...)
+
+    and that norm maps to ``layers.{n}.input_layernorm.weight``. Qwen3.8-Next has
+    no such tensor -- the attention hyper-connection's ``hc_norm`` is the pre-block
+    norm, and what reaches the GDN is already normed. Keeping Qwen3.5's norm would
+    both normalise twice and leave a parameter with no source in the checkpoint,
+    which is how this surfaced: the bridge raised on
+    ``decoder.layers.0.self_attention.input_layernorm.weight``.
+
+    Replaced with Identity rather than dropped so ``hf_forward`` needs no override
+    and stays in step with any future change to Qwen3.5's.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.input_layernorm = torch.nn.Identity()
 
 
 def _apply_qwen3_8_next_config(config, text_config) -> None:
@@ -144,6 +179,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     # Qwen38NextBridge._build_config, which sets the same values on the paths that
     # do go through the bridge.
     _apply_qwen3_8_next_config(config, text_config)
+    # The PLE table is not a checkpointed parameter; it is read from the HF
+    # safetensors on first use, so the module needs to know where from.
+    config.qwen3_8_next_hf_checkpoint = args.hf_checkpoint
 
     # Pipeline parallelism does account for the widened hidden state: with
     # enable_hyper_connections set, schedules.get_tensor_shapes multiplies
@@ -181,18 +219,46 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
 
     layer_types = _layer_types(text_config)
 
+    # PLE hashes the input token ids, which only exist on the stage that holds the
+    # embedding. With 48 layers and PP <= 8 the first stage always covers layer 1, so
+    # this holds today -- but it holds by arithmetic, not by construction, and a
+    # future uneven split would break it by silently having no ids to hash.
+    ple_here = [i for i in config.qwen3_8_next_ple_layer_ids
+                if offset <= i < offset + num_layers_to_build]
+    if ple_here and offset > 0:
+        raise NotImplementedError(
+            f"PLE layers {ple_here} landed on pipeline stage starting at layer {offset}, "
+            "not the first stage. PLE hashes input token ids, which are only available "
+            "where the embedding is; a later stage has hidden states and nothing to hash."
+        )
+
     for layer_id in range(num_layers_to_build):
         global_layer_id = layer_id + offset
         layer_spec = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
 
         # Qwen3.8-Next's gating, in the slots enable_hyper_connections opened.
-        layer_spec.submodules.self_attention_hyper_connection = _hc_spec(config)
+        # PLE lives on one layer only (index 1; ple_layer_ids is 1-based), and its
+        # increment is injected by that layer's attention-site HC.
+        with_ple = global_layer_id in config.qwen3_8_next_ple_layer_ids
+        layer_spec.submodules.self_attention_hyper_connection = _hc_spec(
+            config, with_ple=with_ple
+        )
         layer_spec.submodules.mlp_hyper_connection = _hc_spec(config)
 
         if layer_types[global_layer_id] == "linear_attention":
             layer_spec.submodules.self_attention = ModuleSpec(
-                module=Qwen35LinearAttention,
+                module=Qwen38NextLinearAttention,
                 params={"args": args},
+            )
+        else:
+            # Full-attention layers carry a QSA indexer, so they need Qwen3.8-Next's
+            # attention rather than Megatron's plain SelfAttention. Keep the
+            # submodules the block spec already built (linear_qkv swapped to a plain
+            # TEColumnParallelLinear below, core_attention, linear_proj, QK norms).
+            layer_spec.submodules.self_attention = ModuleSpec(
+                module=Qwen38NextAttention,
+                params=dict(layer_spec.submodules.self_attention.params or {}),
+                submodules=layer_spec.submodules.self_attention.submodules,
             )
 
         _strip_block_layernorms(layer_spec, config)

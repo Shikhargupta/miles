@@ -93,7 +93,9 @@ class Qwen38NextPLE(MegatronModule):
         self.embed_dim = config.qwen3_8_next_ple_embed_dim
         wide = self.n * self.hidden_size
 
-        self.ple_embedding = Qwen38NextFrozenNGramEmbedding(config, tp_group=tp_group)
+        self.ple_embedding = Qwen38NextFrozenNGramEmbedding(
+            config, layer_number=layer_number, tp_group=tp_group
+        )
 
         # Duplicated rather than TP-sharded: these are small next to the table, and
         # keeping them replicated avoids a second reduction on top of the table's.
