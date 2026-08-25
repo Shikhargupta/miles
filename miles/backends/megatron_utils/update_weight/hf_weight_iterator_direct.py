@@ -5,7 +5,10 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
-from miles.backends.megatron_utils.update_weight.hf_weight_iterator import MegatronHfWeightIteratorBase
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
+    MegatronHfWeightIteratorBase,
+    _iter_mm_tower_units,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
@@ -55,6 +58,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             del named_params
             pbar.update(1)
         pbar.close()
+        yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
