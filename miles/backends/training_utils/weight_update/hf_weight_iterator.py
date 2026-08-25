@@ -1,10 +1,4 @@
-"""Backend-neutral API for streaming training-side weights as HF-named tensors.
-
-Every weight consumer (colocated IPC, NCCL broadcast, P2P/RDT direct writes,
-disk-delta, HF export) drives one of these iterators; every training backend
-(megatron raw/bridge today, FSDP-family next) implements one. The API speaks HF
-names and ``WeightUpdatePlacement`` only — no backend types cross it.
-"""
+"""Backend-neutral API for streaming training-side weights as HF-named tensors."""
 
 import dataclasses
 from abc import ABC, abstractmethod
@@ -26,10 +20,9 @@ from miles.utils.lora import is_lora_weight_name
 class WeightUpdatePlacement:
     """Which training-side parallel dims the iterator gathers before yielding.
 
-    A gathered dim: every yielded tensor is full along that dim, identically on
-    every rank of that dim's group. A non-gathered dim: each rank yields its own
-    shard of the param set (e.g. its PP slice). Backends ignore dims they don't
-    have (an FSDP-family backend treats every placement as fully gathered).
+    A gathered dim: every yielded tensor is full along that dim on every rank
+    of that dim's group. A non-gathered dim: each rank yields its own shard of
+    the param set.
     """
 
     gather_pp: bool
@@ -40,10 +33,7 @@ class WeightUpdatePlacement:
 
 def resolve_placement(required: WeightUpdatePlacement, forced: WeightUpdatePlacement | None) -> WeightUpdatePlacement:
     """Join of the protocol's required placement and the iterator's forced one:
-    a dim is gathered if either side gathers it. Protocols must accept a
-    placement that gathers more dims than they asked for and derive their
-    source-rank set from the resolved placement, not from their own assumption.
-    """
+    a dim is gathered if either side gathers it."""
     if forced is None:
         return required
     return WeightUpdatePlacement(
@@ -54,14 +44,11 @@ def resolve_placement(required: WeightUpdatePlacement, forced: WeightUpdatePlace
 
 
 class HfWeightIteratorBase(ABC):
-    """Mental model: ``training_model.to_hf(placement).named_parameters()``,
-    streamed as size-bounded buckets.
+    """Streams a training model's weights as HF-named tensors.
 
-    Collective contract: every training rank must drive the returned iterators
-    to exhaustion in lockstep (collectives run inside ``next()``). Bucket
-    structure is identical across ranks that share the same coordinates along
-    all non-gathered dims. Yielded tensors are freshly allocated per bucket and
-    stay valid for as long as the caller holds a reference.
+    Collective: every training rank must drive the iterators in lockstep.
+    Yielded tensors are freshly allocated per bucket and stay valid while the
+    caller holds a reference.
     """
 
     # Placement this implementation can produce; None means any.
@@ -88,18 +75,12 @@ class HfWeightIteratorBase(ABC):
         *,
         materialize: bool = True,
     ) -> Iterator[list[tuple[str, torch.Tensor]]]:
-        """Base model weights as HF-named GPU tensors, one size-bounded bucket
-        per ``next()``; atomic update groups are never split across buckets.
+        """Base model weights as size-bounded buckets of HF-named GPU tensors;
+        atomic update groups are never split across buckets.
 
-        Template method: drives the backend's ``_iter_hf_param_units`` stream through
-        the shared contract layer — ``assemble_atomic_update_groups`` (HF-namespace
-        groups) + ``pack_units_by_size``. Bucketing is decoupled from the
-        backend's internal gather batching.
-
-        ``weights``: backend-native named weights to read (e.g. a snapshot from
-        the weights backuper); None reads the live model parameters.
-        ``materialize=False`` joins every collective but skips conversion and
-        yields nothing — for ranks the transfer protocol never reads from.
+        ``weights``: backend-native named weights to read; None reads the live
+        model parameters. ``materialize=False`` joins every collective but
+        yields nothing.
         """
         hf_param_units = self._iter_hf_param_units(weights, materialize=materialize)
         hf_param_units = assemble_atomic_update_groups(hf_param_units, self._hf_atomic_update_groups())
@@ -112,27 +93,19 @@ class HfWeightIteratorBase(ABC):
         *,
         materialize: bool,
     ) -> Iterator[list[tuple[str, torch.Tensor]]]:
-        """Backend hook: stream of conversion units honoring ``self.placement``
-        — one unit per training-side parameter, holding every HF tensor it
-        converted into (a weight, or weight + quant scales), so those never
-        split across buckets. Internal gather batching is a backend
-        performance detail, decoupled from bucket boundaries — atomicity
-        constrains the load call, not the gather. Collectives inside the hook
-        must run lockstep on every rank regardless of downstream consumption;
-        with ``materialize=False`` the hook joins the collectives but yields
-        nothing."""
+        """Backend hook: one unit per training-side parameter, holding every HF
+        tensor it converted into (a weight, or weight + quant scales), honoring
+        ``self.placement``. Collectives must run lockstep on every rank;
+        ``materialize=False`` joins them but yields nothing."""
 
     def _hf_atomic_update_groups(self) -> list[AtomicUpdateGroup]:
         """Backend hook: HF-namespace atomic groups for this model. Default none."""
         return []
 
     def get_hf_lora_weights(self, adapter=None) -> list[tuple[str, torch.Tensor]]:
-        """The complete adapter in HF PEFT naming (lora_A/lora_B), as one list.
-
-        Always fully gathered regardless of ``self.placement`` — adapters are
-        small and engines load the whole adapter in one call. ``adapter=None``
-        exports the single-LoRA adapter; otherwise the multi-LoRA adapter to
-        export. Collective: every rank must call this together.
+        """The complete adapter in HF PEFT naming (lora_A/lora_B), fully
+        gathered, as one list. ``adapter`` selects a multi-LoRA slot; None is
+        the single-LoRA adapter. Collective.
         """
         named_tensors = self._export_lora_named_tensors(adapter)
         if not named_tensors:
@@ -152,5 +125,4 @@ class HfWeightIteratorBase(ABC):
     @abstractmethod
     def _export_lora_named_tensors(self, adapter) -> list[tuple[str, torch.Tensor]]:
         """Backend hook: the complete adapter as HF-named tensors, fully
-        gathered along every parallel dim — the backend owns its parallel
-        groups, so any PP assembly happens inside the hook."""
+        gathered along every parallel dim."""
