@@ -261,7 +261,9 @@ class RLLossAdapter(BaseLoss):
         if self._cp_mesh is not None:
             pred = self._gather_context_parallel(pred)
 
-        index = int(target)
+        # Any element identifies the batch (see _microbatch_inputs); under CP
+        # this rank holds only a slice of the target.
+        index = int(target.flatten()[0])
         batch = self._batches[index]
         if self._mode == "train":
             loss, log_dict = self._closure(pred, batch)
@@ -406,8 +408,13 @@ class TitanTrainer(Trainer):
         for batch in batches:
             tokens, positions = _model_inputs(batch)
             input_dicts.append({"input": tokens, "positions": positions, **self._family_forward_kwargs()})
-        # Targets are index tensors; RLLossAdapter maps them back to batches.
-        labels = [torch.tensor(i, device=self.device) for i in range(len(batches))]
+        # Targets carry the microbatch index, but as a full-length tensor rather
+        # than a scalar: context parallelism shards labels along the sequence
+        # like everything else, and a 0-d tensor has no dimension to shard. Every
+        # element holds the same index, so any shard still identifies the batch.
+        labels = [
+            torch.full_like(input_dicts[i]["input"], i, dtype=torch.long) for i in range(len(batches))
+        ]
         return input_dicts, labels
 
     # -------------------------------------------------------- RL step surface
