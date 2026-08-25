@@ -120,6 +120,7 @@ def run_realistic_gsm8k(
     mean_interval_seconds_of_cell_type: dict[str, float],
     create_forms: CreateCellFaultFormsFn,
     extra_train_args: str = "",
+    enable_fault_tolerance: bool = True,
 ) -> Gsm8kOutcome:
     U = create_backend_for_run(config)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
@@ -142,6 +143,7 @@ def run_realistic_gsm8k(
         metric_threshold=metric_threshold,
         fully_async=fully_async,
         test_name=test_name,
+        enable_fault_tolerance=enable_fault_tolerance,
     )
     train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} "
     train_args += extra_train_args
@@ -183,7 +185,13 @@ def prepare_gsm8k(U: BaseCommandBackend) -> None:
 
 
 def get_gsm8k_train_args(
-    *, seed: int, num_rollout: int, metric_threshold: float, fully_async: bool, test_name: str
+    *,
+    seed: int,
+    num_rollout: int,
+    metric_threshold: float,
+    fully_async: bool,
+    test_name: str,
+    enable_fault_tolerance: bool = True,
 ) -> str:
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
@@ -238,12 +246,13 @@ def get_gsm8k_train_args(
         "--sglang-enable-metrics "
     )
 
-    fault_tolerance_args = (
-        "--use-fault-tolerance "
-        f"--ft-components {' '.join(FT_COMPONENTS)} "
-        f"--api-server-port {API_SERVER_PORT} "
-        "--mini-ft-controller-enable "
-    )
+    fault_tolerance_args = f"--api-server-port {API_SERVER_PORT} "
+    if enable_fault_tolerance:
+        fault_tolerance_args += (
+            "--use-fault-tolerance "
+            f"--ft-components {' '.join(FT_COMPONENTS)} "
+            "--mini-ft-controller-enable "
+        )
 
     ci_args = (
         "--ci-test "
