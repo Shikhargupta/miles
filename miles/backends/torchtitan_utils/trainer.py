@@ -14,11 +14,11 @@ coupling:
   ``hf_assets_path``), the RL loss is ``config.loss`` (so the trainer wires it
   into the pipeline schedule itself), and the dataloader is an empty stub
   because the RL loop feeds microbatches directly.
-* ``MilesRLLoss`` -- a ``BaseLoss`` whose targets are microbatch indices: the
+* ``RLLossAdapter`` -- a ``BaseLoss`` whose targets are microbatch indices: the
   schedule only transports tensors, so each target names the miles batch the
   real loss closure runs on. One class serves train (loss + log dict) and
   forward-only (log-prob compute) via an armed mode.
-* ``MilesRLTrainer`` -- the Trainer subclass. It adds nothing to construction;
+* ``TitanTrainer`` -- the Trainer subclass. It adds nothing to construction;
   it exposes ``step_runner()`` (the shared loop's per-optimizer-step protocol)
   and forward-only passes, both delegating to the trainer's own
   ``forward_backward_step`` / ``pp_schedule``.
@@ -129,7 +129,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
         )
     ]
 
-    config.loss = MilesRLLoss.Config()
+    config.loss = RLLossAdapter.Config()
     config.dataloader = EmptyDataLoader.Config()
     config.checkpoint = TiedCheckpointManager.Config()
     config.activation_checkpoint = None  # parallelize_fn treats None as AC off
@@ -149,7 +149,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     return config
 
 
-class MilesRLLoss(BaseLoss):
+class RLLossAdapter(BaseLoss):
     """Trampoline between the schedule's (pred, target) and miles' RL loss.
 
     Targets are microbatch-index tensors: the schedule only transports
@@ -271,7 +271,7 @@ class TiedCheckpointManager(titan_checkpoint.CheckpointManager):
         self.states[titan_checkpoint.MODEL].load_state_dict(self.sd_adapter.from_hf(hf_state))
 
 
-class MilesRLTrainer(Trainer):
+class TitanTrainer(Trainer):
     """torchtitan's Trainer with the RL step surface bolted on.
 
     Construction is entirely the base class. The additions translate the
@@ -300,7 +300,7 @@ class MilesRLTrainer(Trainer):
                 }
         return self._family_kwargs
 
-    def _rl_microbatches(self, batches: list) -> tuple[list[dict], list[torch.Tensor]]:
+    def _microbatch_inputs(self, batches: list) -> tuple[list[dict], list[torch.Tensor]]:
         if self.parallel_dims.pp_enabled:
             expected = self.num_pipeline_parallel_microbatches
             if len(batches) != expected:
@@ -313,33 +313,33 @@ class MilesRLTrainer(Trainer):
             {"input": batch["tokens"], "positions": batch["position_ids"], **self._family_forward_kwargs()}
             for batch in batches
         ]
-        # Targets are index tensors; MilesRLLoss maps them back to batches.
+        # Targets are index tensors; RLLossAdapter maps them back to batches.
         labels = [torch.tensor(i, device=self.device) for i in range(len(batches))]
         return input_dicts, labels
 
     # -------------------------------------------------------- RL step surface
 
-    def rl_forward_backward_step(self, batches, loss_closure: Callable) -> list[dict]:
+    def run_forward_backward(self, batches, loss_closure: Callable) -> list[dict]:
         """One optimizer step's microbatches through the trainer's own
         forward_backward_step. Under PP only the last stage returns log
         dicts."""
         batches = list(batches)
         self.loss_fn.arm(batches, loss_closure, "train")
-        input_dicts, labels = self._rl_microbatches(batches)
+        input_dicts, labels = self._microbatch_inputs(batches)
         ones = torch.ones((), device=self.device)
         if self.parallel_dims.pp_enabled:
             self.forward_backward_step(input_dict=input_dicts, labels=labels, global_valid_tokens=ones)
         else:
             for input_dict, label in zip(input_dicts, labels, strict=True):
                 self.forward_backward_step(input_dict=input_dict, labels=label, global_valid_tokens=ones)
-        return self.loss_fn.collect() if self.pp_last_stage_here() else []
+        return self.loss_fn.collect() if self.has_last_stage() else []
 
-    def rl_forward_only_step(self, batches, compute: Callable) -> list:
+    def run_forward(self, batches, compute: Callable) -> list:
         """Forward-only over the microbatches (log probs); mirrors the
         validator's eval path. Under PP only the last stage returns."""
         batches = list(batches)
         self.loss_fn.arm(batches, compute, "eval")
-        input_dicts, labels = self._rl_microbatches(batches)
+        input_dicts, labels = self._microbatch_inputs(batches)
         if self.parallel_dims.pp_enabled:
             arg_mbs, kwarg_mbs, target_mbs = [], [], []
             for input_dict, label in zip(input_dicts, labels, strict=True):
@@ -359,12 +359,9 @@ class MilesRLTrainer(Trainer):
                 inputs, label, extra = self.post_dataloading_process(input_dict, label)
                 pred = self.model_parts[0](inputs, **extra)
                 self.loss_fn(pred, label)
-        return self.loss_fn.collect() if self.pp_last_stage_here() else []
+        return self.loss_fn.collect() if self.has_last_stage() else []
 
-    def rl_zero_grad(self) -> None:
-        self.optimizers.zero_grad(set_to_none=True)
-
-    def rl_apply_step(self) -> StepMetrics:
+    def apply_optimizer_step(self) -> StepMetrics:
         """The optim block of the trainer's train_step, returning what the
         miles loop logs."""
         grad_norm = titan_dist_utils.clip_grad_norm_(
@@ -382,7 +379,7 @@ class MilesRLTrainer(Trainer):
             grad_norm = grad_norm.full_tensor()
         return StepMetrics(grad_norm=float(grad_norm.item()), extra_metrics=self.lr_schedulers.get_metrics())
 
-    def pp_last_stage_here(self) -> bool:
+    def has_last_stage(self) -> bool:
         return (not self.parallel_dims.pp_enabled) or self.pp_has_last_stage
 
     def step_runner(self) -> "TrainerStepRunner":
@@ -399,7 +396,26 @@ class MilesRLTrainer(Trainer):
         stage, so it is additionally broadcast over the pp mesh -- after which
         every rank yields the identical full stream and the transport stays
         PP-oblivious. One tensor is resident at a time either way.
+
+        An offloaded model comes back to the device for the duration: unlike
+        the plain state dicts FSDP streams, titan's fused-QKV save hooks run
+        DTensor collectives inside ``state_dict()`` itself, and the meshes
+        have no CPU backend. Weights-only occupancy is strictly below the
+        training peak, so whenever training fits, this does.
         """
+        offloaded = next(self.model_parts[0].parameters()).device.type == "cpu"
+        if offloaded:
+            for part in self.model_parts:
+                part.cuda()
+        try:
+            yield from self._hf_weights_on_device()
+        finally:
+            if offloaded:
+                for part in self.model_parts:
+                    part.cpu()
+                torch.cuda.empty_cache()
+
+    def _hf_weights_on_device(self) -> Iterator[tuple[str, torch.Tensor]]:
         sd_adapter = self.checkpointer.sd_adapter
         local = sd_adapter.to_hf({k: v for part in self.model_parts for k, v in part.state_dict().items()})
         if not self.parallel_dims.pp_enabled:
@@ -438,17 +454,17 @@ class TrainerStepRunner:
     with torchtitan's own signature; the protocol must not shadow it.
     """
 
-    def __init__(self, trainer: MilesRLTrainer):
+    def __init__(self, trainer: TitanTrainer):
         self.trainer = trainer
 
     def forward_only_step(self, batches, compute: Callable) -> list:
-        return self.trainer.rl_forward_only_step(batches, compute)
+        return self.trainer.run_forward(batches, compute)
 
     def forward_backward_step(self, batches, loss_closure: Callable) -> list[dict]:
-        return self.trainer.rl_forward_backward_step(batches, loss_closure)
+        return self.trainer.run_forward_backward(batches, loss_closure)
 
     def zero_grad(self) -> None:
-        self.trainer.rl_zero_grad()
+        self.trainer.optimizers.zero_grad(set_to_none=True)
 
     def apply_step(self) -> StepMetrics:
-        return self.trainer.rl_apply_step()
+        return self.trainer.apply_optimizer_step()

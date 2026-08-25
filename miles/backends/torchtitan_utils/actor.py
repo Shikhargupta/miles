@@ -17,7 +17,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
-from miles.backends.torchtitan_utils.trainer import MilesRLTrainer, build_trainer_config
+from miles.backends.torchtitan_utils.trainer import TitanTrainer, build_trainer_config
 from miles.backends.torchtitan_utils.weight_bridge import TitanUpdateWeightFromTensor
 from miles.backends.training_utils.data import get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import log_rollout_data
@@ -81,10 +81,10 @@ class TorchtitanTrainRayActor(TrainRayActor):
         self.hf_config = assets.hf_config
         self.tokenizer = assets.tokenizer
 
-        self.trainer = MilesRLTrainer(config)
+        self.trainer = TitanTrainer(config)
         set_parallel_state(
             create_titan_parallel_state(
-                self.trainer.parallel_dims, is_pp_last_stage=self.trainer.pp_last_stage_here()
+                self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage()
             )
         )
         self.train_parallel_config = {"dp_size": get_parallel_state().intra_dp.size}
@@ -122,7 +122,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
             args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref"
         )
         ref_config.training.enable_cpu_offload = True
-        ref_trainer = MilesRLTrainer(ref_config)
+        ref_trainer = TitanTrainer(ref_config)
         ref_trainer.checkpointer.load()
         for part in ref_trainer.model_parts:
             part.eval()
