@@ -91,6 +91,22 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
 
     config = Trainer.Config()
     config.model_spec = resolve_model_spec(args)
+    if args.titan_num_layers:
+        # Loading a few-layer cutdown of a large checkpoint: the flavor carries
+        # the full model's dimensions and only its depth is trimmed, which must
+        # match the checkpoint exactly. Per-block init scaling stays computed
+        # for the full depth -- harmless when real weights land on top, but it
+        # makes a from-scratch run with this flag meaningless.
+        available = len(config.model_spec.model.layers)
+        if args.titan_num_layers > available:
+            raise ValueError(
+                f"--titan-num-layers {args.titan_num_layers} exceeds the "
+                f"{args.titan_model_flavor} flavor's {available} blocks"
+            )
+        config.model_spec.model.layers = config.model_spec.model.layers[: args.titan_num_layers]
+        logger.info(
+            f"Truncated {args.titan_model_flavor} to {args.titan_num_layers} of {available} blocks"
+        )
     config.hf_assets_path = hf_assets_path
     config.dump_folder = os.path.join(args.save or "./outputs", "torchtitan", dump_subdir)
 

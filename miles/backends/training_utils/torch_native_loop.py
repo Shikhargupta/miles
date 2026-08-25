@@ -217,6 +217,13 @@ def run_optimizer_steps(
                 rank=get_parallel_state().intra_dp_cp.rank,
             )
 
+        # log_train_step defaults to global rank 0, which under pipeline
+        # parallelism is a FIRST-stage rank holding no loss -- it would report
+        # grad_norm and the LR and drop every loss metric. The metrics live on
+        # the same rank experiment tracking was initialized on: the last stage,
+        # tp rank 0, dp-cp rank 0 (the predicate Megatron encodes as
+        # is_first_replica_megatron_main_rank).
+        state = get_parallel_state()
         log_train_step(
             args=args,
             loss_dict=aggregate_train_losses(losses_reduced),
@@ -226,6 +233,9 @@ def run_optimizer_steps(
             num_steps_per_rollout=num_steps,
             role=role,
             extra_metrics=metrics.extra_metrics,
+            should_log=(
+                state.effective_dp_cp.rank == 0 and state.tp.rank == 0 and state.is_pp_last_stage
+            ),
         )
 
 
