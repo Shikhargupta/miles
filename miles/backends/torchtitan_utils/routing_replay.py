@@ -52,6 +52,35 @@ def enable(args) -> bool:
     return routing_replay_manager.enabled
 
 
+def _local(tensor: torch.Tensor) -> torch.Tensor:
+    """This rank's shard, whether or not the tensor is distributed."""
+    from torch.distributed.tensor import DTensor
+
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+
+def _like(local: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    """Put ``local`` back into ``reference``'s distributed layout.
+
+    The expert ids are per token, so they can carry any layout that shards
+    batch or sequence, but not one that shards the expert dimension -- there is
+    no meaningful way to express a global expert id as a shard of the expert
+    axis, and silently doing it anyway would route tokens to the wrong experts.
+    """
+    from torch.distributed.tensor import DTensor
+
+    if not isinstance(reference, DTensor):
+        return local
+    expert_dim = reference.ndim - 1
+    for placement in reference.placements:
+        if placement.is_shard() and placement.dim in (expert_dim, -1):
+            raise RuntimeError(
+                f"router scores are sharded over experts ({reference.placements}); replayed "
+                "expert ids have no shard of that axis to live in"
+            )
+    return DTensor.from_local(local, reference.device_mesh, reference.placements)
+
+
 def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor | None = None):
     """torchtitan TokenChoiceTopKRouter.forward with the expert-selection topk replaced.
 
@@ -72,10 +101,19 @@ def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor
     if self.num_expert_groups is not None:
         scores_for_choice_BLE = self._get_node_limited_routing_scores(scores_for_choice_BLE)
 
-    b, seq_len, _ = scores_for_choice_BLE.shape
-    topk_expert_ids_BLK = self._miles_replay_topk(
-        scores_for_choice_BLE.reshape(b * seq_len, -1), self.top_k
-    ).reshape(b, seq_len, self.top_k)
+    # Tensor parallelism makes the scores a DTensor, and upstream's torch.topk
+    # would return one too. The replayed ids arrive as plain tensors from the
+    # queue, so they are put back into the same layout -- gather refuses a
+    # DTensor and a plain tensor together, and unwrapping the scores instead
+    # would drop the layout for everything downstream.
+    local_choice = _local(scores_for_choice_BLE)
+    b, seq_len, _ = local_choice.shape
+    topk_expert_ids_BLK = _like(
+        self._miles_replay_topk(local_choice.reshape(b * seq_len, -1), self.top_k).reshape(
+            b, seq_len, self.top_k
+        ),
+        scores_for_choice_BLE,
+    )
 
     # The gating values come from the model's own scores, so a replayed run
     # never reuses the rollout's probabilities -- only its expert choice.
