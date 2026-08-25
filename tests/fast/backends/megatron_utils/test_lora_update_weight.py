@@ -1,14 +1,16 @@
-"""Mock-based tests for LoRA weight-sync logic in update_weight_from_tensor.py.
+"""Mock-based tests for LoRA weight-sync logic.
 
-Validates that _send_hf_params correctly separates LoRA vs base weights
-and that UpdateWeightFromTensor initialises _lora_config only when LoRA is active.
+Validates the LoRA vs base weight-name separation and that WeightUpdater
+requires a lora_sync_config exactly when LoRA is active.
 """
 
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
 
+from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.lora import is_lora_weight_name
 
 # ---------------------------------------------------------------------------
@@ -53,65 +55,39 @@ class TestLoraWeightSeparation:
 
 
 # ---------------------------------------------------------------------------
-# UpdateWeightFromTensor._lora_config initialisation
+# WeightUpdater lora_sync_config initialisation
 # ---------------------------------------------------------------------------
 
-_UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
+_UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 
 
-class TestUpdateWeightFromTensorLoraConfig:
-    """Verify _lora_config is set only when is_lora=True."""
+class TestWeightUpdaterLoraConfig:
+    """The updater requires a lora_sync_config exactly when LoRA is active."""
 
-    def _make_args(self):
-        return Namespace(
-            lora_rank=32,
-            lora_alpha=32,
-            lora_dropout=0.0,
-            target_modules=["linear_qkv", "linear_proj"],
-            megatron_to_hf_mode="bridge",
-            rollout_num_gpus_per_engine=2,
-            hf_checkpoint="/fake/path",
-            update_weight_buffer_size=1,
-        )
+    def _make_updater(self, *, is_lora, lora_sync_config):
+        protocol = MagicMock()
+        protocol.supports_lora = True
+        with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
+            return WeightUpdater(
+                Namespace(),
+                [MagicMock()],
+                weights_getter=lambda: {},
+                model_name="qwen",
+                quantization_config=None,
+                iterator_factory=lambda *a, **k: MagicMock(),
+                parallel_state=MagicMock(),
+                is_lora=is_lora,
+                lora_sync_config=lora_sync_config,
+            )
 
-    @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.get_hf_weight_iterator")
-    def test_lora_true_sets_config(self, mock_get_iter, mock_dist):
-        from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+    def test_lora_requires_config(self):
+        with pytest.raises(AssertionError):
+            self._make_updater(is_lora=True, lora_sync_config=None)
 
-        mock_dist.get_world_size.return_value = 2
-        mock_dist.get_rank.return_value = 0
-        mock_dist.new_group.return_value = MagicMock()
+    def test_lora_config_stored(self):
+        updater = self._make_updater(is_lora=True, lora_sync_config={"peft_type": "LORA", "r": 32})
+        assert updater._lora_sync_config["r"] == 32
 
-        args = self._make_args()
-        updater = UpdateWeightFromTensor(
-            args=args,
-            model=[MagicMock()],
-            weights_getter=lambda: {},
-            model_name="qwen",
-            quantization_config=None,
-            is_lora=True,
-        )
-        assert updater._lora_config is not None
-        assert updater._lora_config["peft_type"] == "LORA"
-        assert updater._lora_config["r"] == 32
-
-    @patch(f"{_UW_MODULE}.dist")
-    @patch(f"{_UW_MODULE}.get_hf_weight_iterator")
-    def test_lora_false_no_config(self, mock_get_iter, mock_dist):
-        from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
-
-        mock_dist.get_world_size.return_value = 2
-        mock_dist.get_rank.return_value = 0
-        mock_dist.new_group.return_value = MagicMock()
-
-        args = self._make_args()
-        updater = UpdateWeightFromTensor(
-            args=args,
-            model=[MagicMock()],
-            weights_getter=lambda: {},
-            model_name="qwen",
-            quantization_config=None,
-            is_lora=False,
-        )
-        assert not hasattr(updater, "_lora_config")
+    def test_no_lora_no_config(self):
+        updater = self._make_updater(is_lora=False, lora_sync_config=None)
+        assert updater._lora_sync_config is None
