@@ -43,7 +43,13 @@ def offloader_class():
 
         def _new_cpu_buffer(self, tensor: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
             os.makedirs(self.state_dir, exist_ok=True)
-            return _disk_backed_like(tensor, self.state_dir)
+            buffer = _disk_backed_like(tensor, self.state_dir)
+            self._disk_bytes = getattr(self, "_disk_bytes", 0) + buffer.numel() * buffer.element_size()
+            return buffer
+
+        def step(self) -> None:  # type: ignore[override]
+            super().step()
+            logger.info(f"Muon disk state step: {getattr(self, '_disk_bytes', 0) / 1024**3:.2f} GB file-backed")
 
     return DiskOptimizerStateOffloader
 
