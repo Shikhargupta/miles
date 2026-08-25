@@ -1,10 +1,10 @@
 """Stream torchtitan weights to the rollout engines.
 
 The HF naming comes from the model's own ``state_dict_adapter.to_hf`` -- the
-same mapping used to load the initial checkpoint, run in reverse -- which the
-engine exposes as ``hf_weights()``. The transport (IPC buckets to a colocated
-engine) and the engine handshake are the shared implementations, so this module
-is only the weight *production* side.
+same mapping the trainer's checkpointer used to load the initial checkpoint,
+run in reverse -- exposed by the trainer as ``hf_weights()``. The transport
+(IPC buckets to a colocated engine) and the engine handshake are the shared
+implementations, so this module is only the weight *production* side.
 """
 
 import logging
@@ -21,17 +21,18 @@ class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
     """Reuses FSDP's colocated IPC transport; only weight production differs.
 
     FSDP streams ``model.state_dict()`` under HF names because it trains stock
-    HF modeling. torchtitan's parameter names are its own, so the engine maps
+    HF modeling. torchtitan's parameter names are its own, so the trainer maps
     each tensor through its state-dict adapter and materializes it from its
-    DTensor shards before it goes on the wire. Only the tensors handed to the
-    transport are materialized, and the bucketing bounds how many are resident
-    at once; gathering the whole state dict up front would put a full unsharded
-    copy of the model on every rank, fine for a 0.6B and fatal for a 30B.
+    DTensor shards (pp-broadcast included) before it goes on the wire. Only
+    the tensors handed to the transport are materialized, and the bucketing
+    bounds how many are resident at once; gathering the whole state dict up
+    front would put a full unsharded copy of the model on every rank, fine for
+    a 0.6B and fatal for a 30B.
     """
 
-    def __init__(self, args, engine) -> None:
-        super().__init__(args, engine.model_parts[0])
-        self._engine = engine
+    def __init__(self, args, trainer) -> None:
+        super().__init__(args, trainer.model_parts[0])
+        self._trainer = trainer
 
     def update_weights(self) -> None:
         self.weight_version += 1
@@ -42,7 +43,7 @@ class TitanUpdateWeightFromTensor(UpdateWeightFromTensor):
         bucket: list[tuple[str, torch.Tensor, None]] = []
         bucket_size = 0
 
-        for name, tensor in self._engine.hf_weights():
+        for name, tensor in self._trainer.hf_weights():
             size = tensor.numel() * tensor.element_size()
             if bucket and bucket_size + size >= self.args.update_weight_buffer_size:
                 self.wait_and_update_bucket_weights(bucket)

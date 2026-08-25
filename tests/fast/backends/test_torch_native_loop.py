@@ -71,25 +71,30 @@ def loop_env():
         yield calls
 
 
-def _run_steps(calls, num_microbatches):
-    data_iterator = _DataIterator()
-    steps: list[str] = []
-
+def _runner(calls):
     def forward(batch):
         calls.append("forward")
         return torch.zeros(1, requires_grad=True)
+
+    return tnl.LinearStepRunner(
+        forward,
+        lambda: calls.append("zero_grad"),
+        lambda: (calls.append("step"), tnl.StepMetrics(grad_norm=0.5))[1],
+    )
+
+
+def _run_steps(calls, num_microbatches, runner=None):
+    data_iterator = _DataIterator()
 
     tnl.run_optimizer_steps(
         _args(),
         rollout_id=0,
         data_iterator=data_iterator,
         num_microbatches=num_microbatches,
-        forward_fn=forward,
-        zero_grad_fn=lambda: (calls.append("zero_grad"), steps.append("z"))[0],
-        step_fn=lambda: (calls.append("step"), tnl.StepMetrics(grad_norm=0.5))[1],
+        runner=runner if runner is not None else _runner(calls),
         profiler=_Profiler(),
     )
-    return data_iterator, steps
+    return data_iterator
 
 
 def test_gradients_are_cleared_once_per_optimizer_step(loop_env):
@@ -120,9 +125,30 @@ def test_grad_norm_check_only_under_ci_test(loop_env):
 
 
 def test_the_iterator_is_rewound_before_the_loop(loop_env):
-    data_iterator, _ = _run_steps(loop_env, [2, 2])
+    data_iterator = _run_steps(loop_env, [2, 2])
     assert data_iterator.resets == 1
     assert data_iterator.fetches == 4
+
+
+def test_fetch_and_compute_stay_interleaved_for_a_linear_runner(loop_env):
+    """Microbatches reach the runner as a generator: a linear runner pulls one,
+    computes on it, then pulls the next. Materializing them up front is the
+    schedule-owning runners' choice, not the loop's."""
+    _run_steps(loop_env, [3])
+    compute = [c for c in loop_env if c in ("batch", "forward")]
+    assert compute == ["batch", "forward"] * 3
+
+
+def test_the_runner_gets_one_forward_backward_call_per_optimizer_step(loop_env):
+    """The seam is per optimizer step (pytorch/torchtitan#3856): a PP schedule
+    needs every microbatch of the step in one call, so the loop must not chop
+    the step into per-microbatch calls."""
+    step_calls = []
+    runner = _runner(loop_env)
+    inner = runner.forward_backward_step
+    runner.forward_backward_step = lambda batches, closure: step_calls.append(1) or inner(batches, closure)
+    _run_steps(loop_env, [2, 3], runner=runner)
+    assert len(step_calls) == 2
 
 
 def test_log_probs_collects_one_entry_per_microbatch(loop_env):
@@ -131,7 +157,7 @@ def test_log_probs_collects_one_entry_per_microbatch(loop_env):
         _args(),
         data_iterator,
         [2, 3],
-        lambda batch: torch.zeros(1),
+        tnl.LinearStepRunner(lambda batch: torch.zeros(1)),
         profiler=_Profiler(),
     )
     assert result == {"n": 5}
@@ -148,6 +174,11 @@ def test_log_probs_skips_entropy_for_a_prefixed_pass(loop_env):
 
     with patch.object(tnl, "get_log_probs_and_entropy", spy):
         tnl.run_log_probs(
-            _args(), _DataIterator(), [1], lambda b: torch.zeros(1), profiler=_Profiler(), store_prefix="ref_"
+            _args(),
+            _DataIterator(),
+            [1],
+            tnl.LinearStepRunner(lambda b: torch.zeros(1)),
+            profiler=_Profiler(),
+            store_prefix="ref_",
         )
     assert seen["with_entropy"] is False

@@ -2,12 +2,13 @@
 
 ParallelState is what every shared helper in ``training_utils`` reads (data
 iteration, loss normalization, logging), so a backend's only topology
-responsibility is producing one. torchtitan already owns the mesh construction;
-this is a pure mapping over its named meshes.
+responsibility is producing one. torchtitan owns all mesh construction --
+``ParallelDims.from_config`` (with ``data_parallel_shard_degree=-1`` inferring
+the FSDP degree) builds the dims, and this module is a pure mapping over the
+named meshes it exposes.
 """
 
 import logging
-from argparse import Namespace
 
 import torch.distributed as dist
 
@@ -30,56 +31,46 @@ _MESH_TO_FIELD = {
 }
 
 
-def build_parallel_dims(args: Namespace):
-    """Construct titan ParallelDims from miles arguments."""
+def parallel_dims_from_config(parallelism_config):
+    """torchtitan's own dims construction, exactly as Trainer.init_distributed does it."""
+    from miles.backends.torchtitan_utils import compat
+
+    compat.install()
     from torchtitan.distributed import ParallelDims
 
-    world_size = dist.get_world_size()
-    dp_replicate = args.dp_replicate_size
-    non_dp = args.titan_cp_size * args.titan_tp_size * args.titan_pp_size
-    if world_size % (dp_replicate * non_dp):
-        raise ValueError(
-            f"world_size({world_size}) is not divisible by "
-            f"dp_replicate({dp_replicate}) * cp({args.titan_cp_size}) * "
-            f"tp({args.titan_tp_size}) * pp({args.titan_pp_size})"
-        )
-    dp_shard = world_size // (dp_replicate * non_dp)
-
-    return ParallelDims(
-        dp_replicate=dp_replicate,
-        dp_shard=dp_shard,
-        cp=args.titan_cp_size,
-        tp=args.titan_tp_size,
-        pp=args.titan_pp_size,
-        ep=args.titan_ep_size,
-        world_size=world_size,
-    )
+    return ParallelDims.from_config(parallelism_config, dist.get_world_size())
 
 
-def _dp_cp_gloo_group(dp_cp_size: int):
-    """The gloo group covering the DP-CP ranks.
+def _mesh_gloo_group(mesh):
+    """A gloo subgroup congruent with ``mesh``'s process group.
 
-    Only the world-wide gloo group exists (``init_gloo_group`` creates one), and
-    ``GroupInfo`` checks that an attached group's size matches. That holds while
-    DP-CP spans every rank, which is any topology without model parallelism.
-    A narrower DP-CP group would need a matching gloo subgroup, and building one
-    per mesh is a collective every rank has to participate in for every mesh --
-    not yet done, so refuse it rather than attach a mismatched group.
+    Object-based reductions over the DP-CP group need gloo. ``new_group`` is a
+    collective every rank must join for every subgroup, so the groups are
+    enumerated globally: each rank contributes its own member list and all
+    ranks create all distinct groups.
     """
-    if dp_cp_size == dist.get_world_size():
+    my_ranks = dist.get_process_group_ranks(mesh.get_group())
+    if len(my_ranks) == dist.get_world_size():
         return get_gloo_group()
-    raise NotImplementedError(
-        f"torchtitan backend: DP-CP spans {dp_cp_size} of {dist.get_world_size()} ranks, which needs a "
-        "gloo subgroup over those ranks. Model parallelism (--titan-tp-size / --titan-pp-size / "
-        "--titan-ep-size) is not supported yet."
-    )
+
+    all_lists: list = [None] * dist.get_world_size()
+    dist.all_gather_object(all_lists, my_ranks)
+    my_group = None
+    for ranks in sorted({tuple(lst) for lst in all_lists}):
+        group = dist.new_group(list(ranks), backend="gloo")
+        if dist.get_rank() in ranks:
+            my_group = group
+    return my_group
 
 
-def create_titan_parallel_state(parallel_dims) -> ParallelState:
+def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True) -> ParallelState:
     """Map titan's meshes onto ParallelState.
 
     Axes titan leaves at degree 1 have no mesh; they become trivial single-rank
     groups, which is what the shared helpers expect for a disabled dimension.
+    ``is_pp_last_stage`` comes from the trainer's stage placement (interleaved
+    schedules can place the last stage on any rank), and gates whose ranks
+    report loss metrics and log probs.
     """
     rank = dist.get_rank()
     self_group = dist.new_group([rank])
@@ -92,14 +83,13 @@ def create_titan_parallel_state(parallel_dims) -> ParallelState:
             fields[field] = trivial
             continue
         group = mesh.get_group()
-        size = dist.get_world_size(group=group)
         fields[field] = GroupInfo(
             rank=dist.get_rank(group=group),
-            size=size,
+            size=dist.get_world_size(group=group),
             group=group,
             # Shared helpers reduce metrics over the DP-CP group, and some of
             # those reductions are object-based, which needs a gloo group.
-            gloo_group=_dp_cp_gloo_group(size) if field == "intra_dp_cp" else None,
+            gloo_group=_mesh_gloo_group(mesh) if field == "intra_dp_cp" else None,
         )
 
     meshes = {name: parallel_dims.get_mesh(name) for name in ("fsdp",) if parallel_dims.get_optional_mesh(name)}
@@ -115,11 +105,12 @@ def create_titan_parallel_state(parallel_dims) -> ParallelState:
         etp=trivial,
         indep_dp=trivial,
         meshes=meshes,
-        is_pp_last_stage=True,
+        is_pp_last_stage=is_pp_last_stage,
         vpp_size=1,
     )
     logger.info(
         f"[Rank {rank}] titan ParallelState: dp={state.intra_dp.size} dp_cp={state.intra_dp_cp.size} "
-        f"cp={state.cp.size} tp={state.tp.size} pp={state.pp.size} ep={state.ep.size}"
+        f"cp={state.cp.size} tp={state.tp.size} pp={state.pp.size} ep={state.ep.size} "
+        f"pp_last={is_pp_last_stage}"
     )
     return state

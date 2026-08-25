@@ -56,14 +56,10 @@ def execute():
 
     sglang_args = f"--rollout-num-gpus-per-engine {NUM_GPUS} --sglang-decode-log-interval 1000 "
 
-    # torchtitan's only torch-2.11-compatible attention backend is sdpa, which
-    # applies a plain causal mask: a microbatch must hold a single document, so
-    # this run uses fixed micro-batching instead of dynamic packing.
     titan_args = (
         "--train-backend torchtitan "
         "--titan-model-name qwen3 "
         "--titan-model-flavor 0.6B "
-        "--titan-attn-backend sdpa "
         "--titan-seq-len 2048 "
         "--micro-batch-size 1 "
         f"--update-weight-buffer-size {512 * 1024 * 1024} "

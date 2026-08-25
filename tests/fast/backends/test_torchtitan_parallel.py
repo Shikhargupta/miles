@@ -6,7 +6,7 @@ silently normalizes the loss over the wrong group size. Worth pinning even
 though the mapping is short.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -54,21 +54,24 @@ def dist_stub():
     with (
         patch.object(tp.dist, "get_rank", lambda group=None: 0),
         patch.object(tp.dist, "get_world_size", get_world_size),
-        patch.object(tp.dist, "new_group", lambda ranks: "self_group"),
+        patch.object(tp.dist, "new_group", lambda ranks, backend=None: "self_group" if backend is None else f"gloo_sub{tuple(ranks)}"),
+        patch.object(tp.dist, "get_process_group_ranks", lambda group: list(range(sizes.get(group, 1)))),
+        patch.object(tp.dist, "all_gather_object", lambda out, obj, group=None: out.__setitem__(slice(None), [obj] * len(out))),
         patch.object(tp, "get_gloo_group", lambda: "gloo"),
     ):
         yield sizes
 
 
-def _state(dist_stub, meshes: dict[str, int]):
+def _state(dist_stub, meshes: dict[str, int], world: int | None = None, **kwargs):
     for size in meshes.values():
         dist_stub[f"pg(size={size})"] = size
-    # DP-CP must span the world for the world-wide gloo group to be attachable
-    world = meshes.get("loss", 1)
+    world = world if world is not None else meshes.get("loss", 1)
     dist_stub["__world__"] = world
     dist_stub["gloo"] = world
     dist_stub["self_group"] = 1
-    return tp.create_titan_parallel_state(_ParallelDims(meshes))
+    dp_cp = meshes.get("loss", 1)
+    dist_stub[f"gloo_sub{tuple(range(dp_cp))}"] = dp_cp
+    return tp.create_titan_parallel_state(_ParallelDims(meshes), **kwargs)
 
 
 def test_batch_and_loss_meshes_map_to_the_dp_axes(dist_stub):
@@ -94,16 +97,12 @@ def test_model_parallel_axes_are_carried_through(dist_stub):
     assert (state.tp.size, state.pp.size, state.ep.size) == (4, 2, 8)
 
 
-def test_a_dp_cp_group_narrower_than_the_world_is_refused(dist_stub):
-    """Only a world-wide gloo group exists; attaching it to a narrower DP-CP
-    group would trip GroupInfo's size check, so refuse it explicitly instead."""
-    for size in (2, 8):
-        dist_stub[f"pg(size={size})"] = size
-    dist_stub["__world__"] = 8
-    dist_stub["gloo"] = 8
-    dist_stub["self_group"] = 1
-    with pytest.raises(NotImplementedError, match="gloo subgroup"):
-        tp.create_titan_parallel_state(_ParallelDims({"batch": 2, "loss": 2, "tp": 4}))
+def test_a_dp_cp_group_narrower_than_the_world_gets_its_own_gloo_subgroup(dist_stub):
+    """Under model parallelism DP-CP does not span the world, so the world-wide
+    gloo group cannot be attached (GroupInfo checks sizes); a congruent gloo
+    subgroup is built by enumeration instead."""
+    state = _state(dist_stub, {"batch": 2, "loss": 2, "tp": 4}, world=8)
+    assert state.intra_dp_cp.gloo_group == "gloo_sub(0, 1)"
 
 
 def test_the_dp_cp_group_gets_a_gloo_group(dist_stub):
@@ -130,8 +129,8 @@ def test_vpp_is_disabled(dist_stub):
     assert state.is_pp_last_stage is True
 
 
-def test_build_parallel_dims_rejects_an_indivisible_topology():
-    args = MagicMock(dp_replicate_size=3, titan_cp_size=1, titan_tp_size=1, titan_pp_size=1, titan_ep_size=1)
-    with patch.object(tp.dist, "get_world_size", lambda group=None: 8):
-        with pytest.raises(ValueError, match="not divisible"):
-            tp.build_parallel_dims(args)
+def test_pp_last_stage_comes_from_the_trainer_not_the_mesh(dist_stub):
+    """Interleaved schedules can place the last stage on any rank, so the flag
+    is the trainer's stage placement, not a mesh-rank comparison."""
+    state = _state(dist_stub, {"batch": 2, "loss": 2, "pp": 2}, is_pp_last_stage=False)
+    assert state.is_pp_last_stage is False
