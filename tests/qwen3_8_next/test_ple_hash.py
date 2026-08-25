@@ -29,7 +29,7 @@ OFFS = torch.tensor([0, 20000003, 40000026, 60000059, 80000106, 100000165,
                     dtype=torch.long, device="cuda")
 
 sys.path.insert(0, "/data/home/zzeng/repos/miles-qwen4exp")
-from miles_plugins.models.qwen3_8_next.ple_ops import ngram_hash_ids, shift_right_ignore_eos
+from miles_plugins.models.qwen3_8_next.ops.ple_hash import ngram_hash_ids, shift_right_ignore_eos
 
 from sglang.srt.models.qwen4_exp import Qwen4ExpNGramEmbedding
 

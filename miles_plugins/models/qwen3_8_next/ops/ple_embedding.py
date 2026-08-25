@@ -33,7 +33,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from miles_plugins.models.qwen3_8_next.ops.kernel.ple_gather import gather_ple_rows
-from miles_plugins.models.qwen3_8_next.ple_ops import ngram_hash_ids
+from miles_plugins.models.qwen3_8_next.ops.ple_hash import ngram_hash_ids
 
 
 class Qwen38NextFrozenNGramEmbedding(MegatronModule):

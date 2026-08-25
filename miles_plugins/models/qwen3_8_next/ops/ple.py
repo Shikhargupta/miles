@@ -38,7 +38,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops import grouped_gemma_rmsnorm
+from miles_plugins.models.qwen3_8_next.ops.hc import grouped_gemma_rmsnorm
 from miles_plugins.models.qwen3_8_next.ops.ple_embedding import Qwen38NextFrozenNGramEmbedding
 
 

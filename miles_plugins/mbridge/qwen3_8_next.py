@@ -73,10 +73,11 @@ class Qwen38NextBridge(Qwen3_5Bridge):
             "self_attention.indexer.index_qk_proj.weight": [
                 "model.language_model.layers.{layer_number}.self_attn.indexer.index_qk_proj.weight"
             ],
-            "self_attention.indexer.q_layernorm.weight": [
+            # Plain nn.Parameters on our indexer; HF wraps each in a submodule.
+            "self_attention.indexer.q_layernorm": [
                 "model.language_model.layers.{layer_number}.self_attn.indexer.q_layernorm.weight"
             ],
-            "self_attention.indexer.k_layernorm.weight": [
+            "self_attention.indexer.k_layernorm": [
                 "model.language_model.layers.{layer_number}.self_attn.indexer.k_layernorm.weight"
             ],
         }

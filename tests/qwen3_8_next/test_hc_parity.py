@@ -22,7 +22,7 @@ HC, HIDDEN, LOWRANK, EPS = 4, 2560, 320, 1e-6
 S, B = 7, 2
 TOKENS = S * B
 
-from miles_plugins.models.qwen3_8_next.ops import (
+from miles_plugins.models.qwen3_8_next.ops.hc import (
     grouped_gemma_rmsnorm, hc_combine, hc_inject_gate, hc_mix,
 )
 
