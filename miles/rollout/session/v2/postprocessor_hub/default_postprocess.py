@@ -28,12 +28,12 @@ def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> l
     agent_sample_metadata = check_input_metadata(agent_metadata)
 
     # Picker order may change; `node_id` preserves commit order.
-    loss_owner_by_node_id: dict[int, int] = {}
+    owner_by_node_id: dict[int, int] = {}
     for sample in leaf_samples:
         leaf = sample.metadata["leaf"]
         leaf_id = leaf["node_id"]
         for node_id in leaf["path_node_ids"]:
-            loss_owner_by_node_id[node_id] = min(leaf_id, loss_owner_by_node_id.get(node_id, leaf_id))
+            owner_by_node_id[node_id] = min(leaf_id, owner_by_node_id.get(node_id, leaf_id))
 
     processed_samples: list[Sample] = []
     for sample in leaf_samples:
@@ -42,7 +42,7 @@ def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> l
         # Spans index all tokens; `loss_mask` indexes only the response.
         # Clamp when early-stop or truncation shortens the sample.
         for node_id in leaf["path_node_ids"]:
-            if loss_owner_by_node_id[node_id] == leaf["node_id"]:
+            if owner_by_node_id[node_id] == leaf["node_id"]:
                 continue
             completion_start, completion_end = nodes_by_id[node_id]["completion_span"]
             mask_start = max(completion_start - response_start, 0)
