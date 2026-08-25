@@ -199,16 +199,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--stream-optimizer-state-to-disk",
                 action="store_true",
                 help=(
-                    "Hold optimizer state in files on node-local NVMe, for when it does not fit "
-                    "the GPU *while the step runs* -- --offload-train-target=disk cannot help "
-                    "there, since everything is resident again by the time the step launches.\n"
-                    "adam: streams fp32 main params and moments through per-bucket files, bounding "
-                    "GPU residency to one bucket. Requires the distributed optimizer; bit-identical "
-                    "to keeping state on GPU. Excludes --offload-optimizer-states and "
-                    "--optimizer-cpu-offload.\n"
-                    "dist_muon: the disk backend for --chunked-optimizer-state-offload, so pass "
-                    "that plus a non-zero --optimizer-state-offload-fraction. Keeps the state out "
-                    "of non-reclaimable host memory. --optimizer-cpu-offload is Adam-only."
+                    "Hold optimizer state in files on node-local NVMe, for when it does not fit the "
+                    "GPU *while the step runs*; --offload-train-target=disk cannot help there.\n"
+                    "adam: streams fp32 main params and moments through per-bucket files, one bucket "
+                    "resident at a time. Requires the distributed optimizer, excludes "
+                    "--offload-optimizer-states and --optimizer-cpu-offload.\n"
+                    "dist_muon: the disk backend for --chunked-optimizer-state-offload, so pass that "
+                    "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
+                    "Adam-only."
                 ),
             )
             parser.add_argument(
@@ -240,9 +238,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "its own subdirectory). Should be fast local NVMe (e.g. /scratch); a tmpfs "
                     "mount, which /tmp is on many systems, keeps the data in RAM and defeats both. "
                     "Files are per-process and overwritten in place every step (bounded size); "
-                    "defaults to $SCRATCH/miles_train_offload_<uid>. The Muon optimizer-state "
-                    "backend unlinks its files after mapping them, so its footprint is visible in "
-                    "df but not du."
+                    "defaults to $SCRATCH/miles_train_offload_<uid>. Muon's optimizer-state buffers "
+                    "are unlinked once mapped, so their footprint shows in df but not du."
                 ),
             )
             parser.add_argument(

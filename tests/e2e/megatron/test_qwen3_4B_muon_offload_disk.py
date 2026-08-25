@@ -1,15 +1,12 @@
 """E2E test for dist_muon with its optimizer state on disk.
 
-Same colocate RL loop as test_qwen3_4B_offload_disk_stream.py, but with --optimizer
-dist_muon: Muon's momentum buffers ride Megatron's chunked offloader, whose host buffers
-this run redirects to node-local files. Completing the run is only half the check --
-a run where the disk backend silently never engaged (rebind missed the consuming module,
-plugin import swallowed) trains just as happily against pinned host memory, so `execute`
-also asserts every rank logged real disk-backed steps.
+The colocate loop from test_qwen3_4B_offload_disk_stream.py with --optimizer dist_muon.
+Completing the run is only half the check: if the disk backend silently never engaged, the
+run trains just as happily against pinned host memory, so `execute` also asserts every rank
+logged real disk-backed steps.
 
-At this rollout size every sample truncates, so reward, ppo_kl and grad_norm all sit at
-zero and the metric gates below cannot catch a regression on their own -- same as the Adam
-test this mirrors. The disk-backed-step assertion is what actually guards the feature.
+At this rollout size every sample truncates, so the metric gates below sit at zero and
+cannot catch a regression on their own -- as in the Adam test this mirrors.
 """
 
 import glob
@@ -45,11 +42,7 @@ def prepare():
 
 
 def _assert_disk_backed_steps():
-    """Every rank must have run optimizer steps against file-backed state.
-
-    The offloader logs one `Muon disk state step: ...` line per step from each training
-    actor, so the number of worker logs carrying it equals the number of ranks.
-    """
+    """Every rank must have run optimizer steps against file-backed state."""
     logs = glob.glob("/tmp/ray/session_latest/logs/worker-*")
     assert logs, "no Ray worker logs to check for the disk-backed state path"
 

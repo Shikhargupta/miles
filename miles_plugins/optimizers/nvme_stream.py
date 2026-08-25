@@ -21,10 +21,17 @@ they reach this class through four methods:
 
 Both directory arguments are checkpoint *bases*; the per-rank layout underneath is
 this file's business, matching the layout of the live scratch directory.
+
+Muon reaches disk by a different route. Its state already rides Megatron's
+``ChunkedOptimizerStateOffloader``, whose only tie to host memory is one allocator, so
+``setup_muon_state_on_disk`` swaps that allocator for file-backed tensors and leaves the
+rest of the offloader alone. Those buffers are unlinked once mapped, so their footprint
+shows up in ``df`` but not ``du``.
 """
 
 import atexit
 import errno
+import itertools
 import json
 import logging
 import os
@@ -87,6 +94,17 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
         if n <= 0:
             raise OSError(f"short {op.__name__} ({n}) on optimizer state file at offset {offset + done}")
         done += n
+
+
+_next_index = itertools.count().__next__
+
+
+def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
+    nbytes = tensor.numel() * tensor.element_size()
+    path = os.path.join(directory, f"state_{os.getpid()}_{_next_index():06d}.bin")
+    storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=max(nbytes, 1))
+    os.unlink(path)
+    return torch.empty(0, dtype=tensor.dtype, device="cpu").set_(storage).view(tensor.size())
 
 
 def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -> list[list[_Entry]]:
@@ -450,7 +468,7 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
     """
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
-    dir_root = os.path.join(args.offload_train_disk_dir, "optimizer_state")
+    dir_root = _state_dir_root(args)
     _purge_rank_dir(dir_root)
     for dist_opt in optimizer.chained_optimizers:
         assert isinstance(
@@ -468,7 +486,43 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
         _bind(dist_opt, store)
 
 
-def _purge_rank_dir(dir_root: str) -> None:
+def setup_muon_state_on_disk(args) -> None:
+    """Back the chunked offloader's host buffers with files, for Muon's optimizer state.
+
+    Must run before the optimizer is built, which is when the offloader is constructed.
+    """
+    from megatron.core.optimizer import optimizer as consuming_module
+    from megatron.core.optimizer.cpu_offloading import chunked_optimizer_state_offload as defining_module
+
+    base = defining_module.ChunkedOptimizerStateOffloader
+    if base.__name__ == "DiskOptimizerStateOffloader":
+        return
+    rank_dir = _purge_rank_dir(_state_dir_root(args))
+
+    class DiskOptimizerStateOffloader(base):
+        state_dir = rank_dir
+        _disk_bytes = 0
+
+        def _new_cpu_buffer(self, tensor: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+            buffer = _disk_backed_like(tensor, self.state_dir)
+            self._disk_bytes += buffer.numel() * buffer.element_size()
+            return buffer
+
+        def step(self) -> None:  # type: ignore[override]
+            super().step()
+            logger.info(f"Muon disk state step: {self._disk_bytes / 1024**3:.2f} GB file-backed")
+
+    # optimizer.py imported the name directly, so rebinding only the defining module is a no-op.
+    defining_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
+    consuming_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
+    logger.info(f"Muon optimizer state on disk: buffers backed by files under {rank_dir}")
+
+
+def _state_dir_root(args) -> str:
+    return os.path.join(args.offload_train_disk_dir, "optimizer_state")
+
+
+def _purge_rank_dir(dir_root: str) -> str:
     """Drop everything this rank left behind, before any store claims its own path.
 
     A store only removes the exact path it is about to use, so state written under a
@@ -482,6 +536,7 @@ def _purge_rank_dir(dir_root: str) -> None:
     rank_dir = os.path.join(dir_root, f"rank{torch.distributed.get_rank():05d}")
     shutil.rmtree(rank_dir, ignore_errors=True)
     os.makedirs(rank_dir, exist_ok=True)
+    return rank_dir
 
 
 def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> None:
