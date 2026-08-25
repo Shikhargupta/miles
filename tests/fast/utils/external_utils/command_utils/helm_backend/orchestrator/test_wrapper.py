@@ -26,7 +26,7 @@ def _no_keep_alive(monkeypatch):
 @pytest.fixture(autouse=True)
 def slept(monkeypatch):
     waits = []
-    monkeypatch.setattr(orchestrator_wrapper.time, "sleep", lambda seconds: waits.append(seconds))
+    monkeypatch.setattr(orchestrator_wrapper, "sleep", lambda seconds: waits.append(seconds))
     return waits
 
 

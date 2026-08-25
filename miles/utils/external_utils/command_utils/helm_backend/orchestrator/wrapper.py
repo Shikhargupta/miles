@@ -4,8 +4,8 @@ import argparse
 import logging
 import signal
 import sys
-import time
 from dataclasses import dataclass
+from time import sleep
 from types import FrameType
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Kubectl
@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _keep_alive() -> None:
     while True:
-        time.sleep(_KEEP_ALIVE_POLL_SECONDS)
+        sleep(_KEEP_ALIVE_POLL_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,7 @@ class _Runner:
         for attempt, sleep_seconds in enumerate(_UNINSTALL_JOB_RETRY_SLEEPS, start=1):
             if self._create_uninstall_job_once(attempt=attempt):
                 return
-            time.sleep(sleep_seconds)
+            sleep(sleep_seconds)
 
         logger.error(
             f"Gave up creating the uninstall job of {self.uninstall_manifest} after "
