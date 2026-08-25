@@ -20,7 +20,7 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.transfer import derive_replica_position
+from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -100,7 +100,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self._connection_stale = False
         self._group_name = "miles-disk-delta"
         placement = self._hf_weight_iterator.placement
-        replica_rank, _ = derive_replica_position(get_parallel_state(), placement)
+        replica_rank, _ = get_data_replica_rank_and_size(get_parallel_state(), placement)
         self.is_sender = replica_rank == 0
         self.is_lora_sender = self.is_sender and (placement.gather_pp or get_parallel_state().pp.rank == 0)
 

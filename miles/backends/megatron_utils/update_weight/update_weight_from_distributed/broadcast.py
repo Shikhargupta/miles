@@ -11,7 +11,7 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.transfer import derive_replica_position
+from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils.distributed_utils import init_process_group
 
 from miles.utils.lora import LORA_ADAPTER_NAME
@@ -79,7 +79,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
 
         # One sender per replica set; one NCCL group (sender + all engines) per shard.
         placement = self._hf_weight_iterator.placement
-        replica_rank, _ = derive_replica_position(get_parallel_state(), placement)
+        replica_rank, _ = get_data_replica_rank_and_size(get_parallel_state(), placement)
         self.is_sender = replica_rank == 0
         shard = 0 if placement.gather_pp else get_parallel_state().pp.rank
         self.is_lora_sender = self.is_sender and shard == 0
