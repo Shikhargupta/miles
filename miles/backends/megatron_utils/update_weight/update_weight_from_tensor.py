@@ -13,12 +13,12 @@ from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import build_lora_sync_config, lora_base_cpu_backup_enabled
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update import session
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
 from .hf_weight_iterator import get_hf_weight_iterator
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -208,11 +208,9 @@ class UpdateWeightFromTensor:
         )
 
         if rank == 0:
-            mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            session.pause_engines(self.args, self.rollout_engines)
             if not skip_base_sync:
-                begin_weight_update(self.rollout_engines, weight_update_selector(self.args))
+                session.begin_weight_update(self.rollout_engines, session.weight_update_selector(self.args))
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
@@ -221,7 +219,7 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.iter_hf_base_weights(megatron_local_weights):
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
-                _check_weight_sync_results(results, is_lora=False)
+                session.check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
 
             mm_tower_tensors = self._mm_tower_named_tensors()
@@ -231,7 +229,7 @@ class UpdateWeightFromTensor:
                 ]
                 refs, long_lived_tensors = self._send_base_params(mm_tower_tensors)
                 results = ray.get(refs)
-                _check_weight_sync_results(results, is_lora=False)
+                session.check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors, mm_tower_tensors
 
         if self.is_lora:
@@ -239,7 +237,7 @@ class UpdateWeightFromTensor:
 
             refs, long_lived_tensors = self._send_lora_params(lora_named_tensors)
             results = ray.get(refs)
-            _check_weight_sync_results(results, is_lora=True)
+            session.check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
             del lora_named_tensors
             torch.cuda.ipc_collect()
@@ -253,8 +251,8 @@ class UpdateWeightFromTensor:
         if rank == 0:
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
-                end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+                session.end_weight_update(self.rollout_engines)
+            session.resume_engines(self.rollout_engines)
         dist.barrier(group=get_gloo_group())
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
@@ -307,7 +305,7 @@ class UpdateWeightFromTensor:
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            selector=weight_update_selector(self.args),
+            selector=session.weight_update_selector(self.args),
             weight_version=self.weight_version,
         )
         if self.use_distribute and self._is_distributed_src_rank:
@@ -317,7 +315,7 @@ class UpdateWeightFromTensor:
                 self.weight_version,
                 self.distributed_rollout_engines,
                 hf_named_tensors,
-                selector=weight_update_selector(self.args),
+                selector=session.weight_update_selector(self.args),
             )
             if refs_distributed:
                 refs = (refs or []) + refs_distributed
@@ -332,7 +330,7 @@ class UpdateWeightFromTensor:
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            selector=weight_update_selector(self.args),
+            selector=session.weight_update_selector(self.args),
             lora_config=self._lora_config,
             lora_name=LORA_ADAPTER_NAME,
             lora_loaded=self._lora_loaded,

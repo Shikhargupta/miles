@@ -2,13 +2,11 @@ import inspect
 import logging
 import re
 from argparse import Namespace
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 
-import ray
 import torch
 import torch.distributed as dist
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -248,48 +246,3 @@ def _named_params_and_buffers_global(
                 layer_idx, rest = match.groups()
                 layer_idx = int(layer_idx) + layer_offset
                 yield f"module.module.decoder.layers.{layer_idx}.{rest}", buffer
-
-
-def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
-    """Open a weight-update session on the selected rollout engines (restore packed weights)."""
-    ray.get([engine.begin_weight_update.remote(selector=selector) for engine in rollout_engines])
-
-
-def weight_update_selector(args) -> str:
-    """Exclude the draft only when the trainer provably has no MTP block to send it."""
-    if (
-        getattr(args, "sglang_speculative_algorithm", None)
-        and not getattr(args, "mtp_num_layers", None)
-        and getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
-    ):
-        return "target"
-    return "all"
-
-
-def end_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Close the weight-update session (post-load + quant post-process on the full model)."""
-    ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
-
-
-def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
-    """Validate return values from rollout engine weight-sync RPCs.
-
-    Raises RuntimeError if any engine reports failure, preventing silent
-    failures when SGLang versions are incompatible.
-    """
-    sync_type = "LoRA" if is_lora else "Base model"
-    for result in results:
-        if isinstance(result, Mapping):
-            success = result.get("success")
-            error_msg = result.get("error_message") or result.get("error") or "unknown error"
-        elif hasattr(result, "success"):
-            success = result.success
-            error_msg = getattr(result, "error_message", "unknown error")
-        else:
-            continue
-
-        if success is False:
-            raise RuntimeError(
-                f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
-                f"Check SGLang version compatibility."
-            )

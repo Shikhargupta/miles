@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from miles.backends.megatron_utils.update_weight.common import _check_weight_sync_results
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
     UpdateWeightFromDistributed,
 )
@@ -25,6 +24,7 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.
     DistBucketedWeightUpdateMixin,
 )
 from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
@@ -70,31 +70,31 @@ def _make_args(**overrides):
 
 
 # ---------------------------------------------------------------------------
-# _check_weight_sync_results
+# check_weight_sync_results
 # ---------------------------------------------------------------------------
 
 
 class TestCheckWeightSyncResults:
-    """Validate that _check_weight_sync_results raises on engine failures."""
+    """Validate that check_weight_sync_results raises on engine failures."""
 
     def test_success_results_pass(self):
         results = [_FakeEngineResult(success=True)]
-        _check_weight_sync_results(results, is_lora=True)
+        check_weight_sync_results(results, is_lora=True)
 
     def test_failure_result_raises_for_lora(self):
         results = [_FakeEngineResult(success=False, error_message="incompatible format")]
         with pytest.raises(RuntimeError, match="LoRA weight sync failed"):
-            _check_weight_sync_results(results, is_lora=True)
+            check_weight_sync_results(results, is_lora=True)
 
     def test_failure_result_raises_for_base(self):
         results = [_FakeEngineResult(success=False, error_message="bad version")]
         with pytest.raises(RuntimeError, match="Base model weight sync failed"):
-            _check_weight_sync_results(results, is_lora=False)
+            check_weight_sync_results(results, is_lora=False)
 
     def test_plain_tuple_results_pass(self):
         """Non-dataclass results (e.g. (True, 'Success') tuples) should not raise."""
         results = [(True, "Success")]
-        _check_weight_sync_results(results, is_lora=False)
+        check_weight_sync_results(results, is_lora=False)
 
     def test_mixed_results_raises_on_first_failure(self):
         results = [
@@ -102,7 +102,7 @@ class TestCheckWeightSyncResults:
             _FakeEngineResult(success=False, error_message="oops"),
         ]
         with pytest.raises(RuntimeError, match="oops"):
-            _check_weight_sync_results(results, is_lora=True)
+            check_weight_sync_results(results, is_lora=True)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +404,7 @@ class TestBroadcastLoraImplementation:
 
     @staticmethod
     def _run(fake_self, named_tensors):
-        # NB: the real _check_weight_sync_results runs (not patched), so an engine
+        # NB: the real check_weight_sync_results runs (not patched), so an engine
         # returning success=False propagates as RuntimeError exactly as in prod.
         with (
             patch(f"{_BROADCAST_MODULE}.dist") as dist_mock,

@@ -7,13 +7,13 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.training_utils.weight_update import session
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.timer import timer
 
 from ...lora_utils import build_lora_sync_config
-from ..common import begin_weight_update, end_weight_update, weight_update_selector
 from ..hf_weight_iterator import get_hf_weight_iterator
 
 logger = logging.getLogger(__name__)
@@ -115,28 +115,19 @@ class DistBucketedWeightUpdateMixin:
         """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
 
     def _pause_and_prepare_engines(self) -> None:
-        """Pause rollout engines, flush cache, and open the weight-update session."""
-        self._weight_update_selector = weight_update_selector(self.args)
+        """Pause rollout engines and open the weight-update session."""
+        self._weight_update_selector = session.weight_update_selector(self.args)
         if dist.get_rank() == 0:
-            mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            if mode != "in_place":
-                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-
-            begin_weight_update(self.rollout_engines, self._weight_update_selector)
+            session.pause_engines(self.args, self.rollout_engines)
+            session.begin_weight_update(self.rollout_engines, self._weight_update_selector)
 
     def _finalize_and_resume_engines(self) -> None:
         """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
-            # unify update weight version here to cover both full param and lora update
-            ray.get(
-                [
-                    engine.update_weight_version.remote(weight_version=str(self.weight_version))
-                    for engine in self.rollout_engines
-                ]
-            )
-            end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            # one version stamp covers both full-param and LoRA updates
+            session.set_weight_version(self.rollout_engines, self.weight_version)
+            session.end_weight_update(self.rollout_engines)
+            session.resume_engines(self.rollout_engines)
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear ``update_weight_metrics``. Drained by the actor onto the step log;

@@ -11,11 +11,11 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.transfer import derive_replica_position
 from miles.utils.distributed_utils import init_process_group
-
 from miles.utils.lora import LORA_ADAPTER_NAME
-from ..common import _check_weight_sync_results
+
 from .mixin import DistBucketedWeightUpdateMixin
 
 
@@ -149,7 +149,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         for handle in handles:
             handle.wait()
 
-        _check_weight_sync_results(ray.get(refs), is_lora=True)
+        check_weight_sync_results(ray.get(refs), is_lora=True)
 
     def _update_multi_lora_weight_implementation(
         self,
@@ -185,7 +185,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         for handle in handles:
             handle.wait()
 
-        _check_weight_sync_results(ray.get(refs), is_lora=True)
+        check_weight_sync_results(ray.get(refs), is_lora=True)
 
 
 def connect_rollout_engines_from_distributed(
