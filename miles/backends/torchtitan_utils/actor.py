@@ -73,8 +73,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
             self.train_parallel_config = {"dp_size": get_parallel_state().intra_dp.size}
             return 0
 
-        if dist.get_rank() == 0:
-            init_tracking(args, primary=False)
         self.prof = TrainProfiler(args)
 
         assets = load_model_assets(args)
@@ -88,6 +86,15 @@ class TorchtitanTrainRayActor(TrainRayActor):
             )
         )
         self.train_parallel_config = {"dp_size": get_parallel_state().intra_dp.size}
+
+        # Tracking must live on the rank that produces the training metrics:
+        # the loss (and with it ppo_kl and the train-rollout mismatch numbers)
+        # exists only on the last pipeline stage, and the shared log helpers
+        # gate on exactly this predicate. Global rank 0 is a FIRST-stage rank
+        # under PP, so keying tracking off it loses every train metric.
+        state = get_parallel_state()
+        if state.effective_dp_cp.rank == 0 and state.tp.rank == 0 and state.is_pp_last_stage:
+            init_tracking(args, primary=False)
 
         # Fresh runs fall through to the HF assets load (from_hf via the
         # family's adapter); a resumed run finds the native checkpoint under
