@@ -254,9 +254,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.args,
                 self.model,
                 weights_getter=lambda: self.weights_backuper.get("actor"),
-                model_name=type(self.hf_config).__name__.lower()
-                if self.args.model_name is None
-                else self.args.model_name,
+                model_name=(
+                    type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name
+                ),
                 quantization_config=getattr(self.hf_config, "quantization_config", None),
                 is_lora=is_lora,
             )
@@ -275,9 +275,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.args,
                 self.model,
                 weights_getter=lambda: self.weights_backuper.get("actor"),
-                model_name=type(self.hf_config).__name__.lower()
-                if self.args.model_name is None
-                else self.args.model_name,
+                model_name=(
+                    type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name
+                ),
                 quantization_config=getattr(self.hf_config, "quantization_config", None),
                 iterator_factory=get_hf_weight_iterator,
                 parallel_state=get_parallel_state(),
