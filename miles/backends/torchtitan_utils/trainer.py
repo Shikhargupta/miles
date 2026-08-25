@@ -330,9 +330,12 @@ class TitanTrainer(Trainer):
             if self.parallel_dims.pp_enabled:
                 # The pipeline stages' send/recv buffers are shape-inferred once
                 # and reused, so every microbatch of the whole run must have one
-                # shape: pad to the configured sequence length (zero positions,
-                # the same convention miles' get_batch pads with -- the padding
-                # becomes isolated single-token documents the loss never reads).
+                # shape: pad to the configured sequence length. The pad region
+                # gets consecutive positions starting at 0, making it a single
+                # extra document the loss never reads -- all-zero positions
+                # (miles' usual pad fill) would read as thousands of one-token
+                # documents, which blows up the per-document state allocation
+                # of linear-attention kernels (qwen3_5's GatedDeltaNet).
                 target = self.config.training.seq_len
                 if tokens.shape[1] > target:
                     raise ValueError(
@@ -342,7 +345,8 @@ class TitanTrainer(Trainer):
                 pad = target - tokens.shape[1]
                 if pad:
                     tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
-                    positions = torch.nn.functional.pad(positions, (0, pad), value=0)
+                    pad_positions = torch.arange(pad, device=positions.device, dtype=positions.dtype)
+                    positions = torch.cat([positions, pad_positions.unsqueeze(0)], dim=1)
             return tokens, positions
 
         input_dicts = []
