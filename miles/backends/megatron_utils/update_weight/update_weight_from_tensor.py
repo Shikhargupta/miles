@@ -61,7 +61,7 @@ class UpdateWeightFromTensor:
         self._hf_weight_iterator = get_hf_weight_iterator(
             args,
             model,
-            required_placement=WeightUpdatePlacement.FULL,
+            required_placement=WeightUpdatePlacement(gather_pp=True),
             model_name=model_name,
             quantization_config=quantization_config,
         )

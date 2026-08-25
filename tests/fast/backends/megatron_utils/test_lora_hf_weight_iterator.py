@@ -22,9 +22,11 @@ class TestHfWeightIteratorFactory:
             update_weight_buffer_size=1,
         )
 
-    def _create(self, mode, required_placement=WeightUpdatePlacement.FULL):
+    def _create(self, mode, required_placement=None):
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 
+        if required_placement is None:
+            required_placement = WeightUpdatePlacement(gather_pp=True)
         return get_hf_weight_iterator(
             self._make_args(mode),
             [MagicMock()],
@@ -51,14 +53,15 @@ class TestHfWeightIteratorFactory:
         with pytest.raises(KeyError):
             self._create("invalid_mode")
 
-    def test_forced_placement_resolves_keep_pp_to_full(self):
-        """Both megatron implementations gather every dim today, so a KEEP_PP
-        requirement must resolve to FULL."""
+    def test_forced_placement_resolves_to_full_gather(self):
+        """Both megatron implementations gather every dim today, so a
+        gather_pp=False requirement must resolve to a full gather."""
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 
-        assert HfWeightIteratorBridge.forced_placement == WeightUpdatePlacement.FULL
-        assert HfWeightIteratorDirect.forced_placement == WeightUpdatePlacement.FULL
+        full = WeightUpdatePlacement(gather_pp=True)
+        assert HfWeightIteratorBridge.forced_placement == full
+        assert HfWeightIteratorDirect.forced_placement == full
 
         captured = {}
 
@@ -66,5 +69,5 @@ class TestHfWeightIteratorFactory:
             captured["placement"] = placement
 
         with patch.object(HfWeightIteratorBridge, "__init__", _capture_init):
-            self._create("bridge", required_placement=WeightUpdatePlacement.KEEP_PP)
-        assert captured["placement"] == WeightUpdatePlacement.FULL
+            self._create("bridge", required_placement=WeightUpdatePlacement(gather_pp=False))
+        assert captured["placement"] == full

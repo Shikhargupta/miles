@@ -35,20 +35,15 @@ SAMPLE_BASE_ONLY_WEIGHTS = [
 
 
 class TestWeightUpdatePlacement:
-    def test_constants(self):
-        assert WeightUpdatePlacement.FULL == WeightUpdatePlacement(gather_pp=True, gather_tp=True, gather_ep=True)
-        assert WeightUpdatePlacement.KEEP_PP == WeightUpdatePlacement(gather_pp=False, gather_tp=True, gather_ep=True)
-
     def test_resolve_without_forced_returns_required(self):
-        assert resolve_placement(WeightUpdatePlacement.KEEP_PP, None) == WeightUpdatePlacement.KEEP_PP
+        required = WeightUpdatePlacement(gather_pp=False)
+        assert resolve_placement(required, None) == required
 
     def test_resolve_joins_gathered_dims(self):
-        assert (
-            resolve_placement(WeightUpdatePlacement.KEEP_PP, WeightUpdatePlacement.FULL) == WeightUpdatePlacement.FULL
-        )
-        assert (
-            resolve_placement(WeightUpdatePlacement.FULL, WeightUpdatePlacement.KEEP_PP) == WeightUpdatePlacement.FULL
-        )
+        keep_pp = WeightUpdatePlacement(gather_pp=False)
+        full = WeightUpdatePlacement(gather_pp=True)
+        assert resolve_placement(keep_pp, full) == full
+        assert resolve_placement(full, keep_pp) == full
 
 
 class _StubIterator(HfWeightIteratorBase):
@@ -58,7 +53,7 @@ class _StubIterator(HfWeightIteratorBase):
         super().__init__(
             Namespace(),
             [],
-            placement=WeightUpdatePlacement.FULL,
+            placement=WeightUpdatePlacement(gather_pp=True),
             model_name="stub",
             quantization_config=None,
         )

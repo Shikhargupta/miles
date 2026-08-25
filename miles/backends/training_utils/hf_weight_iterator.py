@@ -35,13 +35,6 @@ class WeightUpdatePlacement:
     gather_tp: bool = True
     gather_ep: bool = True
 
-    FULL: ClassVar["WeightUpdatePlacement"]
-    KEEP_PP: ClassVar["WeightUpdatePlacement"]
-
-
-WeightUpdatePlacement.FULL = WeightUpdatePlacement(gather_pp=True)
-WeightUpdatePlacement.KEEP_PP = WeightUpdatePlacement(gather_pp=False)
-
 
 def resolve_placement(required: WeightUpdatePlacement, forced: WeightUpdatePlacement | None) -> WeightUpdatePlacement:
     """Join of the protocol's required placement and the iterator's forced one:

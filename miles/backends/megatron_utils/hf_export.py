@@ -63,7 +63,7 @@ def export_hf_model_direct(
     iterator = HfWeightIteratorDirect(
         args,
         model,
-        placement=WeightUpdatePlacement.FULL,
+        placement=WeightUpdatePlacement(gather_pp=True),
         model_name=model_name,
         quantization_config=quantization_config,
     )

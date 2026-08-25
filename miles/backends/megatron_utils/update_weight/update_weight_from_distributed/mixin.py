@@ -88,11 +88,11 @@ class DistBucketedWeightUpdateMixin:
             )
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
-            # KEEP_PP is the distributed protocols' true requirement; bridge forces FULL today.
+            # The distributed protocols only need TP/EP gathered; bridge still forces a full gather.
             self._hf_weight_iterator = get_hf_weight_iterator(
                 args,
                 model,
-                required_placement=WeightUpdatePlacement.KEEP_PP,
+                required_placement=WeightUpdatePlacement(gather_pp=False),
                 model_name=model_name,
                 quantization_config=quantization_config,
             )

@@ -14,7 +14,7 @@ from .common import get_atomic_update_groups
 
 class HfWeightIteratorBridge(HfWeightIteratorBase):
     # megatron-bridge gathers every parallel dim internally.
-    forced_placement = WeightUpdatePlacement.FULL
+    forced_placement = WeightUpdatePlacement(gather_pp=True)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
