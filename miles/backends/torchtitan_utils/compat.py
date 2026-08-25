@@ -6,8 +6,8 @@ two. Each shim here backports a small upstream torch fix and is a no-op once
 the running torch already carries the upstream form -- so bumping torch
 retires shims without code changes here.
 
-The schedule-API gap (nightly ``step(arg_mbs=...)`` vs 2.13's whole-batch
-``step()``) is bridged in the engine instead, where the schedule object lives.
+``install()`` runs before any torchtitan object is built, since two of the three
+shims patch classes torchtitan instantiates during construction.
 """
 
 import inspect
