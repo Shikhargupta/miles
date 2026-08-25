@@ -1,15 +1,14 @@
 """Megatron implementations' shared base and factory for the backend-neutral
 HF weight iterator API."""
 
-import math
 from abc import abstractmethod
 from argparse import Namespace
 from collections.abc import Sequence
 
 import torch
-import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.gather import broadcast_from_owners
 from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     HfWeightIteratorBase,
     WeightUpdatePlacement,
@@ -22,7 +21,11 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def _export_lora_named_tensors(self, adapter):
         # Both megatron exporters gather TP/EP but not PP.
-        return _gather_pp_full_adapter(self._export_pp_local_lora(adapter))
+        named_tensors = self._export_pp_local_lora(adapter)
+        pp = get_parallel_state().pp
+        if pp.size == 1:
+            return named_tensors
+        return broadcast_from_owners(named_tensors, pp.group)
 
     @abstractmethod
     def _export_pp_local_lora(self, adapter) -> list[tuple[str, torch.Tensor]]:
@@ -54,42 +57,3 @@ def get_hf_weight_iterator(
         model_name=model_name,
         quantization_config=quantization_config,
     )
-
-
-def _gather_pp_full_adapter(
-    hf_named_tensors: Sequence[tuple[str, torch.Tensor]],
-) -> list[tuple[str, torch.Tensor]]:
-    """Gather the complete adapter onto every PP rank."""
-    pp = get_parallel_state().pp
-    if pp.size == 1:
-        return list(hf_named_tensors)
-    pp_rank = pp.rank
-    global_ranks = dist.get_process_group_ranks(pp.group)
-    device = torch.cuda.current_device()
-
-    local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
-    all_meta: list = [None] * pp.size
-    dist.all_gather_object(all_meta, local_meta, group=pp.group)
-
-    local_by_name = {n: t for n, t in hf_named_tensors}
-    merged: dict[str, torch.Tensor] = {}
-    for src_pp, meta in enumerate(all_meta):
-        by_dtype: dict = {}
-        for n, shape, dtype in meta:
-            by_dtype.setdefault(dtype, []).append((n, shape))
-        for dtype, entries in by_dtype.items():
-            numel = sum(math.prod(shape) for _, shape in entries)
-            flat = torch.empty(numel, dtype=dtype, device=device)
-            if src_pp == pp_rank:
-                off = 0
-                for n, shape in entries:
-                    k = math.prod(shape)
-                    flat[off : off + k].copy_(local_by_name[n].reshape(-1))
-                    off += k
-            dist.broadcast(flat, src=global_ranks[src_pp], group=pp.group)
-            off = 0
-            for n, shape in entries:
-                k = math.prod(shape)
-                merged[n] = flat[off : off + k].view(shape)
-                off += k
-    return sorted(merged.items())
