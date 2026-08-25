@@ -1,0 +1,225 @@
+"""Bridge for Qwen3.8-Next (HF ``architectures: [Qwen4ExpForConditionalGeneration]``).
+
+Subclasses ``Qwen3_5Bridge`` to mirror sglang, where the model is literally
+``Qwen4ExpModel(Qwen3_5ForCausalLM)`` wrapped in
+``Qwen4ExpForConditionalGeneration(Qwen3VLForConditionalGeneration)``. Everything
+Qwen3.5 already maps carries over unchanged: the 3:1 linear/full attention split,
+the fused 3-D MoE experts, the shared expert and its gate, MTP.
+
+What Qwen3.8-Next adds, all verified against the 1658-tensor safetensors index of
+Qwen/Qwen3.8-Flash-Next:
+
+  * **Hyper-Connection**, two per layer (``attn_hyper_connection`` before
+    attention, ``mlp_hyper_connection`` before the MLP) plus one model-level
+    ``hyper_connection_mixer`` contracting n*C -> C before the LM head.
+  * **PLE** on exactly one layer (index 1 -- ``ple_layer_ids`` is 1-based, see
+    ``_ple_layer_ids``), including a 102 GB n-gram table sharded 128 ways.
+  * a sparse **indexer** on the full-attention layers.
+
+And what it *removes*, which matters more than what it adds:
+
+  * no ``input_layernorm`` and no ``post_attention_layernorm`` anywhere (0 of each
+    in the index), because each HC's ``hc_norm`` is the pre-block norm;
+  * no final norm either -- there is no ``model.language_model.norm.weight``,
+    because the final mixer's ``hc_norm`` plays that role.
+
+So the inherited entries for those have to be popped, not left to fail: mapping a
+nonexistent HF key makes the loader raise on a missing tensor, and a spec that
+keeps the norms would leave them at init values and quietly wreck the forward.
+
+The mcore names below are the plain ``nn.Parameter`` attributes on the HC module
+(``hc_norm_weight``), while HF stores each as a submodule's ``.weight``
+(``hc_norm.weight``). Translating is the bridge's job; renaming the Megatron
+params to match HF would mean inventing submodules that hold a single tensor.
+"""
+
+import torch
+from mbridge.core import register_model
+
+from miles_plugins.mbridge.qwen3_5 import Qwen3_5Bridge
+
+
+@register_model(["qwen3.8_next", "qwen3_8_next", "qwen4_exp"])
+class Qwen38NextBridge(Qwen3_5Bridge):
+    """Weight mapping + Megatron config for Qwen3.8-Next."""
+
+    _DIRECT_MAPPING = Qwen3_5Bridge._DIRECT_MAPPING.copy()
+
+    # Qwen3.5 maps this to model.language_model.norm.weight, which Qwen3.8-Next
+    # does not have -- the final mixer's hc_norm is the final norm.
+    _DIRECT_MAPPING.pop("decoder.final_layernorm.weight", None)
+
+    # The final contraction lives in TransformerBlockSubmodules.hc_head_contraction,
+    # filled with Qwen38NextHCHeadContraction by the spec, so its parameters are
+    # under decoder.hc_head_contraction.
+    _DIRECT_MAPPING.update(
+        {
+            "decoder.hc_head_contraction.hc_norm_weight": "model.language_model.hyper_connection_mixer.hc_norm.weight",
+            "decoder.hc_head_contraction.input_mix_weight_down": "model.language_model.hyper_connection_mixer.input_mix_weight_down.weight",
+            "decoder.hc_head_contraction.input_mix_weight_up": "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight",
+        }
+    )
+
+    _ATTENTION_MAPPING = Qwen3_5Bridge._ATTENTION_MAPPING.copy()
+
+    # Qwen3.5 fuses the pre-attention norm into linear_qkv, producing
+    # self_attention.linear_qkv.layer_norm_weight. There is nothing to fill it
+    # with here, and the spec correspondingly stops asking TE to fuse it.
+    _ATTENTION_MAPPING.pop("self_attention.linear_qkv.layer_norm_weight", None)
+    _ATTENTION_MAPPING.pop("self_attention.input_layernorm.weight", None)
+
+    _ATTENTION_MAPPING.update(
+        {
+            "self_attention.indexer.index_qk_proj.weight": [
+                "model.language_model.layers.{layer_number}.self_attn.indexer.index_qk_proj.weight"
+            ],
+            "self_attention.indexer.q_layernorm.weight": [
+                "model.language_model.layers.{layer_number}.self_attn.indexer.q_layernorm.weight"
+            ],
+            "self_attention.indexer.k_layernorm.weight": [
+                "model.language_model.layers.{layer_number}.self_attn.indexer.k_layernorm.weight"
+            ],
+        }
+    )
+
+    _MLP_MAPPING = Qwen3_5Bridge._MLP_MAPPING.copy()
+
+    _MLP_MAPPING.pop("mlp.linear_fc1.layer_norm_weight", None)
+    _MLP_MAPPING.pop("pre_mlp_layernorm", None)
+
+    _OTHER_MAPPING = {
+        "attn_hyper_connection.hc_norm_weight": [
+            "model.language_model.layers.{layer_number}.attn_hyper_connection.hc_norm.weight"
+        ],
+        "attn_hyper_connection.input_mix_weight_down": [
+            "model.language_model.layers.{layer_number}.attn_hyper_connection.input_mix_weight_down.weight"
+        ],
+        "attn_hyper_connection.input_mix_weight_up": [
+            "model.language_model.layers.{layer_number}.attn_hyper_connection.input_mix_weight_up.weight"
+        ],
+        "attn_hyper_connection.block_inject_weight": [
+            "model.language_model.layers.{layer_number}.attn_hyper_connection.block_inject_weight.weight"
+        ],
+        "mlp_hyper_connection.hc_norm_weight": [
+            "model.language_model.layers.{layer_number}.mlp_hyper_connection.hc_norm.weight"
+        ],
+        "mlp_hyper_connection.input_mix_weight_down": [
+            "model.language_model.layers.{layer_number}.mlp_hyper_connection.input_mix_weight_down.weight"
+        ],
+        "mlp_hyper_connection.input_mix_weight_up": [
+            "model.language_model.layers.{layer_number}.mlp_hyper_connection.input_mix_weight_up.weight"
+        ],
+        "mlp_hyper_connection.block_inject_weight": [
+            "model.language_model.layers.{layer_number}.mlp_hyper_connection.block_inject_weight.weight"
+        ],
+        "ple.key_proj.weight": ["model.language_model.layers.{layer_number}.ple.key_proj.weight"],
+        "ple.value_proj.weight": ["model.language_model.layers.{layer_number}.ple.value_proj.weight"],
+        "ple.conv1d.weight": ["model.language_model.layers.{layer_number}.ple.conv1d.weight"],
+        "ple.norm_conv.weight": ["model.language_model.layers.{layer_number}.ple.norm_conv.weight"],
+        "ple.norm_key.weight": ["model.language_model.layers.{layer_number}.ple.norm_key.weight"],
+        "ple.norm_query.weight": ["model.language_model.layers.{layer_number}.ple.norm_query.weight"],
+        "ple.ple_embedding.layer_multipliers": [
+            "model.language_model.layers.{layer_number}.ple.ple_embedding.layer_multipliers"
+        ],
+        "ple.ple_embedding.ngram_heads_offsets": [
+            "model.language_model.layers.{layer_number}.ple.ple_embedding.ngram_heads_offsets"
+        ],
+        "ple.ple_embedding.ngram_heads_vocab_sizes": [
+            "model.language_model.layers.{layer_number}.ple.ple_embedding.ngram_heads_vocab_sizes"
+        ],
+    }
+
+    def _ple_layer_ids(self) -> list[int]:
+        """0-based decoder layer indices carrying PLE.
+
+        ``ple_layer_ids`` in the HF config is **1-based**: sglang's
+        ``Qwen4ExpTextConfig`` computes ``{int(i) - 1 for i in ple_layer_ids}``
+        and its model checks ``(layer_id + 1) in config.ple_layer_ids``. The
+        released config says ``[2]`` and the checkpoint carries the tensors under
+        ``layers.1``, which agrees. Off by one here silently moves PLE to the
+        wrong layer: the shapes are identical, so nothing would complain.
+        """
+        text_config = self._get_text_config()
+        return sorted({int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []})
+
+    def _weight_name_mapping_other(self, mcore_weights_name: str) -> list[str]:
+        """HC / indexer / PLE names, including the sharded n-gram embedding.
+
+        The n-gram table ships as ``split_ngram_parts`` separate tensors
+        (128 x [2500012, 160] = 102 GB, ~31% of the checkpoint), so it is expanded
+        here rather than written out as 128 dict entries.
+        """
+        layer_number = None
+        name = mcore_weights_name
+        if name.startswith("decoder.layers."):
+            parts = name.split(".")
+            layer_number = int(parts[2])
+            name = ".".join(parts[3:])
+
+        shard_prefix = "ple.ple_embedding.ngram_embedding.shard_"
+        if name.startswith(shard_prefix) and layer_number is not None:
+            shard_id = name[len(shard_prefix) :].split(".")[0]
+            return [
+                f"model.language_model.layers.{layer_number}.ple.ple_embedding."
+                f"ngram_embedding.shard_{shard_id}.weight"
+            ]
+
+        if name in self._OTHER_MAPPING:
+            if layer_number is None:
+                raise NotImplementedError(f"{mcore_weights_name} needs a layer index")
+            return [t.format(layer_number=layer_number) for t in self._OTHER_MAPPING[name]]
+
+        raise NotImplementedError(f"Unsupported parameter name: {mcore_weights_name}")
+
+    def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
+        try:
+            return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+        except NotImplementedError:
+            return self._weight_name_mapping_other(mcore_weights_name)
+
+    def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]):
+        """Pass the n-gram shards through untouched.
+
+        The base implementation would try to reshape a 2-D tensor or split it
+        across TP. The n-gram table is a flat lookup already sharded by row on the
+        HF side, so any reshaping here is wrong.
+        """
+        if "ngram_embedding.shard_" in mcore_weights_name and len(hf_weights) == 1:
+            return hf_weights[0]
+        return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+
+    def _build_config(self):
+        text_config = self._get_text_config()
+        config = super()._build_config()
+
+        # enable_hyper_connections is what makes get_gpt_decoder_block_spec emit
+        # HyperConnectionTransformerLayer and fill the two HC ModuleSpec slots; the
+        # spec function then swaps HyperConnectionModule for Qwen3.8-Next's gating.
+        config.enable_hyper_connections = True
+        config.num_residual_streams = getattr(text_config, "hc_count", 4)
+        config.qwen3_8_next_hc_lowrank = getattr(text_config, "hc_lowrank", 320)
+
+        config.qwen3_8_next_ple_layer_ids = self._ple_layer_ids()
+        config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
+        config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
+        config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
+        config.qwen3_8_next_ngram_vocab_size_base = getattr(
+            text_config, "ngram_vocab_size_base", 20000000
+        )
+        config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
+        config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
+
+        config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
+        config.qwen3_8_next_indexer_compress_ratio = getattr(
+            text_config, "indexer_compress_ratio", 4
+        )
+        config.qwen3_8_next_indexer_n_heads = getattr(text_config, "indexer_n_heads", 4)
+        config.qwen3_8_next_indexer_head_dim = getattr(text_config, "indexer_head_dim", 128)
+        config.qwen3_8_next_indexer_kv_heads = getattr(text_config, "indexer_kv_heads", 1)
+
+        # hc_norm is the pre-block norm and the final mixer's hc_norm is the final
+        # norm, so nothing is left for TE's fused LayerNormColumnParallelLinear or
+        # for pre_mlp_layernorm to load. The spec reads this to swap both out.
+        config.qwen3_8_next_no_block_layernorms = True
+
+        return config

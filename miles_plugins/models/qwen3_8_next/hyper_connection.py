@@ -176,23 +176,59 @@ class Qwen38NextHyperConnection(MegatronModule):
         return hc_combine(original_residual, x, h_post, self.n, self.hidden_size)
 
 
-class Qwen38NextHyperConnectionMixer(MegatronModule):
-    """Model-level final contraction ``[s, b, n*C] -> [s, b, C]``.
+class Qwen38NextHCHeadContraction(MegatronModule):
+    """Model-level mHC output contraction ``[s, b, n*C] -> [s, b, C]``.
+
+    Fills ``TransformerBlockSubmodules.hc_head_contraction``, so
+    ``TransformerBlock`` calls this instead of its built-in
+    ``learned_output_contract``. The two are genuinely different functions and
+    not interchangeable:
+
+                        DeepSeek-V4 built-in        Qwen3.8-Next
+        RMS             once over all n*C           per stream
+        gate            one projection -> [s,b,n]   low-rank W_up SiLU(W_down)
+        reduction       sum over streams            mean over streams
 
     sglang builds this from the *same* ``GatedResidual`` class as the per-layer
-    HC, only with ``use_combine=False``, so it reuses the read-gate path
-    verbatim. It replaces Megatron's ``learned_output_contract``, which is a
-    genuinely different function -- single projection to a per-stream scalar, a
-    sum rather than a mean, and one RMS over the whole ``n*C`` vector -- and so
-    is not a drop-in.
+    hyper-connections, only with ``use_combine=False`` (no inject weight), which
+    is why it shares ``ops.grouped_gemma_rmsnorm`` / ``ops.hc_mix`` with
+    ``Qwen38NextHyperConnection`` rather than reimplementing the gate.
+
+    Parameters are replicated across tensor-parallel ranks -- the contraction
+    runs on the full hidden dimension -- and stay in ``config.params_dtype``
+    (bf16) to match sglang, which holds the mixer in bf16. ``ops`` does every
+    reduction in fp32 regardless of storage dtype, so this costs no accuracy:
+    measured against a float64 reference it sits exactly on the bf16 rounding
+    floor.
     """
 
     def __init__(self, config: TransformerConfig, hc_count: Optional[int] = None):
         super().__init__(config)
-        self.hc = Qwen38NextHyperConnection(
-            config, layer_number=-1, hc_count=hc_count, use_combine=False
-        )
+        self.n = hc_count if hc_count is not None else config.num_residual_streams
+        self.hidden_size = config.hidden_size
+        self.norm_eps = config.layernorm_epsilon
+
+        lowrank = config.qwen3_8_next_hc_lowrank
+        wide = self.n * self.hidden_size
+        dtype = config.params_dtype
+
+        self.hc_norm_weight = torch.nn.Parameter(torch.zeros(wide, dtype=dtype))
+        self.input_mix_weight_down = torch.nn.Parameter(torch.empty(lowrank, wide, dtype=dtype))
+        self.input_mix_weight_up = torch.nn.Parameter(torch.empty(wide, lowrank, dtype=dtype))
+
+        for p in (self.hc_norm_weight, self.input_mix_weight_down, self.input_mix_weight_up):
+            setattr(p, "sequence_parallel", config.sequence_parallel)
+        with torch.no_grad():
+            torch.nn.init.xavier_uniform_(self.input_mix_weight_down)
+            torch.nn.init.xavier_uniform_(self.input_mix_weight_up)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
-        aggregated, _ = self.hc.mix(hidden_states)
-        return aggregated
+        normed = grouped_gemma_rmsnorm(hidden_states, self.hc_norm_weight, self.n, self.norm_eps)
+        return hc_mix(
+            normed,
+            self.input_mix_weight_down,
+            self.input_mix_weight_up,
+            self.n,
+            self.hidden_size,
+            out_dtype=hidden_states.dtype,
+        )
