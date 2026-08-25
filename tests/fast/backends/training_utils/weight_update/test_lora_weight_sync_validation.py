@@ -17,17 +17,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
-    UpdateWeightFromDistributed,
-)
-from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from miles.backends.training_utils.weight_update.broadcast import UpdateWeightFromDistributed
+from miles.backends.training_utils.weight_update.colocate import UpdateWeightFromTensor
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
 
-_UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
+_UW_MODULE = "miles.backends.training_utils.weight_update.colocate"
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
-_BROADCAST_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast"
+_BROADCAST_MODULE = "miles.backends.training_utils.weight_update.broadcast"
 
 # ---------------------------------------------------------------------------
 # Helpers

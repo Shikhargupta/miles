@@ -1,5 +1,5 @@
 """Mock-based tests for the rollout-engine lock lifecycle in
-update_weight_from_distributed/broadcast.py.
+training_utils/weight_update/broadcast.py.
 
 Lock.acquire (miles/ray/utils.py) is polled until it returns True, so a
 broadcast failure that skips the release makes every later weight sync spin
@@ -13,11 +13,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
+from miles.backends.training_utils.weight_update.broadcast import (
     UpdateWeightFromDistributed,
 )
 
-_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast"
+_MODULE = "miles.backends.training_utils.weight_update.broadcast"
 
 
 class _LockState:

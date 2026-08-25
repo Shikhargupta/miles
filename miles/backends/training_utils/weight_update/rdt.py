@@ -35,7 +35,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.utils.distributed_utils import get_gloo_group
 
-from .update_weight_from_distributed.p2p_transfer_utils import RemoteTransferPlan, create_server_args_from_dict
+from .p2p_transfer_utils import RemoteTransferPlan, create_server_args_from_dict
 
 logger = logging.getLogger(__name__)
 
