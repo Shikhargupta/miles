@@ -111,8 +111,12 @@ SGLANG_ARGS=(
    --sglang-watchdog-timeout 1800 --sglang-enable-metrics
    --sglang-moe-runner-backend flashinfer_cutlass --sglang-attention-backend trtllm_mha
    --sglang-cuda-graph-bs 1 2 4 8 16 32 --use-rollout-routing-replay
-   # Hybrid linear-attention CUDA graphs keep reading shared recurrent state
-   # during replay. Disable overlap so the next batch cannot overwrite it early.
+   # FIXME(sglang): temporary workaround. Hybrid linear-attention CUDA graphs
+   # keep reading shared recurrent state during replay, so overlap scheduling
+   # lets the next batch overwrite it early and the rollout hangs. Disabling
+   # overlap costs throughput; drop this flag once SGLang lands a real fix
+   # (see https://github.com/sgl-project/sglang/pull/31072, currently a draft
+   # workaround, for context).
    --sglang-disable-overlap-schedule
    --sglang-mamba-scheduler-strategy extra_buffer
 )
