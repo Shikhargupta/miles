@@ -241,9 +241,6 @@ class RLLossAdapter(BaseLoss):
     def __call__(self, pred, target, global_valid_tokens=None, **kwargs):
         from torch.distributed.tensor import DTensor
 
-        if self._cp_mesh is not None:
-            pred = self._gather_context_parallel(pred)
-
         if isinstance(pred, DTensor):
             # Under TP titan shards the lm_head output over the vocab dim
             # (Shard(-1)) -- exactly the Megatron vocab-parallel dialect miles'
@@ -257,6 +254,13 @@ class RLLossAdapter(BaseLoss):
                         f"expected vocab-sharded logits (Shard({pred.ndim - 1})), got {pred.placements}"
                     )
             pred = pred.to_local()
+
+        # After the DTensor unwrap, never before: the CP gather is a plain
+        # collective over the cp mesh, and under TP the logits arrive as a
+        # DTensor whose local shard is what actually has to be gathered.
+        if self._cp_mesh is not None:
+            pred = self._gather_context_parallel(pred)
+
         index = int(target)
         batch = self._batches[index]
         if self._mode == "train":
