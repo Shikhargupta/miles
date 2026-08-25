@@ -8,7 +8,11 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.cp_utils import slice_loss_masks_for_local_cp
+from miles.backends.training_utils.cp_utils import (
+    all_gather_with_cp,
+    slice_log_prob_with_cp,
+    slice_loss_masks_for_local_cp,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 
 _LOG_RATIO_EXP_CLAMP = 20.0
@@ -280,7 +284,9 @@ def compute_log_probs(
     *,
     true_on_policy_mode: bool = False,
     vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
 ):
+    logits = _apply_sampling_mask(logits, sampling_mask, inplace=not true_on_policy_mode)
     if true_on_policy_mode:
         full_logits = _gather_true_on_policy_full_logits(logits, process_group, vocab_size=vocab_size)
         log_probs = torch.log_softmax(full_logits, dim=-1)
@@ -293,6 +299,21 @@ def compute_log_probs(
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+
+
+def _apply_sampling_mask(
+    logits: torch.Tensor,
+    sampling_mask: torch.Tensor | None,
+    *,
+    inplace: bool = False,
+) -> torch.Tensor:
+    if sampling_mask is None:
+        return logits
+    if sampling_mask.shape != logits.shape:
+        raise ValueError(f"sampling mask shape {sampling_mask.shape} != logits shape {logits.shape}")
+    if inplace:
+        return logits.masked_fill_(~sampling_mask, float("-inf"))
+    return logits.masked_fill(~sampling_mask, float("-inf"))
 
 
 def _prepare_true_on_policy_full_logits(
@@ -474,8 +495,6 @@ def get_reinforce_plus_plus_returns(
 
         if cp_size > 1:
             # Step 1,2:Gather all chunks and token_offsets from all ranks and reconstruct the full response tensor by splitting and placing each part
-            from miles.backends.training_utils.cp_utils import all_gather_with_cp
-
             full_kl_response = all_gather_with_cp(local_kl_chunk, total_len, response_len)
         else:
             full_kl_response = local_kl_chunk
@@ -496,8 +515,6 @@ def get_reinforce_plus_plus_returns(
 
         # Step 4: Pick up the results corresponding to our local chunk's parts.
         if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
-
             local_returns_chunk = slice_log_prob_with_cp(returns_for_seq, total_len, response_len)
         else:
             local_returns_chunk = returns_for_seq
@@ -568,8 +585,6 @@ def get_advantages_and_returns(
 
     cp_size = get_parallel_state().cp.size
     if cp_size > 1:
-        from miles.backends.training_utils.cp_utils import all_gather_with_cp
-
         full_rewards = all_gather_with_cp(rewards, total_len, response_len)
         full_values = all_gather_with_cp(values, total_len, response_len)
     else:
@@ -588,8 +603,6 @@ def get_advantages_and_returns(
     full_returns = full_advantages + full_values
 
     if cp_size > 1:
-        from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
-
         advantages = slice_log_prob_with_cp(full_advantages, total_len, response_len)
         returns = slice_log_prob_with_cp(full_returns, total_len, response_len)
     else:
@@ -604,19 +617,52 @@ def get_advantages_and_returns_batch(
     response_lengths,
     values_list,
     rewards_list,
+    terminal_rewards,
+    qkv_format,
+    max_seq_lens,
+    loss_masks,
     gamma,
     lambd,
     chunked: bool = True,
 ):
     """
-    Batched GAE with CP support.
+    Batched GAE with CP support, computed over trainable tokens only.
+
+    Semantics:
+      - Masked tokens (`loss_mask == 0`, e.g. tool/env observations in
+        multi-turn rollouts) are not MDP transitions. GAE runs on the
+        subsequence of trainable tokens, so masked tokens carry no reward
+        (including KL shaping), contribute no value delta, and the GAE carry
+        crosses them without extra `gamma * lambd` decay.
+      - The terminal reward is added at the last trainable token, not the last
+        response token.
+      - Fully masked samples get zero advantages and returns; their terminal
+        reward is dropped.
+      - Truncated sequences use the same zero bootstrap as terminated ones:
+        the value after the last trainable token is taken as 0 and the
+        observed terminal reward is still applied.
+      - This function outputs zero advantages and returns at masked positions.
+        Downstream transforms may still shift these entries to nonzero values
+        (advantage whitening applies its affine transform to every position,
+        and the on-policy distillation KL penalty is added per token), but the
+        whitening statistics themselves are mask-weighted, so the injected
+        zeros do not bias them. Correctness relies on the policy and value
+        losses masking these positions out (the policy loss re-zeros
+        advantages at inactive tokens and all loss reducers weight by
+        `loss_mask`), so masked positions never receive gradient.
+
+    C_i is the length of values_list[i] and rewards_list[i] on the current CP rank.
     Input:
         total_lengths:     list[int], each sample's total_len
         response_lengths:  list[int], each sample's response_len
-        values_list:       list[Tensor], each shape = [resp_len_i]
-        rewards_list:      list[Tensor], same shape
+        values_list:       list[Tensor], each current-CP-rank tensor has shape [C_i]
+        rewards_list:      list[Tensor], same shape as values_list
+        terminal_rewards:  list[float], one scalar sequence reward per sample
+        qkv_format:        str, sequence layout used to split tensors across CP ranks
+        max_seq_lens:      list[int] of BSHD padded lengths, or None for THD
+        loss_masks:        list[Tensor], full-response masks, each has shape [R_i]
     Output:
-        advantages_list:   list[Tensor], each shape = [resp_len_i]
+        advantages_list:   list[Tensor], each current-CP-rank tensor has shape [C_i]
         returns_list:      list[Tensor], same shape
     """
 
@@ -624,52 +670,77 @@ def get_advantages_and_returns_batch(
         B = len(response_lengths)
         assert B == len(values_list)
         assert B == len(rewards_list)
+        assert B == len(terminal_rewards)
+        assert B == len(loss_masks)
 
         cp_size = get_parallel_state().cp.size
+        if cp_size > 1 and qkv_format == "bshd":
+            assert max_seq_lens is not None, "max_seq_lens is required for BSHD with CP"
+            assert B == len(max_seq_lens)
+            max_seq_lens_per_sample = max_seq_lens
+        else:  # qkv_format == "thd" or cp_size == 1
+            max_seq_lens_per_sample = [None] * B
+
         device = values_list[0].device
         dtype = values_list[0].dtype
 
         if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import all_gather_with_cp
-
             full_values_list = []
             full_rewards_list = []
 
-            for total_len, resp_len, v, r in zip(
-                total_lengths, response_lengths, values_list, rewards_list, strict=False
+            for total_len, resp_len, v, r, max_seq_len in zip(
+                total_lengths,
+                response_lengths,
+                values_list,
+                rewards_list,
+                max_seq_lens_per_sample,
+                strict=False,
             ):
-                full_v = all_gather_with_cp(v, total_len, resp_len)
-                full_r = all_gather_with_cp(r, total_len, resp_len)
+                full_v = all_gather_with_cp(v, total_len, resp_len, qkv_format=qkv_format, max_seq_len=max_seq_len)
+                full_r = all_gather_with_cp(r, total_len, resp_len, qkv_format=qkv_format, max_seq_len=max_seq_len)
                 full_values_list.append(full_v)
                 full_rewards_list.append(full_r)
 
-            # full_values_list[i].shape = [total_len_i]
+            # full_values_list[i].shape = [resp_len_i]
         else:
             full_values_list = values_list
             full_rewards_list = rewards_list
 
-        # pad to max_len for batched GAE
-        max_len = max(response_lengths)
+        # Compress each sample to its trainable positions so that masked
+        # tokens do not act as MDP transitions in the GAE recursion.
+        trainable_indices = [
+            loss_masks[i][: response_lengths[i]].to(device).nonzero(as_tuple=True)[0] for i in range(B)
+        ]
+        trainable_lengths = [idx.numel() for idx in trainable_indices]
 
-        full_values = torch.zeros(B, max_len, device=device, dtype=dtype)
-        full_rewards = torch.zeros(B, max_len, device=device, dtype=dtype)
+        # pad to max_len for batched GAE
+        max_len = max(trainable_lengths)
+
+        packed_values = torch.zeros(B, max_len, device=device, dtype=dtype)
+        packed_rewards = torch.zeros(B, max_len, device=device, dtype=dtype)
 
         for i in range(B):
-            L = response_lengths[i]
-            full_values[i, :L] = full_values_list[i][:L]
-            full_rewards[i, :L] = full_rewards_list[i][:L]
+            K = trainable_lengths[i]
+            if K > 0:
+                idx = trainable_indices[i]
+                packed_values[i, :K] = full_values_list[i][idx]
+                packed_rewards[i, :K] = full_rewards_list[i][idx]
+                packed_rewards[i, K - 1] += terminal_rewards[i]
 
-        if not chunked:
-            full_advantages, full_returns = vanilla_gae(
-                rewards=full_rewards,
-                values=full_values,
+        if max_len == 0:
+            packed_advantages = torch.zeros(B, 0, device=device, dtype=dtype)
+            packed_returns = torch.zeros(B, 0, device=device, dtype=dtype)
+        elif not chunked:
+            packed_advantages, packed_returns = vanilla_gae(
+                rewards=packed_rewards,
+                values=packed_values,
                 gamma=gamma,
                 lambd=lambd,
             )
         else:
-            full_advantages, full_returns = chunked_gae(
-                rewards=full_rewards,
-                values=full_values,
+            packed_advantages, packed_returns = chunked_gae(
+                rewards=packed_rewards,
+                values=packed_values,
                 gamma=gamma,
                 lambd=lambd,
             )
@@ -677,30 +748,36 @@ def get_advantages_and_returns_batch(
         advantages_list = []
         returns_list = []
 
-        if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
+        for i in range(B):
+            resp_len = response_lengths[i]
+            K = trainable_lengths[i]
 
-            for total_len, resp_len, adv_row, ret_row in zip(
-                total_lengths,
-                response_lengths,
-                full_advantages,
-                full_returns,
-                strict=False,
-            ):
-                adv_full = adv_row  # shape = [resp_len_i padded to max_len]
-                ret_full = ret_row
+            adv_full = torch.zeros(resp_len, device=device, dtype=dtype)
+            ret_full = torch.zeros(resp_len, device=device, dtype=dtype)
+            if K > 0:
+                idx = trainable_indices[i]
+                adv_full[idx] = packed_advantages[i, :K]
+                ret_full[idx] = packed_returns[i, :K]
 
-                adv_sliced = slice_log_prob_with_cp(adv_full[:resp_len], total_len, resp_len)
-                ret_sliced = slice_log_prob_with_cp(ret_full[:resp_len], total_len, resp_len)
+            if cp_size > 1:
+                max_seq_len = max_seq_lens_per_sample[i]
+                adv_full = slice_log_prob_with_cp(
+                    adv_full,
+                    total_lengths[i],
+                    resp_len,
+                    qkv_format=qkv_format,
+                    max_token_len=max_seq_len,
+                )
+                ret_full = slice_log_prob_with_cp(
+                    ret_full,
+                    total_lengths[i],
+                    resp_len,
+                    qkv_format=qkv_format,
+                    max_token_len=max_seq_len,
+                )
 
-                advantages_list.append(adv_sliced)
-                returns_list.append(ret_sliced)
-
-        else:
-            for i in range(B):
-                L = response_lengths[i]
-                advantages_list.append(full_advantages[i, :L])
-                returns_list.append(full_returns[i, :L])
+            advantages_list.append(adv_full)
+            returns_list.append(ret_full)
 
     return advantages_list, returns_list
 
@@ -881,6 +958,7 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -890,28 +968,38 @@ def calculate_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             vocab_size=vocab_size,
+            sampling_mask=sampling_mask,
         )
 
     logits = logits.contiguous()
-    # TODO: not sure why we need to clone the logits here.
-    # Without the clone, the backward will trigger inplace edit error.
-    # It seems that the function with tp will modify the logits inplace.
+    # TP cross-entropy mutates its input in forward, and entropy does so in backward.
+    # Force a copy for fp32 inputs, where the dtype conversion would otherwise alias logits.
     entropy = None
 
     def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
         if entropy_requires_grad:
-            return compute_entropy_from_logits(logits_chunk.clone(), tp_group)
+            return compute_entropy_from_logits(logits_chunk.to(torch.float32, copy=True), tp_group)
         with torch.no_grad():
-            return compute_entropy_from_logits(logits_chunk.detach().clone(), tp_group)
+            return compute_entropy_from_logits(logits_chunk.detach().to(torch.float32, copy=True), tp_group)
 
     if logits.size(0) != 0:
         if chunk_size > 0:
             num_chunks = (logits.size(0) - 1) // chunk_size + 1
             tokens_chunks = tokens.chunk(num_chunks, dim=0)
             logits_chunks = logits.chunk(num_chunks, dim=0)
+            sampling_mask_chunks = (
+                sampling_mask.chunk(num_chunks, dim=0) if sampling_mask is not None else [None] * num_chunks
+            )
             log_probs = []
-            for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.clone(), tokens_chunk, tp_group)
+            for tokens_chunk, logits_chunk, sampling_mask_chunk in zip(
+                tokens_chunks, logits_chunks, sampling_mask_chunks, strict=True
+            ):
+                log_prob = compute_log_probs(
+                    logits_chunk.to(torch.float32, copy=True),
+                    tokens_chunk,
+                    tp_group,
+                    sampling_mask=sampling_mask_chunk,
+                )
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
@@ -921,7 +1009,12 @@ def calculate_log_probs_and_entropy(
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
+            log_prob = compute_log_probs(
+                logits.to(torch.float32, copy=True),
+                tokens,
+                tp_group,
+                sampling_mask=sampling_mask,
+            )
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
@@ -939,6 +1032,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
     vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
 
@@ -952,6 +1046,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
             without attaching it to the autograd graph.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
+        sampling_mask: Optional local-vocabulary support used to normalize
+            log-probabilities. Entropy remains normalized over the full vocab.
 
     Returns:
         Tuple of ``(log_probs, entropy)`` where *log_probs* has shape ``[R]``
@@ -962,7 +1058,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         entropy = logits.new_zeros((0,)) if with_entropy else None
         return log_prob, entropy
 
-    full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+    log_prob_logits = _apply_sampling_mask(logits, sampling_mask)
+    full_logits = _gather_true_on_policy_full_logits(log_prob_logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
     log_probs_full = torch.log_softmax(full_logits, dim=-1)
     _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
@@ -971,7 +1068,13 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     entropy = None
     if with_entropy:
-        entropy_log_probs = log_probs_full if entropy_requires_grad else log_probs_full.detach()
+        if sampling_mask is None:
+            entropy_log_probs = log_probs_full
+        else:
+            entropy_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+            entropy_log_probs = torch.log_softmax(entropy_logits, dim=-1)
+        if not entropy_requires_grad:
+            entropy_log_probs = entropy_log_probs.detach()
         probs = entropy_log_probs.exp()
         entropy = -(probs * entropy_log_probs).sum(dim=-1)
 

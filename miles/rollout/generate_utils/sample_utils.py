@@ -1,5 +1,6 @@
 from copy import deepcopy
 from dataclasses import fields
+from typing import Any
 
 from miles.utils.types import Sample
 
@@ -83,9 +84,25 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         )
         return av + [[] for _ in range(obs_len)] + bv
 
+    def _pop_lifecycle(metadata):
+        if not metadata or "lifecycle" not in metadata:
+            return metadata, []
+        value = metadata["lifecycle"]
+        rest = {k: v for k, v in metadata.items() if k != "lifecycle"}
+        return rest, value if isinstance(value, list) else [value]
+
+    def _pop_messages(metadata):
+        if not metadata or "messages" not in metadata:
+            return metadata, None
+        return {k: v for k, v in metadata.items() if k != "messages"}, metadata["messages"]
+
     def _merge_metadata():
         a_metadata, a_top_logprobs = _pop_opd_student_top_logprobs(a.metadata)
         b_metadata, b_top_logprobs = _pop_opd_student_top_logprobs(b.metadata)
+        a_metadata, a_lifecycle = _pop_lifecycle(a_metadata)
+        b_metadata, b_lifecycle = _pop_lifecycle(b_metadata)
+        a_metadata, a_messages = _pop_messages(a_metadata)
+        b_metadata, b_messages = _pop_messages(b_metadata)
         assert a_metadata == b_metadata, f"metadata mismatch: a.metadata={a.metadata}, b.metadata={b.metadata}"
 
         merged_metadata = deepcopy(a_metadata)
@@ -94,6 +111,14 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             if merged_metadata is None:
                 merged_metadata = {}
             merged_metadata[_OPD_STUDENT_TOP_LOGPROBS_KEY] = merged_top_logprobs
+        if a_lifecycle or b_lifecycle:
+            if merged_metadata is None:
+                merged_metadata = {}
+            merged_metadata["lifecycle"] = a_lifecycle + b_lifecycle
+        if (messages := b_messages or a_messages) is not None:
+            if merged_metadata is None:
+                merged_metadata = {}
+            merged_metadata["messages"] = messages
         return merged_metadata
 
     _fill_defaults(a)
@@ -122,6 +147,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             Sample,
             group_index=_merge_equal_value("group_index"),
             index=_merge_equal_value("index"),
+            rollout_id=_merge_equal_value("rollout_id"),
             prompt=b.prompt,
             tokens=b.tokens,
             multimodal_inputs=_merge_equal_value("multimodal_inputs"),
@@ -142,7 +168,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
             train_metadata=_merge_equal_value("train_metadata"),
-            session_id=_merge_equal_value("session_id"),
+            adapter=_merge_equal_value("adapter"),
+            reward_spec=_merge_equal_value("reward_spec"),
+            routing_key=_merge_equal_value("routing_key"),
             non_generation_time=_merge_equal_value("non_generation_time"),
             spec_info=_merge_spec_info(a.spec_info, b.spec_info),
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),
@@ -192,3 +220,48 @@ def _startswith(*, short, long) -> bool:
     if isinstance(short, list) and isinstance(long, list):
         return (len(long) >= len(short)) and (long[: len(short)] == short)
     raise NotImplementedError
+
+
+def _len_or_value(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple, str)):
+        return {"type": type(value).__name__, "len": len(value)}
+    return value
+
+
+def sample_text_preview(sample: Sample, max_chars: int = 512) -> str:
+    text = (str(sample.prompt) + sample.response).replace("\n", "\\n")
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}...<truncated chars={len(text) - max_chars}>"
+
+
+def reward_log_summary(reward: Any) -> Any:
+    """Summarize a reward (which for OPD scoring can be a large nested dict of logprobs)
+    into shapes/lengths instead of dumping the whole thing into the log."""
+    if not isinstance(reward, dict):
+        return _len_or_value(reward)
+
+    summary: dict[str, Any] = {}
+    for key, value in reward.items():
+        if not isinstance(value, dict):
+            summary[key] = _len_or_value(value)
+            continue
+
+        entry: dict[str, Any] = {"keys": list(value.keys())}
+        meta_info = value.get("meta_info")
+        if isinstance(meta_info, dict):
+            entry["meta_info"] = {
+                meta_key: _len_or_value(meta_info[meta_key])
+                for meta_key in (
+                    "id",
+                    "finish_reason",
+                    "prompt_tokens",
+                    "weight_version",
+                    "input_token_logprobs",
+                    "input_token_ids_logprobs",
+                    "input_top_logprobs",
+                )
+                if meta_key in meta_info
+            }
+        summary[key] = entry
+    return summary

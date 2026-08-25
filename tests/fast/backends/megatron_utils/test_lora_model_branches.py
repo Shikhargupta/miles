@@ -70,6 +70,7 @@ class TestSetupModelAndOptimizerLoraBranch:
             megatron_to_hf_mode=mode,
             moe_use_upcycling=False,
             debug_disable_optimizer=False,
+            stream_optimizer_state_to_disk=False,
             load="/some/path",
             pretrained_checkpoint=None,
             # optimizer fields
@@ -91,7 +92,7 @@ class TestSetupModelAndOptimizerLoraBranch:
             use_checkpoint_opt_param_scheduler=False,
             override_opt_param_scheduler=False,
             lr_wsd_decay_style="linear",
-            enable_gloo_process_groups=False,
+            use_gloo_process_groups=False,
         )
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")

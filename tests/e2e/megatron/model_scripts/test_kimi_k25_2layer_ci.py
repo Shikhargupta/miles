@@ -2,6 +2,7 @@ import os
 
 from scripts.run_kimi_k25 import ScriptArgs, _convert_to_bf16, _execute_train, _prepare_download
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
@@ -12,19 +13,26 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 
+register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
+register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="rollout/raw_reward")
+
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
+        hardware="H200",
         model_name="Kimi-K2.5-2layer",
         num_nodes=1,
         num_gpus_per_node=4,
         num_rollout=2,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--skip-actor-forward-only "),
     )
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _convert_to_bf16(args)
 

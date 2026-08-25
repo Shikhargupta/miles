@@ -40,9 +40,10 @@ class bdist_wheel(_bdist_wheel):
 setup(
     author="miles Team",
     name="miles",
-    version="0.2.1",
+    version="0.1.0",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
+    package_data={"miles.dashboard": ["static/*"]},
     install_requires=_fetch_requirements("requirements.txt"),
     extras_require={
         "fsdp": [
@@ -50,6 +51,13 @@ setup(
         ],
         "mlflow": [
             "mlflow>=2.0",
+        ],
+        # standalone offline serving; the training image already has these via
+        # sglang, and polars is a base requirement (used by the collector)
+        "dashboard": [
+            "fastapi>=0.135",
+            "uvicorn>=0.41",
+            "prometheus_client>=0.24",
         ],
     },
     python_requires=">=3.10",

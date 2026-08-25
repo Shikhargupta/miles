@@ -1,10 +1,12 @@
 import os
+from pathlib import Path
 
 import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus
 
 
@@ -27,28 +29,46 @@ def allocate_gpus_for_actor(
         # because sglang will always set NCCL_CUMEM_ENABLE to 0
         # we need also set it to 0 to prevent nccl error.
         "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
-        "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "1"),
+        "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": os.environ.get(
+            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES", default_fp8_block_scaling_fp32_scales()
+        ),
         # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
         "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
         **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
         **args.train_env_vars,
     }
 
+    if args.update_weight_transfer_mode == "rdt":
+        # Keep Ray's mask: unmasking makes helper threads default to cuda:0 and NCCL
+        # re-init fails with "Duplicate GPU detected". NIXL uses driver APIs anyway.
+        env_vars["RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES"] = "0"
+        # Every SchedulerActor mapping this trainer's bucket costs a ~520 MiB CUDA
+        # context here, so tightly-packed trainers need the reclaimed fragmentation.
+        env_vars.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        # Probe the NIXL backend at the real bucket size: EFA accepts small CUDA MRs
+        # through its host bounce pool even when GPUDirect is broken.
+        env_vars.setdefault("MILES_RDT_NIXL_VALIDATE_BYTES", str(args.update_weight_buffer_size))
+
     if source_patcher_config := args.dumper_source_patcher_config_train:
         env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
 
     if args.offload_train and args.train_backend == "megatron":
-        import torch_memory_saver
+        from torch_memory_saver.utils import get_binary_path_from_package
 
-        dynlib_path = os.path.join(
-            os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
-            "torch_memory_saver_hook_mode_preload.abi3.so",
-        )
-        assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
+        dynlib_path = str(get_binary_path_from_package("torch_memory_saver_hook_mode_preload"))
 
         env_vars["LD_PRELOAD"] = dynlib_path
         env_vars["TMS_INIT_ENABLE"] = "1"
-        env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
+        if args.offload_train_target == "disk":
+            assert b"TMS_INIT_ENABLE_DISK_BACKUP" in Path(dynlib_path).read_bytes(), (
+                f"{dynlib_path} has no disk backend; reinstall torch_memory_saver at the commit "
+                f"docker/Dockerfile pins."
+            )
+            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "0"
+            env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
+            env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(args.offload_train_disk_chunk_mb)
+        else:
+            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
     backend = args.train_backend
     if backend == "megatron":
@@ -57,29 +77,38 @@ def allocate_gpus_for_actor(
         actor_impl = MegatronTrainRayActor
 
     else:
-        from miles.backends.experimental.fsdp_utils import FSDPTrainRayActor
+        from miles.backends.fsdp_utils import FSDPTrainRayActor
 
         actor_impl = FSDPTrainRayActor
 
     ft = args.use_fault_tolerance
-    TrainRayActor = ray.remote(
-        num_gpus=1,
-        runtime_env={"env_vars": env_vars},
-        **(dict(concurrency_groups={"heartbeat_status": 1, "default": 1, "fault_injector": 1}) if ft else {}),
-    )(_with_ft_concurrency_groups(actor_impl) if ft else actor_impl)
+    remote_kwargs = {"num_gpus": 1, "runtime_env": {"env_vars": env_vars}}
+    if ft:
+        remote_kwargs["concurrency_groups"] = {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+    elif args.update_weight_transfer_mode == "rdt":
+        # update_weights() blocks this actor in ray.get() while Ray's transport
+        # threads serve the NIXL reads of the objects it owns -- one per engine rank
+        # it feeds. At concurrency 1 the blocking call starves them.
+        rdt_tp_size = getattr(args, "rollout_num_gpus_per_engine", 1)
+        remote_kwargs["max_concurrency"] = 1 + rdt_tp_size
+    TrainRayActor = ray.remote(**remote_kwargs)(_with_ft_concurrency_groups(actor_impl) if ft else actor_impl)
 
     # Create worker actors
     actor_handles = []
     master_addr, master_port = None, None
     for rank in range(world_size):
-        actor = TrainRayActor.options(
+        options = dict(
             num_cpus=num_gpus_per_actor,
             num_gpus=num_gpus_per_actor,
             scheduling_strategy=PlacementGroupSchedulingStrategy(
                 placement_group=pg,
                 placement_group_bundle_index=reordered_bundle_indices[rank],
             ),
-        ).remote(
+        )
+        if args.offload_train_target == "disk" and args.offload_train and args.train_backend == "megatron":
+            rank_dir = os.path.join(args.offload_train_disk_dir, f"cell{cell_index}_rank{rank}")
+            options["runtime_env"] = {"env_vars": {**env_vars, "TMS_DISK_BACKUP_DIR": rank_dir}}
+        actor = TrainRayActor.options(**options).remote(
             args,
             world_size,
             rank,
