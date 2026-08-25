@@ -71,7 +71,7 @@ def export_hf_model_direct(
     weight_map: dict[str, str] = {}
     total_size = 0
     shard_index = 0
-    for hf_named_tensors in iterator.iter_hf_base_weights(megatron_local_weights):
+    for hf_named_tensors in iterator.iter_hf_weights(megatron_local_weights):
         if not is_writer:
             continue
         shard_index += 1

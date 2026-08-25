@@ -1,7 +1,8 @@
 """Unit tests for the backend-neutral HF weight iterator base.
 
-Covers WeightUpdatePlacement / resolve_placement and the get_hf_lora_weights
-template method (validation), which every backend shares.
+Covers WeightUpdatePlacement / resolve_placement and the iter_hf_weights
+template method (adapter units in the bucketed stream), which every backend
+shares.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -12,7 +13,6 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 from argparse import Namespace
 from types import SimpleNamespace
 
-import pytest
 import torch
 
 from miles.backends.training_utils.weight_update.hf_weight_iterator import (
@@ -44,50 +44,53 @@ class TestWeightUpdatePlacement:
 
 
 class _StubIterator(HfWeightIteratorBase):
-    """Concrete subclass with a canned adapter export."""
+    """Concrete subclass with canned base and adapter unit streams."""
 
-    def __init__(self, exported):
+    def __init__(self, exported, base=()):
         super().__init__(
-            Namespace(),
+            Namespace(update_weight_buffer_size=1 << 30),
             [],
             placement=WeightUpdatePlacement(gather_pp=True),
             model_name="stub",
             quantization_config=None,
         )
         self._exported = exported
+        self._base = base
         self.export_calls = []
 
     def _iter_hf_param_units(self, weights, *, materialize):
-        yield from []
+        for pair in self._base:
+            yield [pair]
 
-    def _export_lora_named_tensors(self, adapter):
+    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
         self.export_calls.append(adapter)
-        return self._exported
+        for name, tensor in self._exported:
+            yield [(f"{lora_name}:{name}", tensor)]
 
 
-class TestGetHfLoraWeightsTemplate:
-    def test_returns_exported_adapter(self):
-        iterator = _StubIterator(SAMPLE_LORA_WEIGHTS)
-        assert iterator.get_hf_lora_weights() == SAMPLE_LORA_WEIGHTS
-        assert iterator.export_calls == [None]
+class TestIterHfWeightsTemplate:
+    @staticmethod
+    def _names(buckets):
+        return [name for bucket in buckets for name, _ in bucket]
+
+    def test_adapter_units_join_the_stream_prefixed(self):
+        iterator = _StubIterator(SAMPLE_LORA_WEIGHTS, base=SAMPLE_BASE_ONLY_WEIGHTS)
+        names = self._names(iterator.iter_hf_weights(None, adapters=[("miles_lora", None)]))
+        assert names == [SAMPLE_BASE_ONLY_WEIGHTS[0][0]] + [f"miles_lora:{n}" for n, _ in SAMPLE_LORA_WEIGHTS]
 
     def test_adapter_argument_reaches_the_hook(self):
-        adapter = SimpleNamespace(name="slot0")
         iterator = _StubIterator(SAMPLE_LORA_WEIGHTS)
-        iterator.get_hf_lora_weights(adapter)
+        adapter = SimpleNamespace(slot=3)
+        list(iterator.iter_hf_weights(None, adapters=[("__miles_slot_3", adapter)]))
         assert iterator.export_calls == [adapter]
 
-    def test_raises_on_empty_export(self):
-        iterator = _StubIterator([])
-        with pytest.raises(RuntimeError, match="zero chunks"):
-            iterator.get_hf_lora_weights()
+    def test_include_base_false_streams_adapters_only(self):
+        iterator = _StubIterator(SAMPLE_LORA_WEIGHTS, base=SAMPLE_BASE_ONLY_WEIGHTS)
+        names = self._names(iterator.iter_hf_weights(None, include_base=False, adapters=[("miles_lora", None)]))
+        assert names == [f"miles_lora:{n}" for n, _ in SAMPLE_LORA_WEIGHTS]
 
-    def test_empty_export_error_names_the_adapter(self):
-        iterator = _StubIterator([])
-        with pytest.raises(RuntimeError, match="slot0"):
-            iterator.get_hf_lora_weights(SimpleNamespace(name="slot0"))
-
-    def test_raises_when_export_has_no_lora_names(self):
-        iterator = _StubIterator(SAMPLE_BASE_ONLY_WEIGHTS)
-        with pytest.raises(RuntimeError, match="no LoRA weights"):
-            iterator.get_hf_lora_weights()
+    def test_no_adapters_matches_base_stream(self):
+        iterator = _StubIterator([], base=SAMPLE_BASE_ONLY_WEIGHTS)
+        names = self._names(iterator.iter_hf_weights(None))
+        assert names == [SAMPLE_BASE_ONLY_WEIGHTS[0][0]]
+        assert iterator.export_calls == []

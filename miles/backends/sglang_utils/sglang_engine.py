@@ -565,11 +565,11 @@ class SGLangEngine(RayActor):
                 return response.json()["weight_version"]
         response.raise_for_status()
 
-    def unload_lora_adapter(self, lora_name: str):
-        """Unload LoRA adapter."""
+    def register_lora_adapter(self, lora_name: str, config_dict: dict, pinned: bool = True):
+        """Create-or-refresh a LoRA adapter's identity and config (weights zeroed)."""
         return self._make_request(
-            "unload_lora_adapter",
-            {"lora_name": lora_name},
+            "register_lora_adapter",
+            {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
         )
 
     def get_scheduler_actors(self) -> list:
@@ -695,13 +695,15 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def begin_weight_update(self, selector: str = "all"):
-        """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._make_request("begin_weight_update", {"selector": selector})
+    def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
+        """Open a weight-update session on the engine. sync_base=False declares an
+        adapter-only session (no quant unpack; base tensors rejected)."""
+        return self._make_request("begin_weight_update", {"selector": selector, "sync_base": sync_base})
 
-    def end_weight_update(self):
-        """Close the weight-update session (post-load + quant post-process on the full model)."""
-        return self._make_request("end_weight_update", {})
+    def end_weight_update(self, expected_lora_checksums=None):
+        """Close the weight-update session: re-finalize base weights (sync_base
+        sessions) and apply the streamed LoRA stash."""
+        return self._make_request("end_weight_update", {"expected_lora_checksums": expected_lora_checksums})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(

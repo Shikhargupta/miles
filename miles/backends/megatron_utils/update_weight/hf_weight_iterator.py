@@ -16,6 +16,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     WeightUpdatePlacement,
     resolve_placement,
 )
+from miles.utils.lora import is_lora_weight_name
 
 
 class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
@@ -24,13 +25,28 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
     def _hf_atomic_update_groups(self):
         return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)
 
-    def _export_lora_named_tensors(self, adapter):
-        # Both megatron exporters gather TP/EP but not PP.
-        return _gather_pp_full_adapter(self._export_pp_local_lora(adapter))
+    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+        """Both megatron exporters are PP-local after gathering TP/EP; the PP
+        gather runs only where the resolved placement asks for it."""
+        named_tensors = self._export_pp_local_lora(adapter)
+        if self.placement.gather_pp:
+            named_tensors = _gather_pp_full_adapter(named_tensors)
+        if not materialize:
+            return
+        if not named_tensors:
+            raise RuntimeError(
+                f"LoRA weight sync failed: the adapter export produced zero tensors"
+                f"{f' for adapter {adapter!r}' if adapter is not None else ''}. "
+                "This usually means the Megatron-Bridge or SGLang version is incompatible."
+            )
+        if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
+            raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
+        for hf_name, tensor in named_tensors:
+            yield [(f"{lora_name}:{hf_name}", tensor)]
 
     @abstractmethod
     def _export_pp_local_lora(self, adapter) -> list[tuple[str, torch.Tensor]]:
-        """The adapter's HF-named tensors, TP/EP gathered, PP-local."""
+        """Backend hook: the adapter's HF-named tensors, TP/EP gathered, PP-local."""
 
 
 def get_hf_weight_iterator(

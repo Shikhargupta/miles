@@ -77,7 +77,6 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._group_name = "miles-disk-delta"
         replica_rank, _ = derive_replica_position(parallel_state, placement)
         self.is_sender = replica_rank == 0
-        self.is_lora_sender = self.is_sender and (placement.gather_pp or parallel_state.pp.rank == 0)
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         # The first call only captures the baseline snapshot the next sync diffs against.

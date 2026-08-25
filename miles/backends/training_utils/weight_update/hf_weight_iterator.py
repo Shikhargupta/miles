@@ -1,9 +1,10 @@
 """Backend-neutral API for streaming training-side weights as HF-named tensors."""
 
 import dataclasses
+import itertools
 from abc import ABC, abstractmethod
 from argparse import Namespace
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from typing import ClassVar
 
 import torch
@@ -13,7 +14,6 @@ from miles.backends.training_utils.weight_update.bucketing import (
     assemble_atomic_update_groups,
     pack_units_by_size,
 )
-from miles.utils.lora import is_lora_weight_name
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,20 +69,27 @@ class HfWeightIteratorBase(ABC):
         self.model_name = model_name
         self.quantization_config = quantization_config
 
-    def iter_hf_base_weights(
+    def iter_hf_weights(
         self,
         weights: Mapping[str, torch.Tensor] | None,
         *,
+        include_base: bool = True,
+        adapters: Sequence[tuple[str, object]] = (),
         materialize: bool = True,
     ) -> Iterator[list[tuple[str, torch.Tensor]]]:
-        """Base model weights as size-bounded buckets of HF-named GPU tensors;
+        """Model weights as size-bounded buckets of HF-named GPU tensors;
         atomic update groups are never split across buckets.
 
         ``weights``: backend-native named weights to read; None reads the live
-        model parameters. ``materialize=False`` joins every collective but
-        yields nothing.
+        model parameters. ``adapters``: ``(lora_name, adapter_or_None)`` pairs
+        whose tensors join the stream under ``{lora_name}:{hf_key}`` names.
+        ``materialize=False`` joins every collective but yields nothing.
         """
-        hf_param_units = self._iter_hf_param_units(weights, materialize=materialize)
+        hf_param_units = self._iter_hf_param_units(weights, materialize=materialize) if include_base else iter(())
+        for lora_name, adapter in adapters:
+            hf_param_units = itertools.chain(
+                hf_param_units, self._iter_hf_adapter_units(lora_name, adapter, materialize=materialize)
+            )
         hf_param_units = assemble_atomic_update_groups(hf_param_units, self._hf_atomic_update_groups())
         yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
 
@@ -102,27 +109,11 @@ class HfWeightIteratorBase(ABC):
         """Backend hook: HF-namespace atomic groups for this model. Default none."""
         return []
 
-    def get_hf_lora_weights(self, adapter=None) -> list[tuple[str, torch.Tensor]]:
-        """The complete adapter in HF PEFT naming (lora_A/lora_B), fully
-        gathered, as one list. ``adapter`` selects a multi-LoRA slot; None is
-        the single-LoRA adapter. Collective.
-        """
-        named_tensors = self._export_lora_named_tensors(adapter)
-        if not named_tensors:
-            raise RuntimeError(
-                f"LoRA weight sync failed: the weight iterator produced zero chunks"
-                f"{f' for adapter {adapter!r}' if adapter is not None else ''}. "
-                "No adapter weights were sent to the rollout engine. This usually means "
-                "the Megatron-Bridge or SGLang version is incompatible."
-            )
-        if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
-            raise RuntimeError(
-                "LoRA weight sync failed: chunk contains no LoRA weights "
-                "(no lora_A/lora_B names found). Check weight iterator configuration."
-            )
-        return named_tensors
-
     @abstractmethod
-    def _export_lora_named_tensors(self, adapter) -> list[tuple[str, torch.Tensor]]:
-        """Backend hook: the complete adapter as HF-named tensors, fully
-        gathered along every parallel dim."""
+    def _iter_hf_adapter_units(
+        self, lora_name: str, adapter, *, materialize: bool
+    ) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        """Backend hook: this rank's slice of the adapter per ``self.placement``,
+        one unit per parameter, names ``{lora_name}:{hf_key}``, rank-trimmed.
+        Collectives must run lockstep on every rank; ``materialize=False`` joins
+        them but yields nothing."""

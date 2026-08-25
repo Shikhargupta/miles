@@ -23,6 +23,7 @@ from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
     pause_engines,
+    register_lora_adapter,
     resume_engines,
     set_weight_version,
     weight_update_selector,
@@ -68,6 +69,8 @@ class WeightUpdater:
         if is_lora:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
+        # Adapter names already registered on the current engine set; reset at connect.
+        self._registered_adapters: set[str] = set()
         self._mm_tower_cache: list[tuple[str, torch.Tensor]] | None = None
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
@@ -87,6 +90,7 @@ class WeightUpdater:
             self.parallel_state,
             self._hf_weight_iterator.placement,
         )
+        self._registered_adapters.clear()
 
     def is_rollout_engines_fresh(self) -> bool:
         return self.protocol.is_fresh()
@@ -109,42 +113,46 @@ class WeightUpdater:
         # LoRA runs sync the adapters; the frozen base rides along only when the
         # engines do not keep it (protocol fact).
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
+        adapters = self._adapters_to_push()
 
         driver = dist.get_rank() == 0
+        if driver:
+            for lora_name, lora_config in self._new_registrations(adapters):
+                register_lora_adapter(protocol.rollout_engines, lora_name=lora_name, lora_config=lora_config)
         if protocol.uses_session_frame and driver:
             pause_engines(self.args, protocol.rollout_engines)
-            if sync_base:
-                begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args))
+            begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args), sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
 
+        checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
         with timer("update_weights_implementation"):
-            if sync_base:
-                pbar = tqdm(desc=f"[{protocol._group_name}] Update weights", total=0) if protocol.is_sender else None
-                for bucket in self._iter_base_buckets(materialize=protocol.is_sender):
-                    if protocol.is_sender:
-                        protocol.send_bucket(bucket, self.weight_version)
-                        pbar.update(1)
-                if protocol.is_sender and (towers := self._mm_tower_bucket()) is not None:
-                    protocol.send_bucket(towers, self.weight_version)
-                protocol.after_base_weights()
-            if self.is_lora:
-                if is_multi_lora_enabled(self.args):
-                    self._send_multi_lora_adapters()
-                else:
-                    self._send_lora_adapter()
+            pbar = tqdm(desc=f"[{protocol._group_name}] Update weights", total=0) if protocol.is_sender else None
+            for bucket in self._hf_weight_iterator.iter_hf_weights(
+                self.weights_getter(),
+                include_base=sync_base,
+                adapters=adapters,
+                materialize=protocol.is_sender,
+            ):
+                if protocol.is_sender:
+                    if driver and checksums is not None:
+                        _record_lora_checksums(bucket, checksums)
+                    protocol.send_bucket(bucket, self.weight_version)
+                    pbar.update(1)
+            if sync_base and protocol.is_sender and (towers := self._mm_tower_bucket()) is not None:
+                protocol.send_bucket(towers, self.weight_version)
+            protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
             if protocol.uses_session_frame and driver:
                 set_weight_version(protocol.rollout_engines, self.weight_version)
-                if sync_base:
-                    end_weight_update(protocol.rollout_engines)
+                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
 
     def _iter_base_buckets(self, *, materialize: bool):
-        return self._hf_weight_iterator.iter_hf_base_weights(self.weights_getter(), materialize=materialize)
+        return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
 
     def _mm_tower_bucket(self) -> list[tuple[str, torch.Tensor]] | None:
         """Frozen vision/audio tower tensors appended to every base sync, read once
@@ -178,31 +186,41 @@ class WeightUpdater:
             self._mm_tower_cache = cache
         return [(name, tensor.to(torch.cuda.current_device())) for name, tensor in self._mm_tower_cache]
 
-    def _send_lora_adapter(self) -> None:
-        """All ranks call the iterator (TP collectives); only the source ranks transmit.
-        The protocol owns the adapter lifecycle (unload-before-reload / upsert)."""
-        named_tensors = self._hf_weight_iterator.get_hf_lora_weights()
-        if not self.protocol.is_lora_sender:
-            return
-        self.protocol.send_adapter(
-            named_tensors,
-            lora_name=LORA_ADAPTER_NAME,
-            lora_config=self._lora_sync_config,
-            upsert=False,
-        )
+    def _adapters_to_push(self) -> list[tuple[str, object]]:
+        """``(lora_name, adapter_or_None)`` pairs for this sync; the push set is
+        identical on every rank so the iterator's collectives align."""
+        if not self.is_lora:
+            return []
+        if is_multi_lora_enabled(self.args):
+            adapters = self.multi_lora_adapters
+            assert adapters is not None, "actor must set multi_lora_adapters before update_weights"
+            return [(slot_lora_name(adapters[name].slot), adapters[name]) for name in sorted(adapters)]
+        return [(LORA_ADAPTER_NAME, None)]
 
-    def _send_multi_lora_adapters(self) -> None:
-        """Upsert the actor-selected adapters; the push set is identical on every rank so TP collectives align."""
-        adapters = self.multi_lora_adapters
-        assert adapters is not None, "actor must set multi_lora_adapters before update_weights"
-        for name in sorted(adapters):
-            adapter = adapters[name]
-            named_tensors = self._hf_weight_iterator.get_hf_lora_weights(adapter)
-            if not self.protocol.is_lora_sender:
+    def _new_registrations(self, adapters: list[tuple[str, object]]) -> list[tuple[str, dict]]:
+        """Adapters not yet registered on the current engine set, with their
+        per-adapter config; eager so the engine validates rank before any bytes move."""
+        new = []
+        for lora_name, adapter in adapters:
+            if lora_name in self._registered_adapters:
                 continue
-            self.protocol.send_adapter(
-                named_tensors,
-                lora_name=slot_lora_name(adapter.slot),
-                lora_config=self._lora_sync_config | {"r": adapter.config.rank, "lora_alpha": adapter.config.alpha},
-                upsert=True,
-            )
+            config = self._lora_sync_config
+            if adapter is not None:
+                config = config | {"r": adapter.config.rank, "lora_alpha": adapter.config.alpha}
+            new.append((lora_name, config))
+            self._registered_adapters.add(lora_name)
+        return new
+
+
+def _record_lora_checksums(bucket, checksums) -> None:
+    """Accumulate the sha256 manifest the engines verify at end_weight_update."""
+    import hashlib
+
+    for name, tensor in bucket:
+        if ":" not in name:
+            continue
+        lora_name, hf_key = name.split(":", 1)
+        digest = hashlib.sha256(
+            tensor.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
+        ).hexdigest()
+        checksums[lora_name][hf_key] = digest

@@ -1,4 +1,3 @@
-import hashlib
 import logging
 from argparse import Namespace
 from collections.abc import Sequence
@@ -155,7 +154,6 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         # Every engine-covered rank sends: the per-engine gather_object is
         # collective among the group's members.
         self.is_sender = self._ipc_gather_group is not None
-        self.is_lora_sender = self.is_sender
 
         # A LoRA sync must re-push the frozen base unless the engines keep it
         # across pauses (CPU backup, persistent GPU copy, or remote engines);
@@ -190,66 +188,6 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         check_weight_sync_results(ray.get(refs or []), is_lora=False)
         del long_lived_tensors
 
-    def send_adapter(
-        self, named_tensors: list[tuple[str, torch.Tensor]], *, lora_name: str, lora_config: dict, upsert: bool
-    ) -> None:
-        if upsert:
-            raise NotImplementedError("multi-LoRA weight sync is not supported for colocated engines")
-        if self.use_distribute and self._is_distributed_src_rank:
-            raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
-
-        refs, long_lived_tensors = _send_to_colocated_engine(
-            hf_named_tensors=named_tensors,
-            ipc_engine=self._ipc_engine,
-            ipc_gather_src=self._ipc_gather_src,
-            ipc_gather_group=self._ipc_gather_group,
-            selector=self._selector,
-            lora_config=lora_config,
-            lora_name=lora_name,
-            check_equal=self.args.check_lora_weight_equal,
-            repack_lora_for_ipc=self.args.offload_train,
-        )
-        check_weight_sync_results(ray.get(refs or []), is_lora=True)
-        del long_lived_tensors
-        torch.cuda.ipc_collect()
-        torch.cuda.empty_cache()
-
-
-def _repack_onto_fresh_storage(
-    named_tensors: list[tuple[str, torch.Tensor]],
-) -> dict[str, torch.Tensor]:
-    """Copy CUDA tensors into freshly allocated flat buffers and return views onto them.
-
-    ``torch_memory_saver.region()`` is a ``torch.cuda.use_mem_pool`` context, so anything
-    allocated while building the model -- the LoRA adapter parameters included -- lives in
-    a MemPool the preloaded hook backs with cuMem. cuMem allocations cannot be exported
-    over the legacy CUDA IPC API that ``MultiprocessingSerializer`` uses, so handing their
-    storages straight to the engine fails with "CUDA error: invalid argument" on the first
-    sync. Allocating here, outside any region, gets normal caching-allocator memory whose
-    handles export fine. (This is also why the FlattenedTensorBucket path works: its
-    flattened tensor is likewise allocated at sync time.)
-
-    One buffer per (dtype, device) rather than one clone per tensor: the direct-dict
-    transport relies on the pickler memoizing storages so the engine receives a handful of
-    IPC handles instead of one per adapter tensor.
-    """
-    groups: dict[tuple[torch.dtype, torch.device], list[tuple[str, torch.Tensor]]] = {}
-    for name, tensor in named_tensors:
-        if tensor.is_cuda:
-            groups.setdefault((tensor.dtype, tensor.device), []).append((name, tensor))
-
-    views: dict[str, torch.Tensor] = {}
-    for (dtype, device), items in groups.items():
-        flat = torch.empty(sum(t.numel() for _, t in items), dtype=dtype, device=device)
-        offset = 0
-        for name, tensor in items:
-            view = flat[offset : offset + tensor.numel()].view(tensor.shape)
-            view.copy_(tensor)
-            views[name] = view
-            offset += tensor.numel()
-
-    return {name: views.get(name, tensor) for name, tensor in named_tensors}
-
 
 def _send_to_colocated_engine(
     hf_named_tensors: list[tuple[str, torch.Tensor]],
@@ -258,27 +196,17 @@ def _send_to_colocated_engine(
     ipc_gather_src,
     ipc_gather_group,
     weight_version=None,
-    lora_config: dict | None = None,
-    lora_name: str | None = None,
-    check_equal: bool = False,
     selector: str = "all",
-    repack_lora_for_ipc: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
     if ipc_gather_group is None:
         return [], None
 
-    is_lora = lora_config is not None
     is_gather_src = dist.get_rank() == ipc_gather_src
     long_live_tensors = []
 
-    if is_lora:
-        payload = _repack_onto_fresh_storage(hf_named_tensors) if repack_lora_for_ipc else dict(hf_named_tensors)
-        long_live_tensors.append(payload)
-        converted_named_tensors_by_dtypes = {}
-        serialized_lora = MultiprocessingSerializer.serialize(payload, output_str=True)
-    elif getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+    if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
         converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
     else:
         converted_named_tensors_by_dtypes = {}
@@ -288,7 +216,7 @@ def _send_to_colocated_engine(
                 converted_named_tensors_by_dtypes[dtype] = []
             converted_named_tensors_by_dtypes[dtype].append((name, tensor))
 
-    serialized_tensors: list = [serialized_lora] if is_lora else []
+    serialized_tensors: list = []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
         flattened_tensor_data = {
@@ -308,41 +236,14 @@ def _send_to_colocated_engine(
 
     refs = []
     if is_gather_src:
-        if is_lora:
-            try:
-                ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
-            except Exception as _unload_err:
-                logger.debug("lora unload before load skipped: %s", _unload_err)
-
-            expected_checksums = None
-            if check_equal:
-                expected_checksums = {
-                    n: hashlib.sha256(
-                        t.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
-                    ).hexdigest()
-                    for n, t in hf_named_tensors
-                }
-
-            refs.append(
-                ipc_engine.load_lora_adapter_from_tensors.remote(
-                    lora_name=lora_name,
-                    config_dict=lora_config,
-                    serialized_named_tensors=[
-                        per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
-                    ],
-                    expected_checksums=expected_checksums,
-                )
-            )
-
-        else:
-            num_dtypes = len(serialized_named_tensors[0])
-            for i in range(num_dtypes):
-                kwargs = {
-                    "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
-                    "load_format": "flattened_bucket",
-                    "weight_version": str(weight_version),
-                    "selector": selector,
-                }
-                refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
+        num_dtypes = len(serialized_named_tensors[0])
+        for i in range(num_dtypes):
+            kwargs = {
+                "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
+                "load_format": "flattened_bucket",
+                "weight_version": str(weight_version),
+                "selector": selector,
+            }
+            refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
 
     return refs, long_live_tensors

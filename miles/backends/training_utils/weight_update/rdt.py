@@ -137,7 +137,6 @@ class UpdateWeightFromRDT(WeightTransferProtocol):
         self._connection_stale = False
         # Senders: the first rollout_num_gpus replicas of each PP shard.
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
-        self.is_lora_sender = False
         self._staged_tensors.clear()
         self._tensor_update_pending.clear()
         self._shared_params_dict = {}
