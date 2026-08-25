@@ -53,6 +53,7 @@ from torchtitan.components.dataloader import BaseDataLoader  # noqa: E402
 from torchtitan.components.loss import BaseLoss  # noqa: E402
 from torchtitan.components.optimizer import ParamGroupConfig  # noqa: E402
 from torchtitan.distributed import utils as titan_dist_utils  # noqa: E402
+from torchtitan.distributed.activation_checkpoint import FullAC  # noqa: E402
 from torchtitan.trainer import Trainer  # noqa: E402
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param  # noqa: E402
@@ -138,7 +139,8 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     config.loss = RLLossAdapter.Config()
     config.dataloader = EmptyDataLoader.Config()
     config.checkpoint = TiedCheckpointManager.Config()
-    config.activation_checkpoint = None  # parallelize_fn treats None as AC off
+    # miles' existing flag maps onto titan's own AC component; None means off.
+    config.activation_checkpoint = FullAC.Config() if getattr(args, "gradient_checkpointing", False) else None
     config.debug.seed = args.seed
 
     # The checkpointer must be enabled for the initial load: with no native
