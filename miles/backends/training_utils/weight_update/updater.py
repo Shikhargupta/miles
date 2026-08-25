@@ -52,9 +52,9 @@ class WeightUpdater:
         self.args = args
         self.parallel_state = parallel_state
         self.protocol = get_weight_transfer_protocol(args)
-        assert not is_lora or self.protocol.supports_lora, (
-            f"LoRA weight sync is not supported for {args.update_weight_transfer_mode!r} weight transfer."
-        )
+        assert (
+            not is_lora or self.protocol.supports_lora
+        ), f"LoRA weight sync is not supported for {args.update_weight_transfer_mode!r} weight transfer."
         self._hf_weight_iterator = iterator_factory(
             args,
             model,

@@ -377,4 +377,3 @@ class UpdateWeightFromRDT(WeightTransferProtocol):
             f"Some tensors were not transferred during RDT weight update. "
             f"Pending: {self._tensor_update_pending}, Staged: {self._staged_tensors}"
         )
-
