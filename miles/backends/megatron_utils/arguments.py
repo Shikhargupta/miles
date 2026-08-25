@@ -2,7 +2,7 @@ import logging
 import os
 
 from megatron.training.arguments import parse_args, validate_args
-from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
+from megatron.training.vocab_utils import calculate_padded_vocab_size
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
@@ -32,7 +32,12 @@ def set_default_megatron_args(args):
         args.rope_type = "yarn" if args.multi_latent_attention else "rope"
 
     if args.vocab_size and not args.padded_vocab_size:
-        args.padded_vocab_size = _vocab_size_with_padding(args.vocab_size, args)
+        args.padded_vocab_size = calculate_padded_vocab_size(
+            args.vocab_size,
+            args.make_vocab_size_divisible_by,
+            args.tensor_model_parallel_size,
+            logging_enabled=args.rank == 0,
+        )
 
     if not args.tokenizer_model and not args.tokenizer_type:
         logger.info("--tokenizer-model not set, use --hf-checkpoint as tokenizer model.")
