@@ -19,6 +19,7 @@ normalization, scaling) is unchanged, so replayed routing stays differentiable
 through the gate exactly as recorded routing is.
 """
 
+import contextlib
 import functools
 import logging
 import types
@@ -88,6 +89,10 @@ def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor
     return topk_scores_BLK, topk_expert_ids_BLK, scores_BLE
 
 
+_BYPASS_ATTR = "_miles_replay_bypass_next"
+_INSTALLED_ATTR = "_miles_replay_installed"
+
+
 def install(model_parts: list[nn.Module]) -> int:
     """Install R3 on every TokenChoiceTopKRouter and return the number of streams.
 
@@ -120,6 +125,7 @@ def install(model_parts: list[nn.Module]) -> int:
 
     for part in model_parts:
         _bracket_real_forward(part)
+        setattr(part, _INSTALLED_ATTR, True)
 
     for layer_idx, router in sorted(routers, key=lambda pair: pair[0]):
         router._miles_replay_topk = routing_replay_manager.get_topk_fn(
@@ -136,7 +142,14 @@ def install(model_parts: list[nn.Module]) -> int:
     return len(routers)
 
 
-_BYPASS_ATTR = "_miles_replay_bypass_next"
+def _is_installed(model_parts: list[nn.Module]) -> bool:
+    """Whether these parts are the ones replaying.
+
+    Only the actor's model gets routers rebound; the reference model runs its
+    own routing. Both are TitanTrainers driving the same shared manager, so the
+    replay hooks have to tell them apart.
+    """
+    return routing_replay_manager.enabled and all(getattr(part, _INSTALLED_ATTR, False) for part in model_parts)
 
 
 def bypass_next_forward(model_parts: list[nn.Module]) -> None:
@@ -154,28 +167,34 @@ def bypass_next_forward(model_parts: list[nn.Module]) -> None:
     once-per-job event: an RL step does a log-prob pass and then a training
     pass, and each one re-infers.
     """
-    if not routing_replay_manager.enabled:
+    if not _is_installed(model_parts):
         return
     for part in model_parts:
         setattr(part, _BYPASS_ATTR, True)
 
 
-def check_consumption(expected: int) -> None:
-    """Assert every queue advanced exactly once per microbatch.
+@contextlib.contextmanager
+def consumption_guard(model_parts: list[nn.Module], expected: int):
+    """Assert the pass read exactly one queue entry per microbatch.
 
     The replay is only correct if entry k is read by microbatch k, and nothing
-    in the mechanism enforces that: a stray forward silently shifts every
-    subsequent lookup. This turns that shift into a failure at the end of the
-    pass that caused it.
+    in the mechanism enforces it: a stray forward shifts every later lookup
+    silently. This turns that shift into a failure in the pass that caused it.
+
+    The queues are filled once per rollout and read across its optimizer steps,
+    so what a single pass can be held to is the *advance*, not the position.
     """
-    if not routing_replay_manager.enabled:
+    if not _is_installed(model_parts):
+        yield
         return
+    before = {id(replay): replay.forward_index for replay in routing_replay_manager.replays}
+    yield
     for replay in routing_replay_manager.replays:
-        if replay.forward_index != expected:
+        advance = replay.forward_index - before[id(replay)]
+        if advance != expected:
             raise RuntimeError(
-                f"routing replay stream {replay.stream_idx} advanced "
-                f"{replay.forward_index} times over a pass of {expected} microbatches; "
-                "the queues no longer line up with the microbatches"
+                f"routing replay stream {replay.stream_idx} advanced {advance} times over a pass "
+                f"of {expected} microbatches; the queues no longer line up with the microbatches"
             )
 
 

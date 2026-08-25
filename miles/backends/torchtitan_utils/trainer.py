@@ -487,14 +487,14 @@ class TitanTrainer(Trainer):
         self.loss_fn.arm(batches, loss_closure, "train")
         input_dicts, labels = self._microbatch_inputs(batches)
         ones = torch.ones((), device=self.device)
-        if self.parallel_dims.pp_enabled:
-            if self._pipeline_will_infer_metadata(has_backward=True):
-                routing_replay.bypass_next_forward(self.model_parts)
-            self.forward_backward_step(input_dict=input_dicts, labels=labels, global_valid_tokens=ones)
-            routing_replay.check_consumption(len(batches))
-        else:
-            for input_dict, label in zip(input_dicts, labels, strict=True):
-                self.forward_backward_step(input_dict=input_dict, labels=label, global_valid_tokens=ones)
+        with routing_replay.consumption_guard(self.model_parts, len(batches)):
+            if self.parallel_dims.pp_enabled:
+                if self._pipeline_will_infer_metadata(has_backward=True):
+                    routing_replay.bypass_next_forward(self.model_parts)
+                self.forward_backward_step(input_dict=input_dicts, labels=labels, global_valid_tokens=ones)
+            else:
+                for input_dict, label in zip(input_dicts, labels, strict=True):
+                    self.forward_backward_step(input_dict=input_dict, labels=label, global_valid_tokens=ones)
         return self.loss_fn.collect() if self.has_last_stage() else []
 
     def run_forward(self, batches, compute: Callable) -> list:
@@ -503,33 +503,33 @@ class TitanTrainer(Trainer):
         batches = list(batches)
         self.loss_fn.arm(batches, compute, "eval")
         input_dicts, labels = self._microbatch_inputs(batches)
-        if self.parallel_dims.pp_enabled:
-            arg_mbs, kwarg_mbs, target_mbs = [], [], []
-            for input_dict, label in zip(input_dicts, labels, strict=True):
-                inputs, label, extra = self.post_dataloading_process(input_dict, label)
-                arg_mbs.append((inputs,))
-                kwarg_mbs.append(extra)
-                target_mbs.append(label)
-            losses = [] if self.pp_has_last_stage else None
-            if self._pipeline_will_infer_metadata(has_backward=False):
-                routing_replay.bypass_next_forward(self.model_parts)
-            # return_outputs=False matters: the last stage otherwise retains
-            # every microbatch's full-vocab logits until the merge -- at RL
-            # sequence lengths that alone exceeds device memory. The loss
-            # adapter has already consumed each microbatch's logits by then.
-            self.pp_schedule.eval(
-                arg_mbs=arg_mbs if self.pp_has_first_stage else None,
-                kwarg_mbs=kwarg_mbs,
-                target_mbs=target_mbs if self.pp_has_last_stage else None,
-                losses=losses,
-                return_outputs=False,
-            )
-            routing_replay.check_consumption(len(batches))
-        else:
-            for input_dict, label in zip(input_dicts, labels, strict=True):
-                inputs, label, extra = self.post_dataloading_process(input_dict, label)
-                pred = self.model_parts[0](inputs, **extra)
-                self.loss_fn(pred, label)
+        with routing_replay.consumption_guard(self.model_parts, len(batches)):
+            if self.parallel_dims.pp_enabled:
+                arg_mbs, kwarg_mbs, target_mbs = [], [], []
+                for input_dict, label in zip(input_dicts, labels, strict=True):
+                    inputs, label, extra = self.post_dataloading_process(input_dict, label)
+                    arg_mbs.append((inputs,))
+                    kwarg_mbs.append(extra)
+                    target_mbs.append(label)
+                losses = [] if self.pp_has_last_stage else None
+                if self._pipeline_will_infer_metadata(has_backward=False):
+                    routing_replay.bypass_next_forward(self.model_parts)
+                # return_outputs=False matters: the last stage otherwise retains
+                # every microbatch's full-vocab logits until the merge -- at RL
+                # sequence lengths that alone exceeds device memory. The loss
+                # adapter has already consumed each microbatch's logits by then.
+                self.pp_schedule.eval(
+                    arg_mbs=arg_mbs if self.pp_has_first_stage else None,
+                    kwarg_mbs=kwarg_mbs,
+                    target_mbs=target_mbs if self.pp_has_last_stage else None,
+                    losses=losses,
+                    return_outputs=False,
+                )
+            else:
+                for input_dict, label in zip(input_dicts, labels, strict=True):
+                    inputs, label, extra = self.post_dataloading_process(input_dict, label)
+                    pred = self.model_parts[0](inputs, **extra)
+                    self.loss_fn(pred, label)
         return self.loss_fn.collect() if self.has_last_stage() else []
 
     def apply_optimizer_step(self) -> StepMetrics:

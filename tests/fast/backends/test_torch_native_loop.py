@@ -6,6 +6,7 @@ per microbatch instead of per step), and those are invisible in a loss curve.
 """
 
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -67,6 +68,18 @@ def loop_env():
         patch.object(tnl, "aggregate_forward_results", lambda store, *a, **kw: {"n": len(store)}),
         patch.object(tnl, "get_log_probs_and_entropy", lambda **kw: {"log_probs": 1, "entropy": 2}),
         patch.object(tnl.dist, "get_rank", lambda: 0),
+        # The loop asks the topology which rank reports metrics (the last
+        # pipeline stage, not global rank 0), so it needs a state to ask.
+        patch.object(
+            tnl,
+            "get_parallel_state",
+            lambda: SimpleNamespace(
+                intra_dp_cp=SimpleNamespace(rank=0),
+                effective_dp_cp=SimpleNamespace(rank=0),
+                tp=SimpleNamespace(rank=0),
+                is_pp_last_stage=True,
+            ),
+        ),
     ):
         yield calls
 

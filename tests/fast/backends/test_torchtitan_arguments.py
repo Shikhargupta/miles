@@ -19,9 +19,12 @@ from miles.backends.torchtitan_utils.arguments import TorchtitanArgs, validate_t
 def _args(**overrides) -> Namespace:
     base = dict(
         titan_attn_backend="flex",
+        titan_model_name="qwen3",
+        titan_seq_len=8192,
         titan_pipeline_parallel_degree=1,
         titan_context_parallel_degree=1,
         titan_expert_parallel_degree=1,
+        rollout_max_context_len=8192,
         ref_update_interval=None,
         save_debug_train_data=None,
     )
@@ -69,16 +72,30 @@ def test_pipeline_parallelism_is_accepted(monkeypatch):
     validate_torchtitan_args(_args(titan_pipeline_parallel_degree=2))
 
 
-def test_context_parallelism_is_rejected(monkeypatch):
+def test_context_and_expert_parallelism_are_accepted(monkeypatch):
+    """Both stay inside the trainer: it shards the sequence and gathers the
+    logits back before the loss, and the expert axis only changes where a
+    parameter lives. The shared loop is told cp=1 either way."""
     monkeypatch.setattr(torch, "__version__", "2.13.0")
-    with pytest.raises(ValueError, match="titan-context-parallel-degree"):
-        validate_torchtitan_args(_args(titan_context_parallel_degree=2))
+    validate_torchtitan_args(_args(titan_context_parallel_degree=2))
+    validate_torchtitan_args(_args(titan_expert_parallel_degree=2))
 
 
-def test_expert_parallelism_is_rejected(monkeypatch):
+def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
+    """Upstream needs the whole sequence for GatedDeltaNet, so torchtitan itself
+    refuses -- deep inside the model build rather than here."""
     monkeypatch.setattr(torch, "__version__", "2.13.0")
-    with pytest.raises(ValueError, match="titan-expert-parallel-degree"):
-        validate_torchtitan_args(_args(titan_expert_parallel_degree=2))
+    with pytest.raises(ValueError, match="context parallelism"):
+        validate_torchtitan_args(_args(titan_model_name="qwen3_5", titan_context_parallel_degree=2))
+
+
+def test_a_sequence_longer_than_the_rotary_tables_is_rejected(monkeypatch):
+    """torchtitan sizes its rotary embeddings from --titan-seq-len; a longer
+    prompt-plus-response indexes past them and asserts inside the rope kernel,
+    pointing at rope rather than at the setting."""
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="titan-seq-len"):
+        validate_torchtitan_args(_args(titan_seq_len=8192, rollout_max_context_len=16384))
 
 
 def test_periodic_reference_refresh_is_rejected_rather_than_ignored(monkeypatch):

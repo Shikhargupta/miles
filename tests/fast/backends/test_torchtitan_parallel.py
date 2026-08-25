@@ -69,18 +69,24 @@ def _state(dist_stub, meshes: dict[str, int], world: int | None = None, **kwargs
     dist_stub["__world__"] = world
     dist_stub["gloo"] = world
     dist_stub["self_group"] = 1
-    dp_cp = meshes.get("loss", 1)
-    dist_stub[f"gloo_sub{tuple(range(dp_cp))}"] = dp_cp
+    # The gloo subgroup is congruent with the sample-parallel axis, which is
+    # titan's batch mesh (cp stays inside the trainer).
+    dp = meshes.get("batch", 1)
+    dist_stub[f"gloo_sub{tuple(range(dp))}"] = dp
     return tp.create_titan_parallel_state(_ParallelDims(meshes), **kwargs)
 
 
-def test_batch_and_loss_meshes_map_to_the_dp_axes(dist_stub):
-    """titan's 'batch' mesh is dp_replicate x dp_shard; 'loss' folds cp in as
-    well -- which is exactly miles' intra_dp / intra_dp_cp split."""
+def test_context_parallelism_is_hidden_from_the_shared_helpers(dist_stub):
+    """titan's 'batch' mesh is dp_replicate x dp_shard and 'loss' folds cp in,
+    but the shared helpers must be told cp is 1: the trainer shards the sequence
+    itself and gathers the logits back before the loss sees them. Reporting cp>1
+    here would make get_batch slice the rollout a second time and make the metric
+    reduction average over ranks holding identical values, so intra_dp_cp is the
+    sample-parallel axis rather than titan's 'loss' mesh."""
     state = _state(dist_stub, {"batch": 4, "loss": 8, "cp": 2})
     assert state.intra_dp.size == 4
-    assert state.intra_dp_cp.size == 8
-    assert state.cp.size == 2
+    assert state.intra_dp_cp.size == 4
+    assert state.cp.size == 1
 
 
 def test_absent_axes_become_trivial_single_rank_groups(dist_stub):
@@ -107,10 +113,11 @@ def test_a_dp_cp_group_narrower_than_the_world_gets_its_own_gloo_subgroup(dist_s
 
 def test_the_dp_cp_group_gets_a_gloo_group(dist_stub):
     """Some shared reductions over this axis are object-based, so they need a
-    CPU-capable group rather than the nccl one."""
+    CPU-capable group rather than the nccl one. It is the same group as intra_dp
+    because cp is internal to the trainer."""
     state = _state(dist_stub, {"batch": 2, "loss": 2})
     assert state.intra_dp_cp.gloo_group == "gloo"
-    assert state.intra_dp.gloo_group is None
+    assert state.intra_dp_cp is state.intra_dp
 
 
 def test_titan_has_no_expert_tensor_axis(dist_stub):

@@ -84,7 +84,16 @@ def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True)
     for mesh_name, field in _MESH_TO_FIELD.items():
         mesh = parallel_dims.get_optional_mesh(mesh_name)
         if mesh is None:
-            fields[field] = trivial
+            # titan builds no mesh for a degree-1 axis. The sample-parallel one
+            # still needs a gloo group even when it is this rank alone -- the
+            # shared log gathering reduces over it unconditionally, and a None
+            # group fails with "Group None is not registered". Model parallelism
+            # alone (tp x pp filling the world) puts us here.
+            fields[field] = (
+                GroupInfo(rank=0, size=1, group=self_group, gloo_group=_gloo_subgroup([rank]))
+                if field == "intra_dp"
+                else trivial
+            )
             continue
         group = mesh.get_group()
         member_ranks = dist.get_process_group_ranks(group)

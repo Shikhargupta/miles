@@ -88,47 +88,65 @@ def test_each_microbatch_replays_its_own_entry(part):
     _queue_microbatches(3)
     scores = torch.rand(1, 4, 8, device="cuda")
 
-    for expected in range(3):
-        picked = part(scores)
-        assert picked.unique().tolist() == [expected]
-
-    routing_replay.check_consumption(3)
+    with routing_replay.consumption_guard([part], 3):
+        for expected in range(3):
+            assert part(scores).unique().tolist() == [expected]
 
 
 def test_the_schedules_metadata_forward_does_not_consume(part):
     _queue_microbatches(2)
     scores = torch.rand(1, 4, 8, device="cuda")
 
-    routing_replay.bypass_next_forward([part])
-    inferred = part(scores)
-    # Bypassed: the router chose for itself rather than replaying entry 0.
-    assert inferred.unique().tolist() != [0]
+    with routing_replay.consumption_guard([part], 2):
+        routing_replay.bypass_next_forward([part])
+        inferred = part(scores)
+        # Bypassed: the router chose for itself rather than replaying entry 0.
+        assert inferred.unique().tolist() != [0]
 
-    for expected in range(2):
-        assert part(scores).unique().tolist() == [expected]
+        for expected in range(2):
+            assert part(scores).unique().tolist() == [expected]
 
-    routing_replay.check_consumption(2)
+
+def test_consecutive_passes_share_one_queue(part):
+    """The queues are filled per rollout and read across its optimizer steps, so
+    a pass is held to how far it advanced, not to where it ended up."""
+    _queue_microbatches(4)
+    scores = torch.rand(1, 4, 8, device="cuda")
+
+    for step in range(2):
+        with routing_replay.consumption_guard([part], 2):
+            for offset in range(2):
+                assert part(scores).unique().tolist() == [step * 2 + offset]
 
 
 def test_bypass_covers_exactly_one_forward(part):
     _queue_microbatches(2)
     scores = torch.rand(1, 4, 8, device="cuda")
 
-    routing_replay.bypass_next_forward([part])
-    part(scores)
-    part(scores)
-    # The bypass is spent, so the second forward replayed entry 0 -- and the
-    # pass is short one microbatch.
+    # The bypass is spent by the first forward, so the second replays entry 0
+    # and the pass comes up one microbatch short.
     with pytest.raises(RuntimeError, match="no longer line up"):
-        routing_replay.check_consumption(2)
+        with routing_replay.consumption_guard([part], 2):
+            routing_replay.bypass_next_forward([part])
+            part(scores)
+            part(scores)
 
 
 def test_a_stray_forward_is_reported(part):
     _queue_microbatches(3)
     scores = torch.rand(1, 4, 8, device="cuda")
 
-    for _ in range(3):
-        part(scores)
-
     with pytest.raises(RuntimeError, match="advanced 3 times over a pass of 2"):
-        routing_replay.check_consumption(2)
+        with routing_replay.consumption_guard([part], 2):
+            for _ in range(3):
+                part(scores)
+
+
+def test_the_reference_model_is_left_alone(part):
+    """Only the actor's routers replay; a second trainer's parts must not be
+    held to the actor's queues."""
+    _queue_microbatches(1)
+    other = _Part()
+
+    with routing_replay.consumption_guard([other], 7):
+        pass
