@@ -76,7 +76,7 @@ def validate_torchtitan_args(args) -> None:
             f"torch>={'.'.join(map(str, needed))}; this environment runs {torch.__version__}"
         )
     if args.titan_cp_size != 1:
-        # The engine's forward hands miles' loss full-sequence logits; under CP
+        # The trainer's forward hands miles' loss full-sequence logits; under CP
         # they come back sequence-sharded and the loss-side gather is not wired.
         # (For qwen3_5 torchtitan itself rejects CP: GatedDeltaNet needs the
         # full sequence.)
