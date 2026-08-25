@@ -11,12 +11,12 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.16
+ARG SGLANG_IMAGE_TAG=v0.5.18
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
 
-ARG SGLANG_BRANCH=sglang-miles
+ARG SGLANG_BRANCH=sglang-miles-v0.5.18
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
@@ -30,7 +30,7 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-x86_64
+ARG WHEELS_TAG_X86=cu130-torch213-x86_64
 ARG WHEELS_TAG_ARM64=cu130-aarch64
 
 # ======================================== Setup =============================================
@@ -159,7 +159,7 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
 # orthogonalization; not on PyPI (only a dependency-confusion stub), so install from the
 # git source Megatron-LM itself pins in pyproject.toml.
-RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1.0"
+RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3.0"
 
 # torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
