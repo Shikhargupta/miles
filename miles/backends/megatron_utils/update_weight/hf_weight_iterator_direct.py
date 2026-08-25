@@ -6,8 +6,8 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator import MegatronHfWeightIteratorBase
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
@@ -23,9 +23,7 @@ from .common import (
 )
 
 
-class HfWeightIteratorDirect(HfWeightIteratorBase):
-    forced_placement = WeightUpdatePlacement(gather_pp=True)
-
+class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(
@@ -44,7 +42,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
             yield hf_named_tensors
             del megatron_full_params
 
-    def _export_lora_named_tensors(self, adapter):
+    def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
         # Local: raw-mode adapter export only exists for the inkling plugin.
         from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named

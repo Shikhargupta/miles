@@ -7,16 +7,13 @@ names and ``WeightUpdatePlacement`` only — no backend types cross it.
 """
 
 import dataclasses
-import math
 from abc import ABC, abstractmethod
 from argparse import Namespace
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from typing import ClassVar
 
 import torch
-import torch.distributed as dist
 
-from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora import is_lora_weight_name
 
 
@@ -27,7 +24,7 @@ class WeightUpdatePlacement:
     A gathered dim: every yielded tensor is full along that dim, identically on
     every rank of that dim's group. A non-gathered dim: each rank yields its own
     shard of the param set (e.g. its PP slice). Backends ignore dims they don't
-    have (an FSDP-family backend treats every placement as FULL).
+    have (an FSDP-family backend treats every placement as fully gathered).
     """
 
     gather_pp: bool
@@ -100,10 +97,9 @@ class HfWeightIteratorBase(ABC):
         """The complete adapter in HF PEFT naming (lora_A/lora_B), as one list.
 
         Always fully gathered regardless of ``self.placement`` — adapters are
-        small and engines load the whole adapter in one call, so PP assembly
-        happens here rather than at call sites. ``adapter=None`` exports the
-        single-LoRA adapter; otherwise the multi-LoRA adapter to export.
-        Collective: every rank must call this together.
+        small and engines load the whole adapter in one call. ``adapter=None``
+        exports the single-LoRA adapter; otherwise the multi-LoRA adapter to
+        export. Collective: every rank must call this together.
         """
         named_tensors = self._export_lora_named_tensors(adapter)
         if not named_tensors:
@@ -113,7 +109,6 @@ class HfWeightIteratorBase(ABC):
                 "No adapter weights were sent to the rollout engine. This usually means "
                 "the Megatron-Bridge or SGLang version is incompatible."
             )
-        named_tensors = _assemble_pp_full_adapter(named_tensors)
         if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
             raise RuntimeError(
                 "LoRA weight sync failed: chunk contains no LoRA weights "
@@ -123,45 +118,6 @@ class HfWeightIteratorBase(ABC):
 
     @abstractmethod
     def _export_lora_named_tensors(self, adapter) -> list[tuple[str, torch.Tensor]]:
-        """Backend hook: the adapter's HF-named tensors, TP/EP gathered;
-        PP-local is fine (``get_hf_lora_weights`` assembles PP)."""
-
-
-def _assemble_pp_full_adapter(
-    hf_named_tensors: Sequence[tuple[str, torch.Tensor]],
-) -> list[tuple[str, torch.Tensor]]:
-    """Assemble the complete adapter on every PP rank (backend exporters gather
-    TP/EP but not PP)."""
-    pp = get_parallel_state().pp
-    if pp.size == 1:
-        return list(hf_named_tensors)
-    pp_rank = pp.rank
-    global_ranks = dist.get_process_group_ranks(pp.group)
-    device = torch.cuda.current_device()
-
-    local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
-    all_meta: list = [None] * pp.size
-    dist.all_gather_object(all_meta, local_meta, group=pp.group)
-
-    local_by_name = {n: t for n, t in hf_named_tensors}
-    merged: dict[str, torch.Tensor] = {}
-    for src_pp, meta in enumerate(all_meta):
-        by_dtype: dict = {}
-        for n, shape, dtype in meta:
-            by_dtype.setdefault(dtype, []).append((n, shape))
-        for dtype, entries in by_dtype.items():
-            numel = sum(math.prod(shape) for _, shape in entries)
-            flat = torch.empty(numel, dtype=dtype, device=device)
-            if src_pp == pp_rank:
-                off = 0
-                for n, shape in entries:
-                    k = math.prod(shape)
-                    flat[off : off + k].copy_(local_by_name[n].reshape(-1))
-                    off += k
-            dist.broadcast(flat, src=global_ranks[src_pp], group=pp.group)
-            off = 0
-            for n, shape in entries:
-                k = math.prod(shape)
-                merged[n] = flat[off : off + k].view(shape)
-                off += k
-    return sorted(merged.items())
+        """Backend hook: the complete adapter as HF-named tensors, fully
+        gathered along every parallel dim — the backend owns its parallel
+        groups, so any PP assembly happens inside the hook."""

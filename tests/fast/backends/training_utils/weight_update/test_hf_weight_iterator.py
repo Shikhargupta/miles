@@ -1,7 +1,7 @@
 """Unit tests for the backend-neutral HF weight iterator base.
 
 Covers WeightUpdatePlacement / resolve_placement and the get_hf_lora_weights
-template method (validation + PP assembly gating), which every backend shares.
+template method (validation), which every backend shares.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -11,7 +11,6 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 import torch
@@ -21,8 +20,6 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     WeightUpdatePlacement,
     resolve_placement,
 )
-
-_MODULE = "miles.backends.training_utils.weight_update.hf_weight_iterator"
 
 SAMPLE_LORA_WEIGHTS = [
     ("model.layers.0.self_attn.q_proj.lora_A.weight", torch.randn(4, 2)),
@@ -68,22 +65,16 @@ class _StubIterator(HfWeightIteratorBase):
         return self._exported
 
 
-def _patch_pp_size_one():
-    return patch(f"{_MODULE}.get_parallel_state", return_value=SimpleNamespace(pp=SimpleNamespace(size=1)))
-
-
 class TestGetHfLoraWeightsTemplate:
     def test_returns_exported_adapter(self):
         iterator = _StubIterator(SAMPLE_LORA_WEIGHTS)
-        with _patch_pp_size_one():
-            assert iterator.get_hf_lora_weights() == SAMPLE_LORA_WEIGHTS
+        assert iterator.get_hf_lora_weights() == SAMPLE_LORA_WEIGHTS
         assert iterator.export_calls == [None]
 
     def test_adapter_argument_reaches_the_hook(self):
         adapter = SimpleNamespace(name="slot0")
         iterator = _StubIterator(SAMPLE_LORA_WEIGHTS)
-        with _patch_pp_size_one():
-            iterator.get_hf_lora_weights(adapter)
+        iterator.get_hf_lora_weights(adapter)
         assert iterator.export_calls == [adapter]
 
     def test_raises_on_empty_export(self):
@@ -98,6 +89,5 @@ class TestGetHfLoraWeightsTemplate:
 
     def test_raises_when_export_has_no_lora_names(self):
         iterator = _StubIterator(SAMPLE_BASE_ONLY_WEIGHTS)
-        with _patch_pp_size_one():
-            with pytest.raises(RuntimeError, match="no LoRA weights"):
-                iterator.get_hf_lora_weights()
+        with pytest.raises(RuntimeError, match="no LoRA weights"):
+            iterator.get_hf_lora_weights()

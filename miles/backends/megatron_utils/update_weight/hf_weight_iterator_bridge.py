@@ -2,7 +2,7 @@ import dataclasses
 import json
 import os
 
-from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator import MegatronHfWeightIteratorBase
 from miles.utils import megatron_bridge_utils
 from miles.utils.lora import is_lora_weight_name
 
@@ -12,10 +12,7 @@ from ..misc_utils import strip_param_name_prefix
 from .common import get_atomic_update_groups
 
 
-class HfWeightIteratorBridge(HfWeightIteratorBase):
-    # megatron-bridge gathers every parallel dim internally.
-    forced_placement = WeightUpdatePlacement(gather_pp=True)
-
+class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -62,7 +59,7 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             units = _stream_atomic_units(named_weights, groups)
             yield from _chunk_atomic_units_by_size(units, chunk_size=self.args.update_weight_buffer_size)
 
-    def _export_lora_named_tensors(self, adapter):
+    def _export_pp_local_lora(self, adapter):
         if adapter is None:
             return self._export_current_adapter()
 
