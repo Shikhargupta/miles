@@ -176,9 +176,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
 
-        # Senders: the first rollout_num_gpus replicas of each PP shard (all of
-        # them when replicas <= rollout gpus); target planning stays in
-        # RemoteTransferPlan (protocol-owned).
+        # Senders: the first rollout_num_gpus replicas of each PP shard.
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
         self.is_lora_sender = False
 

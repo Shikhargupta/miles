@@ -169,8 +169,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             )
 
     def _for_each_hf_bucket(self, bucket_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None]) -> None:
-        """Feed every HF bucket through ``bucket_func``. All ranks drive the
-        iterator (its gathers are collective); ``bucket_func`` only runs on senders."""
+        """Feed every HF bucket through ``bucket_func``; runs on senders only."""
         pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self.is_sender else None
         weights = self.weights_getter()
         for bucket in self._hf_weight_iterator.iter_hf_base_weights(weights, materialize=self.is_sender):

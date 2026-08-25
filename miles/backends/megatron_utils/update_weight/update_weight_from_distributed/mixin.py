@@ -22,18 +22,11 @@ logger = logging.getLogger(__name__)
 class DistBucketedWeightUpdateMixin:
     """Distributed weight-update lifecycle over the HF weight iterator.
 
-    Requires the consuming class to set:
-        self.args, self.model, self.model_name, self.quantization_config.
-        self.weight_version: int.
-        self.rollout_engines: Sequence[ActorHandle].
-        self._group_name: str (shown in the tqdm progress bar).
-        self.is_sender / self.is_lora_sender: bool, decided at connect time.
-        self._update_weight_implementation(bucket, pbar) -> None
-            Transfer one bucket of HF ``(name, tensor)`` pairs (NCCL broadcast,
-            p2p write, ...).
-        self._update_lora_weight_implementation(named_tensors) -> None
-        self._update_multi_lora_weight_implementation(named_tensors, *, lora_name, lora_config) -> None
-        Optionally override ``_after_base_weights`` (e.g. await in-flight writes).
+    Consuming classes set args/model/model_name/quantization_config,
+    weight_version, rollout_engines, _group_name, and — at connect time —
+    is_sender / is_lora_sender. They implement
+    ``_update_weight_implementation(bucket, pbar)`` plus the LoRA variants, and
+    may override ``_after_base_weights`` (e.g. await in-flight writes).
     """
 
     def _init_weight_transfer(

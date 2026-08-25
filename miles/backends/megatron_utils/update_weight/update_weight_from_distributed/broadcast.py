@@ -77,8 +77,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.rollout_engine_lock = rollout_engine_lock
         self._engine_gpu_counts = engine_gpu_counts
 
-        # All pairing decisions happen here: one sender per replica set, one
-        # NCCL group (sender + every engine GPU) per shard.
+        # One sender per replica set; one NCCL group (sender + all engines) per shard.
         placement = self._hf_weight_iterator.placement
         replica_rank, _ = derive_replica_position(get_parallel_state(), placement)
         self.is_sender = replica_rank == 0
