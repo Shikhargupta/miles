@@ -74,7 +74,7 @@ def run_ci(
             fully_async=False,
             mean_interval_seconds_of_cell_type={ACTOR_CELL_TYPE: hot_restart_interval_seconds},
             create_forms=create_forms,
-            extra_train_args=build_checkpoint_args(resolve_dump_dir(TEST_NAME)),
+            extra_train_args=_build_train_args(resolve_dump_dir(TEST_NAME)),
         )
 
     form = hot_restart_form.value
@@ -102,6 +102,10 @@ def run_ci(
     assert_no_take_over_threw_away_more_than_a_save_interval(evidence.records)
 
     print(f"Hot restart realistic gsm8k test PASSED (seed={seed}, rollouts={num_rollout})")
+
+
+def _build_train_args(dump_dir: str) -> str:
+    return build_checkpoint_args(dump_dir) + "--ci-disable-weight-update-checker "
 
 
 def assert_no_take_over_attempt_failed(events: list[Event]) -> None:

@@ -81,10 +81,16 @@ async def trainer_init_or_load_state(
 # ============================ inference take-over =============================
 
 
-async def init_or_reset_inference_controller(inference_controller: BaseWorkerHandle) -> None:
+async def init_or_reset_inference_controller(
+    inference_controller: BaseWorkerHandle, *, args: Namespace
+) -> None:
     if not await inference_controller.is_initialized():
         await inference_controller.init()
         return
+
+    assert args.update_weight_transfer_mode != "disk-delta", (
+        "Hot restart does not support disk-delta weight transfer because its first update only captures a baseline"
+    )
 
     logger.info("The inference controller outlived a previous orchestration script; taking it over as it is")
 

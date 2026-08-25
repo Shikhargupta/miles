@@ -35,10 +35,10 @@ class TestTheRecipeIsTheOneFtConverges:
         assert scenario.DEFAULT_NUM_ROLLOUT is scenario_realistic_gsm8k.DEFAULT_NUM_ROLLOUT
 
     def test_this_scenario_spells_no_training_arguments_of_its_own_beyond_its_checkpoints(self):
-        """Anything else spelled here is a recipe divergence nothing would compare against ft's."""
-        declared = [one for one in shlex.split(scenario.build_checkpoint_args("/dumps")) if one.startswith("--")]
+        """Hot restart keeps the FT recipe except for checkpointing and its incompatible tensor checker."""
+        declared = [one for one in shlex.split(scenario._build_train_args("/dumps")) if one.startswith("--")]
 
-        assert sorted(declared) == ["--load", "--save", "--save-interval"]
+        assert sorted(declared) == ["--ci-disable-weight-update-checker", "--load", "--save", "--save-interval"]
 
 
 class TestTheInjectionPlan:

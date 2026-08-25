@@ -516,7 +516,7 @@ async def create_rollout_components(args) -> RolloutComponents:
     await wait_until_worker_not_initialized(rollout_executor)
 
     inference_controller = create_inference_controller_handle(capability=capability)
-    await init_or_reset_inference_controller(inference_controller)
+    await init_or_reset_inference_controller(inference_controller, args=args)
 
     await rollout_executor.init()
 
