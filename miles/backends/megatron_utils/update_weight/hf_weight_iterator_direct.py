@@ -34,8 +34,6 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         assert materialize, "non-materializing iteration lands with the distributed-path migration"
         rank = dist.get_rank()
 
-        # Internal gather batching only: atomicity is enforced by the base
-        # template's post-conversion bucketing, never by the gather.
         pbar = tqdm(
             total=len(self._non_expert_batches) + len(self._expert_batches),
             disable=rank != 0,
@@ -131,10 +129,8 @@ def _materialize_expert_batch(
 ) -> list[tuple[str, torch.Tensor]]:
     """Load -> PP broadcast (when gather_pp) -> ETP all_gather -> EP all_gather.
 
-    Expert metadata is EP-local (each rank's own experts, plus other PP ranks'
-    experts of the same ep_rank when gather_pp), so the full expert set is
-    materialized by a symmetric EP all_gather with a name exchange — expert
-    shapes are identical across EP ranks, only the expert indices differ.
+    Expert metadata is EP-local; the full expert set is materialized by a
+    symmetric EP all_gather with a name exchange.
     """
     monkey_patch_torch_reductions()
     params = _load_or_allocate_params(param_infos, megatron_local_weights)
@@ -171,8 +167,7 @@ def _materialize_expert_batch(
 def _pack_param_infos_by_size(
     args: Namespace, param_infos: list[ParamInfo], *, size_multiplier: int = 1
 ) -> list[list[ParamInfo]]:
-    """Greedy size packing into gather batches ≤ update_weight_buffer_size.
-    Pure size packing: transfer atomicity is the base template's job."""
+    """Greedy size packing into gather batches ≤ update_weight_buffer_size."""
     batches: list[list[ParamInfo]] = [[]]
     buffer_size = 0
     for info in param_infos:
@@ -198,10 +193,7 @@ def _get_megatron_local_param_infos(
 ) -> tuple[list[ParamInfo], list[ParamInfo]]:
     """Collect param metadata, exchanged across PP when gather_pp.
 
-    Returns (non_expert_infos, expert_infos). Non-expert infos are identical on
-    every rank of the gathered span; expert infos stay EP-local — the full
-    expert set is materialized by the symmetric EP all_gather at gather time,
-    never merged into the metadata.
+    Returns (non_expert_infos, expert_infos); expert infos stay EP-local.
     """
     pp_size = get_parallel_state().pp.size
 
@@ -254,9 +246,7 @@ def _get_megatron_local_param_infos(
 
 
 def _check_param_infos_consistent(param_infos: list[ParamInfo]) -> None:
-    """Every rank must hold identical non-expert metadata once PP is gathered.
-    (Expert metadata is EP-local by design; the EP all_gather validates its own
-    per-batch symmetry.)"""
+    """Every rank must hold identical non-expert metadata once PP is gathered."""
     all_param_info_list = [None] * dist.get_world_size()
     dist.all_gather_object(obj=param_infos, object_list=all_param_info_list, group=get_gloo_group())
     for i, param_info in enumerate(param_infos):
