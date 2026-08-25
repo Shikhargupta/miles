@@ -463,7 +463,11 @@ class TitanTrainer(Trainer):
                 torch.cuda.empty_cache()
 
     def _hf_weights_on_device(self) -> Iterator[tuple[str, torch.Tensor]]:
-        sd_adapter = self.checkpointer.sd_adapter
+        # The checkpointer only builds its adapter when checkpointing is
+        # enabled; weight streaming needs the mapping regardless.
+        sd_adapter = getattr(self.checkpointer, "sd_adapter", None)
+        if sd_adapter is None:
+            sd_adapter = self.config.model_spec.state_dict_adapter(self.model_config, self.config.hf_assets_path)
         local = sd_adapter.to_hf({k: v for part in self.model_parts for k, v in part.state_dict().items()})
         if not self.parallel_dims.pp_enabled:
             for name, tensor in local.items():
