@@ -8,6 +8,7 @@ from collections.abc import Sequence
 import torch
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.atomic_groups import get_hf_atomic_update_groups
 from miles.backends.training_utils.weight_update.gather import broadcast_from_owners
 from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     HfWeightIteratorBase,
@@ -18,6 +19,9 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import (
 
 class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
     forced_placement = WeightUpdatePlacement(gather_pp=True)
+
+    def _hf_atomic_update_groups(self):
+        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)
 
     def _export_lora_named_tensors(self, adapter):
         # Both megatron exporters gather TP/EP but not PP.

@@ -57,7 +57,7 @@ class _StubIterator(HfWeightIteratorBase):
         self._exported = exported
         self.export_calls = []
 
-    def iter_hf_base_weights(self, weights, *, materialize=True):
+    def _iter_hf_param_units(self, weights, *, materialize):
         yield from []
 
     def _export_lora_named_tensors(self, adapter):
