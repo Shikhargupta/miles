@@ -324,10 +324,31 @@ class TitanTrainer(Trainer):
                     f"but this step has {len(batches)}; global_batch_size / dp / "
                     "micro_batch_size must be constant (no dynamic batch sizing with PP)"
                 )
-        input_dicts = [
-            {"input": batch["tokens"], "positions": batch["position_ids"], **self._family_forward_kwargs()}
-            for batch in batches
-        ]
+
+        def _model_inputs(batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+            tokens, positions = batch["tokens"], batch["position_ids"]
+            if self.parallel_dims.pp_enabled:
+                # The pipeline stages' send/recv buffers are shape-inferred once
+                # and reused, so every microbatch of the whole run must have one
+                # shape: pad to the configured sequence length (zero positions,
+                # the same convention miles' get_batch pads with -- the padding
+                # becomes isolated single-token documents the loss never reads).
+                target = self.config.training.seq_len
+                if tokens.shape[1] > target:
+                    raise ValueError(
+                        f"packed microbatch of {tokens.shape[1]} tokens exceeds --titan-seq-len "
+                        f"{target}, which is the fixed shape PP stages exchange"
+                    )
+                pad = target - tokens.shape[1]
+                if pad:
+                    tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
+                    positions = torch.nn.functional.pad(positions, (0, pad), value=0)
+            return tokens, positions
+
+        input_dicts = []
+        for batch in batches:
+            tokens, positions = _model_inputs(batch)
+            input_dicts.append({"input": tokens, "positions": positions, **self._family_forward_kwargs()})
         # Targets are index tensors; RLLossAdapter maps them back to batches.
         labels = [torch.tensor(i, device=self.device) for i in range(len(batches))]
         return input_dicts, labels
