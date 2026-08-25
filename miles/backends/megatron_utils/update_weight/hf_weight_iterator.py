@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.atomic_groups import get_hf_atomic_update_groups
+from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     HfWeightIteratorBase,
     WeightUpdatePlacement,

@@ -20,9 +20,9 @@ from miles.backends.training_utils.weight_update.session import check_weight_syn
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.lora import is_lora_weight_name
 
-_UW_MODULE = "miles.backends.training_utils.weight_update.colocate"
+_UW_MODULE = "miles.backends.training_utils.weight_update.protocols.cuda_ipc"
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
-_BROADCAST_MODULE = "miles.backends.training_utils.weight_update.broadcast"
+_BROADCAST_MODULE = "miles.backends.training_utils.weight_update.protocols.broadcast"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -182,7 +182,7 @@ class TestFlattenedTensorBucketRoundTrip:
         not align across heterogeneous element sizes.
 
         This is a latent production landmine: ``_send_to_colocated_engine`` in
-        ``miles/backends/training_utils/weight_update/colocate.py``
+        ``miles/backends/training_utils/weight_update/protocols/cuda_ipc.py``
         reads the flag and packs mixed dtypes into a single bucket. In practice
         LoRA weights are uniform dtype, but FP8 / INT4 mixed-precision base
         weight sync would crash on sglang's receiver.

@@ -80,23 +80,23 @@ class WeightTransferProtocol(ABC):
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     # Local: protocol modules import megatron/sglang-heavy deps.
     if args.colocate and args.update_weight_transfer_mode != "rdt":
-        from miles.backends.training_utils.weight_update.colocate import UpdateWeightFromTensor
+        from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 
         return UpdateWeightFromTensor(args)
     if args.update_weight_transfer_mode == "broadcast":
-        from miles.backends.training_utils.weight_update.broadcast import UpdateWeightFromDistributed
+        from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
 
         return UpdateWeightFromDistributed(args)
     if args.update_weight_transfer_mode == "disk-delta":
-        from miles.backends.training_utils.weight_update.delta import UpdateWeightFromDiskDelta
+        from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
         return UpdateWeightFromDiskDelta(args)
     if args.update_weight_transfer_mode == "rdt":
-        from miles.backends.training_utils.weight_update.rdt import UpdateWeightFromRDT
+        from miles.backends.training_utils.weight_update.protocols.rdt import UpdateWeightFromRDT
 
         return UpdateWeightFromRDT(args)
     if args.update_weight_transfer_mode == "p2p":
-        from miles.backends.training_utils.weight_update.p2p import UpdateWeightP2P
+        from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
 
         return UpdateWeightP2P(args)
     raise ValueError(f"Unknown --update-weight-transfer-mode {args.update_weight_transfer_mode!r}")

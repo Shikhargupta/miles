@@ -8,7 +8,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
-from miles.backends.training_utils.weight_update.bucketing import (
+from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing import (
     AtomicUpdateGroup,
     assemble_atomic_update_groups,
     pack_units_by_size,
