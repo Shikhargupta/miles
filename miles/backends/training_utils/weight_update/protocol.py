@@ -1,0 +1,105 @@
+"""Transfer protocol contract and factory."""
+
+from abc import ABC, abstractmethod
+from argparse import Namespace
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any, ClassVar
+
+import torch
+from ray.actor import ActorHandle
+
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+
+
+class WeightTransferProtocol(ABC):
+    """Moves HF-named weight buckets from training ranks to rollout engines.
+
+    ``connect`` makes every pairing decision once: it sets ``is_sender``,
+    ``is_lora_sender``, and whatever send channels the protocol needs. The
+    updater then drives ``send_bucket`` on sender ranks only.
+    """
+
+    required_placement: ClassVar[WeightUpdatePlacement] = WeightUpdatePlacement(gather_pp=False)
+    supports_lora: ClassVar[bool] = False
+    # disk-delta transfers asynchronously behind the engines' own locking and
+    # never quiesces them.
+    uses_session_frame: ClassVar[bool] = True
+
+    def __init__(self, args: Namespace) -> None:
+        self.args = args
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale = False
+        self.is_sender = False
+        self.is_lora_sender = False
+        self.dst: Any = None
+
+    @abstractmethod
+    def connect(
+        self,
+        rollout_engines: Sequence[ActorHandle],
+        rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
+    ) -> None: ...
+
+    def begin_sync(
+        self,
+        weight_version: int,
+        iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]],
+    ) -> bool:
+        """Hook before the session frame; return False to skip this round.
+        The return value must be identical on every rank."""
+        return True
+
+    @abstractmethod
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]], weight_version: int) -> None: ...
+
+    def after_base_weights(self) -> None:  # noqa: B027 — optional hook
+        """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
+
+    def finalize(self, weight_version: int) -> None:  # noqa: B027 — optional hook
+        """Hook after all sends (e.g. publish + engine reload)."""
+
+    def send_adapter(self, named_tensors, *, lora_name: str, lora_config: dict, upsert: bool) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support LoRA weight sync")
+
+    def is_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_stale(self) -> None:
+        self._connection_stale = True
+
+    def pop_metrics(self) -> dict[str, float]:
+        return self.__dict__.pop("update_weight_metrics", {})
+
+
+def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+    # Local: protocol modules import megatron/sglang-heavy deps.
+    if args.update_weight_transfer_mode == "custom":
+        from miles.utils.misc import load_function
+
+        return load_function(args.custom_weight_transfer_path)(args)
+    if args.update_weight_transfer_mode == "broadcast":
+        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
+            UpdateWeightFromDistributed,
+        )
+
+        return UpdateWeightFromDistributed(args)
+    if args.update_weight_transfer_mode == "disk-delta":
+        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.delta import (
+            UpdateWeightFromDiskDelta,
+        )
+
+        return UpdateWeightFromDiskDelta(args)
+    if args.update_weight_transfer_mode == "rdt":
+        from miles.backends.megatron_utils.update_weight.update_weight_from_rdt import UpdateWeightFromRDT
+
+        return UpdateWeightFromRDT(args)
+    if args.update_weight_transfer_mode == "p2p":
+        from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+
+        return UpdateWeightP2P(args)
+    raise ValueError(f"Unknown --update-weight-transfer-mode {args.update_weight_transfer_mode!r}")

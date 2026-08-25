@@ -1,73 +1,43 @@
 import socket
 import time
 from argparse import Namespace
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 
 import ray
 import torch
 import torch.distributed as dist
 from ray import ObjectRef
 from ray.actor import ActorHandle
-from tqdm import tqdm
 
-from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results, weight_update_selector
 from miles.backends.training_utils.weight_update.transfer import derive_replica_position
 from miles.utils.distributed_utils import init_process_group
-from miles.utils.lora import LORA_ADAPTER_NAME
-
-from .mixin import DistBucketedWeightUpdateMixin
 
 
-class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
+class UpdateWeightFromDistributed(WeightTransferProtocol):
     """
     Update distributed engines via NCCL. Each PP rank: group "miles-pp_{pp_rank}",
     only DP=TP=0 broadcasts. Non-expert (TP) and expert (EP) params separate.
     """
 
-    def __init__(
-        self,
-        args: Namespace,
-        model: Sequence[torch.nn.Module],
-        weights_getter: Callable[[], Mapping[str, torch.Tensor]],
-        *,
-        model_name: str,
-        quantization_config: dict[str, int | str | list[str]] | None,
-        is_lora: bool = False,
-    ) -> None:
-        """
-        Initialize. Groups created in connect_rollout_engines.
-        """
-        self.args = args
-        self.model = model
-        self.model_name = model_name
-        self.quantization_config = quantization_config
-        self.weight_version = 0
+    supports_lora = True
+
+    def __init__(self, args: Namespace) -> None:
+        super().__init__(args)
         self._model_update_groups = None
-        self.rollout_engines: Sequence[ActorHandle] | None = None
-        self._connection_stale: bool = False
-        self._init_weight_transfer(
-            args=args,
-            model=model,
-            model_name=model_name,
-            quantization_config=quantization_config,
-            weights_getter=weights_getter,
-            is_lora=is_lora,
-        )
+        self._selector = weight_update_selector(args)
 
-    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
-
-    def connect_rollout_engines(
+    def connect(
         self,
         rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle,
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
+        rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
     ) -> None:
         """
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
@@ -78,10 +48,9 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self._engine_gpu_counts = engine_gpu_counts
 
         # One sender per replica set; one NCCL group (sender + all engines) per shard.
-        placement = self._hf_weight_iterator.placement
-        replica_rank, _ = derive_replica_position(get_parallel_state(), placement)
+        replica_rank, _ = derive_replica_position(parallel_state, placement)
         self.is_sender = replica_rank == 0
-        shard = 0 if placement.gather_pp else get_parallel_state().pp.rank
+        shard = 0 if placement.gather_pp else parallel_state.pp.rank
         self.is_lora_sender = self.is_sender and shard == 0
         if self.is_sender:
             self._group_name = f"miles-pp_{shard}"
@@ -92,9 +61,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 self.args, self._group_name, rollout_engines
             )
 
-    def _update_weight_implementation(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
-    ) -> None:
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
         """Serialize NCCL broadcasts and always release the rollout lock."""
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
@@ -102,64 +69,30 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             refs = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
-                self.weight_version,
+                weight_version,
                 self.rollout_engines,
-                converted_named_tensors,
-                selector=self._weight_update_selector,
+                bucket,
+                selector=self._selector,
             )
             ray.get(refs)
-            converted_named_tensors.clear()
+            bucket.clear()
         finally:
             # Leaking this lock makes the next weight sync poll forever, so the
             # release must run after both successful and failed broadcasts.
             ray.get(self.rollout_engine_lock.release.remote())
-        if pbar:
-            pbar.update(1)
 
-    def _update_lora_weight_implementation(self, named_tensors: list[tuple[str, torch.Tensor]]) -> None:
+    def send_adapter(
+        self, named_tensors: list[tuple[str, torch.Tensor]], *, lora_name: str, lora_config: dict, upsert: bool
+    ) -> None:
         """Send adapter metadata over Ray, then broadcast the tensors (src=0).
 
         Reuses the base broadcast group (``self._model_update_groups`` /
         ``self._group_name``); base and adapter syncs are strictly sequential, so
         sharing the NCCL communicator is safe. No CUDA IPC, so it works across
         nodes: the engine allocates buffers from the metadata and broadcast-receives
-        in order.
+        in order. ``upsert`` maps to the engine's in-place insert-or-overwrite RPC
+        (multi-LoRA slots); without it the caller unloads the old adapter first.
         """
-        names = [name for name, _ in named_tensors]
-        dtypes = [param.dtype for _, param in named_tensors]
-        shapes = [list(param.shape) for _, param in named_tensors]
-
-        refs = [
-            engine.load_lora_adapter_from_distributed.remote(
-                lora_name=LORA_ADAPTER_NAME,
-                config_dict=self._lora_config,
-                names=names,
-                dtypes=dtypes,
-                shapes=shapes,
-                group_name=self._group_name,
-            )
-            for engine in self.rollout_engines
-        ]
-        contiguous_tensors = [
-            param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in named_tensors
-        ]
-        handles = [
-            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in contiguous_tensors
-        ]
-        for handle in handles:
-            handle.wait()
-
-        check_weight_sync_results(ray.get(refs), is_lora=True)
-
-    def _update_multi_lora_weight_implementation(
-        self,
-        named_tensors: list[tuple[str, torch.Tensor]],
-        *,
-        lora_name: str,
-        lora_config: dict,
-    ) -> None:
-        """Multi-LoRA variant of ``_update_lora_weight_implementation``: same transport, but with a
-        per-adapter slot name/config and an upsert RPC (in-place insert-or-overwrite, no unload/register)."""
         names = [name for name, _ in named_tensors]
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
@@ -172,15 +105,17 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 dtypes=dtypes,
                 shapes=shapes,
                 group_name=self._group_name,
-                upsert=True,
+                **({"upsert": True} if upsert else {}),
             )
             for engine in self.rollout_engines
         ]
-        # NCCL needs contiguous buffers (lora_B slices are strided); the list keeps them alive
-        # until the async broadcasts complete.
-        broadcast_tensors = [param.data.contiguous() for _, param in named_tensors]
+        # NCCL needs contiguous buffers (lora_B slices are strided); the list keeps them
+        # alive until the async broadcasts complete.
+        contiguous_tensors = [
+            param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in named_tensors
+        ]
         handles = [
-            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in broadcast_tensors
+            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in contiguous_tensors
         ]
         for handle in handles:
             handle.wait()

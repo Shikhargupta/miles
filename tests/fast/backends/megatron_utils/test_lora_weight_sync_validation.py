@@ -20,15 +20,13 @@ import torch
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
     UpdateWeightFromDistributed,
 )
-from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin import (
-    DistBucketedWeightUpdateMixin,
-)
 from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
-_MIXIN_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin"
+_SESSION_MODULE = "miles.backends.training_utils.weight_update.session"
 _BROADCAST_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast"
 
 # ---------------------------------------------------------------------------
@@ -287,9 +285,9 @@ class TestFlattenedTensorBucketRoundTrip:
 
 # ---------------------------------------------------------------------------
 # Distributed (disaggregate) LoRA sync. The base-weight split is mirrored:
-#   - DistBucketedWeightUpdateMixin._update_lora_weights  → shared orchestration
-#       (bridge iteration, guards, source gating, engine lock, unload-on-reload)
-#   - <subclass>._update_lora_weight_implementation       → transport (NCCL / p2p)
+#   - WeightUpdater._send_lora_adapter  → shared orchestration
+#       (bridge iteration, guards, source gating, unload-on-reload)
+#   - <protocol>.send_adapter           → transport (NCCL / p2p)
 # ---------------------------------------------------------------------------
 
 
@@ -310,11 +308,11 @@ class _FakeEngine:
 
 
 class TestDistLoraUpdateOrchestration:
-    """Shared ``_update_lora_weights``: transport-agnostic orchestration.
+    """Shared ``WeightUpdater._send_lora_adapter``: transport-agnostic orchestration.
 
     It must enforce the silent-failure guards (zero chunks, no LoRA names), gate
     on the source rank, unload a stale adapter before reload, and delegate the
-    actual transmit to ``_update_lora_weight_implementation`` (mocked here).
+    actual transmit to ``protocol.send_adapter`` (mocked here).
     """
 
     @staticmethod
@@ -323,25 +321,32 @@ class TestDistLoraUpdateOrchestration:
             named_tensors = SAMPLE_LORA_WEIGHTS
         return SimpleNamespace(
             _hf_weight_iterator=SimpleNamespace(get_hf_lora_weights=lambda *a, **k: named_tensors),
-            is_lora_sender=is_source,
+            protocol=SimpleNamespace(
+                is_lora_sender=is_source,
+                rollout_engines=engines,
+                send_adapter=MagicMock(name="send_adapter"),
+            ),
             _lora_loaded=lora_loaded,
-            rollout_engines=engines,
-            _update_lora_weight_implementation=MagicMock(name="impl"),
+            _lora_sync_config={"peft_type": "LORA", "r": 32, "lora_alpha": 32},
         )
 
     @staticmethod
     def _run(fake_self):
-        with patch(f"{_MIXIN_MODULE}.ray") as ray_mock:
+        with patch(f"{_SESSION_MODULE}.ray") as ray_mock:
             ray_mock.get.side_effect = lambda refs: refs
-            DistBucketedWeightUpdateMixin._update_lora_weights(fake_self)
+            WeightUpdater._send_lora_adapter(fake_self)
 
-    def test_delegates_accumulated_tensors_to_implementation(self):
+    def test_delegates_accumulated_tensors_to_protocol(self):
         engines = [_FakeEngine()]
         fake_self = self._make_self(engines=engines)
         self._run(fake_self)
-        fake_self._update_lora_weight_implementation.assert_called_once()
-        (sent,) = fake_self._update_lora_weight_implementation.call_args.args
+        fake_self.protocol.send_adapter.assert_called_once()
+        (sent,) = fake_self.protocol.send_adapter.call_args.args
         assert sent == SAMPLE_LORA_WEIGHTS
+        kwargs = fake_self.protocol.send_adapter.call_args.kwargs
+        assert kwargs["lora_name"] == LORA_ADAPTER_NAME
+        assert kwargs["lora_config"] == fake_self._lora_sync_config
+        assert kwargs["upsert"] is False
         assert fake_self._lora_loaded is True
 
     def test_non_source_rank_does_not_transmit(self):
@@ -350,7 +355,7 @@ class TestDistLoraUpdateOrchestration:
         engines = [_FakeEngine()]
         fake_self = self._make_self(engines=engines, is_source=False)
         self._run(fake_self)
-        fake_self._update_lora_weight_implementation.assert_not_called()
+        fake_self.protocol.send_adapter.assert_not_called()
         assert engines[0].unload_lora_adapter.calls == []
 
     def test_iterator_validation_errors_propagate(self):
@@ -362,7 +367,7 @@ class TestDistLoraUpdateOrchestration:
         fake_self._hf_weight_iterator = SimpleNamespace(get_hf_lora_weights=_raise)
         with pytest.raises(RuntimeError, match="zero chunks"):
             self._run(fake_self)
-        fake_self._update_lora_weight_implementation.assert_not_called()
+        fake_self.protocol.send_adapter.assert_not_called()
 
     def test_reload_unloads_existing_adapter_first(self):
         # When an adapter is already loaded, the stale one must be unloaded before
@@ -371,7 +376,7 @@ class TestDistLoraUpdateOrchestration:
         fake_self = self._make_self(engines=engines, lora_loaded=True)
         self._run(fake_self)
         assert engines[0].unload_lora_adapter.calls == [{"lora_name": LORA_ADAPTER_NAME}]
-        fake_self._update_lora_weight_implementation.assert_called_once()
+        fake_self.protocol.send_adapter.assert_called_once()
 
     def test_first_load_does_not_unload(self):
         engines = [_FakeEngine()]
@@ -381,29 +386,29 @@ class TestDistLoraUpdateOrchestration:
 
     def test_lora_loaded_stays_false_when_implementation_raises(self):
         fake_self = self._make_self(engines=[_FakeEngine()])
-        fake_self._update_lora_weight_implementation.side_effect = RuntimeError("boom")
+        fake_self.protocol.send_adapter.side_effect = RuntimeError("boom")
         with pytest.raises(RuntimeError, match="boom"):
             self._run(fake_self)
         assert fake_self._lora_loaded is False
 
 
 class TestBroadcastLoraImplementation:
-    """Broadcast transport ``UpdateWeightFromDistributed._update_lora_weight_implementation``:
+    """Broadcast transport ``UpdateWeightFromDistributed.send_adapter``:
     send metadata over Ray, then ``dist.broadcast`` each adapter tensor over the
     reused base group (src=0) — no CUDA IPC, valid across nodes.
     """
+
+    LORA_CONFIG = {"peft_type": "LORA", "r": 32, "lora_alpha": 32}
 
     @staticmethod
     def _make_self(*, engines):
         return SimpleNamespace(
             rollout_engines=engines,
-            _lora_config={"peft_type": "LORA", "r": 32, "lora_alpha": 32},
             _group_name="miles-pp_0",
             _model_update_groups=MagicMock(name="base_nccl_group"),
         )
 
-    @staticmethod
-    def _run(fake_self, named_tensors):
+    def _run(self, fake_self, named_tensors, upsert=False):
         # NB: the real check_weight_sync_results runs (not patched), so an engine
         # returning success=False propagates as RuntimeError exactly as in prod.
         with (
@@ -411,7 +416,13 @@ class TestBroadcastLoraImplementation:
             patch(f"{_BROADCAST_MODULE}.ray") as ray_mock,
         ):
             ray_mock.get.side_effect = lambda refs: refs
-            UpdateWeightFromDistributed._update_lora_weight_implementation(fake_self, named_tensors)
+            UpdateWeightFromDistributed.send_adapter(
+                fake_self,
+                named_tensors,
+                lora_name=LORA_ADAPTER_NAME,
+                lora_config=self.LORA_CONFIG,
+                upsert=upsert,
+            )
         return dist_mock
 
     def test_sends_metadata_rpc_and_broadcasts_each_tensor(self):
@@ -421,7 +432,8 @@ class TestBroadcastLoraImplementation:
 
         kwargs = engines[0].load_lora_adapter_from_distributed.calls[0]
         assert kwargs["lora_name"] == LORA_ADAPTER_NAME
-        assert kwargs["config_dict"] == fake_self._lora_config
+        assert kwargs["config_dict"] == self.LORA_CONFIG
+        assert "upsert" not in kwargs
         assert kwargs["group_name"] == "miles-pp_0"
         # Metadata describes every adapter tensor, no IPC payload.
         assert kwargs["names"] == [n for n, _ in SAMPLE_LORA_WEIGHTS]
@@ -432,6 +444,12 @@ class TestBroadcastLoraImplementation:
         for call in dist_mock.broadcast.call_args_list:
             assert call.args[1] == 0
             assert call.kwargs["group"] is fake_self._model_update_groups
+
+    def test_upsert_flag_reaches_engine_rpc(self):
+        engines = [_FakeEngine()]
+        fake_self = self._make_self(engines=engines)
+        self._run(fake_self, SAMPLE_LORA_WEIGHTS, upsert=True)
+        assert engines[0].load_lora_adapter_from_distributed.calls[0]["upsert"] is True
 
     def test_each_engine_gets_one_rpc(self):
         engines = [_FakeEngine(), _FakeEngine()]

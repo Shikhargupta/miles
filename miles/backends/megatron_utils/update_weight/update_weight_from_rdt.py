@@ -1,7 +1,6 @@
 """Update SchedulerActor engines via RDT/NIXL weight transfer.
 
-Reuses ``DistBucketedWeightUpdateMixin`` for the bucketed TP/EP all-gather and HF
-conversion. Instead of a full GPU replica of the rollout model, each engine rank
+Rides the updater's bucketed TP/EP all-gather and HF conversion. Instead of a full GPU replica of the rollout model, each engine rank
 is backed by a small reusable GPU bucket: per flush the bucket is re-staged to the
 ready params' shapes, ``model_replica.load_weights`` writes the TP-rank-correct
 sglang shard into the views, and each ``SchedulerActor`` pulls its shard from
@@ -13,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from argparse import Namespace
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 
 import ray
 import torch
@@ -30,11 +29,12 @@ from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
-from tqdm import tqdm
 
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.utils.distributed_utils import get_gloo_group
 
-from .update_weight_from_distributed.mixin import DistBucketedWeightUpdateMixin
 from .update_weight_from_distributed.p2p_transfer_utils import RemoteTransferPlan, create_server_args_from_dict
 
 logger = logging.getLogger(__name__)
@@ -85,48 +85,20 @@ class _EngineRankBucket:
         return views
 
 
-class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
+class UpdateWeightFromRDT(WeightTransferProtocol):
     """RDT/NIXL weight transfer on the P2P bucketed all-gather + HF conversion.
 
-    Per HF bucket flushed by the mixin: stage GPU bucket -> load_weights
+    Per HF bucket streamed by the updater: stage GPU bucket -> load_weights
     -> ray.put(views, nixl) -> actor.pull_weights -> ray.get. Ready params that
     overflow the fixed bucket are split into sequential NIXL rounds. One bucket
     per engine rank, so concurrent pulls never clobber each other.
     """
 
-    def __init__(
-        self,
-        args: Namespace,
-        model: Sequence[torch.nn.Module],
-        weights_getter: Callable[[], Mapping[str, torch.Tensor]],
-        *,
-        model_name: str,
-        quantization_config: dict[str, int | str | list[str]] | None,
-        is_lora: bool = False,
-    ) -> None:
-        self.args = args
-        self.model = model
-        self.model_name = model_name
-        self.quantization_config = quantization_config
-        self.weight_version = 0
-
-        # RDT is full-param sync; this only registers the attribute the mixin's
-        # update_weights guards on.
-        self._init_weight_transfer(
-            args=args,
-            model=model,
-            model_name=model_name,
-            quantization_config=quantization_config,
-            weights_getter=weights_getter,
-            is_lora=is_lora,
-        )
-
-        self.transfer_plan = RemoteTransferPlan(args, model)
+    def __init__(self, args: Namespace) -> None:
+        super().__init__(args)
+        self.transfer_plan = RemoteTransferPlan(args)
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._group_name = "miles-rdt"
-
-        self.rollout_engines: Sequence[ActorHandle] | None = None
-        self._connection_stale = False
 
         self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
         self._tensor_update_pending: dict[str, int] = {}
@@ -137,18 +109,14 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self._engine_rank_buckets: list[_EngineRankBucket] = []
         self._scheduler_actors_cache: dict[int, list[ActorHandle]] = {}
 
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
-
-    def connect_rollout_engines(
+    def connect(
         self,
         rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle | None = None,
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
+        rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
     ) -> None:
         """Plan transfers, build a GPU replica + fixed bucket per engine rank.
 
@@ -355,9 +323,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             self._tensor_update_pending.pop(param_name, None)
         return ready
 
-    def _update_weight_implementation(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
-    ) -> None:
+    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
         """Stage incoming tensors; once a param is complete, load it into each engine
         rank's bucket and pull via RDT.
 
@@ -400,12 +366,10 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                     futures.append(actor.pull_weights.remote([weights_ref], chunk))
             ray.get(futures)
             del weight_refs
-            if pbar is not None:
-                pbar.update(len(chunk))
 
         converted_named_tensors.clear()
 
-    def _after_base_weights(self):
+    def after_base_weights(self) -> None:
         """Assert all staged shards were transferred (transfers are awaited inline)."""
         if not self.is_sender:
             return
@@ -414,14 +378,3 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             f"Pending: {self._tensor_update_pending}, Staged: {self._staged_tensors}"
         )
 
-    def _finalize_and_resume_engines(self):
-        # The engine never saw the RDMA pull, so nothing else bumps the version the
-        # trainer's post-update check compares against.
-        if dist.get_rank() == 0:
-            ray.get(
-                [
-                    engine.update_weight_version.remote(weight_version=str(self.weight_version))
-                    for engine in self.rollout_engines
-                ]
-            )
-        super()._finalize_and_resume_engines()

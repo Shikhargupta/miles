@@ -33,7 +33,7 @@ class RemoteTransferPlan:
     assuming static training and rollout placements.
     """
 
-    def __init__(self, args: Namespace, model: Sequence[torch.nn.Module]) -> None:
+    def __init__(self, args: Namespace) -> None:
         self._get_parallelism(args)
 
     def _get_parallelism(self, args: Namespace) -> None:

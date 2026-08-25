@@ -41,6 +41,10 @@ def set_weight_version(rollout_engines: Sequence[ActorHandle], weight_version: i
     ray.get([engine.update_weight_version.remote(weight_version=str(weight_version)) for engine in rollout_engines])
 
 
+def unload_lora_adapter(rollout_engines: Sequence[ActorHandle], lora_name: str) -> None:
+    ray.get([engine.unload_lora_adapter.remote(lora_name=lora_name) for engine in rollout_engines])
+
+
 def weight_update_selector(args: Namespace) -> str:
     """Exclude the draft only when the trainer provably has no MTP block to send it."""
     if (
