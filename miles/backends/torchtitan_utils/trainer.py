@@ -465,19 +465,21 @@ class TitanTrainer(Trainer):
         rename in torch a loud failure instead of a silent replay corruption.
         """
         schedule = self.pp_schedule
-        missing = [
-            attr
-            for attr in ("_stages_forward_initialized", "_stages_backward_initialized")
-            if not hasattr(schedule, attr)
-        ]
-        if missing:
+        # Schedules that own one stage per rank track this in the singular,
+        # looped ones in the plural.
+        for prefix in ("_stage", "_stages"):
+            forward_attr = f"{prefix}_forward_initialized"
+            backward_attr = f"{prefix}_backward_initialized"
+            if hasattr(schedule, forward_attr) and hasattr(schedule, backward_attr):
+                break
+        else:
             raise RuntimeError(
-                f"{type(schedule).__name__} no longer exposes {missing}; the pipeline "
-                "schedule's metadata-inference forward can no longer be anticipated"
+                f"{type(schedule).__name__} exposes no forward/backward initialization state; "
+                "the pipeline schedule's metadata-inference forward can no longer be anticipated"
             )
-        if not schedule._stages_forward_initialized:
+        if not getattr(schedule, forward_attr):
             return True
-        return has_backward != schedule._stages_backward_initialized
+        return has_backward != getattr(schedule, backward_attr)
 
     def run_forward_backward(self, batches, loss_closure: Callable) -> list[dict]:
         """One optimizer step's microbatches through the trainer's own
