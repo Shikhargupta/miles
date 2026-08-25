@@ -200,7 +200,16 @@ class TorchtitanTrainRayActor(TrainRayActor):
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterators, num_microbatches = get_data_iterator(self.args, self.trainer.model_parts, rollout_data)
         # Before unwrapping: fill_replay_data resets every iterator in the list.
-        routing_replay.fill(self.args, self.trainer.model_parts, data_iterators, num_microbatches, rollout_data)
+        routing_replay.fill(
+            self.args,
+            self.trainer.model_parts,
+            data_iterators,
+            num_microbatches,
+            rollout_data,
+            # Under PP the trainer pads every microbatch to this length, so the
+            # routing queues have to describe the padded sequence too.
+            pad_to=self.trainer.config.training.seq_len if self.trainer.parallel_dims.pp_enabled else None,
+        )
         data_iterator = data_iterators[0]
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
 

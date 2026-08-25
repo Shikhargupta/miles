@@ -167,12 +167,20 @@ def _bracket_real_forward(part: nn.Module) -> None:
     part.forward = forward
 
 
-def fill(args, model_parts, data_iterators, num_microbatches, rollout_data) -> None:
+def fill(args, model_parts, data_iterators, num_microbatches, rollout_data, pad_to: int | None = None) -> None:
     """Load the rollout's routing into the per-layer replay queues.
 
     Takes the iterator list rather than a single iterator: ``fill_replay_data``
     resets every element and reads through element 0, so call before the caller
     unwraps it.
+
+    ``pad_to`` extends every queued entry to that many tokens. Pipeline
+    parallelism needs one shape for the whole run, so the trainer pads each
+    microbatch to the configured sequence length; the routing queues are filled
+    from the rollout at the microbatch's own length and would otherwise be
+    shorter than the scores the routers see. The extension is -1, which the
+    replay manager already treats as padding (it substitutes arange so the
+    lookup stays in range) and which the loss never reads.
     """
     if not uses_rollout_replay(args):
         return
@@ -189,6 +197,20 @@ def fill(args, model_parts, data_iterators, num_microbatches, rollout_data) -> N
         if_sp_region=routing_replay_manager.if_sp_region,
         indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
     )
+
+    if pad_to is None:
+        return
+    for replay in routing_replay_manager.replays:
+        for i, entry in enumerate(replay.top_indices_list):
+            missing = pad_to - entry.shape[0]
+            if missing < 0:
+                raise ValueError(
+                    f"routing queue entry has {entry.shape[0]} tokens, more than the "
+                    f"{pad_to}-token shape the pipeline schedule exchanges"
+                )
+            if missing:
+                pad = torch.full((missing, *entry.shape[1:]), -1, dtype=entry.dtype)
+                replay.top_indices_list[i] = torch.cat([entry, pad], dim=0)
 
 
 def log_prob_stage(args) -> str:
