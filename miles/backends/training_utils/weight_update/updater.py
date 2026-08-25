@@ -110,11 +110,11 @@ class WeightUpdater:
         # LoRA runs sync the adapters; the frozen base rides along only when the
         # engines do not keep it (protocol fact).
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
-        adapters = self._adapters_to_push()
+        adapters = self._get_updated_adapters()
 
         driver = dist.get_rank() == 0
         if driver:
-            for lora_name, lora_config in self._new_registrations(adapters):
+            for lora_name, lora_config in self._get_new_lora_registrations(adapters):
                 register_lora_adapter(protocol.rollout_engines, lora_name=lora_name, lora_config=lora_config)
         if protocol.uses_session_frame and driver:
             pause_engines(self.args, protocol.rollout_engines)
@@ -149,7 +149,7 @@ class WeightUpdater:
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
 
-    def _adapters_to_push(self) -> list[tuple[str, object]]:
+    def _get_updated_adapters(self) -> list[tuple[str, object]]:
         """``(lora_name, adapter_or_None)`` pairs for this sync; the push set is
         identical on every rank so the iterator's collectives align."""
         if not self.is_lora:
@@ -160,7 +160,7 @@ class WeightUpdater:
             return [(slot_lora_name(adapters[name].slot), adapters[name]) for name in sorted(adapters)]
         return [(LORA_ADAPTER_NAME, None)]
 
-    def _new_registrations(self, adapters: list[tuple[str, object]]) -> list[tuple[str, dict]]:
+    def _get_new_lora_registrations(self, adapters: list[tuple[str, object]]) -> list[tuple[str, dict]]:
         """Adapters not yet registered on the current engine set, with their
         per-adapter config; eager so the engine validates rank before any bytes move."""
         new = []
