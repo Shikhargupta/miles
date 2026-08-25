@@ -7,7 +7,7 @@ expert ids, keyed by decoder-layer index -- the axis the rollout's
 ``[tokens, layers, topk]`` tensor uses.
 
 What is torchtitan-specific is the install step. Every titan MoE model routes
-through one class, ``torchtitan.models.common.moe.TokenRouter``, so a single
+through one class, ``torchtitan.models.common.moe.TokenChoiceTopKRouter``, so a single
 rebound forward covers qwen3, qwen3_5, deepseek_v3 and the rest; the FSDP
 backend needs a per-architecture adapter table instead because it trains stock
 HF modeling, where each family has its own router module.
@@ -51,7 +51,7 @@ def enable(args) -> bool:
 
 
 def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor | None = None):
-    """torchtitan TokenRouter.forward with the expert-selection topk replaced.
+    """torchtitan TokenChoiceTopKRouter.forward with the expert-selection topk replaced.
 
     titan routes on ``(B, L, E)`` while the manager speaks ``(tokens, experts)``,
     so the scores are flattened for the call and the ids restored after.
@@ -88,7 +88,7 @@ def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor
 
 
 def install(model_parts: list[nn.Module]) -> int:
-    """Install R3 on every TokenRouter and return the number of streams.
+    """Install R3 on every TokenChoiceTopKRouter and return the number of streams.
 
     Returns 0 without touching the model when R3 is off. Call for the actor
     only: a second registration would double the manager's stream list and
@@ -99,12 +99,12 @@ def install(model_parts: list[nn.Module]) -> int:
     if not routing_replay_manager.enabled:
         return 0
 
-    from torchtitan.models.common.moe import TokenRouter
+    from torchtitan.models.common.moe import TokenChoiceTopKRouter
 
     routers: list[tuple[int, nn.Module]] = []
     for part in model_parts:
         for name, module in part.named_modules():
-            if not isinstance(module, TokenRouter):
+            if not isinstance(module, TokenChoiceTopKRouter):
                 continue
             layer_key = next((p for p in name.split(".") if p.isdigit()), None)
             if layer_key is None:
@@ -113,9 +113,12 @@ def install(model_parts: list[nn.Module]) -> int:
 
     if not routers:
         raise ValueError(
-            "routing replay is enabled but this model has no torchtitan TokenRouter; "
+            "routing replay is enabled but this model has no torchtitan TokenChoiceTopKRouter; "
             "R3 applies to MoE models only"
         )
+
+    for part in model_parts:
+        _bracket_real_forward(part)
 
     for layer_idx, router in sorted(routers, key=lambda pair: pair[0]):
         router._miles_replay_topk = routing_replay_manager.get_topk_fn(
@@ -130,6 +133,31 @@ def install(model_parts: list[nn.Module]) -> int:
         f"(global indices {indices[0]}..{indices[-1]})"
     )
     return len(routers)
+
+
+def _bracket_real_forward(part: nn.Module) -> None:
+    """Make a model part's own forward draw from the forward cursor.
+
+    The manager keeps two cursors over the same recorded routing: a training
+    step runs under ``replay_backward`` so that activation-checkpoint recompute
+    -- which re-runs each *block* during backward -- has its own cursor, while
+    the step's real forward must still read the forward cursor. Bracketing the
+    top-level forward separates them: recompute happens inside backward, i.e.
+    outside this call, and keeps the backward cursor. Without this both draw
+    from the backward cursor and it advances twice per microbatch.
+
+    Only ``replay_backward`` is promoted; ``fallthrough`` (the reference model)
+    and ``record`` must reach the routers unchanged.
+    """
+    inner = part.forward
+
+    def forward(*args, **kwargs):
+        if routing_replay_manager.stage == REPLAY_BACKWARD:
+            with stage(REPLAY_FORWARD):
+                return inner(*args, **kwargs)
+        return inner(*args, **kwargs)
+
+    part.forward = forward
 
 
 def fill(args, model_parts, data_iterators, num_microbatches, rollout_data) -> None:
