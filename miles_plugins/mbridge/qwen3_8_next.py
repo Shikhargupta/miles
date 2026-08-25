@@ -114,10 +114,14 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         ],
         "ple.key_proj.weight": ["model.language_model.layers.{layer_number}.ple.key_proj.weight"],
         "ple.value_proj.weight": ["model.language_model.layers.{layer_number}.ple.value_proj.weight"],
-        "ple.conv1d.weight": ["model.language_model.layers.{layer_number}.ple.conv1d.weight"],
-        "ple.norm_conv.weight": ["model.language_model.layers.{layer_number}.ple.norm_conv.weight"],
-        "ple.norm_key.weight": ["model.language_model.layers.{layer_number}.ple.norm_key.weight"],
-        "ple.norm_query.weight": ["model.language_model.layers.{layer_number}.ple.norm_query.weight"],
+        # HF wraps each of these in a submodule holding a .weight; on our side they
+        # are plain nn.Parameters, so the names differ by that one level.
+        "ple.conv1d_weight": ["model.language_model.layers.{layer_number}.ple.conv1d.weight"],
+        "ple.norm_conv": ["model.language_model.layers.{layer_number}.ple.norm_conv.weight"],
+        "ple.norm_key": ["model.language_model.layers.{layer_number}.ple.norm_key.weight"],
+        "ple.norm_query": ["model.language_model.layers.{layer_number}.ple.norm_query.weight"],
+        # Integer hash metadata: buffers, not parameters, but they still have to be
+        # carried across from the checkpoint or the table gets read at wrong rows.
         "ple.ple_embedding.layer_multipliers": [
             "model.language_model.layers.{layer_number}.ple.ple_embedding.layer_multipliers"
         ],
@@ -142,6 +146,25 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         text_config = self._get_text_config()
         return sorted({int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []})
 
+    def _ngram_rows_per_shard(self) -> int | None:
+        """Height of one n-gram shard, read from the checkpoint's tensor shapes.
+
+        Returns None when the index is unavailable (from-scratch init), in which
+        case the embedding module falls back to ceil(total_rows / num_shards).
+        """
+        layer_ids = self._ple_layer_ids()
+        if not layer_ids:
+            return None
+        key = (
+            f"model.language_model.layers.{layer_ids[0]}.ple.ple_embedding"
+            ".ngram_embedding.shard_0.weight"
+        )
+        try:
+            shape = self.safetensor_io.get_tensor_shape(key)
+        except Exception:
+            return None
+        return int(shape[0]) if shape else None
+
     def _weight_name_mapping_other(self, mcore_weights_name: str) -> list[str]:
         """HC / indexer / PLE names, including the sharded n-gram embedding.
 
@@ -156,7 +179,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
             layer_number = int(parts[2])
             name = ".".join(parts[3:])
 
-        shard_prefix = "ple.ple_embedding.ngram_embedding.shard_"
+        shard_prefix = "ple.ple_embedding.shard_"
         if name.startswith(shard_prefix) and layer_number is not None:
             shard_id = name[len(shard_prefix) :].split(".")[0]
             return [
@@ -208,6 +231,13 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         )
         config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
         config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
+        config.qwen3_8_next_ple_conv_dilation = getattr(text_config, "ple_conv_dilation", 3)
+        # The n-gram hash resets at EOS so n-grams never straddle a document.
+        config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
+        # Shard height is not derivable from the config: the checkpoint rounds the
+        # 320,001,446 hashed rows up to 128 x 2,500,012, so the last shard carries
+        # padding. Read it off the checkpoint instead of recomputing a ceil.
+        config.qwen3_8_next_ngram_rows_per_shard = self._ngram_rows_per_shard()
 
         config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
         config.qwen3_8_next_indexer_compress_ratio = getattr(
