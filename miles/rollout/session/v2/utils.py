@@ -1,6 +1,6 @@
 import logging
 from argparse import Namespace
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 NODE_ADDITIVE_METRICS_METADATA_KEY = "_node_additive_metrics"
 
 
+def _sum_flat_metric(
+    left: Sample.SpecInfo | Sample.PrefixCacheInfo,
+    right: Sample.SpecInfo | Sample.PrefixCacheInfo,
+) -> Sample.SpecInfo | Sample.PrefixCacheInfo:
+    assert type(left) is type(right)
+    left_counters = asdict(left)
+    right_counters = asdict(right)
+    assert left_counters.keys() == right_counters.keys()
+    return type(left)(**{name: value + right_counters[name] for name, value in left_counters.items()})
+
+
 @dataclass(frozen=True)
 class AdditiveNodeMetrics:
     """Explicit registry of metrics attributed exactly once per tree node."""
@@ -27,45 +38,42 @@ class AdditiveNodeMetrics:
 
     @classmethod
     def from_sample(cls, sample: Sample) -> "AdditiveNodeMetrics":
-        return cls(**{metric.name: getattr(sample, metric.name) for metric in fields(cls)})
+        return cls(spec_info=sample.spec_info, prefix_cache_info=sample.prefix_cache_info)
 
     @classmethod
     def from_dict(cls, data: dict[str, dict[str, int]]) -> "AdditiveNodeMetrics":
-        empty = cls()
         metric_names = {metric.name for metric in fields(cls)}
         assert set(data) == metric_names, f"node metric mismatch: expected {metric_names}, got {set(data)}"
 
-        values = {}
-        for metric in fields(cls):
-            metric_type = type(getattr(empty, metric.name))
+        for metric_name, metric_type in (
+            ("spec_info", Sample.SpecInfo),
+            ("prefix_cache_info", Sample.PrefixCacheInfo),
+        ):
             counter_names = {counter.name for counter in fields(metric_type)}
-            counters = data[metric.name]
+            counters = data[metric_name]
             assert (
                 set(counters) == counter_names
-            ), f"{metric.name} counter mismatch: expected {counter_names}, got {set(counters)}"
-            values[metric.name] = metric_type(**counters)
-        return cls(**values)
+            ), f"{metric_name} counter mismatch: expected {counter_names}, got {set(counters)}"
+        return cls(
+            spec_info=Sample.SpecInfo(**data["spec_info"]),
+            prefix_cache_info=Sample.PrefixCacheInfo(**data["prefix_cache_info"]),
+        )
 
     def to_dict(self) -> dict[str, dict[str, int]]:
-        return {metric.name: getattr(self, metric.name).to_dict() for metric in fields(self)}
+        return {
+            "spec_info": self.spec_info.to_dict(),
+            "prefix_cache_info": self.prefix_cache_info.to_dict(),
+        }
 
     def __add__(self, other: "AdditiveNodeMetrics") -> "AdditiveNodeMetrics":
-        values = {}
-        for metric in fields(self):
-            left = getattr(self, metric.name)
-            right = getattr(other, metric.name)
-            assert type(left) is type(right)
-            values[metric.name] = type(left)(
-                **{
-                    counter.name: getattr(left, counter.name) + getattr(right, counter.name)
-                    for counter in fields(left)
-                }
-            )
-        return type(self)(**values)
+        return type(self)(
+            spec_info=_sum_flat_metric(self.spec_info, other.spec_info),
+            prefix_cache_info=_sum_flat_metric(self.prefix_cache_info, other.prefix_cache_info),
+        )
 
     def assign_to(self, sample: Sample) -> None:
-        for metric in fields(self):
-            setattr(sample, metric.name, getattr(self, metric.name))
+        sample.spec_info = self.spec_info
+        sample.prefix_cache_info = self.prefix_cache_info
 
 
 def tree_metadata(state: SessionStateV2) -> dict:
