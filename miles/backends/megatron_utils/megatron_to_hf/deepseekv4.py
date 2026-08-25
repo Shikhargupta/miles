@@ -1,27 +1,5 @@
 import re
 
-from ..update_weight.common import AtomicUpdateGroup
-
-
-def get_deepseek_v4_atomic_update_groups():
-    return [
-        AtomicUpdateGroup(key, suffixes)
-        for key, suffixes in [
-            ("wqkv_a", (".self_attention.wq_a.weight", ".self_attention.wkv.weight")),
-            (
-                "compressor_wkv_gate",
-                (".self_attention.compressor.wkv.weight", ".self_attention.compressor.wgate.weight"),
-            ),
-            (
-                "indexer_compressor_wkv_gate",
-                (
-                    ".self_attention.indexer.compressor.wkv.weight",
-                    ".self_attention.indexer.compressor.wgate.weight",
-                ),
-            ),
-        ]
-    ]
-
 
 def convert_deepseekv4_to_hf(args, name, param):
     if name == "module.module.embedding.word_embeddings.weight":

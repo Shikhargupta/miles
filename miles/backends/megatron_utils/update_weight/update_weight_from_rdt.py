@@ -112,11 +112,12 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
 
         # RDT is full-param sync; this only registers the attribute the mixin's
         # update_weights guards on.
-        self._init_lora(
+        self._init_weight_transfer(
             args=args,
             model=model,
             model_name=model_name,
             quantization_config=quantization_config,
+            weights_getter=weights_getter,
             is_lora=is_lora,
         )
 
@@ -142,12 +143,6 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     def mark_engine_connection_stale(self) -> None:
         self._connection_stale = True
 
-    @property
-    def _is_source(self) -> bool:
-        """Whether this training rank sends weights to rollout. Every rank holds a
-        full replica after all-gather, so only the first _rollout_num_gpus are used."""
-        return self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
-
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[ActorHandle],
@@ -172,6 +167,9 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
 
         self.rollout_engines = rollout_engines
         self._connection_stale = False
+        # Senders: the first rollout_num_gpus replicas of each PP shard.
+        self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+        self.is_lora_sender = False
         self._staged_tensors.clear()
         self._tensor_update_pending.clear()
         self._shared_params_dict = {}
@@ -179,7 +177,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self._engine_rank_buckets.clear()
         self._scheduler_actors_cache.clear()
 
-        if not self._is_source:
+        if not self.is_sender:
             return
 
         self._group_name = f"miles-rdt_{self.transfer_plan._gathered_dp_rank}"
@@ -367,7 +365,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         packed into sequential rounds rather than grown. A flush that already fits is
         one round.
         """
-        if not self._is_source or not converted_named_tensors:
+        if not self.is_sender or not converted_named_tensors:
             return
 
         ready = self._get_transfer_ready_params(converted_named_tensors)
@@ -407,10 +405,9 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
 
         converted_named_tensors.clear()
 
-    def _gather_and_update_expert_weights(self, update_bucket_weight_func, pbar=None):
+    def _after_base_weights(self):
         """Assert all staged shards were transferred (transfers are awaited inline)."""
-        super()._gather_and_update_expert_weights(update_bucket_weight_func, pbar)
-        if not self._is_source:
+        if not self.is_sender:
             return
         assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (
             f"Some tensors were not transferred during RDT weight update. "

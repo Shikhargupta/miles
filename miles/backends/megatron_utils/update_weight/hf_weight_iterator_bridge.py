@@ -36,7 +36,6 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 }
 
     def _iter_hf_param_units(self, weights, *, materialize):
-        assert materialize, "non-materializing iteration lands with the distributed-path migration"
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
@@ -52,6 +51,12 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
             # e.g. FP8 sglang): base weights are quantized to match the rollout's
             # storage format so update_weights_from_tensor lands real weight + scale
             # pairs.
+            if not materialize:
+                # The export's internal TP collectives must still run on every rank.
+                for _ in named_weights:
+                    pass
+                return
+
             named_weights = self._postprocess_and_quantize(named_weights, "base")
             # One unit per megatron param: quantize emits weight + scales
             # consecutively, so grouping by source name keeps them together.

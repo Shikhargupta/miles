@@ -63,7 +63,14 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale: bool = False
         assert not is_lora, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
-        self.is_lora = False
+        self._init_weight_transfer(
+            args=args,
+            model=model,
+            model_name=model_name,
+            quantization_config=quantization_config,
+            weights_getter=weights_getter,
+            is_lora=False,
+        )
 
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())
@@ -76,32 +83,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
         )
 
-    @property
-    def _is_source(self):
-        """Whether this training rank is a source that sends weights to rollout.
-
-        In P2P mode, all training GPUs sharing the same PP rank hold a complete
-        weight replica after TP/EP all-gather. Each source rank transfers its
-        weights to exactly one rollout rank in a 1-to-1 fashion.
-
-        Key quantities:
-          - senders:   _gathered_dp_size  = world_size // pp_size
-          - receivers: _rollout_num_gpus
-
-        Case 1: senders <= receivers
-          Every training rank is a source (all are needed to cover the rollout ranks).
-
-        Case 2: senders > receivers
-          Only the first `_rollout_num_gpus` training ranks (by gathered_dp_rank)
-          are sources; the rest are idle during transfer.
-
-        """
-        return self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
-
-    def _gather_and_update_expert_weights(self, update_bucket_weight_func, pbar=None):
-        """Wait for all background P2P writes to complete here."""
-        super()._gather_and_update_expert_weights(update_bucket_weight_func, pbar)
-        if not self._is_source:
+    def _after_base_weights(self):
+        """Wait for all background P2P writes to complete."""
+        if not self.is_sender:
             return
         self.transfer_manager.wait_transfers()
         assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (
@@ -112,7 +96,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
     def _pause_and_prepare_engines(self):
         """Register shared CPU pinned memory with P2P on first call."""
         super()._pause_and_prepare_engines()
-        if not self._is_source:
+        if not self.is_sender:
             return
 
         if not self._model_registered:
@@ -129,7 +113,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         partial writes that would corrupt the shared buffer when different engine
         ranks have different EP expert-to-local mappings.
         """
-        if not self._is_source or not converted_named_tensors:
+        if not self.is_sender or not converted_named_tensors:
             return
         # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
         transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
@@ -192,7 +176,13 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
 
-        if self._is_source:
+        # Senders: the first rollout_num_gpus replicas of each PP shard (all of
+        # them when replicas <= rollout gpus); target planning stays in
+        # RemoteTransferPlan (protocol-owned).
+        self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+        self.is_lora_sender = False
+
+        if self.is_sender:
             self._group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
             targets = self.transfer_plan.plan_p2p()
             (

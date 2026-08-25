@@ -31,7 +31,6 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         self._expert_batches = _pack_param_infos_by_size(self.args, expert_infos, size_multiplier=ep_size)
 
     def _iter_hf_param_units(self, weights, *, materialize):
-        assert materialize, "non-materializing iteration lands with the distributed-path migration"
         rank = dist.get_rank()
 
         # Internal gather batching only: atomicity is enforced by the base
@@ -45,14 +44,16 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             named_params = _materialize_non_expert_batch(
                 self.args, param_infos, weights, gather_pp=self.placement.gather_pp
             )
-            yield from self._convert_to_hf_param_units(named_params)
+            if materialize:
+                yield from self._convert_to_hf_param_units(named_params)
             del named_params
             pbar.update(1)
         for param_infos in self._expert_batches:
             named_params = _materialize_expert_batch(
                 self.args, param_infos, weights, gather_pp=self.placement.gather_pp
             )
-            yield from self._convert_to_hf_param_units(named_params)
+            if materialize:
+                yield from self._convert_to_hf_param_units(named_params)
             del named_params
             pbar.update(1)
         pbar.close()

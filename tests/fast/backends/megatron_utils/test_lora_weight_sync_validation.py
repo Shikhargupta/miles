@@ -323,7 +323,7 @@ class TestDistLoraUpdateOrchestration:
             named_tensors = SAMPLE_LORA_WEIGHTS
         return SimpleNamespace(
             _hf_weight_iterator=SimpleNamespace(get_hf_lora_weights=lambda *a, **k: named_tensors),
-            _is_lora_source=is_source,
+            is_lora_sender=is_source,
             _lora_loaded=lora_loaded,
             rollout_engines=engines,
             _update_lora_weight_implementation=MagicMock(name="impl"),

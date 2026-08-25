@@ -11,6 +11,7 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.transfer import derive_replica_position
 from miles.utils.distributed_utils import init_process_group
 
 from miles.utils.lora import LORA_ADAPTER_NAME
@@ -45,11 +46,12 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self._model_update_groups = None
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale: bool = False
-        self._init_lora(
+        self._init_weight_transfer(
             args=args,
             model=model,
             model_name=model_name,
             quantization_config=quantization_config,
+            weights_getter=weights_getter,
             is_lora=is_lora,
         )
 
@@ -75,32 +77,21 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.rollout_engine_lock = rollout_engine_lock
         self._engine_gpu_counts = engine_gpu_counts
 
-        # For TP:
-        #   1. AllGather parameters to rank 0
-        #   2. Broadcast parameters from rank 0 to all sglang engines
-        pp_rank = get_parallel_state().pp.rank
-        if self._is_source:
-            self._group_name = f"miles-pp_{pp_rank}"
-
-        if self._is_source:
+        # All pairing decisions happen here: one sender per replica set, one
+        # NCCL group (sender + every engine GPU) per shard.
+        placement = self._hf_weight_iterator.placement
+        replica_rank, _ = derive_replica_position(get_parallel_state(), placement)
+        self.is_sender = replica_rank == 0
+        shard = 0 if placement.gather_pp else get_parallel_state().pp.rank
+        self.is_lora_sender = self.is_sender and shard == 0
+        if self.is_sender:
+            self._group_name = f"miles-pp_{shard}"
             disconnect_rollout_engines_from_distributed(
                 self.args, self._group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
                 self.args, self._group_name, rollout_engines
             )
-
-    @property
-    def _is_source(self):
-        """If it's the source gpu that broadcasting weights to rollout side"""
-        return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
-
-    @property
-    def _is_lora_source(self) -> bool:
-        """The single rank holding the full adapter (DP=TP=PP=0). At PP=1 (enforced
-        for LoRA) this coincides with ``_is_source``."""
-        ps = get_parallel_state()
-        return ps.pp.rank == 0 and ps.tp.rank == 0 and ps.intra_dp_cp.rank == 0
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
