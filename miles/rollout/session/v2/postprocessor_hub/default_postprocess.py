@@ -1,4 +1,4 @@
-from miles.rollout.session.v2.utils import NODE_ADDITIVE_METRICS_METADATA_KEY, AdditiveNodeMetrics
+from miles.rollout.session.v2.metrics import NODE_ADDITIVE_METRICS_METADATA_KEY, AdditiveNodeMetrics
 from miles.utils.types import Sample
 
 _SERVER_OWNED_METADATA_KEYS = ("accumulated_token_ids", "tito_session_mismatch", "leaf")

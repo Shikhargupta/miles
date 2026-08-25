@@ -18,13 +18,14 @@ from miles.rollout.session.core import (
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.rollout.session.v2.metrics import NODE_ADDITIVE_METRICS_METADATA_KEY
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
     commit_generation,
     position_for_request,
     prepare_pretokenized,
 )
-from miles.rollout.session.v2.utils import NODE_ADDITIVE_METRICS_METADATA_KEY, build_leaf_material, tree_metadata
+from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
 from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)

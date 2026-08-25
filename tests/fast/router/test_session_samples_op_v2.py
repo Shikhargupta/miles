@@ -32,8 +32,8 @@ from miles.rollout.session.errors import TokenizationError
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
+from miles.rollout.session.v2.metrics import AdditiveNodeMetrics
 from miles.rollout.session.v2.session_state import SessionRegistryV2
-from miles.rollout.session.v2.utils import AdditiveNodeMetrics
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.misc import function_registry
 from miles.utils.processing_utils import load_tokenizer
