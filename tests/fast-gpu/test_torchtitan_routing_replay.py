@@ -98,7 +98,7 @@ def test_the_schedules_metadata_forward_does_not_consume(part):
     scores = torch.rand(1, 4, 8, device="cuda")
 
     with routing_replay.consumption_guard([part], 2):
-        routing_replay.bypass_next_forward([part])
+        routing_replay.bypass_schedule_initialization([part])
         inferred = part(scores)
         # Bypassed: the router chose for itself rather than replaying entry 0.
         assert inferred.unique().tolist() != [0]
@@ -119,17 +119,32 @@ def test_consecutive_passes_share_one_queue(part):
                 assert part(scores).unique().tolist() == [step * 2 + offset]
 
 
-def test_bypass_covers_exactly_one_forward(part):
+def test_the_bypass_ends_at_the_first_real_microbatch(part):
+    """The probing forward and the backward that follows it both fall through;
+    the next forward is microbatch 0 and replays again."""
     _queue_microbatches(2)
     scores = torch.rand(1, 4, 8, device="cuda")
 
-    # The bypass is spent by the first forward, so the second replays entry 0
-    # and the pass comes up one microbatch short.
-    with pytest.raises(RuntimeError, match="no longer line up"):
+    with routing_replay.consumption_guard([part], 2):
+        routing_replay.bypass_schedule_initialization([part])
+        part(scores)
+        assert routing_replay_manager.stage == routing_replay.FALLTHROUGH
+        for expected in range(2):
+            assert part(scores).unique().tolist() == [expected]
+        assert routing_replay_manager.stage == routing_replay.REPLAY_FORWARD
+
+
+def test_a_recompute_pass_that_lost_its_place_is_reported(part):
+    """Activation checkpointing reads a second cursor, one entry per microbatch.
+    Anything else means the recompute is replaying other microbatches' routing --
+    which is what the schedule's probing backward caused."""
+    replay = _queue_microbatches(3)
+
+    with pytest.raises(RuntimeError, match="recompute pass is replaying"):
         with routing_replay.consumption_guard([part], 2):
-            routing_replay.bypass_next_forward([part])
-            part(scores)
-            part(scores)
+            replay.pop_forward()
+            replay.pop_forward()
+            replay.pop_backward()
 
 
 def test_a_stray_forward_is_reported(part):

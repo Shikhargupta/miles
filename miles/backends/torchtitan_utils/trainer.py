@@ -48,15 +48,15 @@ from miles.backends.torchtitan_utils import compat
 
 compat.install()
 
+from torch.distributed._functional_collectives import all_gather_single_autograd  # noqa: E402
+
 from torchtitan.components import checkpoint as titan_checkpoint  # noqa: E402
 from torchtitan.components.dataloader import BaseDataLoader  # noqa: E402
 from torchtitan.components.loss import BaseLoss  # noqa: E402
 from torchtitan.components.optimizer import ParamGroupConfig  # noqa: E402
-from torch.distributed._functional_collectives import all_gather_single_autograd  # noqa: E402
-
 from torchtitan.distributed import utils as titan_dist_utils  # noqa: E402
-from torchtitan.distributed.context_parallel import cp_shard  # noqa: E402
 from torchtitan.distributed.activation_checkpoint import FullAC  # noqa: E402
+from torchtitan.distributed.context_parallel import cp_shard  # noqa: E402
 from torchtitan.trainer import Trainer  # noqa: E402
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param  # noqa: E402
@@ -512,7 +512,7 @@ class TitanTrainer(Trainer):
         with routing_replay.consumption_guard(self.model_parts, len(batches)):
             if self.parallel_dims.pp_enabled:
                 if self._pipeline_will_infer_metadata(has_backward=True):
-                    routing_replay.bypass_next_forward(self.model_parts)
+                    routing_replay.bypass_schedule_initialization(self.model_parts)
                 self.forward_backward_step(input_dict=input_dicts, labels=labels, global_valid_tokens=ones)
             else:
                 for input_dict, label in zip(input_dicts, labels, strict=True):
@@ -535,7 +535,7 @@ class TitanTrainer(Trainer):
                     target_mbs.append(label)
                 losses = [] if self.pp_has_last_stage else None
                 if self._pipeline_will_infer_metadata(has_backward=False):
-                    routing_replay.bypass_next_forward(self.model_parts)
+                    routing_replay.bypass_schedule_initialization(self.model_parts)
                 # return_outputs=False matters: the last stage otherwise retains
                 # every microbatch's full-vocab logits until the merge -- at RL
                 # sequence lengths that alone exceeds device memory. The loss
