@@ -58,7 +58,6 @@ from .model import TrainStepOutcome, forward_only, initialize_model_and_optimize
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
-from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
     from miles.ray.rollout.rollout_manager import EnginesAndLock
@@ -248,42 +247,29 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
+        from miles.backends.training_utils.weight_update.updater import WeightUpdater
+
+        from .lora_utils import build_lora_sync_config
+        from .update_weight.hf_weight_iterator import get_hf_weight_iterator
+
         is_lora = lora_rollout_enabled(args)
-        if self.args.colocate and self.args.update_weight_transfer_mode != "rdt":
-            self.weight_updater = UpdateWeightFromTensor(
-                self.args,
-                self.model,
-                weights_getter=lambda: self.weights_backuper.get("actor"),
-                model_name=type(self.hf_config).__name__.lower()
-                if self.args.model_name is None
-                else self.args.model_name,
-                quantization_config=getattr(self.hf_config, "quantization_config", None),
-                is_lora=is_lora,
+        uses_colocate_protocol = self.args.colocate and self.args.update_weight_transfer_mode != "rdt"
+        if is_lora and not uses_colocate_protocol:
+            assert args.megatron_to_hf_mode == "bridge", (
+                "LoRA weight sync over distributed engines requires "
+                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
             )
-        else:
-            from miles.backends.training_utils.weight_update.updater import WeightUpdater
-
-            from .lora_utils import build_lora_sync_config
-            from .update_weight.hf_weight_iterator import get_hf_weight_iterator
-
-            if is_lora:
-                assert args.megatron_to_hf_mode == "bridge", (
-                    "LoRA weight sync over distributed engines requires "
-                    f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
-                )
-            self.weight_updater = WeightUpdater(
-                self.args,
-                self.model,
-                weights_getter=lambda: self.weights_backuper.get("actor"),
-                model_name=type(self.hf_config).__name__.lower()
-                if self.args.model_name is None
-                else self.args.model_name,
-                quantization_config=getattr(self.hf_config, "quantization_config", None),
-                iterator_factory=get_hf_weight_iterator,
-                parallel_state=get_parallel_state(),
-                is_lora=is_lora,
-                lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
-            )
+        self.weight_updater = WeightUpdater(
+            self.args,
+            self.model,
+            weights_getter=lambda: self.weights_backuper.get("actor"),
+            model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
+            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            iterator_factory=get_hf_weight_iterator,
+            parallel_state=get_parallel_state(),
+            is_lora=is_lora,
+            lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
+        )
 
         # Adapters currently loaded into Megatron slots on this rank.
         self.loaded_adapters: dict[str, object] = {}

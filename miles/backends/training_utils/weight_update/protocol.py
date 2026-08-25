@@ -25,6 +25,10 @@ class WeightTransferProtocol(ABC):
     # disk-delta transfers asynchronously behind the engines' own locking and
     # never quiesces them.
     uses_session_frame: ClassVar[bool] = True
+    # Whether LoRA runs must re-send the frozen base each sync. Remote engines
+    # keep their base loaded from hf_checkpoint; only colocate (which may
+    # offload or discard it) recomputes this at connect.
+    needs_base_resync_for_lora: bool = False
 
     def __init__(self, args: Namespace) -> None:
         self.args = args
@@ -78,6 +82,10 @@ class WeightTransferProtocol(ABC):
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     # Local: protocol modules import megatron/sglang-heavy deps.
+    if args.colocate and args.update_weight_transfer_mode != "rdt":
+        from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
+        return UpdateWeightFromTensor(args)
     if args.update_weight_transfer_mode == "broadcast":
         from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
             UpdateWeightFromDistributed,

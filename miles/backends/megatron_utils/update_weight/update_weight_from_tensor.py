@@ -1,8 +1,7 @@
 import hashlib
 import logging
-import os
 from argparse import Namespace
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import ray
@@ -11,15 +10,13 @@ import torch.distributed as dist
 from ray import ObjectRef
 from ray.actor import ActorHandle
 
-from miles.backends.megatron_utils.lora_utils import build_lora_sync_config, lora_base_cpu_backup_enabled
-from miles.backends.training_utils.parallel import get_parallel_state
-from miles.backends.training_utils.weight_update import session
+from miles.backends.megatron_utils.lora_utils import lora_base_cpu_backup_enabled
+from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results, weight_update_selector
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .hf_weight_iterator import get_hf_weight_iterator
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
@@ -29,47 +26,24 @@ from .update_weight_from_distributed.broadcast import (
 logger = logging.getLogger(__name__)
 
 
-class UpdateWeightFromTensor:
+class UpdateWeightFromTensor(WeightTransferProtocol):
     """
-    Update rollout engines from tensor dict:
-    load(dict->GPU) -> broadcast PP/EP(GPU NCCL) -> gather TP(GPU NCCL) -> convert HF(GPU) -> send.
-    Colocated: GPU->CPU serialize -> gather_object(Gloo CPU) -> Ray IPC to engine.
-    Distributed: GPU NCCL broadcast to remote engines.
+    Colocated transfer: every training rank serializes its bucket to CUDA-IPC
+    handles and gather_objects them to its engine group's src rank, which hands
+    them to the engine over Ray. Hybrid deployments broadcast to the
+    non-colocated engine tail over NCCL from the global source rank.
     """
 
-    def __init__(
-        self,
-        args: Namespace,
-        model: Sequence[torch.nn.Module],
-        weights_getter: Callable[[], Mapping[str, torch.Tensor]],
-        *,
-        model_name: str,
-        quantization_config: dict[str, int | str | list[str]] | None,
-        is_lora: bool = False,
-    ) -> None:
-        """
-        Compute param buckets, create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
-        """
-        self.args = args
-        self.model = model
-        self.weights_getter = weights_getter
-        self.model_name = model_name
-        self.quantization_config = quantization_config
-        self.weight_version = 0
-        self.is_lora = is_lora
-        self._hf_weight_iterator = get_hf_weight_iterator(
-            args,
-            model,
-            required_placement=WeightUpdatePlacement(gather_pp=True),
-            model_name=model_name,
-            quantization_config=quantization_config,
-        )
-        if self.is_lora:
-            self._lora_config = build_lora_sync_config(args)
-            self._lora_loaded = False
-            self._lora_base_synced = False
+    required_placement = WeightUpdatePlacement(gather_pp=True)
+    supports_lora = True
 
-        self._mm_tower_cache: list[tuple[str, torch.Tensor]] | None = None
+    def __init__(self, args: Namespace) -> None:
+        """
+        Create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
+        """
+        super().__init__(args)
+        self._selector = weight_update_selector(args)
+        self._model_update_groups = None
 
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = min(start_rank + self.args.rollout_num_gpus_per_engine, dist.get_world_size())
@@ -79,23 +53,14 @@ class UpdateWeightFromTensor:
                 self._ipc_gather_group = new_group
                 self._ipc_gather_src = start_rank
 
-        self._model_update_groups = None
-        self.rollout_engines: Sequence[ActorHandle] | None = None
-        self._connection_stale: bool = False
-
-    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
-
-    def connect_rollout_engines(
+    def connect(
         self,
         rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle,
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
+        rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
     ) -> None:
         """
         Split colocated/distributed engines. Global source rank (DP=TP=PP=0) creates NCCL
@@ -129,9 +94,7 @@ class UpdateWeightFromTensor:
             self.distributed_rollout_engines = rollout_engines[colocate_engine_nums:]
             distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
             self._is_distributed_src_rank = (
-                get_parallel_state().intra_dp_cp.rank == 0
-                and get_parallel_state().tp.rank == 0
-                and get_parallel_state().pp.rank == 0
+                parallel_state.intra_dp_cp.rank == 0 and parallel_state.tp.rank == 0 and parallel_state.pp.rank == 0
             )
             self._group_name = "miles"
             if self._is_distributed_src_rank:
@@ -182,163 +145,67 @@ class UpdateWeightFromTensor:
             if start <= dist.get_rank() < end:
                 self._ipc_engine = engine
 
-    def pop_metrics(self) -> dict[str, float]:
-        """Return and clear ``update_weight_metrics``. Empty under colocate today; kept symmetric
-        with the distributed updaters so the actor can drain unconditionally."""
-        out = self.__dict__.pop("update_weight_metrics", {})
-        return out
+        # Every engine-covered rank sends: the per-engine gather_object is
+        # collective among the group's members.
+        self.is_sender = self._ipc_gather_group is not None
+        self.is_lora_sender = self.is_sender
 
-    @torch.no_grad()
-    def update_weights(self) -> None:
-        """
-        version++, flush caches, process buckets. Progress on rank 0.
-        """
-        self.weight_version += 1
-
-        rank = dist.get_rank()
-
-        # TODO: implement lora weight checker
-        colocate_base_persistent = getattr(self.args, "colocate", False) and not getattr(
-            self.args, "offload_rollout", True
+        # A LoRA sync must re-push the frozen base unless the engines keep it
+        # across pauses (CPU backup, persistent GPU copy, or remote engines);
+        # the weight checker always needs the full rewrite.
+        base_persists = (
+            self.use_distribute
+            or lora_base_cpu_backup_enabled(self.args)
+            or (self.args.colocate and not self.args.offload_rollout)
         )
-        skip_base_sync = (
-            self.is_lora
-            and (self.use_distribute or lora_base_cpu_backup_enabled(self.args) or colocate_base_persistent)
-            and not getattr(self.args, "check_weight_update_equal", False)
-        )
+        self.needs_base_resync_for_lora = self.args.check_weight_update_equal or not base_persists
 
-        if rank == 0:
-            session.pause_engines(self.args, self.rollout_engines)
-            if not skip_base_sync:
-                session.begin_weight_update(self.rollout_engines, session.weight_update_selector(self.args))
-        dist.barrier(group=get_gloo_group())
-
-        megatron_local_weights = self.weights_getter()
-
-        if not skip_base_sync:
-            for hf_named_tensors in self._hf_weight_iterator.iter_hf_base_weights(megatron_local_weights):
-                refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
-                results = ray.get(refs)
-                session.check_weight_sync_results(results, is_lora=False)
-                del long_lived_tensors
-
-            mm_tower_tensors = self._mm_tower_named_tensors()
-            if mm_tower_tensors is not None:
-                mm_tower_tensors = [
-                    (name, tensor.to(torch.cuda.current_device())) for name, tensor in mm_tower_tensors
-                ]
-                refs, long_lived_tensors = self._send_base_params(mm_tower_tensors)
-                results = ray.get(refs)
-                session.check_weight_sync_results(results, is_lora=False)
-                del long_lived_tensors, mm_tower_tensors
-
-        if self.is_lora:
-            lora_named_tensors = self._hf_weight_iterator.get_hf_lora_weights()
-
-            refs, long_lived_tensors = self._send_lora_params(lora_named_tensors)
-            results = ray.get(refs)
-            session.check_weight_sync_results(results, is_lora=True)
-            del long_lived_tensors
-            del lora_named_tensors
-            torch.cuda.ipc_collect()
-            torch.cuda.empty_cache()
-
-            if not self._lora_base_synced:
-                self._lora_base_synced = True
-
-        dist.barrier(group=get_gloo_group())
-
-        if rank == 0:
-            # Skip when no fresh base bytes landed (skip_base_sync).
-            if not skip_base_sync:
-                session.end_weight_update(self.rollout_engines)
-            session.resume_engines(self.rollout_engines)
-        dist.barrier(group=get_gloo_group())
-
-    def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
-        """Frozen vision/audio tower tensors to append to every base sync (see
-        __init__ comment). Returns None when the run has no MM towers. EVERY
-        gather-group rank contributes the full tower set (read once from its local
-        HF checkpoint, the same bytes the engine loaded at boot): the colocated
-        send requires homogeneous per-rank bucket counts (num_dtypes is taken from
-        rank 0 and indexed into every rank's list), so a src-only contribution
-        breaks assembly. The duplicates are ~15MB/rank and load idempotently."""
-        provider = getattr(self.args, "custom_model_provider_path", None) or ""
-        if "inkling_mm_model_provider" not in provider:
-            return None
-        if self._mm_tower_cache is None:
-            if self._ipc_gather_group is not None:
-                import json
-
-                from safetensors import safe_open
-
-                ckpt_dir = self.args.hf_checkpoint
-                with open(os.path.join(ckpt_dir, "model.safetensors.index.json"), encoding="utf-8") as f:
-                    weight_map = json.load(f)["weight_map"]
-                tower_keys = sorted(
-                    k
-                    for k in weight_map
-                    if ".visual." in f".{k}" or ".audio." in f".{k}" or k.startswith(("visual.", "audio."))
-                )
-                by_shard: dict[str, list[str]] = {}
-                for k in tower_keys:
-                    by_shard.setdefault(weight_map[k], []).append(k)
-                cache = []
-                for shard, keys in by_shard.items():
-                    with safe_open(os.path.join(ckpt_dir, shard), framework="pt", device="cpu") as f:
-                        for k in keys:
-                            cache.append((k, f.get_tensor(k)))
-                logger.info(
-                    "mm tower sync: caching %d tower tensors from %s: %s",
-                    len(cache),
-                    ckpt_dir,
-                    [k for k, _ in cache],
-                )
-                self._mm_tower_cache = cache
-            else:
-                self._mm_tower_cache = []
-        return self._mm_tower_cache
-
-    def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
         refs, long_lived_tensors = _send_to_colocated_engine(
-            hf_named_tensors=hf_named_tensors,
+            hf_named_tensors=bucket,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            selector=session.weight_update_selector(self.args),
-            weight_version=self.weight_version,
+            selector=self._selector,
+            weight_version=weight_version,
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
-                self.weight_version,
+                weight_version,
                 self.distributed_rollout_engines,
-                hf_named_tensors,
-                selector=session.weight_update_selector(self.args),
+                bucket,
+                selector=self._selector,
             )
             if refs_distributed:
                 refs = (refs or []) + refs_distributed
-        return refs or [], long_lived_tensors
+        check_weight_sync_results(ray.get(refs or []), is_lora=False)
+        del long_lived_tensors
 
-    def _send_lora_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def send_adapter(
+        self, named_tensors: list[tuple[str, torch.Tensor]], *, lora_name: str, lora_config: dict, upsert: bool
+    ) -> None:
+        if upsert:
+            raise NotImplementedError("multi-LoRA weight sync is not supported for colocated engines")
         if self.use_distribute and self._is_distributed_src_rank:
             raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
 
         refs, long_lived_tensors = _send_to_colocated_engine(
-            hf_named_tensors=hf_named_tensors,
+            hf_named_tensors=named_tensors,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
-            selector=session.weight_update_selector(self.args),
-            lora_config=self._lora_config,
-            lora_name=LORA_ADAPTER_NAME,
-            lora_loaded=self._lora_loaded,
-            check_equal=getattr(self.args, "check_lora_weight_equal", False),
-            repack_lora_for_ipc=getattr(self.args, "offload_train", False),
+            selector=self._selector,
+            lora_config=lora_config,
+            lora_name=lora_name,
+            check_equal=self.args.check_lora_weight_equal,
+            repack_lora_for_ipc=self.args.offload_train,
         )
-        self._lora_loaded = True
-        return refs or [], long_lived_tensors
+        check_weight_sync_results(ray.get(refs or []), is_lora=True)
+        del long_lived_tensors
+        torch.cuda.ipc_collect()
+        torch.cuda.empty_cache()
 
 
 def _repack_onto_fresh_storage(
@@ -386,7 +253,6 @@ def _send_to_colocated_engine(
     weight_version=None,
     lora_config: dict | None = None,
     lora_name: str | None = None,
-    lora_loaded: bool = False,
     check_equal: bool = False,
     selector: str = "all",
     repack_lora_for_ipc: bool = False,
