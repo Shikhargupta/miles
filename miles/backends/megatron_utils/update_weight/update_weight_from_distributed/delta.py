@@ -20,6 +20,7 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.transfer import derive_replica_position
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -70,11 +71,12 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             from miles.utils.misc import load_function
 
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
-        self._init_lora(
+        self._init_weight_transfer(
             args=args,
             model=model,
             model_name=model_name,
             quantization_config=quantization_config,
+            weights_getter=weights_getter,
             is_lora=is_lora,
         )
 
@@ -97,11 +99,10 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self.rollout_engines = rollout_engines
         self._connection_stale = False
         self._group_name = "miles-disk-delta"
-
-    @property
-    def _is_source(self):
-        """If it's the source gpu producing the gathered HF tensors this rank publishes."""
-        return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
+        placement = self._hf_weight_iterator.placement
+        replica_rank, _ = derive_replica_position(get_parallel_state(), placement)
+        self.is_sender = replica_rank == 0
+        self.is_lora_sender = self.is_sender and (placement.gather_pp or get_parallel_state().pp.rank == 0)
 
     @torch.no_grad()
     def update_weights(self) -> None:
@@ -168,12 +169,12 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             )
 
     def _for_each_hf_bucket(self, bucket_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None]) -> None:
-        """Feed every gathered HF bucket through ``bucket_func``: the base-class TP pass then the
-        EP pass. All ranks join the gathers; ``bucket_func`` only runs on source ranks."""
-        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
-        self._gather_and_update_non_expert_weights(bucket_func, pbar)
-        dist.barrier(group=get_gloo_group())
-        self._gather_and_update_expert_weights(bucket_func, pbar)
+        """Feed every HF bucket through ``bucket_func``; runs on senders only."""
+        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self.is_sender else None
+        weights = self.weights_getter()
+        for bucket in self._hf_weight_iterator.iter_hf_base_weights(weights, materialize=self.is_sender):
+            if self.is_sender:
+                bucket_func(bucket, pbar)
         dist.barrier(group=get_gloo_group())
 
     def _publish(self) -> None:
@@ -272,7 +273,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         each bucket callback copies one tensor at a time to a pinned buffer and submits it; pool
         workers diff and compress in parallel (each is a few big GIL-releasing numpy/zstd calls)."""
         self._version_dir = os.path.join(self.delta_dir, f"weight_v{self.weight_version:06d}")
-        if self._is_source:
+        if self.is_sender:
             os.makedirs(self._version_dir, exist_ok=True)
         snapshot = self._snapshot
         self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff

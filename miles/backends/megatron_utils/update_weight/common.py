@@ -1,4 +1,3 @@
-import dataclasses
 import inspect
 import logging
 import re
@@ -16,119 +15,6 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import ParamInfo
 
 logger = logging.getLogger(__name__)
-
-
-@dataclasses.dataclass(frozen=True)
-class AtomicUpdateGroup:
-    key: str
-    suffixes: tuple[str, ...]
-    optional: bool = False
-
-
-def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
-    model_groups = _get_model_atomic_update_groups(args, model_name)
-    if model_groups:
-        return model_groups
-    return _get_q_lora_atomic_update_groups(args)
-
-
-def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
-    if args.q_lora_rank is None:
-        return []
-
-    return [
-        AtomicUpdateGroup(
-            key="q_lora_a_proj",
-            suffixes=(
-                ".self_attention.linear_q_down_proj.weight",
-                ".self_attention.linear_kv_down_proj.weight",
-            ),
-        )
-    ]
-
-
-def _get_model_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
-    model_name = model_name.lower()
-    if "inkling" in model_name:
-        from ..megatron_to_hf.inkling import get_inkling_atomic_update_groups
-
-        return get_inkling_atomic_update_groups(args)
-    if "deepseekv4" in model_name:
-        from ..megatron_to_hf.deepseekv4 import get_deepseek_v4_atomic_update_groups
-
-        return get_deepseek_v4_atomic_update_groups()
-    return []
-
-
-@dataclasses.dataclass(frozen=True)
-class NamedUpdateUnit:
-    """A set of params that must be transferred and packed together."""
-
-    names: tuple[str, ...]
-
-
-def get_named_update_units(param_names: Sequence[str], atomic_update_groups) -> list[NamedUpdateUnit]:
-    position = {}
-    for i, name in enumerate(param_names):
-        assert name not in position, f"Duplicate param name: {name}"
-        position[name] = i
-
-    grouped_names: set[str] = set()
-    group_keys: set[str] = set()
-    ordered_units: list[tuple[int, NamedUpdateUnit]] = []
-    pending_groups: dict[tuple[str, str], list[str | None]] = {}
-    matched_group_keys: set[str] = set()
-
-    for group in atomic_update_groups:
-        key = group.key
-        suffixes = group.suffixes
-        assert key not in group_keys, f"Duplicate atomic update group: {key}"
-        assert suffixes, f"Atomic update group {key} has no suffixes"
-        assert all(suffixes), f"Atomic update group {key} contains empty suffix"
-        assert len(set(suffixes)) == len(suffixes), f"Atomic update group {key} contains duplicate suffixes"
-        group_keys.add(key)
-
-    for name in param_names:
-        matches = [
-            (group, suffix_idx, suffix)
-            for group in atomic_update_groups
-            for suffix_idx, suffix in enumerate(group.suffixes)
-            if name.endswith(suffix)
-        ]
-        assert len(matches) <= 1, f"Param {name} matches multiple atomic update groups"
-        if not matches:
-            continue
-
-        group, suffix_idx, suffix = matches[0]
-        prefix = name[: -len(suffix)]
-        names = pending_groups.setdefault((prefix, group.key), [None] * len(group.suffixes))
-        names[suffix_idx] = name
-        grouped_names.add(name)
-        matched_group_keys.add(group.key)
-
-    for group in atomic_update_groups:
-        assert (
-            group.optional or group.key in matched_group_keys
-        ), f"Atomic update group {group.key} references no params matching suffixes {group.suffixes}"
-
-    for (prefix, key), names in pending_groups.items():
-        assert all(names), f"Atomic update group {prefix}:{key} is incomplete: {names}"
-        resolved_names = tuple(names)
-        ordered_units.append((min(position[name] for name in resolved_names), NamedUpdateUnit(names=resolved_names)))
-
-    for name in param_names:
-        if name not in grouped_names:
-            ordered_units.append((position[name], NamedUpdateUnit(names=(name,))))
-
-    return [unit for _position, unit in sorted(ordered_units, key=lambda item: item[0])]
-
-
-def get_named_value_update_units(
-    named_values: Sequence[tuple[str, object]], atomic_update_groups
-) -> list[list[tuple[str, object]]]:
-    update_units = get_named_update_units([name for name, _value in named_values], atomic_update_groups)
-    value_by_name = dict(named_values)
-    return [[(name, value_by_name[name]) for name in unit.names] for unit in update_units]
 
 
 def _gather_with_stride(
@@ -184,41 +70,6 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     else:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
     return partition_stride, partition_dim
-
-
-def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
-    """
-    All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
-    Uses expert-TP for routed ".experts." (but NOT ".shared_experts." — those are split on the
-    REGULAR TP group like attention), else regular-TP. Handles strided partitioning via partition_stride.
-    """
-    if "expert_bias" in name:
-        return param
-
-    assert hasattr(param, "tensor_model_parallel"), f"{name} does not have tensor_model_parallel attribute"
-    if getattr(param, "parallel_mode", None) == "duplicated":
-        return param.data
-    if not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(name, param):
-        return param.data
-
-    if is_routed_expert_param(name):
-        tp_size = get_parallel_state().etp.size
-        tp_group = get_parallel_state().etp.group
-    else:
-        tp_size = get_parallel_state().tp.size
-        tp_group = get_parallel_state().tp.group
-
-    if tp_size <= 1:
-        return param.data
-
-    param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
-    dist.all_gather(param_partitions, param.data, group=tp_group)
-    partition_dim = param.partition_dim
-    partition_stride = param.partition_stride
-
-    partition_stride, partition_dim = _check_and_fix_partition(args, name, partition_stride, partition_dim)
-    param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
-    return param
 
 
 def all_gather_params_async(
@@ -397,18 +248,6 @@ def _named_params_and_buffers_global(
                 layer_idx, rest = match.groups()
                 layer_idx = int(layer_idx) + layer_offset
                 yield f"module.module.decoder.layers.{layer_idx}.{rest}", buffer
-
-
-def collect_named_tensors_for_weight_transfer(
-    args: Namespace,
-    model: Sequence[torch.nn.Module],
-    convert_to_global_name: bool = True,
-    is_expert: bool | None = False,
-) -> Iterator[tuple[str, torch.Tensor]]:
-
-    for name, tensor in named_params_and_buffers(args, model, convert_to_global_name):
-        if is_expert is None or is_expert == is_routed_expert_param(name):
-            yield name, tensor
 
 
 def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
