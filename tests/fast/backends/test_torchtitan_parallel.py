@@ -134,3 +134,16 @@ def test_pp_last_stage_comes_from_the_trainer_not_the_mesh(dist_stub):
     is the trainer's stage placement, not a mesh-rank comparison."""
     state = _state(dist_stub, {"batch": 2, "loss": 2, "pp": 2}, is_pp_last_stage=False)
     assert state.is_pp_last_stage is False
+
+
+def test_a_degree_one_dp_cp_still_gets_a_singleton_gloo_group(dist_stub):
+    """Model parallelism can shrink DP-CP to this rank alone, and the shared
+    log gathering still runs over it -- a trivial group with gloo_group=None
+    crashes there ("Group None is not registered")."""
+    dist_stub["__world__"] = 2
+    dist_stub["gloo"] = 2
+    dist_stub["self_group"] = 1
+    dist_stub["gloo_sub(0,)"] = 1
+    state = tp.create_titan_parallel_state(_ParallelDims({"tp": 2}))
+    assert state.intra_dp_cp.size == 1
+    assert state.intra_dp_cp.gloo_group == "gloo_sub(0,)"

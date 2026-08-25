@@ -41,15 +41,15 @@ def parallel_dims_from_config(parallelism_config):
     return ParallelDims.from_config(parallelism_config, dist.get_world_size())
 
 
-def _mesh_gloo_group(mesh):
-    """A gloo subgroup congruent with ``mesh``'s process group.
+def _gloo_subgroup(my_ranks: list[int]):
+    """A gloo subgroup over exactly ``my_ranks``.
 
-    Object-based reductions over the DP-CP group need gloo. ``new_group`` is a
-    collective every rank must join for every subgroup, so the groups are
-    enumerated globally: each rank contributes its own member list and all
-    ranks create all distinct groups.
+    Object-based reductions over the DP-CP group need gloo, and the shared
+    helpers use it even when the group is this rank alone (model parallelism
+    can shrink DP-CP to 1). ``new_group`` is a collective every rank must join
+    for every subgroup, so the groups are enumerated globally: each rank
+    contributes its own member list and all ranks create all distinct groups.
     """
-    my_ranks = dist.get_process_group_ranks(mesh.get_group())
     if len(my_ranks) == dist.get_world_size():
         return get_gloo_group()
 
@@ -79,17 +79,19 @@ def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True)
     fields: dict[str, GroupInfo] = {}
     for mesh_name, field in _MESH_TO_FIELD.items():
         mesh = parallel_dims.get_optional_mesh(mesh_name)
-        if mesh is None:
+        if mesh is None and field != "intra_dp_cp":
             fields[field] = trivial
             continue
-        group = mesh.get_group()
+        group = mesh.get_group() if mesh is not None else self_group
+        member_ranks = dist.get_process_group_ranks(mesh.get_group()) if mesh is not None else [rank]
         fields[field] = GroupInfo(
             rank=dist.get_rank(group=group),
             size=dist.get_world_size(group=group),
             group=group,
             # Shared helpers reduce metrics over the DP-CP group, and some of
-            # those reductions are object-based, which needs a gloo group.
-            gloo_group=_mesh_gloo_group(mesh) if field == "intra_dp_cp" else None,
+            # those reductions are object-based, which needs a gloo group --
+            # a degree-1 DP-CP included (log gathering runs regardless).
+            gloo_group=_gloo_subgroup(member_ranks) if field == "intra_dp_cp" else None,
         )
 
     meshes = {name: parallel_dims.get_mesh(name) for name in ("fsdp",) if parallel_dims.get_optional_mesh(name)}

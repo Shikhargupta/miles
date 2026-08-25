@@ -190,9 +190,18 @@ class RLLossAdapter(BaseLoss):
         from torch.distributed.tensor import DTensor
 
         if isinstance(pred, DTensor):
-            # Under TP the lm_head output is Shard(-1); miles' loss code wants
-            # plain full-vocab tensors.
-            pred = pred.full_tensor()
+            # Under TP titan shards the lm_head output over the vocab dim
+            # (Shard(-1)) -- exactly the Megatron vocab-parallel dialect miles'
+            # loss hub speaks (its softmax reduces over parallel_state.tp). So
+            # the loss gets the local shard; gathering to full vocab instead
+            # would double-count the softmax denominator, shifting every
+            # log-prob by -ln(tp).
+            for placement in pred.placements:
+                if not (placement.is_shard() and placement.dim in (pred.ndim - 1, -1)):
+                    raise RuntimeError(
+                        f"expected vocab-sharded logits (Shard({pred.ndim - 1})), got {pred.placements}"
+                    )
+            pred = pred.to_local()
         index = int(target)
         batch = self._batches[index]
         if self._mode == "train":
