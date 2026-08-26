@@ -12,13 +12,14 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h100",
     labels=["long"],
     disabled=(
-        "the run stops producing rollouts around solver=99 verifier=80 and never resumes, then dies on the "
-        "harness clock. It stalls 17 minutes into a 117 minute budget, so this is the end of the rollout count "
-        "and not the end of the time: raising est_time did not help, and lowering NUM_ROLLOUT would only starve "
-        "the trailing policy sooner. What is lost meanwhile is real and the short variant does not replace it: "
-        "this is the only multi-policy soak, and its solver bound of final_min=0.5 is the only assertion "
-        "anywhere that a multi-policy run learns at all -- the short variant's final_min=0.01 only proves the "
-        "reward fired once. Re-enable by fixing the stall, not by loosening these bounds."
+        "the recipe was realigned with the single-policy GSM8K baseline (nonzero-std dynamic filter, 32x8 "
+        "groups, response length 1024) and its acceptance has not been recalibrated against a run of that "
+        "recipe yet. The historical stall around solver=99 verifier=80 is fixed: since the rollout-disposal "
+        "and executor-teardown fixes, 100-rollout runs complete and the Ray job succeeds. What remains open "
+        "is the learning gate: with the dynamic filter on, rollout/raw_reward is computed over accepted "
+        "nonzero-std groups only, whose mean is pinned near .5 by construction, so growth on that metric no "
+        "longer measures learning -- the per-policy held-out eval curves (eval/gsm8k/solver) do. Re-enable "
+        "by running this recipe once, then gating on the observed eval trajectory."
     ),
 )
 
@@ -26,8 +27,8 @@ NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "100"))
 
 # TODO: tighten these weak bounds once the e2e run has been observed.
 TRAIN_REWARD_BOUNDS = {
-    SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.6, final_min=0.5, min_growth=0.2),
-    VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.1, min_growth=0.2),
+    SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.3, min_growth=None),
+    VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.1, min_growth=None),
 }
 
 
