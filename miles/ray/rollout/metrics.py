@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 
+from miles.rollout.session.v2.metrics import read_sample_rollout_metrics
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -148,22 +149,30 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
     rewards_by_rollout: dict[tuple[str, int | None, int], list[float]] = {}
     use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
     for position, sample in enumerate(samples):
-        if sample.rollout_id is not None:
-            rollout_key = ("rollout", sample.group_index, sample.rollout_id)
-        elif sample.index is not None:
-            rollout_key = ("sample", sample.group_index, sample.index)
-        else:
-            rollout_key = ("position", sample.group_index, position)
-
         raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
         if isinstance(raw_reward, Number):
-            rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
+            rewards_by_rollout.setdefault(_rollout_key(sample, position), []).append(raw_reward)
 
     rollout_rewards = [sum(rewards) / len(rewards) for rewards in rewards_by_rollout.values()]
     return {
         "num_training_samples": len(samples),
         "episode_raw_reward": sum(rollout_rewards) / len(rollout_rewards) if rollout_rewards else 0.0,
     }
+
+
+def _rollout_key(sample: Sample, position: int) -> tuple[str, int | None, int]:
+    if sample.rollout_id is not None:
+        return ("rollout", sample.group_index, sample.rollout_id)
+    if sample.index is not None:
+        return ("sample", sample.group_index, sample.index)
+    return ("position", sample.group_index, position)
+
+
+def _group_samples_by_rollout(samples: list[Sample]) -> list[list[Sample]]:
+    groups: dict[tuple[str, int | None, int], list[Sample]] = {}
+    for position, sample in enumerate(samples):
+        groups.setdefault(_rollout_key(sample, position), []).append(sample)
+    return list(groups.values())
 
 
 def _compute_perf_metrics_from_samples(args, samples, rollout_time):
@@ -230,10 +239,31 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 def _compute_spec_metrics(args, all_samples: list[Sample]):
     if args.sglang_speculative_algorithm is None:
         return {}
-    num_correct_drafts = sum(sample.spec_info.spec_num_correct_drafts for sample in all_samples)
-    num_proposed_drafts = sum(sample.spec_info.spec_num_proposed_drafts for sample in all_samples)
-    spec_verify_ct = sum(sample.spec_info.spec_verify_ct for sample in all_samples)
-    completion_tokens = sum(sample.spec_info.completion_tokens for sample in all_samples)
+    if args.use_session_server == "v2":
+        session_metrics = []
+        unavailable_session_ids = []
+        for rollout_samples in _group_samples_by_rollout(all_samples):
+            metrics, session_id = read_sample_rollout_metrics(rollout_samples)
+            if metrics is None:
+                unavailable_session_ids.append(session_id)
+            else:
+                session_metrics.append(metrics)
+        if unavailable_session_ids:
+            logger.warning(
+                "Speculative metrics unavailable for %d v2 sessions: %s",
+                len(unavailable_session_ids),
+                unavailable_session_ids,
+            )
+        spec_infos = [metrics["spec_info"] for metrics in session_metrics]
+        num_correct_drafts = sum(info["spec_num_correct_drafts"] for info in spec_infos)
+        num_proposed_drafts = sum(info["spec_num_proposed_drafts"] for info in spec_infos)
+        spec_verify_ct = sum(info["spec_verify_ct"] for info in spec_infos)
+        completion_tokens = sum(info["completion_tokens"] for info in spec_infos)
+    else:
+        num_correct_drafts = sum(sample.spec_info.spec_num_correct_drafts for sample in all_samples)
+        num_proposed_drafts = sum(sample.spec_info.spec_num_proposed_drafts for sample in all_samples)
+        spec_verify_ct = sum(sample.spec_info.spec_verify_ct for sample in all_samples)
+        completion_tokens = sum(sample.spec_info.completion_tokens for sample in all_samples)
     return {
         "spec_accept_rate": num_correct_drafts / num_proposed_drafts if num_proposed_drafts > 0 else 0.0,
         "spec_accept_length": completion_tokens / spec_verify_ct if spec_verify_ct > 0 else 0.0,
