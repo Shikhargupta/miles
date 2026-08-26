@@ -14,7 +14,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results, weight_update_selector
-from miles.utils.lora import lora_base_cpu_backup_enabled
+from miles.utils.lora import lora_base_cpu_backup_enabled, lora_rollout_enabled
 
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
@@ -94,6 +94,8 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             colocate_engine_nums += 1
 
         self.use_distribute = len(rollout_engines) > colocate_engine_nums
+        if self.use_distribute and lora_rollout_enabled(self.args):
+            raise NotImplementedError("LoRA weight sync is not supported for hybrid colocated+distributed deployments")
 
         if self.use_distribute:
             self.rollout_engines = rollout_engines[:colocate_engine_nums]
