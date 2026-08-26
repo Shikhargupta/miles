@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 
+from miles.rollout.session.v2.metrics import collect_session_rollout_metrics
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -207,11 +208,27 @@ def _compute_spec_metrics(args, all_samples: list[Sample]):
 
 
 def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
+    if args.use_session_server == "v2":
+        session_metrics, unavailable_session_ids = collect_session_rollout_metrics(all_samples)
+        if unavailable_session_ids:
+            logger.warning(
+                "Prefix-cache metrics unavailable for %d v2 sessions: %s",
+                len(unavailable_session_ids),
+                unavailable_session_ids,
+            )
+        cache_infos = [metrics["prefix_cache_info"] for metrics in session_metrics]
+        total_cached_tokens = sum(info["cached_tokens"] for info in cache_infos)
+        total_prompt_tokens = sum(info["total_prompt_tokens"] for info in cache_infos)
+        num_sessions = len(cache_infos)
+        return {
+            "prefix_cache_hit_rate": (total_cached_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0),
+            "avg_cached_tokens_per_sample": total_cached_tokens / num_sessions if num_sessions > 0 else 0.0,
+        }
+
     num_samples = len(all_samples)
     metrics = {}
     total_cached_tokens = sum(sample.prefix_cache_info.cached_tokens for sample in all_samples)
     total_prompt_tokens = sum(sample.prefix_cache_info.total_prompt_tokens for sample in all_samples)
-
     metrics["prefix_cache_hit_rate"] = total_cached_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0
     metrics["avg_cached_tokens_per_sample"] = total_cached_tokens / num_samples
     return metrics

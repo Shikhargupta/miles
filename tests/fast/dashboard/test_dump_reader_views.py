@@ -6,6 +6,8 @@ import pytest
 from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
 from miles.dashboard.dump_reader import DumpReader
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.types import Sample
 
 REMOVED = (3,)  # within-step positions marked remove_sample=True by the fixture
 
@@ -45,6 +47,28 @@ def test_summary_matches_hand_computed(reader):
                 float((row.log_probs - row.rollout_log_probs).exp()[mask].mean()), rel=1e-5
             )
             assert entry["mean_entropy"] == pytest.approx(float(row.entropy[mask].mean()), rel=1e-5)
+
+
+def test_summary_uses_leaf_prefix_cache_info_not_session_carrier(reader):
+    sample = Sample(
+        prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=1, total_prompt_tokens=4),
+        metadata={
+            SESSION_ROLLOUT_METRICS_KEY: {
+                "session_id": "sid-1",
+                "available": True,
+                "metrics": {
+                    "prefix_cache_info": {
+                        "cached_tokens": 99,
+                        "total_prompt_tokens": 100,
+                    }
+                },
+            }
+        },
+    )
+
+    entry = reader._summary_row(sample, None, rollout_id=0)
+
+    assert entry["prefix_cache_hit_rate"] == 0.25
 
 
 def test_summary_removed_sample_has_no_masked_stats(reader):

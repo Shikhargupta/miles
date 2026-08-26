@@ -6,9 +6,12 @@ from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_prefix_cache_metrics,
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.types import Sample
 
 
 class TestComputeZeroStdMetrics:
@@ -52,6 +55,100 @@ class TestComputeZeroStdMetrics:
         # No groups → no all_zero/all_one keys (the function guards on total_groups>0).
         assert "zero_std/all_zero_percentage" not in out
         assert "zero_std/all_one_percentage" not in out
+
+
+class TestComputePrefixCacheMetrics:
+    @staticmethod
+    def _member(session_id, metrics, *, available=True):
+        sample = Sample()
+        sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
+            "session_id": session_id,
+            "available": available,
+            "metrics": metrics,
+        }
+        return sample
+
+    @staticmethod
+    def _prefix_cache_info(cached_tokens, total_prompt_tokens):
+        return {
+            "prefix_cache_info": {
+                "cached_tokens": cached_tokens,
+                "total_prompt_tokens": total_prompt_tokens,
+            }
+        }
+
+    def test_v2_aggregates_once_per_session_and_uses_session_denominator(self):
+        args = make_args(use_session_server="v2")
+        samples = [
+            self._member("sid-1", self._prefix_cache_info(5, 10)),
+            self._member("sid-1", None),
+            self._member("sid-2", self._prefix_cache_info(7, 14)),
+        ]
+        for sample in samples:
+            sample.prefix_cache_info = Sample.PrefixCacheInfo(cached_tokens=100, total_prompt_tokens=100)
+
+        out = _compute_prefix_cache_metrics(args, samples)
+
+        assert out == {"prefix_cache_hit_rate": 0.5, "avg_cached_tokens_per_sample": 6.0}
+
+    @pytest.mark.parametrize("carriers", [0, 2])
+    def test_v2_rejects_missing_or_duplicate_carrier(self, carriers):
+        args = make_args(use_session_server="v2")
+        metrics = self._prefix_cache_info(1, 2)
+        samples = [self._member("sid-1", metrics if i < carriers else None) for i in range(2)]
+
+        with pytest.raises(ValueError, match="exactly one metrics carrier"):
+            _compute_prefix_cache_metrics(args, samples)
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {},
+            {
+                SESSION_ROLLOUT_METRICS_KEY: {
+                    "session_id": "sid-1",
+                    "available": True,
+                    "metrics": {"prefix_cache_info": {"cached_tokens": 1}},
+                }
+            },
+            {
+                SESSION_ROLLOUT_METRICS_KEY: {
+                    "session_id": "sid-1",
+                    "available": True,
+                    "metrics": {
+                        "prefix_cache_info": {
+                            "cached_tokens": True,
+                            "total_prompt_tokens": 2,
+                        }
+                    },
+                }
+            },
+        ],
+    )
+    def test_v2_rejects_missing_or_bad_schema(self, metadata):
+        args = make_args(use_session_server="v2")
+
+        with pytest.raises(ValueError):
+            _compute_prefix_cache_metrics(args, [Sample(metadata=metadata)])
+
+    def test_v2_excludes_unavailable_session_from_totals_and_denominator(self, caplog):
+        args = make_args(use_session_server="v2")
+        samples = [
+            self._member("sid-1", self._prefix_cache_info(5, 10)),
+            self._member("sid-2", None, available=False),
+        ]
+
+        out = _compute_prefix_cache_metrics(args, samples)
+
+        assert out == {"prefix_cache_hit_rate": 0.5, "avg_cached_tokens_per_sample": 5.0}
+        assert "Prefix-cache metrics unavailable for 1 v2 sessions" in caplog.text
+
+    def test_v2_all_unavailable_sessions_return_zero_metrics(self):
+        args = make_args(use_session_server="v2")
+
+        out = _compute_prefix_cache_metrics(args, [self._member("sid-1", None, available=False)])
+
+        assert out == {"prefix_cache_hit_rate": 0.0, "avg_cached_tokens_per_sample": 0.0}
 
 
 class TestTitoMismatchMetrics:
