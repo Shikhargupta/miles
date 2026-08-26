@@ -242,9 +242,7 @@ class TestConfig:
 
         default = Qwen38TITOTokenizer(tokenizer)
         low = default.clone_with_chat_template_kwargs({"reasoning_effort": "low"})
-        disabled_low = default.clone_with_chat_template_kwargs(
-            {"enable_thinking": False, "reasoning_effort": "low"}
-        )
+        disabled_low = default.clone_with_chat_template_kwargs({"enable_thinking": False, "reasoning_effort": "low"})
         disabled_medium = default.clone_with_chat_template_kwargs(
             {"enable_thinking": False, "reasoning_effort": "medium"}
         )
