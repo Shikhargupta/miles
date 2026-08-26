@@ -25,7 +25,7 @@ class WeightTransferProtocol(ABC):
     supports_lora: ClassVar[bool] = False
     # disk-delta transfers asynchronously behind the engines' own locking and
     # never quiesces them.
-    uses_session_frame: ClassVar[bool] = True
+    use_weight_update_session: ClassVar[bool] = True
     # Whether LoRA runs must re-send the frozen base each sync. Remote engines
     # keep their base loaded from hf_checkpoint; only colocate (which may
     # offload or discard it) recomputes this at connect.

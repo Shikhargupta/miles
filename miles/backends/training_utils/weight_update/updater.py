@@ -117,7 +117,7 @@ class WeightUpdater:
         if driver:
             for lora_name, lora_config in self._get_new_lora_registrations(adapters):
                 register_lora_adapter(protocol.rollout_engines, lora_name=lora_name, lora_config=lora_config)
-        if protocol.uses_session_frame and driver:
+        if protocol.use_weight_update_session and driver:
             pause_engines(self.args, protocol.rollout_engines)
             begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args), sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
@@ -141,7 +141,7 @@ class WeightUpdater:
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
-            if protocol.uses_session_frame and driver:
+            if protocol.use_weight_update_session and driver:
                 set_weight_version(protocol.rollout_engines, self.weight_version)
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
                 resume_engines(protocol.rollout_engines)

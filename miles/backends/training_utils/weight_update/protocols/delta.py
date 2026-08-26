@@ -41,7 +41,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     # The transport is asynchronous by design: the engine-side apply is serialized by a
     # per-host flock behind /pull_weights and the reload pauses each engine itself, so
     # the sync never runs inside the pause/begin session frame.
-    uses_session_frame = False
+    use_weight_update_session = False
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
