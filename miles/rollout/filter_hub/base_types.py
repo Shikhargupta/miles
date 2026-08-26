@@ -33,6 +33,8 @@ class MetricGatherer:
 
     def on_group_before_dynamic_filter(self, args: argparse.Namespace, group: list) -> None:
         for sample in _iter_group_samples(group):
+            if sample.reward is None:
+                continue
             self._unfiltered_reward_sum += float(sample.get_reward_value(args))
             self._unfiltered_reward_count += 1
 

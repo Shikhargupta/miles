@@ -46,5 +46,15 @@ def _args(reward_key: str | None = None) -> Namespace:
     return Namespace(reward_key=reward_key)
 
 
-def _sample(reward: float | dict) -> Sample:
+def _sample(reward: float | dict | None) -> Sample:
     return Sample(group_index=0, index=0, prompt="p", label="l", reward=reward)
+
+
+class TestMetricGathererUnscoredSamples:
+    def test_an_unscored_sample_is_left_out_of_the_mean_instead_of_crashing_it(self):
+        """A late-aborted group-RM group arrives COMPLETED with reward None; it carries no score to average."""
+        gatherer = MetricGatherer()
+
+        gatherer.on_group_before_dynamic_filter(_args(), [_sample(reward=1.0), _sample(reward=None)])
+
+        assert gatherer.collect()["rollout/raw_reward_unfiltered"] == 1.0
