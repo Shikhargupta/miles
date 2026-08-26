@@ -124,6 +124,7 @@ def run_ci(
             train_args=train_args,
             mode=ft_mode,
             dump_dir=dump_dir,
+            extra_env_vars=_get_extra_env_vars(fully_async=fully_async),
             config=config,
             train_script=get_train_script(fully_async=fully_async),
         )
@@ -138,6 +139,12 @@ def run_ci(
     )
 
     print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def _get_extra_env_vars(*, fully_async: bool) -> dict[str, str]:
+    if fully_async:
+        return {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    return {}
 
 
 def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:
