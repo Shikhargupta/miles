@@ -52,7 +52,7 @@ def end_weight_update(
 
 
 def register_lora_adapter(
-    rollout_engines: Sequence[ActorHandle], *, lora_name: str, lora_config: Mapping, pinned: bool = True
+    rollout_engines: Sequence[ActorHandle], *, lora_name: str, lora_config: Mapping, pinned: bool = False
 ) -> None:
     """Create-or-refresh an adapter's identity and config on every engine
     (weights zeroed; the bytes follow in the update stream)."""

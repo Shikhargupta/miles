@@ -565,7 +565,7 @@ class SGLangEngine(RayActor):
                 return response.json()["weight_version"]
         response.raise_for_status()
 
-    def register_lora_adapter(self, lora_name: str, config_dict: dict, pinned: bool = True):
+    def register_lora_adapter(self, lora_name: str, config_dict: dict, pinned: bool = False):
         """Create-or-refresh a LoRA adapter's identity and config (weights zeroed)."""
         return self._make_request(
             "register_lora_adapter",
