@@ -13,7 +13,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvid
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HOT_RESTART_FORM_NAME, HotRestartFaultForm
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.cli_options import MetricThresholdOption, NumRolloutOption, SeedOption
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ACTOR_CELL_TYPE, CellFaultForms
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import Event, InjectionEvent
 from tests.e2e.ft.conftest_ft.fault_injection.views import compute_num_successful_injections_of_form
 from tests.e2e.ft.conftest_ft.scenario_realistic_gsm8k import (
@@ -34,6 +34,8 @@ SAVE_INTERVAL: int = 3
 MIN_HOT_RESTARTS: int = 1
 MAX_REDONE_STEPS_PER_TAKE_OVER: int = SAVE_INTERVAL + 1
 DEFAULT_HOT_RESTART_INTERVAL_SECONDS: float = 600.0
+_HOT_RESTART_CELL_TYPE: str = "hot-restart-virtual-cell"
+_VIRTUAL_CELL_NAMES: tuple[str, str] = ("hot-restart-virtual-cell-0", "hot-restart-virtual-cell-1")
 
 HotRestartIntervalSecondsOption = Annotated[
     float, typer.Option(help="Mean seconds between take-overs of the orchestration script")
@@ -61,7 +63,7 @@ def run_ci(
             "the run's fault forms were built twice, so the form this soak reads at the end is not the one the "
             "second run was injected with"
         )
-        [hot_restart_form.value] = forms[ACTOR_CELL_TYPE]
+        [hot_restart_form.value] = forms[_HOT_RESTART_CELL_TYPE]
         return forms
 
     with observing_the_cluster(observer):
@@ -72,8 +74,9 @@ def run_ci(
             num_rollout=num_rollout,
             metric_threshold=metric_threshold,
             fully_async=False,
-            mean_interval_seconds_of_cell_type={ACTOR_CELL_TYPE: hot_restart_interval_seconds},
+            mean_interval_seconds_of_cell_type={_HOT_RESTART_CELL_TYPE: hot_restart_interval_seconds},
             create_forms=create_forms,
+            virtual_cells=_create_virtual_cells(),
             extra_train_args=_build_train_args(resolve_dump_dir(TEST_NAME)),
             enable_fault_tolerance=False,
         )
@@ -142,7 +145,17 @@ def create_hot_restart_forms(run: Gsm8kRun) -> CellFaultForms:
         checkpoint_dir=compute_checkpoint_dir(run.dump_dir),
         events_dir=run.events_dir,
     )
-    return {ACTOR_CELL_TYPE: [form]}
+    return {_HOT_RESTART_CELL_TYPE: [form]}
+
+
+def _create_virtual_cells() -> list[dict]:
+    return [
+        {
+            "metadata": {"name": name, "labels": {"miles.io/cell-type": _HOT_RESTART_CELL_TYPE}},
+            "status": {"phase": "Running", "conditions": [{"type": "Healthy", "status": "True"}]},
+        }
+        for name in _VIRTUAL_CELL_NAMES
+    ]
 
 
 def build_checkpoint_args(dump_dir: str) -> str:
