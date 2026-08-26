@@ -35,7 +35,10 @@ def _injector(*, cell_types: tuple[str, ...]) -> entrypoint.FaultInjectorHandle:
 
 def _actor_cell(name: str = _ACTOR_CELL_NAME) -> dict:
     return {
-        "metadata": {"name": name, "labels": {"miles.io/cell-type": "actor"}},
+        "metadata": {
+            "name": name,
+            "labels": {"miles.io/cell-type": "actor", "miles.io/workers-hash": "generation-0"},
+        },
         "status": {"phase": "Running", "conditions": [{"type": "Healthy", "status": "True"}]},
     }
 
@@ -46,7 +49,11 @@ def _note_actor_injections(
     log = injector.event_log
     for _ in range(count):
         log.observe([_actor_cell(name)])
-        log.note_injection_attempt(cell_name=name, form_name="inject_fault:sigkill", succeeded=True)
+        log.note_injection_attempt(
+            cell_name=name,
+            form_name="inject_fault:sigkill",
+            succeeded=True,
+        )
 
 
 def _note_form_attempts(
@@ -54,11 +61,19 @@ def _note_form_attempts(
 ) -> None:
     injector.event_log.observe([_actor_cell(name)])
     for succeeded in outcomes:
-        injector.event_log.note_injection_attempt(cell_name=name, form_name=form_name, succeeded=succeeded)
+        injector.event_log.note_injection_attempt(
+            cell_name=name,
+            form_name=form_name,
+            succeeded=succeeded,
+        )
 
 
 def _note_rollout_injection(log: state.EventLog) -> None:
-    log.note_injection_attempt(cell_name=_ROLLOUT_CELL_NAME, form_name="inject_fault:sigkill", succeeded=True)
+    log.note_injection_attempt(
+        cell_name=_ROLLOUT_CELL_NAME,
+        form_name="inject_fault:sigkill",
+        succeeded=True,
+    )
 
 
 def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
@@ -72,7 +87,10 @@ def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
         ]
     )
     return {
-        "metadata": {"name": _ROLLOUT_CELL_NAME, "labels": {"miles.io/cell-type": "rollout"}},
+        "metadata": {
+            "name": _ROLLOUT_CELL_NAME,
+            "labels": {"miles.io/cell-type": "rollout", "miles.io/workers-hash": "generation-0"},
+        },
         "status": {"phase": phase, "conditions": conditions},
     }
 
