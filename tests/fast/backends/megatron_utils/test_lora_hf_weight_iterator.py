@@ -53,15 +53,16 @@ class TestHfWeightIteratorFactory:
         with pytest.raises(KeyError):
             self._create("invalid_mode")
 
-    def test_forced_placement_resolves_to_full_gather(self):
-        """Both megatron implementations gather every dim today, so a
-        gather_pp=False requirement must resolve to a full gather."""
+    def test_forced_placement_resolves_by_implementation(self):
+        """Bridge forces a full gather; the direct iterator can keep PP local,
+        so resolution joins the requirement with each implementation's floor."""
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 
         full = WeightUpdatePlacement(gather_pp=True)
+        keep_pp = WeightUpdatePlacement(gather_pp=False)
         assert HfWeightIteratorBridge.forced_placement == full
-        assert HfWeightIteratorDirect.forced_placement == full
+        assert HfWeightIteratorDirect.forced_placement == keep_pp
 
         captured = {}
 
@@ -69,5 +70,9 @@ class TestHfWeightIteratorFactory:
             captured["placement"] = placement
 
         with patch.object(HfWeightIteratorBridge, "__init__", _capture_init):
-            self._create("bridge", required_placement=WeightUpdatePlacement(gather_pp=False))
+            self._create("bridge", required_placement=keep_pp)
         assert captured["placement"] == full
+
+        with patch.object(HfWeightIteratorDirect, "__init__", _capture_init):
+            self._create("raw", required_placement=keep_pp)
+        assert captured["placement"] == keep_pp
