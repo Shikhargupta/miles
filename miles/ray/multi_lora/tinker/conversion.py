@@ -1,5 +1,7 @@
 """Datum-to-Sample conversion for the tinker training plane; validation failures are client errors."""
 
+import copy
+
 from miles.ray.multi_lora.operations import BadRequest
 from miles.ray.multi_lora.tinker.api_data_types import LOSS_FNS, Datum, ForwardBackwardInput, TensorData
 from miles.utils.types import Sample
@@ -40,6 +42,22 @@ def datum_to_sample(datum: Datum) -> Sample:
         advantages=advantages,
         status=Sample.Status.COMPLETED,
     )
+
+
+def pad_samples_to_multiple(samples: list[Sample], multiple: int) -> list[Sample]:
+    """Pad with zero-contribution clones so a co-batch splits evenly across DP ranks."""
+    if multiple <= 1 or not samples or len(samples) % multiple == 0:
+        return samples
+    template = samples[-1]
+    padded = list(samples)
+    while len(padded) % multiple != 0:
+        clone = copy.deepcopy(template)
+        clone.index = len(padded)
+        clone.remove_sample = True  # convert_samples_to_train_data zeroes the loss mask for these
+        clone.loss_weights = [0.0] * clone.response_length
+        clone.advantages = [0.0] * clone.response_length
+        padded.append(clone)
+    return padded
 
 
 def _per_token_values(datum: Datum, key: str, length: int, default: float) -> list[float]:
