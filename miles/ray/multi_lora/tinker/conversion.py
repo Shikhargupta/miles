@@ -28,10 +28,15 @@ def datum_to_sample(datum: Datum) -> Sample:
     overlap = input_tokens[len(input_tokens) - len(target_tokens) + 1 :]
     if overlap != target_tokens[:-1]:
         raise BadRequest("target_tokens must be the model_input tokens shifted left by one")
+    weights_tensor = datum.loss_fn_inputs.get("weights")
+    loss_weights = tensor_values(weights_tensor) if weights_tensor is not None else [1.0] * len(target_tokens)
+    if len(loss_weights) != len(target_tokens):
+        raise BadRequest("weights length must match target_tokens length")
     return Sample(
         tokens=input_tokens + [target_tokens[-1]],
         response_length=len(target_tokens),
         loss_mask=[1] * len(target_tokens),
+        loss_weights=loss_weights,
         status=Sample.Status.COMPLETED,
     )
 
