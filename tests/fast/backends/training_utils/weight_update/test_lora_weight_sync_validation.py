@@ -105,7 +105,7 @@ class TestUpdateWeightsEmptyBaseIteration:
         empty_iterator.iter_hf_weights.return_value = iter([])
 
         protocol = MagicMock()
-        protocol.uses_session_frame = True
+        protocol.use_weight_update_session = True
         protocol.needs_base_resync_for_lora = False
         protocol.is_sender = True
         protocol._group_name = "test"
