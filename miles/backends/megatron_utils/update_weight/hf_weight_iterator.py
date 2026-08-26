@@ -37,8 +37,6 @@ def get_hf_weight_iterator(
     model_name: str,
     quantization_config: dict | None,
 ) -> HfWeightIteratorBase:
-    # Local: the implementations subclass MegatronHfWeightIteratorBase from
-    # this module, so importing them at the top would be a cycle.
     from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
     from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 

@@ -44,7 +44,6 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        # Local: raw-mode adapter export only exists for the inkling plugin.
         from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
 
         return export_inkling_lora_hf_named(self.model)
