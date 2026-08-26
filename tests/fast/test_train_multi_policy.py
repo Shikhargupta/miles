@@ -426,9 +426,7 @@ class TestEvalDispatch:
 
     async def test_a_resumed_run_does_not_re_evaluate_the_untrained_model(self):
         """The rollout-0 point describes the base checkpoint; a resume from rollout 1 is past it."""
-        context = await _run(
-            _make_args(num_rollout=2, eval_interval=2), start_rollout_ids={"a": 1, "b": 1}
-        )
+        context = await _run(_make_args(num_rollout=2, eval_interval=2), start_rollout_ids={"a": 1, "b": 1})
 
         eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
         assert eval_rollout_ids == [1]
