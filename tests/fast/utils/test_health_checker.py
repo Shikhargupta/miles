@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from _pytest.recwarn import WarningsRecorder
 
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import (
@@ -787,6 +788,20 @@ class TestDiscardingStaleProbeResults:
         with pytest.raises(asyncio.CancelledError):
             await probe_task
         assert probe_task.cancelled()
+
+    async def test_stopping_before_a_probe_starts_does_not_abandon_its_coroutine(
+        self, recwarn: WarningsRecorder
+    ) -> None:
+        """Stopping a newly scheduled probe must not leave its coroutine unawaited."""
+        checker, _ = _make_checker(interval=5.0)
+        run_probe = asyncio.create_task(checker._run_probe())
+        await asyncio.sleep(0)
+
+        checker.stop()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_probe
+        assert not [warning for warning in recwarn if "was never awaited" in str(warning.message)]
 
 
 class TestNoopHealthChecker:

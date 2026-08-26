@@ -199,10 +199,10 @@ class SimpleHealthChecker(BaseHealthChecker):
             await self._clock.sleep(self._config.interval)
 
     async def _run_probe(self) -> bool:
-        self._probe_task = asyncio.create_task(asyncio.wait_for(self._check_fn(), timeout=self._config.timeout))
+        self._probe_task = asyncio.create_task(self._check_fn())
 
         try:
-            await self._probe_task
+            await asyncio.wait_for(self._probe_task, timeout=self._config.timeout)
             return True
         except Exception:
             log_structured(logger.error, tag="ft", op="health", phase="check_failed", name=self._name, exc_info=True)
