@@ -143,13 +143,13 @@ class TestSendLoraParams:
 
 
 class TestUpdateWeightsEmptyBaseIteration:
-    @patch("miles.backends.megatron_utils.update_weight.common.ray")
+    @patch("miles.backends.training_utils.weight_update.session.ray")
     @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
     @patch(f"{_UW_MODULE}.ray")
     @patch(f"{_UW_MODULE}.dist")
     @patch(f"{_UW_MODULE}.get_hf_weight_iterator")
     def test_no_raise_for_base_model_zero_buckets(
-        self, mock_get_iter, mock_dist, mock_ray, mock_gloo, mock_common_ray
+        self, mock_get_iter, mock_dist, mock_ray, mock_gloo, mock_session_ray
     ):
         """Base model weight sync with zero buckets is valid (e.g. empty model state)."""
         mock_dist.get_world_size.return_value = 1
