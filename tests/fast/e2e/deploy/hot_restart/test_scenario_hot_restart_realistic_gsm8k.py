@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_realistic_gsm8k as scenario
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress
 from tests.e2e.deploy.conftest_deploy.hot_restart.fault_form import HotRestartFaultForm
 from tests.e2e.ft.conftest_ft import scenario_realistic_gsm8k
 from tests.e2e.ft.conftest_ft.fault_injection.state import InjectionEvent
@@ -59,6 +59,38 @@ class TestTheRecipeIsTheOneFtConverges:
 
 
 class TestTheInjectionPlan:
+    def test_virtual_cells_remain_available_before_the_closing_window(self, monkeypatch, tmp_path: Path):
+        """A draw before the final fifteen rollouts still reaches the ordinary scheduler."""
+        monkeypatch.setattr(
+            scenario,
+            "read_run_progress",
+            lambda **_kwargs: RunProgress(last_saved_iteration=231, last_finished_rollout_id=233),
+        )
+
+        cells = scenario._create_virtual_cells_before(
+            max_allowed_rollout_id=234,
+            checkpoint_dir=tmp_path / "checkpoints",
+            events_dir=tmp_path / "events",
+        )
+
+        assert len(cells) == 2
+
+    def test_virtual_cells_disappear_at_the_closing_window(self, monkeypatch, tmp_path: Path):
+        """Completing rollout 234 leaves all of 235-249 free of new take-overs."""
+        monkeypatch.setattr(
+            scenario,
+            "read_run_progress",
+            lambda **_kwargs: RunProgress(last_saved_iteration=234, last_finished_rollout_id=234),
+        )
+
+        cells = scenario._create_virtual_cells_before(
+            max_allowed_rollout_id=234,
+            checkpoint_dir=tmp_path / "checkpoints",
+            events_dir=tmp_path / "events",
+        )
+
+        assert cells == []
+
     def test_the_plan_supplies_two_healthy_virtual_cells(self):
         """The regular scheduler sees a spare target without borrowing a real FT cell."""
         cells = scenario._create_virtual_cells()
