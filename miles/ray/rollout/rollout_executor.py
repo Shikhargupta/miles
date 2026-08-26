@@ -156,7 +156,12 @@ class RolloutExecutor:
                 logger.warning(f"Rollout {rollout_id} produced no trainable group before the empty-wait timeout: {e}")
                 return RolloutDataPack(empty_batch_timeout=True)
         save_debug_rollout_data(
-            self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata, trainer_model_id=trainer_model_id
+            self.args,
+            data,
+            rollout_id=rollout_id,
+            evaluation=False,
+            metadata=metadata,
+            trainer_model_id=trainer_model_id,
         )
         log_rollout_data(
             rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
