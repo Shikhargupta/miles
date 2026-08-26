@@ -1,5 +1,6 @@
 import random
 import threading
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state, views
@@ -23,7 +24,7 @@ def _run_injection_loop(
     quiescent_polls_required: int = 1,
     event_log: state.EventLog | None = None,
     cell_fault_forms: fault_forms.CellFaultForms | None = None,
-    virtual_cells: list[dict] | None = None,
+    get_virtual_cells: Callable[[], list[dict]] | None = None,
     stop_event: threading.Event,
 ) -> None:
     with patched_requests() as mock_requests:
@@ -37,7 +38,7 @@ def _run_injection_loop(
             stop_event=stop_event,
             event_log=event_log or state.EventLog(),
             cell_fault_forms=cell_fault_forms or api_server_fault_forms(),
-            virtual_cells=virtual_cells,
+            get_virtual_cells=get_virtual_cells,
             poll_interval_seconds=1e-6,
             quiescent_polls_required=quiescent_polls_required,
         )
@@ -114,7 +115,7 @@ def test_virtual_cells_use_the_regular_targeted_injection_path() -> None:
         fake_get=fake_get,
         cell_types=("virtual",),
         cell_fault_forms={"virtual": [StubFaultForm("virtual-fault", inject)]},
-        virtual_cells=virtual_cells,
+        get_virtual_cells=lambda: virtual_cells,
         stop_event=stop_event,
     )
 
