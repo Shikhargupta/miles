@@ -219,11 +219,7 @@ class MegatronTrainRayActor(TrainRayActor):
             main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=lambda: named_params_and_buffers(
-                self.args,
-                self.model,
-                convert_to_global_name=args.megatron_to_hf_mode == "raw",
-            ),
+            source_getter=self._named_actor_weights,
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
@@ -262,7 +258,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self.weight_updater = WeightUpdater(
             self.args,
             self.model,
-            weights_getter=lambda: self.weights_backuper.get("actor"),
+            weights_getter=self._get_actor_weights,
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             iterator_factory=get_hf_weight_iterator,
@@ -726,6 +722,17 @@ class MegatronTrainRayActor(TrainRayActor):
         from miles.backends.megatron_utils.hf_export import save_hf_model
 
         save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
+
+
+    def _named_actor_weights(self):
+        return named_params_and_buffers(
+            self.args, self.model, convert_to_global_name=self.args.megatron_to_hf_mode == "raw"
+        )
+
+    def _get_actor_weights(self):
+        if self._enable_weight_backup:
+            return self.weights_backuper.get("actor")
+        return dict(self._named_actor_weights())
 
     @with_logs
     @timer
