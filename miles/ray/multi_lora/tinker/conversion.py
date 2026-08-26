@@ -30,8 +30,8 @@ def datum_to_sample(datum: Datum) -> Sample:
     overlap = input_tokens[len(input_tokens) - len(target_tokens) + 1 :]
     if overlap != target_tokens[:-1]:
         raise BadRequest("target_tokens must be the model_input tokens shifted left by one")
-    loss_weights = _per_token_values(datum, "weights", len(target_tokens), default=1.0)
-    advantages = _per_token_values(datum, "advantages", len(target_tokens), default=0.0)
+    loss_weights = _resolve_per_token_channel(datum, "weights", len(target_tokens), default=1.0)
+    advantages = _resolve_per_token_channel(datum, "advantages", len(target_tokens), default=0.0)
     return Sample(
         tokens=input_tokens + [target_tokens[-1]],
         response_length=len(target_tokens),
@@ -42,7 +42,7 @@ def datum_to_sample(datum: Datum) -> Sample:
     )
 
 
-def _per_token_values(datum: Datum, key: str, length: int, default: float) -> list[float]:
+def _resolve_per_token_channel(datum: Datum, key: str, length: int, default: float) -> list[float]:
     """Channels stay homogeneous across mixed-loss co-batches, so absent inputs fill with the default."""
     tensor = datum.loss_fn_inputs.get(key)
     if tensor is None:
