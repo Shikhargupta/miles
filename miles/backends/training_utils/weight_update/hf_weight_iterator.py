@@ -83,7 +83,8 @@ class HfWeightIteratorBase(ABC):
         yields nothing.
         """
         hf_param_units = self._iter_hf_param_units(weights, materialize=materialize)
-        hf_param_units = assemble_atomic_update_groups(hf_param_units, self._hf_atomic_update_groups())
+        atomic_update_groups = self._hf_atomic_update_groups() if materialize else []
+        hf_param_units = assemble_atomic_update_groups(hf_param_units, atomic_update_groups)
         yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
 
     @abstractmethod
