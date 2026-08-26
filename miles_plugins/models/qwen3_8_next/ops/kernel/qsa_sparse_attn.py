@@ -21,7 +21,7 @@ import triton.language as tl
 from torch import Tensor
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["T", "TOPK"])
 def _qsa_fwd_kernel(
     Q, K, V, IDX, O, LSE,
     stride_qt, stride_qh, stride_kt, stride_kh, stride_vt, stride_vh,
@@ -93,7 +93,7 @@ def _qsa_fwd_kernel(
     tl.store(LSE + pid_h * T + offs_q, lse, mask=q_mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["T", "TOPK"])
 def _qsa_bwd_kernel(
     Q, K, V, IDX, O, LSE, DO, DQ, DK, DV,
     stride_qt, stride_qh, stride_kt, stride_kh, stride_vt, stride_vh,

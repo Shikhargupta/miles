@@ -101,6 +101,7 @@ class Qwen38NextAttention(SelfAttention):
     def __init__(self, config, submodules, layer_number=1, *args, **kwargs):
         super().__init__(config, submodules, layer_number, *args, **kwargs)
         self.indexer = Qwen38NextQSAIndexer(config, layer_number=layer_number)
+        self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
         self.core_attention = Qwen38NextQSACoreAttention(config, layer_number, owner=self)
         self._qsa_selection = None
 
@@ -160,7 +161,35 @@ class Qwen38NextAttention(SelfAttention):
         # The indexer works on one sequence's [T, hidden]; batch is folded per item
         # inside the core attention, so score on the first batch element's states.
         with torch.no_grad():
-            self._qsa_selection = self.indexer(indexer_states[:, 0], positions)
+            selection = self.indexer(indexer_states[:, 0], positions)
+            # Append the query's own partial-block tail as explicit indices. The
+            # triton kernel is list-semantics (it attends exactly the listed
+            # tokens), so the tail must be in the list; the torch mask path
+            # dedupes, so the extra entries are harmless there. Indexer output
+            # covers only complete blocks strictly before the query, so the tail
+            # never duplicates a selected token.
+            seq_start = torch.arange(seq, device=positions.device) - positions
+            r = self.compress_ratio
+            tail_in_seq = (positions + 1) // r * r
+            offs = torch.arange(r, device=positions.device)
+            tail_pos = tail_in_seq.unsqueeze(1) + offs.unsqueeze(0)          # in-seq
+            tail_idx = seq_start.unsqueeze(1) + tail_pos                     # pack index
+            tail_idx = torch.where(
+                tail_pos <= positions.unsqueeze(1), tail_idx,
+                torch.full_like(tail_idx, -1),
+            )
+            merged = torch.cat([selection, tail_idx.to(selection.dtype)], dim=1)
+            # Enforce causality and segment confinement on the index list itself:
+            # the triton kernel attends exactly what is listed (the torch path's
+            # mask re-derives these constraints, the kernel must not rely on it).
+            # Leaks show up as impossibly good logprobs on repeated text, which is
+            # how this surfaced.
+            pack_pos = torch.arange(seq, device=positions.device).unsqueeze(1)
+            seg_lo = seq_start.unsqueeze(1)
+            ok = (merged >= seg_lo) & (merged <= pack_pos) & (merged >= 0)
+            self._qsa_selection = torch.where(
+                ok, merged, torch.full_like(merged, -1)
+            )
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:

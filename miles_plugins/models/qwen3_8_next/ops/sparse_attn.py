@@ -32,7 +32,10 @@ def selection_to_mask(topk_indices: Tensor, seq_len: int) -> Tensor:
     if valid.any():
         rows = torch.arange(tokens, device=topk_indices.device).unsqueeze(-1).expand_as(topk_indices)
         mask[rows[valid], topk_indices[valid].long()] = True
-    mask.diagonal().fill_(True)
+    # No forced diagonal: sglang's kernel attends exactly the listed indices
+    # (top-k expansion + the query's partial-block tail, which contains the query
+    # itself whenever its block is incomplete). Forcing the diagonal here made
+    # this path diverge from both sglang and the triton kernel on saturated rows.
     return mask
 
 

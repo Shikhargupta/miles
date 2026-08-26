@@ -155,6 +155,10 @@ def train(args: ScriptArgs):
         "--custom-model-provider-path "
         "miles_plugins.models.qwen3_8_next.model_provider.get_qwen3_8_next_model_provider "
         "--rollout-health-check-interval 300 "
+        # The first train step compiles triton kernels for many shapes and the
+        # pipeline stages drift apart; the default 10-minute NCCL timeout turned
+        # that into watchdog SIGABRTs that looked like worker crashes.
+        "--distributed-timeout-minutes 60 "
         "--rollout-health-check-timeout 300 "
     )
     if args.check_weight_update:
@@ -187,6 +191,13 @@ def train(args: ScriptArgs):
         # needs miles_plugins on the path; both are prepended here and merged with
         # execute_train's own entries.
         "PYTHONPATH": "/data/home/zzeng/repos/sglang-B/python",
+        # Triton QSA kernel (validated against the torch reference at 1e-7/1e-3):
+        # list-semantics selection, flash-style online softmax, no [T, S] score
+        # materialization. The torch fallback's masked-SDPA backward is the prime
+        # suspect for the native train-step worker deaths.
+        "QSA_BACKEND": "triton",
+        "TRITON_CACHE_DIR": "/tmp/zz_triton_cache",
+        "TORCHINDUCTOR_CACHE_DIR": "/tmp/zz_inductor_cache",
     }
 
     U.execute_train(

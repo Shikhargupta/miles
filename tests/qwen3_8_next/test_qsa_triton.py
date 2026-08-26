@@ -39,11 +39,16 @@ def run_case(T, S, Hq, Hkv, D, K, dtype, seed):
     q = torch.randn(T, Hq, D, device="cuda", dtype=dtype, generator=g, requires_grad=True)
     k = torch.randn(S, Hkv, D, device="cuda", dtype=dtype, generator=g, requires_grad=True)
     v = torch.randn(S, Hkv, D, device="cuda", dtype=dtype, generator=g, requires_grad=True)
-    # causal-ish random selection with -1 padding
-    idx = torch.randint(0, S, (T, K), device="cuda", generator=g, dtype=torch.int32)
+    # Unique indices per row: production selections are unique by construction
+    # (top-k block expansion is disjoint from the incomplete tail block), and the
+    # kernel is list-semantics -- a duplicated index would be counted twice, which
+    # the mask-based reference cannot represent.
+    scores_rand = torch.rand(T, S, device="cuda", generator=g)
+    idx = scores_rand.topk(K, dim=-1).indices.to(torch.int32)
     pos = torch.arange(T, device="cuda").unsqueeze(1)
-    idx = torch.where(idx <= pos * (S // max(T, 1)), idx, torch.full_like(idx, -1))
-    idx[:, 0] = torch.arange(T, device="cuda").clamp_max(S - 1)  # guarantee 1 valid
+    keep = torch.rand(T, K, device="cuda", generator=g) > 0.3
+    keep[:, 0] = True
+    idx = torch.where(keep, idx, torch.full_like(idx, -1))
 
     scale = D ** -0.5
     out_t = qsa_sparse_attention_triton(q, k, v, idx, scale)
