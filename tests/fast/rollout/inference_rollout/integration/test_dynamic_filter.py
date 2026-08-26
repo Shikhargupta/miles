@@ -32,6 +32,20 @@ from miles.utils.function_registry import function_registry
     ],
     indirect=["rollout_env"],
 )
+def test_filter_effect(rollout_env, use_filter, expect_all_correct):
+    env = rollout_env
+    ctx = function_registry.temporary("test:filter_by_reward", filter_by_reward) if use_filter else nullcontext()
+
+    with ctx:
+        out = load_and_call_train(env.args, env.data_source)
+
+    rewards = {group[0].reward for group in out.samples}
+    if expect_all_correct:
+        assert rewards == {1}, "Filter should keep only correct samples"
+    else:
+        assert 0 in rewards, "Without filter, incorrect samples should be present"
+
+
 @pytest.mark.parametrize(
     "rollout_env",
     [
@@ -54,17 +68,3 @@ def test_unfiltered_raw_reward_still_sees_the_dropped_groups(rollout_env):
 
     assert {group[0].reward for group in out.samples} == {1}
     assert 0 < out.metrics["rollout/raw_reward_unfiltered"] < 1
-
-
-def test_filter_effect(rollout_env, use_filter, expect_all_correct):
-    env = rollout_env
-    ctx = function_registry.temporary("test:filter_by_reward", filter_by_reward) if use_filter else nullcontext()
-
-    with ctx:
-        out = load_and_call_train(env.args, env.data_source)
-
-    rewards = {group[0].reward for group in out.samples}
-    if expect_all_correct:
-        assert rewards == {1}, "Filter should keep only correct samples"
-    else:
-        assert 0 in rewards, "Without filter, incorrect samples should be present"
