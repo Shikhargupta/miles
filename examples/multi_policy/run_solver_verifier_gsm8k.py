@@ -125,9 +125,7 @@ def build_train_args(
         "--pause-generation-mode in_place "
     )
     if args.dynamic_sampling_filter:
-        rollout_args += (
-            "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        )
+        rollout_args += "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
 
     eval_args = ""
     if args.eval_interval is not None:
