@@ -8,7 +8,7 @@ from tests.e2e.conftest_multi_policy import TrainRewardBounds, execute
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=7000,
+    est_time=15000,
     suite="stage-c-4-gpu-h200",
     labels=["long"],
     disabled=(
@@ -23,7 +23,7 @@ register_cuda_ci(
     ),
 )
 
-NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "100"))
+NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "250"))
 
 # TODO: tighten these weak bounds once the e2e run has been observed.
 TRAIN_REWARD_BOUNDS = {
