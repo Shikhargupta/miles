@@ -27,6 +27,7 @@ weight sync never has to carry it.
 """
 
 import json
+import logging
 import struct
 
 import torch
@@ -36,6 +37,19 @@ from torch import Tensor
 
 from miles_plugins.models.qwen3_8_next.ops.kernel.ple_gather import gather_ple_rows
 from miles_plugins.models.qwen3_8_next.ops.ple_hash import ngram_hash_ids
+
+
+logger = logging.getLogger(__name__)
+
+_WEIGHT_MAP_CACHE: dict[str, dict] = {}
+
+
+def _weight_map(hf_checkpoint: str) -> dict:
+    """The checkpoint's name->file map, parsed once per path per process."""
+    if hf_checkpoint not in _WEIGHT_MAP_CACHE:
+        with open(f"{hf_checkpoint}/model.safetensors.index.json") as f:
+            _WEIGHT_MAP_CACHE[hf_checkpoint] = json.load(f)["weight_map"]
+    return _WEIGHT_MAP_CACHE[hf_checkpoint]
 
 
 def _safetensors_slice(path: str, name: str, header_cache: dict) -> tuple[int, int, list[int]]:
@@ -151,17 +165,20 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         the actual per-head vocab, so arithmetic on it is off by a few rows per shard
         and silently misaligns every subsequent shard.
         """
+        name = (
+            f"model.language_model.layers.{hf_layer_index}.ple.ple_embedding"
+            ".ngram_embedding.shard_0.weight"
+        )
         try:
-            index = json.load(
-                open(f"{hf_checkpoint}/model.safetensors.index.json")
-            )["weight_map"]
-            name = (
-                f"model.language_model.layers.{hf_layer_index}.ple.ple_embedding"
-                ".ngram_embedding.shard_0.weight"
-            )
+            index = _weight_map(hf_checkpoint)
             _, _, shape = _safetensors_slice(f"{hf_checkpoint}/{index[name]}", name, {})
             return int(shape[0])
-        except Exception:
+        except (OSError, KeyError, json.JSONDecodeError) as exc:
+            logger.warning(
+                f"Could not read the PLE shard height from {hf_checkpoint} ({exc}); "
+                "falling back to config arithmetic, which is KNOWN to drift by "
+                "12 rows/shard and misalign the table (see __init__)."
+            )
             return None
 
     @staticmethod
@@ -169,9 +186,8 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         return (config.qwen3_8_next_ngram_size - 1) * config.qwen3_8_next_heads_per_ngram
 
     def _hf_index_and_prefix(self, hf_checkpoint: str):
-        index = json.load(open(f"{hf_checkpoint}/model.safetensors.index.json"))["weight_map"]
         prefix = f"model.language_model.layers.{self.hf_layer_index}.ple.ple_embedding"
-        return index, prefix
+        return _weight_map(hf_checkpoint), prefix
 
     def load_metadata_from_hf(self, hf_checkpoint: str) -> None:
         """Load the three integer tensors that parameterise the hash.

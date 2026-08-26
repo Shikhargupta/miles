@@ -18,16 +18,9 @@ export PYTHONPATH="$MEGATRON:$REPO"
 export HOME=/data/home/zzeng
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export OMP_NUM_THREADS=32
-export PARITY_FIND_NONDETERMINISM=0
-export PARITY_REPEAT_BISECT=0
-export PARITY_CHUNK_DOUBLE=0
-export PARITY_FLA_SUBPROBE=1
-export PARITY_CHUNK_O_BK="${PIN_BK:-64}"
 
-export CUBLAS_WORKSPACE_CONFIG=:4096:8
-
-torchrun --nproc-per-node 4 --master-port 29607 \
-  "$REPO/scripts/qwen3_8_next/megatron_logprobs.py" \
+torchrun --nproc-per-node 4 --master-port 29581 \
+  "$REPO/scripts/qwen3_8_next/debug/megatron_logprobs.py" \
   $MODEL_ARGS \
   --tensor-model-parallel-size 4 \
   --expert-model-parallel-size 1 \

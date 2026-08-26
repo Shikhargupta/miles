@@ -18,15 +18,18 @@ export PYTHONPATH="$MEGATRON:$REPO"
 export HOME=/data/home/zzeng
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export OMP_NUM_THREADS=32
+export CUDA_LAUNCH_BLOCKING=1
+export QSA_BACKEND=triton
+export TRITON_CACHE_DIR=/tmp/zz_triton
 
-torchrun --nproc-per-node 4 --master-port 29581 \
-  "$REPO/scripts/qwen3_8_next/megatron_logprobs.py" \
+torchrun --nproc-per-node 4 --master-port 29647 \
+  "$REPO/scripts/qwen3_8_next/debug/megatron_logprobs.py" \
   $MODEL_ARGS \
-  --tensor-model-parallel-size 4 \
+  --tensor-model-parallel-size 4 --sequence-parallel \
   --expert-model-parallel-size 1 \
   --hf-checkpoint "$MODEL" \
   --load "$CKPT" \
-  --tokens "$OUT/tokens.pt" \
-  --parity-out "$OUT"
+  --tokens "$OUT/tokens4k.pt" \
+  --parity-out "$OUT" --split-every 700
 echo "PARITY_MEGATRON_EXIT=$?"
 ls -l "$OUT"

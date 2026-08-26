@@ -19,14 +19,14 @@ export HOME=/data/home/zzeng
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export OMP_NUM_THREADS=32
 
-torchrun --nproc-per-node 4 --master-port 29613 \
-  "$REPO/scripts/qwen3_8_next/megatron_logprobs.py" \
+torchrun --nproc-per-node 4 --master-port 29585 \
+  "$REPO/scripts/qwen3_8_next/debug/megatron_logprobs.py" \
   $MODEL_ARGS \
   --tensor-model-parallel-size 4 \
-  --expert-model-parallel-size 4 \
+  --expert-model-parallel-size 1 \
   --hf-checkpoint "$MODEL" \
   --load "$CKPT" \
   --tokens "$OUT/tokens.pt" \
-  --parity-out "$OUT"
+  --parity-out "$OUT" --trace
 echo "PARITY_MEGATRON_EXIT=$?"
 ls -l "$OUT"

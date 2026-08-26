@@ -66,6 +66,12 @@ def add_parity_args(parser):
              "the sglang dumper, for comparison against the reference implementation",
     )
     group.add_argument(
+        "--bwd-stress", type=int, default=0,
+        help="crash repro: run this many fwd+bwd iterations over randomly packed "
+             "THD batches (rollout-like length mix incl. 4096 truncations and "
+             "tiny segments). PP=1 counterpart of the e2e train step's backward.",
+    )
+    group.add_argument(
         "--backward",
         action="store_true",
         help="run forward+backward with a fixed CE loss and dump gradients via the "
@@ -388,6 +394,87 @@ def _wrap_chunk_double_call(module) -> None:
         wrapped += 1
     if dist.get_rank() == 0:
         print(f"CHUNK_DOUBLE wrapped={wrapped}", flush=True)
+
+
+def _run_backward_stress(model, margs, ple, iters, vocab_hi):
+    """Loop fwd+bwd over randomly packed THD batches to reproduce the e2e
+    train-step SIGSEGV offline (PP=1). Prints one line per iteration with the
+    packing signature, so a crash names its shape. Same loss math as the
+    trainer (compute_log_probs -> mean CE)."""
+    import random
+
+    from megatron.core import parallel_state
+    from megatron.core.packed_seq_params import PackedSeqParams
+    from miles.backends.training_utils.loss_hub.math_utils import compute_log_probs
+    from miles_plugins.models.qwen3_8_next.ops.ple_context import ple_forward_context
+    from miles_plugins.models.qwen3_8_next.ops.ple_hash import build_ngram_contexts_packed
+
+    m = model[0]
+    for prm in m.parameters():
+        prm.requires_grad_(True)
+
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    rng = random.Random(1234)  # same schedule on every TP rank
+    sp = getattr(margs, "sequence_parallel", False)
+    sp_mult = parallel_state.get_tensor_model_parallel_world_size() if sp else 1
+
+    for it in range(iters):
+        budget = rng.choice([2048, 4096, 6144, 8192])
+        lens = []
+        left = budget
+        while left > 0:
+            r = rng.random()
+            if r < 0.4:
+                seg = 4096          # truncated_ratio ~0.44 in the real rollout
+            elif r < 0.5:
+                seg = rng.randint(1, 8)   # tiny edge-case segments
+            else:
+                seg = rng.randint(398, 4095)
+            seg = min(seg, left)
+            lens.append(seg)
+            left -= seg
+        # SP scatters the sequence dim across TP ranks; keep totals divisible.
+        total = sum(lens)
+        if sp_mult > 1 and total % sp_mult:
+            lens[-1] += sp_mult - (total % sp_mult)
+        total = sum(lens)
+
+        gen = torch.Generator(device="cuda").manual_seed(9000 + it)
+        ids = torch.randint(1, vocab_hi, (total,), device="cuda",
+                            dtype=torch.long, generator=gen)
+        bounds = [0]
+        for L in lens:
+            bounds.append(bounds[-1] + L)
+        cu_seqlens = torch.tensor(bounds, dtype=torch.int32, device="cuda")
+        pos = torch.cat([torch.arange(L, device="cuda") for L in lens]).view(1, total)
+        psp = PackedSeqParams(
+            cu_seqlens_q=cu_seqlens, cu_seqlens_kv=cu_seqlens,
+            max_seqlen_q=max(lens), max_seqlen_kv=max(lens), qkv_format="thd",
+        )
+        contexts = build_ngram_contexts_packed(ids, cu_seqlens, ple.ngram_size, ple.eos_token_id)
+        ngram_ids = ple.compute_ngram_ids(contexts)
+
+        if rank == 0:
+            print(f"STRESS iter {it}: total={total} nseg={len(lens)} lens={lens}", flush=True)
+        for prm in m.parameters():
+            prm.grad = None
+        with ple_forward_context(ngram_ids, cu_seqlens=cu_seqlens):
+            out = m(input_ids=ids.view(1, total), position_ids=pos,
+                    attention_mask=None, packed_seq_params=psp)
+        logits = out if isinstance(out, torch.Tensor) else out[0]
+        flat_logits = logits.squeeze(1) if logits.shape[1] == 1 else logits.squeeze(0)
+        logprobs = compute_log_probs(
+            flat_logits[:-1].to(torch.float32, copy=True),
+            ids[1:],
+            parallel_state.get_tensor_model_parallel_group(),
+        )
+        loss = -logprobs.mean()
+        loss.backward()
+        torch.cuda.synchronize()
+        if rank == 0:
+            print(f"STRESS iter {it}: loss={loss.item():.6f} OK", flush=True)
+    if rank == 0:
+        print("STRESS_SURVIVED", flush=True)
 
 
 def _run_backward_parity(model, margs, input_ids, position_ids, attention_mask,
@@ -741,6 +828,11 @@ def main():
         if os.environ.get("PARITY_REPEAT_BISECT") == "1"
         else None
     )
+
+    if margs.bwd_stress:
+        _run_backward_stress(model, margs, ple, margs.bwd_stress,
+                             vocab_hi=min(margs.vocab_size - 1, 200000))
+        return
 
     if margs.backward:
         _run_backward_parity(model, margs, input_ids, position_ids, attention_mask,

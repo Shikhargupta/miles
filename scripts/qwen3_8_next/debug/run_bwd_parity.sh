@@ -18,7 +18,6 @@ export PYTHONPATH="$MEGATRON:$REPO"
 export HOME=/data/home/zzeng
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export OMP_NUM_THREADS=32
-export CUDA_LAUNCH_BLOCKING=1
 # Compile caches must be node-local: HOME is on NFS, and two nodes sharing one
 # inductor/triton cache produce "OSError: Stale file handle" mid-compile.
 export TORCHINDUCTOR_CACHE_DIR=/tmp/zz_inductor_cache
@@ -31,15 +30,15 @@ export DUMPER_DIR=/data/home/zzeng/parity/bwd
 export DUMPER_EXP_NAME="${BWD_TAG:-bwd1}"
 export DUMPER_CLEANUP_PREVIOUS=0
 
-torchrun --nproc-per-node 4 --master-port 29643 \
-  "$REPO/scripts/qwen3_8_next/megatron_logprobs.py" \
+torchrun --nproc-per-node 4 --master-port 29617 \
+  "$REPO/scripts/qwen3_8_next/debug/megatron_logprobs.py" \
   $MODEL_ARGS \
-  --tensor-model-parallel-size 4 --sequence-parallel --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 \
+  --tensor-model-parallel-size 4 \
   --expert-model-parallel-size 1 \
   --hf-checkpoint "$MODEL" \
   --load "$CKPT" \
-  --tokens "$OUT/tokens4k.pt" \
+  --tokens "$OUT/tokens.pt" \
   --no-gradient-accumulation-fusion \
-  --parity-out "$OUT" --split-every 700 --backward
+  --parity-out "$OUT" --backward
 echo "PARITY_BWD_EXIT=$?"
 ls -l "$OUT"

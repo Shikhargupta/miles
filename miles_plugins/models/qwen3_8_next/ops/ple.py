@@ -38,7 +38,6 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.parity_dump import parity_dump
 from miles_plugins.models.qwen3_8_next.ops.hc import grouped_gemma_rmsnorm
 from miles_plugins.models.qwen3_8_next.ops.ple_embedding import Qwen38NextFrozenNGramEmbedding
 
@@ -149,16 +148,26 @@ class Qwen38NextPLE(MegatronModule):
         key, _ = self.key_proj(embeddings)
         value, _ = self.value_proj(embeddings)
 
-        layer_tag = f"L{self.layer_number - 1:02d}"
-        parity_dump(f"{layer_tag}.ple_emb", embeddings, dims="t h # tp:replicated")
-        parity_dump(f"{layer_tag}.ple_key", key, dims="t h # tp:replicated")
-        parity_dump(f"{layer_tag}.ple_value", value, dims="t h # tp:replicated")
 
         tokens = hc_state.shape[0]
         if hc_state.shape[-1] != self.n * self.hidden_size:
             raise RuntimeError(
                 "PLE hidden size does not match the hyper-connection layout: expected "
                 f"{self.n * self.hidden_size}, got {hc_state.shape[-1]}"
+            )
+
+        from miles_plugins.models.qwen3_8_next.ops.backend import use_triton
+
+        if use_triton("PLE"):
+            from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import (
+                ple_gate_conv_triton,
+            )
+
+            return ple_gate_conv_triton(
+                hc_state, key, value,
+                self.norm_key, self.norm_query, self.norm_conv,
+                self.conv1d_weight, self.n, self.norm_eps,
+                self.conv_dilation, cu_seqlens,
             )
 
         key_normed = grouped_gemma_rmsnorm(key, self.norm_key, self.n, self.norm_eps)
@@ -170,7 +179,6 @@ class Qwen38NextPLE(MegatronModule):
             self.hidden_size
         )
         gate = torch.sigmoid(score.abs().clamp_min(1e-6).sqrt() * score.sign())
-        parity_dump(f"{layer_tag}.ple_gate", gate, dims="t c 1 # tp:replicated")
         gated = (gate * value.unsqueeze(-2)).flatten(-2)
 
         gated_normed = grouped_gemma_rmsnorm(gated, self.norm_conv, self.n, self.norm_eps)
@@ -186,5 +194,4 @@ class Qwen38NextPLE(MegatronModule):
         # the PLE increment ~88% wrong while every weight and every other
         # intermediate in the layer was exact.
         conv_out = F.silu(conv_out)
-        parity_dump(f"{layer_tag}.ple_conv", conv_out, dims="t h # tp:replicated")
         return (gated.to(conv_out.dtype) + conv_out).to(hc_state.dtype)

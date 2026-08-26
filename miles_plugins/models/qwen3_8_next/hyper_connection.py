@@ -38,6 +38,7 @@ first call to the second, so returning ``None`` for ``h_res`` is safe and lets
 ``fused_h_res_h_post_bda`` skip the identity bmm entirely.
 """
 
+import os
 from typing import Optional, Tuple
 
 import torch
@@ -46,13 +47,19 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.parity_dump import parity_dump
 from miles_plugins.models.qwen3_8_next.ops.hc import (
     grouped_gemma_rmsnorm,
     hc_combine,
     hc_inject_gate,
     hc_mix,
 )
+
+
+def _hc_backend() -> str:
+    """Backend switch, shared policy in ops/backend.py (HC_BACKEND env)."""
+    from miles_plugins.models.qwen3_8_next.ops.backend import backend
+
+    return backend("HC")
 
 
 class Qwen38NextHyperConnection(MegatronModule):
@@ -145,6 +152,21 @@ class Qwen38NextHyperConnection(MegatronModule):
                 "run without 'mhc' in --recompute-modules."
             )
         assert self.use_combine, "per-layer HC needs the inject weight; use the Mixer for read-only"
+        if _hc_backend() == "triton":
+            from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
+                hc_mix_inject_triton,
+            )
+
+            aggregated, h_post = hc_mix_inject_triton(
+                hidden_states,
+                self.hc_norm_weight,
+                self.input_mix_weight_down,
+                self.input_mix_weight_up,
+                self.block_inject_weight,
+                self.n,
+                self.norm_eps,
+            )
+            return aggregated, None, h_post, hidden_states
         aggregated, normed = self.mix(hidden_states)
         h_post = hc_inject_gate(normed, self.block_inject_weight, self.n)
         return aggregated, None, h_post, hidden_states
@@ -174,6 +196,12 @@ class Qwen38NextHyperConnection(MegatronModule):
             x = x + bias.view(*([1] * (x.dim() - 1)), -1)
         if dropout_prob > 0.0 and training:
             x = F.dropout(x, p=dropout_prob)
+        if _hc_backend() == "triton":
+            from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
+                hc_combine_triton,
+            )
+
+            return hc_combine_triton(original_residual, x, h_post, self.n)
         return hc_combine(original_residual, x, h_post, self.n, self.hidden_size)
 
 
@@ -224,6 +252,21 @@ class Qwen38NextHCHeadContraction(MegatronModule):
             torch.nn.init.xavier_uniform_(self.input_mix_weight_up)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
+        if _hc_backend() == "triton":
+            from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
+                hc_mix_inject_triton,
+            )
+
+            mixed, _ = hc_mix_inject_triton(
+                hidden_states,
+                self.hc_norm_weight,
+                self.input_mix_weight_down,
+                self.input_mix_weight_up,
+                None,
+                self.n,
+                self.norm_eps,
+            )
+            return mixed
         normed = grouped_gemma_rmsnorm(hidden_states, self.hc_norm_weight, self.n, self.norm_eps)
         return hc_mix(
             normed,
@@ -330,8 +373,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         # Debug hook for the sglang parity comparison, off unless the dumper is
         # enabled. Named to match what the sglang side dumps at the same two points
         # inside _prepare_qwen4_exp_attn.
-        parity_dump(f"L{self.layer_number - 1:02d}.ple_query", hidden_states)
-        parity_dump(f"L{self.layer_number - 1:02d}.ple_out", increment.view_as(hidden_states))
         assert increment.shape == flat_state.shape, (
             f"PLE increment {tuple(increment.shape)} != state {tuple(flat_state.shape)}"
         )

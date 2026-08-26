@@ -217,62 +217,19 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         with _wrap_low_level_call():
             return getattr(inner, method)(*args, **kwargs)
 
-    def barrier(self, *a, **kw):
-        return self._fwd("barrier", *a, **kw)
-
-    def broadcast(self, *a, **kw):
-        return self._fwd("broadcast", *a, **kw)
-
-    def allreduce(self, *a, **kw):
-        return self._fwd("allreduce", *a, **kw)
-
-    def allreduce_coalesced(self, *a, **kw):
-        return self._fwd("allreduce_coalesced", *a, **kw)
-
-    def reduce(self, *a, **kw):
-        return self._fwd("reduce", *a, **kw)
-
-    def allgather(self, *a, **kw):
-        return self._fwd("allgather", *a, **kw)
-
-    def _allgather_base(self, *a, **kw):
-        return self._fwd("_allgather_base", *a, **kw)
-
-    def allgather_coalesced(self, *a, **kw):
-        return self._fwd("allgather_coalesced", *a, **kw)
-
-    def allgather_into_tensor_coalesced(self, *a, **kw):
-        return self._fwd("allgather_into_tensor_coalesced", *a, **kw)
-
-    def gather(self, *a, **kw):
-        return self._fwd("gather", *a, **kw)
-
-    def scatter(self, *a, **kw):
-        return self._fwd("scatter", *a, **kw)
-
-    def reduce_scatter(self, *a, **kw):
-        return self._fwd("reduce_scatter", *a, **kw)
-
-    def _reduce_scatter_base(self, *a, **kw):
-        return self._fwd("_reduce_scatter_base", *a, **kw)
-
-    def reduce_scatter_tensor_coalesced(self, *a, **kw):
-        return self._fwd("reduce_scatter_tensor_coalesced", *a, **kw)
-
-    def alltoall_base(self, *a, **kw):
-        return self._fwd("alltoall_base", *a, **kw)
-
-    def alltoall(self, *a, **kw):
-        return self._fwd("alltoall", *a, **kw)
-
-    def send(self, *a, **kw):
-        return self._fwd("send", *a, **kw)
-
-    def recv(self, *a, **kw):
-        return self._fwd("recv", *a, **kw)
-
-    def recv_anysource(self, *a, **kw):
-        return self._fwd("recv_anysource", *a, **kw)
+    # NO python overrides for collectives (allreduce/reduce_scatter/send/...):
+    # this class is a python subclass of ProcessGroup, so any method defined
+    # here is installed as a pybind trampoline override — every C++ virtual
+    # call then round-trips through python and wraps the returned Work in
+    # c10d::PyProcessGroup::PyWorkHolder. On torch 2.13 that holder is the
+    # crash site of the e2e train step (SIGSEGV at PyWorkHolder::wait()+0x4,
+    # wild `this`, stack destroyed — apport core from the first grad-sync wait
+    # of the run, all ranks of a PP stage at once). With the inner NCCL/Gloo
+    # backends registered on this wrapper (_adopt_inner_backends, re-run after
+    # every reload), the base-class C++ dispatch routes every collective
+    # straight to ProcessGroupNCCL and returns plain C++ Works — that path has
+    # carried all rollout/logprob traffic since the backend-map fix, including
+    # across reloads. _fwd stays for the plumbing methods below only.
 
     def _start_coalescing(self, *a, **kw):
         return self._fwd("_start_coalescing", *a, **kw)

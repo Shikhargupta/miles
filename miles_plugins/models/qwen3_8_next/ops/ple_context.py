@@ -14,6 +14,17 @@ you ship a model that runs and is quietly wrong. So there is no default: a PLE
 forward with nothing set raises. Construction-only paths (weight conversion,
 shape audits) never call forward, so they are unaffected; ``allow_missing`` exists
 for tests that deliberately want the no-PLE path.
+
+Producers and consumers, for orientation:
+
+  * the parity harness wraps its forward in ``ple_forward_context`` directly;
+  * production training publishes via ``publish_ple_batch``/``clear_ple_batch``
+    from the model-provider forward hooks (model_provider.py) -- a pre-hook has
+    no scope that survives to the post-hook, so the pair replaces the ``with``;
+  * the sole consumer is ``Qwen38NextPLEHyperConnection._resolve_ple_batch``
+    (hyper_connection.py), which also keeps a FIFO so activation recompute pops
+    the batch the checkpointed original pass enqueued instead of whatever is
+    current by then.
 """
 
 import contextlib

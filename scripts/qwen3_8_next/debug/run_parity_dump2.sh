@@ -18,18 +18,20 @@ export PYTHONPATH="$MEGATRON:$REPO"
 export HOME=/data/home/zzeng
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export OMP_NUM_THREADS=32
-export CUDA_LAUNCH_BLOCKING=1
-export QSA_BACKEND=triton
-export TRITON_CACHE_DIR=/tmp/zz_triton
+export DUMPER_ENABLE=1
+export DUMPER_DIR=/data/home/zzeng/parity/dump
+export DUMPER_EXP_NAME=megatron2
+export DUMPER_NON_INTRUSIVE_MODE=core
+export DUMPER_CLEANUP_PREVIOUS=0
 
-torchrun --nproc-per-node 4 --master-port 29647 \
-  "$REPO/scripts/qwen3_8_next/megatron_logprobs.py" \
+torchrun --nproc-per-node 4 --master-port 29591 \
+  "$REPO/scripts/qwen3_8_next/debug/megatron_logprobs.py" \
   $MODEL_ARGS \
-  --tensor-model-parallel-size 4 --sequence-parallel \
+  --tensor-model-parallel-size 4 \
   --expert-model-parallel-size 1 \
   --hf-checkpoint "$MODEL" \
   --load "$CKPT" \
-  --tokens "$OUT/tokens4k.pt" \
-  --parity-out "$OUT" --split-every 700
-echo "PARITY_MEGATRON_EXIT=$?"
+  --tokens "$OUT/tokens.pt" \
+  --parity-out "$OUT" --dump --trace
+echo "PARITY_DUMP_EXIT=$?"
 ls -l "$OUT"

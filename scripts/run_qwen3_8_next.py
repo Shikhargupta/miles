@@ -61,7 +61,9 @@ def train(args: ScriptArgs):
         "--rollout-shuffle "
         "--rm-type math "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 32 "
+        # 4 prompts x 8 samples = 32 sequences per rollout (down from 32x8=256):
+        # faster iterations while bringing the pipeline up.
+        "--rollout-batch-size 4 "
         "--n-samples-per-prompt 8 "
         "--rollout-temperature 0.8 "
         "--num-steps-per-rollout 1 "
@@ -90,7 +92,11 @@ def train(args: ScriptArgs):
         # (SIGSEGV/OOM-shaped): the torch QSA path materializes [T, S] attention
         # scores (~3.2 GB/layer at 8k), which is exactly the thing the planned
         # triton QSA kernel removes. Revisit after that kernel lands.
-        "--max-tokens-per-gpu 2048 "
+        # 2048 was a debugging-era safety margin (torch QSA then materialized
+        # [T,S] scores). With the triton QSA kernel and full recompute the
+        # activation footprint is small; 8192 packs ~4x more tokens per
+        # microbatch, cutting the ~180-microbatch train step to ~45.
+        "--max-tokens-per-gpu 8192 "
     )
 
     grpo_args = (
@@ -109,9 +115,11 @@ def train(args: ScriptArgs):
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        "--optimizer-cpu-offload "
-        "--use-precision-aware-optimizer "
-        "--overlap-cpu-optimizer-d2h-h2d "
+        # GPU Adam on purpose: the CPU-offload optimizer (--optimizer-cpu-offload
+        # --use-precision-aware-optimizer --overlap-cpu-optimizer-d2h-h2d) made the
+        # step pathologically slow here (long 95%-CPU/0%-GPU phases on Grace), and
+        # memory is comfortable without it (train peak ~81GB of 276GB, optimizer
+        # states ~+54GB/rank).
     )
 
     # One sglang engine spans two nodes (tp8 over 4-GPU nodes); GB300 prefers tp8.
@@ -127,6 +135,11 @@ def train(args: ScriptArgs):
         # runner keeps the standard 3D layout that updates load into directly.
         "--sglang-moe-runner-backend triton "
         "--sglang-chunked-prefill-size 8192 "
+        # Hybrid-model radix caching of unfinished reqs (mamba_component
+        # prepare_for_caching_req) hit a device-side assert in attempt 28's
+        # rollout. Prefix reuse across RL rollouts is ~5% hit rate — not worth
+        # that bug class.
+        "--sglang-disable-radix-cache "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "

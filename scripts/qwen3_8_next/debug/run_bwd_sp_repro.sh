@@ -32,7 +32,7 @@ export DUMPER_EXP_NAME="${BWD_TAG:-bwd1}"
 export DUMPER_CLEANUP_PREVIOUS=0
 
 torchrun --nproc-per-node 4 --master-port 29641 \
-  "$REPO/scripts/qwen3_8_next/megatron_logprobs.py" \
+  "$REPO/scripts/qwen3_8_next/debug/megatron_logprobs.py" \
   $MODEL_ARGS \
   --tensor-model-parallel-size 4 --sequence-parallel \
   --expert-model-parallel-size 1 \

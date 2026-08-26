@@ -20,7 +20,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export OMP_NUM_THREADS=32
 
 torchrun --nproc-per-node 4 --master-port 29613 \
-  "$REPO/scripts/qwen3_8_next/megatron_logprobs.py" \
+  "$REPO/scripts/qwen3_8_next/debug/megatron_logprobs.py" \
   $MODEL_ARGS \
   --tensor-model-parallel-size 2 \
   --expert-model-parallel-size 2 \
