@@ -103,6 +103,9 @@ class OperationQueue:
             ordinal += 1
         return ordinal
 
+    def open_count(self) -> int:
+        return sum(1 for rec in self.ops.values() if rec.status in ("QUEUED", "RUNNING"))
+
     # ------------------------------ poll / eviction ------------------------------
 
     def poll(self, ordinal: int) -> tuple[str, dict | None]:
