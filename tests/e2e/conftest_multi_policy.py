@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from examples.multi_policy.run_solver_verifier_gsm8k import (
+    EVAL_DATASET_NAME,
     SOLVER_MODEL_ID,
     VERIFIER_MODEL_ID,
     ScriptArgs,
@@ -51,6 +52,12 @@ def execute(
         events_dir, megatron_config=megatron_config, expected_num_ranks=args.actor_num_gpus_per_policy
     )
     assert_every_policy_reported_reward_in_bounds(events_dir, bounds=train_reward_bounds or TRAIN_REWARD_BOUNDS)
+    if args.eval_interval is not None:
+        assert_every_policy_reported_eval_points(
+            events_dir,
+            model_ids=[trainer["model_id"] for trainer in megatron_config["trainers"]],
+            dataset_name=EVAL_DATASET_NAME,
+        )
 
 
 def assert_every_rank_trained_with_its_own_policy_args(
@@ -126,6 +133,21 @@ def assert_every_policy_reported_reward_in_bounds(events_dir: Path, *, bounds: d
         assert final - initial >= model_bounds.min_growth, (
             f"policy {model_id!r} raw reward grew by {final - initial}, below {model_bounds.min_growth}; "
             f"its first three-step mean was {initial} and its final-window mean was {final}"
+        )
+
+
+def assert_every_policy_reported_eval_points(events_dir: Path, *, model_ids: list[str], dataset_name: str) -> None:
+    for model_id in model_ids:
+        eval_key = f"eval/{dataset_name}/{model_id}"
+        points = [
+            event.metrics[eval_key]
+            for event in read_events(events_dir)
+            if isinstance(event, MetricEvent) and eval_key in event.metrics
+        ]
+        assert len(points) >= 2, (
+            f"policy {model_id!r} logged {len(points)} {eval_key} point(s) under {events_dir}, but an eval-enabled "
+            f"run evaluates at the start and every --eval-interval rollouts after, so fewer than two points means "
+            f"held-out eval never actually ran for this policy"
         )
 
 
