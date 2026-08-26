@@ -265,15 +265,44 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
             pass  # not initialised (shape audits); falls back to unsharded
         self.ple = Qwen38NextPLE(config, layer_number=layer_number, tp_group=tp_group)
 
-    def forward(
-        self,
-        hidden_states: Tensor,
-        mhc_recompute_manager=None,
-        output_slot=None,
-    ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
-        from miles_plugins.models.qwen3_8_next.ops.ple_context import current_ple_batch
 
-        ngram_ids, cu_seqlens = current_ple_batch()
+
+    def _resolve_ple_batch(self):
+        """The published batch, made safe under activation recompute.
+
+        With --recompute-granularity full, Megatron replays this layer's forward
+        during BACKWARD, long after the model-level post-hook cleared the side
+        channel -- and under 1F1B the channel would by then hold a LATER
+        microbatch's ids, which is silent corruption, not a crash. So: on the
+        checkpointed original pass (is_checkpointing() and grads disabled) the
+        batch is also enqueued; the recompute pass (is_checkpointing() and grads
+        enabled) pops from the queue instead of reading the channel. Plain
+        no-checkpoint forwards just read the channel. FIFO matches non-interleaved
+        1F1B's backward order; interleaved VPP would need a smarter key, and this
+        model rejects VPP in the spec anyway.
+        """
+        from megatron.core.tensor_parallel.random import is_checkpointing
+
+        if not hasattr(self, "_ple_recompute_fifo"):
+            self._ple_recompute_fifo = []
+
+        if is_checkpointing() and torch.is_grad_enabled():
+            if not self._ple_recompute_fifo:
+                from miles_plugins.models.qwen3_8_next.ops.ple_context import PLEContextError
+
+                raise PLEContextError(
+                    "PLE recompute ran with no queued n-gram batch; the checkpointed "
+                    "original pass did not enqueue (or the recompute order diverged "
+                    "from FIFO, e.g. interleaved VPP)."
+                )
+            return self._ple_recompute_fifo.pop(0)
+
+        batch = current_ple_batch()
+        if is_checkpointing():
+            self._ple_recompute_fifo.append(batch)
+        return batch
+
+    def _apply_ple(self, hidden_states, ngram_ids, cu_seqlens):
 
         # The two sides disagree on layout and, at batch 1, agree on element count,
         # so a bare reshape inside the PLE silently mixes them up: the HC state is
@@ -305,6 +334,43 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
             f"PLE increment {tuple(increment.shape)} != state {tuple(flat_state.shape)}"
         )
         hidden_states = hidden_states + increment.view_as(hidden_states)
+        return hidden_states
+
+    def forward(
+        self,
+        hidden_states: Tensor,
+        mhc_recompute_manager=None,
+        output_slot=None,
+    ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
+        from miles_plugins.models.qwen3_8_next.ops.ple_context import current_ple_batch
+
+        ngram_ids, cu_seqlens = self._resolve_ple_batch()
+
+        # Under sequence parallelism this layer sees only its [T/tp] shard of the
+        # sequence, but the PLE is not shard-local math: the n-gram ids cover the
+        # full pack and the short conv must not break at shard boundaries. Do what
+        # the GDN wrapper does -- gather the full sequence, compute, keep the local
+        # shard of the result. The gather's backward is a split (not
+        # reduce-scatter): the computation is duplicated across ranks, so summing
+        # gradients would inflate them by tp.
+        sp_size = 1
+        if getattr(self.config, "sequence_parallel", False):
+            from megatron.core import parallel_state as _ps
+            from megatron.core import tensor_parallel as _tp
+
+            sp_size = _ps.get_tensor_model_parallel_world_size()
+        if sp_size > 1:
+            sp_rank = _ps.get_tensor_model_parallel_rank()
+            local_seq = hidden_states.shape[0]
+            full = _tp.gather_from_sequence_parallel_region(
+                hidden_states,
+                tensor_parallel_output_grad=False,
+                group=_ps.get_tensor_model_parallel_group(),
+            )
+            updated = self._apply_ple(full, ngram_ids, cu_seqlens)
+            hidden_states = updated[sp_rank * local_seq : (sp_rank + 1) * local_seq]
+        else:
+            hidden_states = self._apply_ple(hidden_states, ngram_ids, cu_seqlens)
         return super().forward(
             hidden_states,
             mhc_recompute_manager=mhc_recompute_manager,

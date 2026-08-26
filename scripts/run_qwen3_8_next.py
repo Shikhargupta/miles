@@ -146,6 +146,10 @@ def train(args: ScriptArgs):
         "--model-name qwen4_exp "
         "--qkv-format thd "
         "--linear-attention-backend flashqla "
+        # Installs the PLE n-gram side-channel hooks on the stage hosting layer 1;
+        # everything else delegates to miles' default provider.
+        "--custom-model-provider-path "
+        "miles_plugins.models.qwen3_8_next.model_provider.get_qwen3_8_next_model_provider "
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )

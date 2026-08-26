@@ -112,7 +112,28 @@ class Qwen38NextAttention(SelfAttention):
 
     def forward(self, hidden_states: Tensor, *args, **kwargs):
         packed = kwargs.get("packed_seq_params")
-        seq = hidden_states.shape[0]
+
+        # Under sequence parallelism this wrapper sees only its [T/tp] shard, but
+        # the indexer scores the whole pack (cu_seqlens are full-sequence
+        # positions; the q/k/v the core attention receives are also full-length,
+        # gathered inside the SP-aware linear). Gather for the indexer only.
+        # no_grad: the selection is integer indices, so no gradient path exists
+        # through it -- the indexer is effectively frozen in RL training, same as
+        # on the inference side, and skipping autograd avoids holding the gathered
+        # activations.
+        indexer_states = hidden_states
+        if getattr(self.config, "sequence_parallel", False):
+            from megatron.core import parallel_state as _ps
+            from megatron.core import tensor_parallel as _tp
+
+            if _ps.get_tensor_model_parallel_world_size() > 1:
+                with torch.no_grad():
+                    indexer_states = _tp.gather_from_sequence_parallel_region(
+                        hidden_states,
+                        tensor_parallel_output_grad=False,
+                        group=_ps.get_tensor_model_parallel_group(),
+                    )
+        seq = indexer_states.shape[0]
         if packed is not None:
             cu = getattr(packed, "cu_seqlens_q", None)
             if cu is None:
@@ -128,7 +149,8 @@ class Qwen38NextAttention(SelfAttention):
             positions = torch.arange(seq, device=hidden_states.device)
         # The indexer works on one sequence's [T, hidden]; batch is folded per item
         # inside the core attention, so score on the first batch element's states.
-        self._qsa_selection = self.indexer(hidden_states[:, 0], positions)
+        with torch.no_grad():
+            self._qsa_selection = self.indexer(indexer_states[:, 0], positions)
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:

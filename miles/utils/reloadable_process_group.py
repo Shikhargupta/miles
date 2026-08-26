@@ -119,10 +119,46 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         self.group = group
         self.inner_args = inner_args
         self.inner_kwargs = inner_kwargs
+        self._adopt_inner_backends()
         pid = os.getpid()
         if pid not in ReloadableProcessGroup.GROUPS:
             ReloadableProcessGroup.GROUPS[pid] = []
         ReloadableProcessGroup.GROUPS[pid].append(self)
+
+    def _adopt_inner_backends(self) -> None:
+        """Register the inner group's backends on this wrapper.
+
+        The wrapper is constructed as a bare C++ ProcessGroup(rank, size) with an
+        empty device->backend map; __getattr__ forwarding covers Python-level
+        attribute access only. Newer torch (observed on 2.13) dispatches
+        collectives like reduce_scatter_tensor through the C++ backend map of the
+        group object itself, so without this every such collective fails with
+        "No backend type associated with device type cuda". Older torch resolved
+        the collective via attribute lookup, which is why the bare wrapper used
+        to be enough. Re-run after every reload: the fresh inner group carries
+        fresh backends.
+        """
+        if self.group is None:
+            return
+        for device_type in ("cpu", "cuda"):
+            device = torch.device(device_type)
+            try:
+                backend = self.group._get_backend(device)
+            except Exception:
+                continue
+            backend_cls = type(backend).__name__
+            if "NCCL" in backend_cls:
+                backend_type = torch.distributed.ProcessGroup.BackendType.NCCL
+            elif "Gloo" in backend_cls.title() or "GLOO" in backend_cls.upper():
+                backend_type = torch.distributed.ProcessGroup.BackendType.GLOO
+            else:
+                backend_type = torch.distributed.ProcessGroup.BackendType.CUSTOM
+            try:
+                self._register_backend(device, backend_type, backend)
+            except Exception as exc:
+                logger.warning(
+                    f"Could not register {device_type} backend on reloadable group: {exc}"
+                )
 
     def __getattr__(self, name):
         return getattr(self.group, name)
@@ -155,6 +191,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
                 continue
             group = old_new_group(*reloadable_group.inner_args, **reloadable_group.inner_kwargs)
             reloadable_group.group = group
+            reloadable_group._adopt_inner_backends()
 
     def rank(self) -> int:
         return self.group.rank()

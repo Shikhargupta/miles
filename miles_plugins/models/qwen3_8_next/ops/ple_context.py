@@ -54,3 +54,17 @@ def current_ple_batch(*, allow_missing: bool = False):
             "increment, which changes the logits without failing."
         )
     return batch
+
+
+def publish_ple_batch(ngram_ids: torch.Tensor, cu_seqlens: torch.Tensor | None = None) -> None:
+    """Hook-style publication for callers that cannot hold a context manager open.
+
+    The model-provider forward hooks use this: a ``register_forward_pre_hook`` has
+    no scope that survives until the matching post-hook, so the pair
+    publish/clear replaces the ``with`` block. Same thread-local, same contract.
+    """
+    _state.batch = (ngram_ids, cu_seqlens)
+
+
+def clear_ple_batch() -> None:
+    _state.batch = None

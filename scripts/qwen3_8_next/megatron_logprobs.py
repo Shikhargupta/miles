@@ -53,6 +53,13 @@ def add_parity_args(parser):
                        help=".pt file with a 1-D int64 tensor of input ids")
     group.add_argument("--parity-out", type=str, required=True)
     group.add_argument(
+        "--split-every",
+        type=int,
+        default=0,
+        help="split the token stream into packed sequences of this many tokens "
+             "(0 = one sequence); reproduces multi-segment cu_seqlens like training",
+    )
+    group.add_argument(
         "--dump",
         action="store_true",
         help="dump the hyper-connection residual stream at every layer boundary via "
@@ -685,7 +692,12 @@ def main():
     # (THD) batches. One sequence means cu_seqlens = [0, T].
     from megatron.core.packed_seq_params import PackedSeqParams
 
-    cu_seqlens = torch.tensor([0, seq], dtype=torch.int32, device=ids.device)
+    if margs.split_every and margs.split_every > 0:
+        bounds = list(range(0, seq, margs.split_every)) + [seq]
+        bounds = sorted(set(bounds))
+        cu_seqlens = torch.tensor(bounds, dtype=torch.int32, device=ids.device)
+    else:
+        cu_seqlens = torch.tensor([0, seq], dtype=torch.int32, device=ids.device)
     packed_seq_params = PackedSeqParams(
         cu_seqlens_q=cu_seqlens,
         cu_seqlens_kv=cu_seqlens,

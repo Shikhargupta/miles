@@ -113,3 +113,23 @@ def build_ngram_contexts(tokens: Tensor, ngram_size: int, eos_token_id: int) -> 
     assert tokens.dim() == 1, f"expected a 1-D token sequence, got {tuple(tokens.shape)}"
     pad = tokens.new_full((ngram_size - 1,), eos_token_id)
     return torch.cat([pad, tokens]).unfold(0, ngram_size, 1)
+
+
+def build_ngram_contexts_packed(
+    tokens: Tensor, cu_seqlens: Tensor | None, ngram_size: int, eos_token_id: int
+) -> Tensor:
+    """``build_ngram_contexts`` for a packed (THD) batch.
+
+    Each sequence gets its own EOS padding so a token's n-gram never reaches into
+    the previous document -- the padding at the start of the pack alone would let
+    sequence k's first tokens hash together with sequence k-1's last ones.
+    """
+    if cu_seqlens is None:
+        return build_ngram_contexts(tokens, ngram_size, eos_token_id)
+    bounds = cu_seqlens.tolist()
+    parts = [
+        build_ngram_contexts(tokens[lo:hi], ngram_size, eos_token_id)
+        for lo, hi in zip(bounds[:-1], bounds[1:])
+        if hi > lo
+    ]
+    return torch.cat(parts, dim=0)
