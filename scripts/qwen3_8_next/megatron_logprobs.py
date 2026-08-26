@@ -28,6 +28,18 @@ def parse():
     return p.parse_known_args()[0]
 
 
+def _find_ple_embedding(module):
+    """The PLE table hangs off the attention hyper-connection of one layer."""
+    from miles_plugins.models.qwen3_8_next.ops.ple_embedding import (
+        Qwen38NextFrozenNGramEmbedding,
+    )
+
+    for m in module.modules():
+        if isinstance(m, Qwen38NextFrozenNGramEmbedding):
+            return m
+    return None
+
+
 def main():
     args = parse()
 
@@ -62,7 +74,22 @@ def main():
     position_ids = torch.arange(seq, device=ids.device).view(1, seq)
     attention_mask = None
 
-    with torch.no_grad():
+    # PLE reads its n-gram row ids off a side channel, because a transformer layer
+    # never sees token ids. Nothing is published by default and the PLE forward
+    # raises rather than skipping its increment, so this has to be set up here.
+    from miles_plugins.models.qwen3_8_next.ops.ple_context import ple_forward_context
+    from miles_plugins.models.qwen3_8_next.ops.ple_hash import build_ngram_contexts
+
+    ple = _find_ple_embedding(model[0])
+    if ple is None:
+        raise RuntimeError(
+            "no PLE embedding found in the model; the layer spec should have attached "
+            "one to the attention hyper-connection of layer 1"
+        )
+    contexts = build_ngram_contexts(ids, ple.ngram_size, ple.eos_token_id)
+    ngram_ids = ple.compute_ngram_ids(contexts)
+
+    with torch.no_grad(), ple_forward_context(ngram_ids, cu_seqlens=None):
         out = model[0](input_ids=input_ids, position_ids=position_ids, attention_mask=attention_mask)
 
     logits = out if isinstance(out, torch.Tensor) else out[0]

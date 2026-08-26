@@ -99,3 +99,17 @@ def ngram_hash_ids(
         )
         blocks.append((ids + head_offsets[start:end].view(1, 1, -1))[:, 0])
     return torch.cat(blocks, dim=-1)
+
+def build_ngram_contexts(tokens: Tensor, ngram_size: int, eos_token_id: int) -> Tensor:
+    """``[T]`` token ids -> ``[T, ngram_size]`` sliding windows, one row per token.
+
+    Row ``t`` is ``tokens[t - ngram_size + 1 : t + 1]``, i.e. the window *ending* at
+    token ``t``, which is the layout ``ngram_hash_ids`` expects and what sglang's
+    ``ngram_context.unfold(1, ngram_size, 1)`` produces. The first few rows are
+    padded on the left with ``eos_token_id`` -- the same filler
+    ``shift_right_ignore_eos`` uses inside a segment -- so the start of the sequence
+    is treated as a document start rather than borrowing whatever preceded it.
+    """
+    assert tokens.dim() == 1, f"expected a 1-D token sequence, got {tuple(tokens.shape)}"
+    pad = tokens.new_full((ngram_size - 1,), eos_token_id)
+    return torch.cat([pad, tokens]).unfold(0, ngram_size, 1)

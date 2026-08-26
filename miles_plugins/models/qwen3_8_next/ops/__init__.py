@@ -15,6 +15,7 @@ from miles_plugins.models.qwen3_8_next.ops.hc import (
     hc_mix,
 )
 from miles_plugins.models.qwen3_8_next.ops.ple_hash import (
+    build_ngram_contexts,
     ngram_hash_ids,
     shift_right_ignore_eos,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "hc_combine",
     "hc_inject_gate",
     "hc_mix",
+    "build_ngram_contexts",
     "ngram_hash_ids",
     "shift_right_ignore_eos",
 ]

@@ -229,10 +229,15 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         """
         layer_number = None
         name = mcore_weights_name
-        if name.startswith("decoder.layers."):
+        # A GPTModel prefixes its block with "decoder."; a bare TransformerBlock
+        # (as built by the audit and timing harnesses) does not. Accept either --
+        # the remaining keys are unambiguous, so this cannot mask a real prefix bug.
+        if name.startswith("decoder."):
+            name = name[len("decoder.") :]
+        if name.startswith("layers."):
             parts = name.split(".")
-            layer_number = int(parts[2])
-            name = ".".join(parts[3:])
+            layer_number = int(parts[1])
+            name = ".".join(parts[2:])
 
         if name in self._OTHER_MAPPING:
             if layer_number is None:
@@ -249,16 +254,80 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         except NotImplementedError:
             return self._weight_name_mapping_other(mcore_weights_name)
 
-    def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]):
-        """Pass the n-gram shards through untouched.
+    # Megatron's grouped-GEMM MoE materialises experts as individual parameters --
+    # linear_fc1.weight0 .. weight511 -- while the checkpoint stores two fused
+    # tensors per layer. mbridge's load loop is per mcore parameter, so for a
+    # 512-expert model it runs ~1046 times per layer (~50,000 for 48 layers), and
+    # every one of those iterations resolves to the *same* fused HF tensor and hands
+    # it to _weight_to_mcore_format to slice one expert out of.
+    #
+    # Touching the whole fused tensor once per expert is what made the load take
+    # hours: gate_up_proj is [512, 1280, 2560] = 3.36 GB, and moving it to the device
+    # costs ~0.4 s, so 512 experts is ~205 s of pure transfer per layer -- 3.4
+    # min/layer, which is exactly what was measured. Doing that work on the CPU
+    # instead (the unpatched path) is the same cost in a different place.
+    #
+    # So cache the moved tensor by HF name. One layer's 512 experts then share a
+    # single upload. The cache holds two entries because a layer has two fused
+    # expert tensors (gate_up and down) and the loop alternates between them.
+    _GPU_CACHE_SIZE = 2
 
-        The base implementation would try to reshape a 2-D tensor or split it
-        across TP. The n-gram table is a flat lookup already sharded by row on the
-        HF side, so any reshaping here is wrong.
+    def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]):
+        """Slice on the device, reusing one upload across a layer's experts."""
+        if not torch.cuda.is_available():
+            return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+
+        cache = getattr(self, "_gpu_weight_cache", None)
+        if cache is None:
+            cache = self._gpu_weight_cache = {}
+
+        moved = []
+        for w in hf_weights:
+            # data_ptr identifies the mmap-backed source, and is stable for repeated
+            # reads of the same tensor out of the same safetensors file.
+            key = (w.data_ptr(), tuple(w.shape), w.dtype)
+            hit = cache.get(key)
+            if hit is None:
+                if len(cache) >= self._GPU_CACHE_SIZE:
+                    cache.pop(next(iter(cache)))
+                hit = w.to(torch.cuda.current_device(), non_blocking=False)
+                cache[key] = hit
+            moved.append(hit)
+        return super()._weight_to_mcore_format(mcore_weights_name, moved)
+
+    def load_weights(self, model, *args, **kwargs):
+        """Memoise state_dict() for the load, then drop the device cache.
+
+        mbridge's loop does ``param = model.state_dict()[local_name]`` once per
+        parameter (bridge.py:199). state_dict() is O(number of parameters), so
+        inside an n-iteration loop the load is O(n^2) -- and n is not the ~35 per
+        layer the checkpoint suggests but 512 experts x 2, about 1046 per layer, so
+        ~50,000 for 48 layers. Measured on a 4-layer model: 23.4 s of the 34 s load
+        is mbridge internals dominated by this, which scales to roughly an hour at
+        full size.
+
+        Caching is safe here because the load only ever writes *into* existing
+        parameters (``param.copy_``); the parameter set does not change, and the
+        cached dict holds the same tensor objects, so in-place writes are visible
+        through it.
         """
-        if "ngram_embedding.shard_" in mcore_weights_name and len(hf_weights) == 1:
-            return hf_weights[0]
-        return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+        chunks = model if isinstance(model, (list, tuple)) else [model]
+        originals = []
+        for chunk in chunks:
+            cached = chunk.state_dict()
+            originals.append((chunk, chunk.state_dict))
+            chunk.state_dict = lambda *a, _c=cached, **k: _c
+        try:
+            return super().load_weights(model, *args, **kwargs)
+        finally:
+            for chunk, orig in originals:
+                try:
+                    del chunk.state_dict
+                except AttributeError:
+                    chunk.state_dict = orig
+            self._gpu_weight_cache = {}
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _build_config(self):
         text_config = self._get_text_config()

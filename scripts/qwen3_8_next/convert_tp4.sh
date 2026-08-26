@@ -27,6 +27,19 @@ echo "MODEL_ARGS=$MODEL_ARGS"
 # switch it provides for exactly this. (torch_dist is a resharding-friendly format,
 # so the parallelism used to write it does not have to match the training layout --
 # TP4 here is to match what training will use, not a requirement of the format.)
+# torchrun defaults OMP_NUM_THREADS to 1 "to avoid your system being overloaded",
+# which makes every CPU tensor op in the bridge single-threaded. That matters here
+# because mbridge does its reshape/concat/TP-slice work on the CPU, and this model's
+# fused MoE experts are ~2.5 B elements per layer -- 123 B elements in total, all
+# through one core of 144. Measured: 3.4 min/layer, i.e. ~2.8 h for 48 layers, with
+# exactly one thread in state R out of 168.
+export OMP_NUM_THREADS=32
+
+# Secondary: torchrun defaults OMP_NUM_THREADS to 1, which serialises whatever CPU
+# tensor work is left (the safetensors read itself). The bridge's heavy reshape and
+# split work is on the GPU now -- see Qwen38NextBridge._weight_to_mcore_format.
+export OMP_NUM_THREADS=32
+
 export CONVERT_KEEP_PP1=1
 export PYTHONPATH="$MEGATRON:$REPO"
 export HOME=/data/home/zzeng
