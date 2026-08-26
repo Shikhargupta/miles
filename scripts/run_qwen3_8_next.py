@@ -117,6 +117,11 @@ def train(args: ScriptArgs):
         "--sglang-dp-size 1 "
         "--sglang-ep-size 8 "
         "--sglang-linear-attn-prefill-backend flashinfer "
+        # flashinfer_trtllm (the GB300 default) shuffles expert weights into a
+        # blocked 4D layout after loading, which the per-expert weight-update path
+        # cannot write into (w13_weight becomes [E, 40, 1280, 64]). The triton
+        # runner keeps the standard 3D layout that updates load into directly.
+        "--sglang-moe-runner-backend triton "
         "--sglang-chunked-prefill-size 8192 "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
@@ -145,7 +150,18 @@ def train(args: ScriptArgs):
         "--rollout-health-check-timeout 300 "
     )
     if args.check_weight_update:
-        misc_args += "--check-weight-update-equal "
+        # visual.* and the 102 GB frozen n-gram table are never part of an update
+        # payload (text-only RL; the table is frozen by design), so the checker
+        # must neither reset nor compare them -- reset would garble the real
+        # values before the static-state stash snapshots them.
+        misc_args += (
+            "--check-weight-update-equal "
+            # ple_embedding. covers the frozen int64 hash metadata
+            # (layer_multipliers, ngram_heads_vocab_sizes/offsets) and the 102 GB
+            # table; the PLE's trainable tensors (key_proj etc.) live under ple.*
+            # outside ple_embedding and stay checked.
+            "--check-weight-update-skip-list visual. ple_embedding. "
+        )
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
 
