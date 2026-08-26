@@ -1,8 +1,4 @@
-"""Tinker-compatible wire layer over the multi-LoRA control plane.
-
-Mount with ``--multi-lora-http-server-path
-miles.ray.multi_lora.tinker.http_server.TinkerHTTPServer``; the base
-control-plane routes stay available next to the ``/api/v1`` surface."""
+"""Tinker wire layer; mount via --multi-lora-http-server-path miles.ray.multi_lora.tinker.http_server.TinkerHTTPServer."""
 
 import time
 import uuid

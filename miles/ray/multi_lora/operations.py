@@ -1,8 +1,4 @@
-"""Client-driven operation queue for multi-LoRA explicit training.
-
-One ``OperationQueue`` per registration: a dict keyed by the client-assigned
-ordinal doubles as the reorder buffer, the retry-idempotency table, and the
-result store."""
+"""Client-driven operation queue: per registration, one ordinal-keyed dict serves as reorder buffer, idempotency table, and result store."""
 
 import hashlib
 import json
@@ -43,11 +39,7 @@ class OperationRecord:
 
 @dataclass
 class OperationQueue:
-    """Per-registration queue; ordinals are consecutive from 1, arrival may be out of order.
-
-    ``cap=None`` is the training-plane setting: the tinker SDK posts chunk 1
-    last and only after chunks 2..N are accepted, so any capacity 429 on
-    training ordinals deadlocks the client."""
+    """Per-registration ordinal queue; cap=None (training plane) because capacity-429 deadlocks the SDK, which posts chunk 1 last."""
 
     cap: int | None = None
     keep_delivered: int = 4

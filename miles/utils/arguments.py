@@ -1839,10 +1839,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--tinker-mode",
                 action="store_true",
                 default=False,
-                help=(
-                    "Serve the tinker wire protocol: training data and rewards arrive as client "
-                    "operations, so adapter registrations skip the data-path and reward-config checks"
-                ),
+                help="Serve the tinker wire protocol: data/rewards arrive as client operations, so registrations skip the data-path and reward checks",
             )
             parser.add_argument(
                 "--multi-lora-disable-service-mode",
