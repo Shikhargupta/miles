@@ -171,14 +171,9 @@ def _create_virtual_cells() -> list[dict]:
     ]
 
 
-def _create_virtual_cells_before(
-    *, max_allowed_rollout_id: int, checkpoint_dir: Path, events_dir: Path
-) -> list[dict]:
+def _create_virtual_cells_before(*, max_allowed_rollout_id: int, checkpoint_dir: Path, events_dir: Path) -> list[dict]:
     progress = read_run_progress(checkpoint_dir=checkpoint_dir, events_dir=events_dir)
-    if (
-        progress.last_finished_rollout_id is not None
-        and progress.last_finished_rollout_id >= max_allowed_rollout_id
-    ):
+    if progress.last_finished_rollout_id is not None and progress.last_finished_rollout_id >= max_allowed_rollout_id:
         return []
     return _create_virtual_cells()
 

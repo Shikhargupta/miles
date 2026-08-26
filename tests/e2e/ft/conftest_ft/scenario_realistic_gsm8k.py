@@ -251,9 +251,7 @@ def get_gsm8k_train_args(
     fault_tolerance_args = f"--api-server-port {API_SERVER_PORT} "
     if enable_fault_tolerance:
         fault_tolerance_args += (
-            "--use-fault-tolerance "
-            f"--ft-components {' '.join(FT_COMPONENTS)} "
-            "--mini-ft-controller-enable "
+            "--use-fault-tolerance " f"--ft-components {' '.join(FT_COMPONENTS)} " "--mini-ft-controller-enable "
         )
 
     ci_args = (

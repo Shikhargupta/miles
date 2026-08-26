@@ -97,8 +97,7 @@ class TestTheInjectionPlan:
 
         assert [cell["metadata"]["name"] for cell in cells] == list(scenario._VIRTUAL_CELL_NAMES)
         assert all(
-            cell["metadata"]["labels"]["miles.io/cell-type"] == scenario._HOT_RESTART_CELL_TYPE
-            for cell in cells
+            cell["metadata"]["labels"]["miles.io/cell-type"] == scenario._HOT_RESTART_CELL_TYPE for cell in cells
         )
 
     def test_the_only_fault_the_plan_may_draw_is_a_hot_restart(self):

@@ -95,9 +95,7 @@ class InferenceController:
 
     # TEMPORARY: exists only so fault injection can take this lock, reverted with the weight-update fault tolerance work
     @with_lock
-    async def inject_fault_between_weight_updates(
-        self, cell_id: str, *, mode: FailureMode, sub_index: int
-    ) -> None:
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         await self._engine_provider._worker_manager_handle.inject_fault.remote(
             cell_id,
             mode=mode.value,
