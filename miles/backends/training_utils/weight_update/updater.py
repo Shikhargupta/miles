@@ -68,7 +68,6 @@ class WeightUpdater:
         if is_lora:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
-        # Adapter names already registered on the current engine set; reset at connect.
         self._registered_adapters: set[str] = set()
         # Set by the actor before each update_weights call (loaded map at reconcile).
         self.multi_lora_adapters = None
