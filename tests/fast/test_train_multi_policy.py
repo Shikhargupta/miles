@@ -4,6 +4,7 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 import asyncio
 from argparse import Namespace
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,7 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from train_multi_policy import train_multi_policy
 
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
+from miles.utils.multi_policy.parker import Parker
 from miles.utils.multi_policy.utils import TrainerInfo
 
 
@@ -423,6 +425,36 @@ class TestEvalDispatch:
 
         eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
         assert eval_rollout_ids == [1]
+
+    async def test_eval_holds_every_follower_parked(self, monkeypatch):
+        """A follower pushing weights mid-eval would swap its engines' weights under the running sweep."""
+        held_during_eval = []
+
+        class SpyParker(Parker):
+            holding = False
+
+            @asynccontextmanager
+            async def with_all_parked(self):
+                async with super().with_all_parked():
+                    SpyParker.holding = True
+                    try:
+                        yield
+                    finally:
+                        SpyParker.holding = False
+
+        async def _eval(rollout_id: int) -> None:
+            held_during_eval.append(SpyParker.holding)
+
+        rollout_executor = AsyncMock()
+        rollout_executor.eval = AsyncMock(side_effect=_eval)
+        monkeypatch.setattr(multi_policy_driver, "Parker", SpyParker)
+
+        await _run(
+            _make_args(num_rollout=2, eval_interval=2, skip_eval_before_train=True),
+            rollout_executor=rollout_executor,
+        )
+
+        assert held_during_eval == [True]
 
     async def test_a_resumed_run_does_not_re_evaluate_the_untrained_model(self):
         """The rollout-0 point describes the base checkpoint; a resume from rollout 1 is past it."""
