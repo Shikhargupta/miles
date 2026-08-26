@@ -59,6 +59,16 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         # Without packing it is [s, b, np, hn]. Handle both explicitly instead of
         # unpacking four names and failing on the layout that actually occurs.
         if query.dim() == 3:
+            import os
+
+            if os.environ.get("QSA_BACKEND", "torch") == "triton":
+                from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import (
+                    qsa_sparse_attention_triton,
+                )
+
+                return qsa_sparse_attention_triton(
+                    query, key, value, selection, self.softmax_scale
+                ).reshape(query.shape[0], -1)
             return qsa_sparse_attention(
                 query, key, value, selection,
                 scale=self.softmax_scale,

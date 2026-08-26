@@ -99,11 +99,22 @@ def qsa_sparse_attention(
     kh = k.transpose(0, 1).repeat_interleave(repeat, dim=0)  # [Hq, S, D]
     vh = v.transpose(0, 1).repeat_interleave(repeat, dim=0)
 
-    out = F.scaled_dot_product_attention(
-        qh.unsqueeze(0),
-        kh.unsqueeze(0),
-        vh.unsqueeze(0),
-        attn_mask=mask.unsqueeze(0).unsqueeze(0),
-        scale=scale if scale is not None else dim**-0.5,
-    )
-    return out.squeeze(0).transpose(0, 1).contiguous()
+    # Chunk over queries: an arbitrary boolean mask forces sdpa onto the math
+    # path, which materializes [Hq, T, S] attention scores -- ~3.2 GB per layer at
+    # 8k tokens, and with the backward that is what killed train-step workers.
+    # 512-query chunks bound the peak at [Hq, 512, S] (~200 MB) with identical
+    # numerics; activation recompute replays the same loop.
+    chunk = 512
+    eff_scale = scale if scale is not None else dim**-0.5
+    outs = []
+    for lo in range(0, tokens, chunk):
+        hi = min(lo + chunk, tokens)
+        o = F.scaled_dot_product_attention(
+            qh[:, lo:hi].unsqueeze(0),
+            kh.unsqueeze(0),
+            vh.unsqueeze(0),
+            attn_mask=mask[lo:hi].unsqueeze(0).unsqueeze(0),
+            scale=eff_scale,
+        )
+        outs.append(o.squeeze(0))
+    return torch.cat(outs, dim=1).transpose(0, 1).contiguous()

@@ -283,6 +283,8 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         """
         from megatron.core.tensor_parallel.random import is_checkpointing
 
+        from miles_plugins.models.qwen3_8_next.ops.ple_context import current_ple_batch
+
         if not hasattr(self, "_ple_recompute_fifo"):
             self._ple_recompute_fifo = []
 

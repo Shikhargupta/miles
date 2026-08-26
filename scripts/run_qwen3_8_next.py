@@ -86,7 +86,11 @@ def train(args: ScriptArgs):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--micro-batch-size 1 "
-        "--max-tokens-per-gpu 8192 "
+        # dsv4's proven value on this hardware. 8192 killed a train-step worker
+        # (SIGSEGV/OOM-shaped): the torch QSA path materializes [T, S] attention
+        # scores (~3.2 GB/layer at 8k), which is exactly the thing the planned
+        # triton QSA kernel removes. Revisit after that kernel lands.
+        "--max-tokens-per-gpu 2048 "
     )
 
     grpo_args = (
