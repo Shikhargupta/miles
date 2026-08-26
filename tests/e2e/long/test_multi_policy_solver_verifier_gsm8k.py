@@ -9,7 +9,7 @@ from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=7000,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-4-gpu-h200",
     labels=["long"],
     disabled=(
         "the recipe was realigned with the single-policy GSM8K baseline (nonzero-std dynamic filter, 32x8 "

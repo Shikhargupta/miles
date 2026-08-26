@@ -34,7 +34,7 @@ SHARED_TRAINER_OVERRIDES = dict(
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_rollout: int = 3
-    num_gpus_per_node: int = 8
+    num_gpus_per_node: int = 4
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 8
     global_batch_size: int = 256
@@ -46,8 +46,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     verifier_model_name: str = "Qwen3-0.6B"
     solver_megatron_model_type: str = "qwen2.5-0.5B"
     verifier_megatron_model_type: str = "qwen3-0.6B"
-    rollout_num_gpus_per_model: int = 2
-    actor_num_gpus_per_policy: int = 2
+    rollout_num_gpus_per_model: int = 1
+    actor_num_gpus_per_policy: int = 1
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     extra_args: str = ""
