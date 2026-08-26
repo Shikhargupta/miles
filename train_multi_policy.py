@@ -146,12 +146,13 @@ async def _run_policy(
                 trainer_model_id=model_id,
             )
 
-        if is_leader and should_run_periodic_action(
-            rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout
-        ):
-            async with parker.with_all_parked():
-                await inference_controller.prepare_eval()
-                await rollout_executor.eval(rollout_id)
+        if is_leader:
+            if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+                async with parker.with_all_parked():
+                    await inference_controller.prepare_eval()
+                    await rollout_executor.eval(rollout_id)
+        else:
+            await parker.maybe_park_follower()
 
         if (
             is_leader
