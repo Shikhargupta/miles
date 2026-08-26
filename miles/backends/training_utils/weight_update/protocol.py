@@ -24,7 +24,7 @@ class WeightTransferProtocol(ABC):
     supports_lora: ClassVar[bool] = False
     # disk-delta transfers asynchronously behind the engines' own locking and
     # never quiesces them.
-    uses_session_frame: ClassVar[bool] = True
+    use_weight_update_session: ClassVar[bool] = True
 
     def __init__(self, args: Namespace) -> None:
         self.args = args

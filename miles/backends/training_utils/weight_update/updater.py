@@ -103,7 +103,7 @@ class WeightUpdater:
         self.weight_version += 1
 
         driver = dist.get_rank() == 0
-        if protocol.uses_session_frame and driver:
+        if protocol.use_weight_update_session and driver:
             pause_engines(self.args, protocol.rollout_engines)
             begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args))
         dist.barrier(group=get_gloo_group())
@@ -125,7 +125,7 @@ class WeightUpdater:
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
-            if protocol.uses_session_frame and driver:
+            if protocol.use_weight_update_session and driver:
                 set_weight_version(protocol.rollout_engines, self.weight_version)
                 end_weight_update(protocol.rollout_engines)
                 resume_engines(protocol.rollout_engines)
