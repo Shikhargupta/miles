@@ -1,11 +1,30 @@
-"""Operation-queue-owning backend; mount via --multi-lora-backend-path miles.ray.multi_lora.operation_backend.MultiLoRAOperationBackend."""
+"""Operation-queue-owning backend plus the driver-side round executor; mount via --multi-lora-backend-path miles.ray.multi_lora.operation_backend.MultiLoRAOperationBackend."""
 
+import logging
 from collections import deque
 from typing import Any
 
 from miles.ray.multi_lora.backend import MultiLoRABackend
 from miles.ray.multi_lora.operations import CONTROL_KINDS, OperationQueue
 from miles.ray.multi_lora.registry import AdapterState
+
+logger = logging.getLogger(__name__)
+
+TINKER_HTTP_SERVER_PATH = "miles.ray.multi_lora.tinker.http_server.TinkerHTTPServer"
+OPERATION_BACKEND_PATH = "miles.ray.multi_lora.operation_backend.MultiLoRAOperationBackend"
+
+
+def apply_tinker_defaults(args):
+    """Serve the tinker wire protocol unless the seams are explicitly overridden."""
+    assert getattr(args, "tinker_mode", False), "operation rounds require --tinker-mode"
+    args.multi_lora_http_server_path = args.multi_lora_http_server_path or TINKER_HTTP_SERVER_PATH
+    args.multi_lora_backend_path = args.multi_lora_backend_path or OPERATION_BACKEND_PATH
+    return args
+
+
+async def run_operation_round(args, actor_model, rollout_id: int) -> int:
+    """Driver side (controller.py idiom: actor class and driver helpers cohabit): claim and execute one round."""
+    raise NotImplementedError("operation-round execution lands with the next slice")
 
 
 class MultiLoRAOperationBackend(MultiLoRABackend):
