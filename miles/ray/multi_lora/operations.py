@@ -55,9 +55,11 @@ class OperationQueue:
 
     # ------------------------------ enqueue ------------------------------
 
-    def enqueue(self, ordinal: int, request_id: str, kind: str, payload: dict | None = None) -> int:
-        """Buffer one operation; idempotent on (request_id, fingerprint), returns the holding ordinal."""
-        fp = payload_fingerprint(kind, payload)
+    def enqueue(
+        self, ordinal: int, request_id: str, kind: str, payload: dict | None = None, *, fingerprint: str | None = None
+    ) -> int:
+        """Buffer one operation; retry identity is `fingerprint` (defaults to hashing `payload`), execution input is `payload`."""
+        fp = fingerprint if fingerprint is not None else payload_fingerprint(kind, payload)
         if (known := self.by_request_id.get(request_id)) is not None:
             rec = self.ops[known]
             if rec.fingerprint != fp or rec.ordinal != ordinal:

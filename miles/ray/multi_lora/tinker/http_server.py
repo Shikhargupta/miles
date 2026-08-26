@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
-from miles.ray.multi_lora.operations import BadRequest, OperationQueue, QueueFull
+from miles.ray.multi_lora.operations import BadRequest, OperationQueue, QueueFull, payload_fingerprint
 from miles.utils.adapter_config import AdapterRunConfig
 
 KIND_BY_PATH = {
@@ -136,9 +136,11 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
         if not isinstance(seq_id, int) or seq_id < 1:
             return JSONResponse({"detail": "seq_id must be an integer >= 1"}, status_code=400)
         request_id = f"{model_id}:op{seq_id}"
-        fp_payload = {k: v for k, v in body.items() if k not in FP_EXCLUDE}
+        kind = KIND_BY_PATH[request.url.path]
+        # Identity hashes the body MINUS volatile fields; the stored execution payload keeps the full body.
+        fingerprint = payload_fingerprint(kind, {k: v for k, v in body.items() if k not in FP_EXCLUDE})
         try:
-            queue.enqueue(seq_id, request_id, KIND_BY_PATH[request.url.path], fp_payload)
+            queue.enqueue(seq_id, request_id, kind, body, fingerprint=fingerprint)
         except BadRequest as exc:
             # 422: same identity retried with different content; the SDK treats it as fatal.
             return JSONResponse({"detail": str(exc)}, status_code=422)
