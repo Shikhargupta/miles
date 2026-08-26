@@ -474,10 +474,10 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith(f"/{template}")
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
-    def test_qwen38_resolves_reasoning_effort_template(self):
-        args = self._parse(["--use-session-server", "--tito-model", "qwen38"])
+    def test_qwen38small_resolves_reasoning_effort_template(self):
+        args = self._parse(["--use-session-server", "--tito-model", "qwen38small"])
         miles_validate_args(args)
-        assert args.chat_template_path.endswith("/qwen3.8_fixed.jinja")
+        assert args.chat_template_path.endswith("/qwen3.8_small_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
     def test_named_family_rejects_custom_template(self):

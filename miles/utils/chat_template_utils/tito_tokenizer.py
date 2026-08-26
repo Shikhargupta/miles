@@ -321,14 +321,14 @@ class Qwen36TITOTokenizer(Qwen3TITOTokenizer):
     )
 
 
-class Qwen38TITOTokenizer(Qwen3TITOTokenizer):
+class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
     """Qwen3.8-27B — Qwen3 boundary with its reasoning-effort template."""
 
     tool_call_parser = "qwen3_coder"
     top_level_chat_template_kwargs = frozenset({"reasoning_effort"})
 
     FIXED_TEMPLATE = FixedTemplate(
-        template="qwen3.8_fixed.jinja",
+        template="qwen3.8_small_fixed.jinja",
         extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
@@ -802,7 +802,7 @@ class TITOTokenizerType(StrEnum):
     QWEN3 = "qwen3"
     QWEN35 = "qwen35"
     QWEN36 = "qwen36"
-    QWEN38 = "qwen38"
+    QWEN38_SMALL = "qwen38small"
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
     NEMOTRON3 = "nemotron3"
@@ -826,8 +826,8 @@ class TITOTokenizerType(StrEnum):
                 return Qwen35TITOTokenizer
             case cls.QWEN36:
                 return Qwen36TITOTokenizer
-            case cls.QWEN38:
-                return Qwen38TITOTokenizer
+            case cls.QWEN38_SMALL:
+                return Qwen38SmallTITOTokenizer
             case cls.QWENNEXT:
                 return QwenNextTITOTokenizer
             case cls.GLM47:

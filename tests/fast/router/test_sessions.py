@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from miles.rollout.session.core import prepare_chat_request
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
-from miles.utils.chat_template_utils.tito_tokenizer import Qwen38TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import Qwen38SmallTITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
@@ -236,11 +236,11 @@ class TestSessionProxy:
         assert override_payload["chat_template_kwargs"] == {"enable_thinking": True}
         assert override_payload["input_ids"] != default_payload["input_ids"]
 
-    def test_qwen38_top_level_reasoning_effort_reaches_local_renderer(self):
+    def test_qwen38small_top_level_reasoning_effort_reaches_local_renderer(self):
         tokenizer = MagicMock()
         tokenizer.encode.return_value = [198]
         tokenizer.convert_tokens_to_ids.return_value = 151645
-        tito = Qwen38TITOTokenizer(tokenizer)
+        tito = Qwen38SmallTITOTokenizer(tokenizer)
 
         request_body, _, request_tito = prepare_chat_request(
             json.dumps(

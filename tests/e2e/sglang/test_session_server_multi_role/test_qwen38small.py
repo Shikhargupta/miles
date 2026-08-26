@@ -11,15 +11,15 @@ CONFIG = ModelConfig(
     model_name="Qwen/Qwen3.8-27B",
     reasoning_parser="qwen3",
     tool_call_parser="qwen3_coder",
-    tito_model="qwen38",
+    tito_model="qwen38small",
     cycles=2,
     tool_call_failure_mode="append_tool",
 )
 
 
-def test_qwen38():
+def test_qwen38small():
     run_both_versions(CONFIG)
 
 
 if __name__ == "__main__":
-    test_qwen38()
+    test_qwen38small()

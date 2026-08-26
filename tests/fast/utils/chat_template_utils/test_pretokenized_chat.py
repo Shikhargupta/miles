@@ -65,8 +65,8 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         {"preserve_thinking": True},
     ),
     (
-        "qwen3.8_fixed_preserve_thinking",
-        _load_fixed(TITOTokenizerType.QWEN38),
+        "qwen3.8_small_fixed_preserve_thinking",
+        _load_fixed(TITOTokenizerType.QWEN38_SMALL),
         True,
         frozenset({"tool", "user"}),
         {"preserve_thinking": True},
@@ -306,7 +306,7 @@ _APPEND_ROLE_FAMILIES = [
     (TITOTokenizerType.QWEN3, None),
     (TITOTokenizerType.QWEN35, None),
     (TITOTokenizerType.QWEN36, None),
-    (TITOTokenizerType.QWEN38, None),
+    (TITOTokenizerType.QWEN38_SMALL, None),
     (TITOTokenizerType.QWENNEXT, None),
     (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
     (TITOTokenizerType.KIMI25, None),
@@ -346,7 +346,10 @@ def test_appends_are_append_only_on_family_template(family, hf_model_id, shape):
     ]
 
     base = apply_chat_template_from_str(template, history, add_generation_prompt=False, **kwargs)
-    if family in (TITOTokenizerType.QWEN35, TITOTokenizerType.QWEN36, TITOTokenizerType.QWEN38) and shape == "system":
+    if (
+        family in (TITOTokenizerType.QWEN35, TITOTokenizerType.QWEN36, TITOTokenizerType.QWEN38_SMALL)
+        and shape == "system"
+    ):
         with pytest.raises(ValueError, match="System message must be at the beginning"):
             apply_chat_template_from_str(
                 template,
