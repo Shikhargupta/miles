@@ -73,7 +73,6 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         if adapter is None:
             return self._export_current_adapter()
 
-        # Local: multi-LoRA deps stay off the single-LoRA path.
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
         from ..multi_lora_utils import slice_lora_to_rank
