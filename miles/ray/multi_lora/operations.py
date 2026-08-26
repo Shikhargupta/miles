@@ -127,7 +127,7 @@ class OperationQueue:
     # ------------------------------ collect / terminals ------------------------------
 
     def claim_next_runnable_ops(self) -> list[OperationRecord]:
-        """Pop the executable prefix at the cursor: consecutive data ops, or one control op alone."""
+        """Claim (mark RUNNING) the next runnable ops at the cursor: consecutive data ops, or one control op alone."""
         out: list[OperationRecord] = []
         ordinal = self.next_to_run
         while (rec := self.ops.get(ordinal)) is not None and rec.status == "QUEUED":
