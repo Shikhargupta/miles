@@ -1,5 +1,6 @@
 """Tinker wire layer; mount via --multi-lora-http-server-path miles.ray.multi_lora.tinker.http_server.TinkerHTTPServer."""
 
+import asyncio
 import time
 import uuid
 
@@ -7,7 +8,19 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
+from miles.ray.multi_lora.operations import BadRequest, OperationQueue, QueueFull
 from miles.utils.adapter_config import AdapterRunConfig
+
+KIND_BY_PATH = {
+    "/api/v1/forward_backward": "forward_backward",
+    "/api/v1/forward": "forward",
+    "/api/v1/optim_step": "optim_step",
+    "/api/v1/save_weights": "save_state",
+    "/api/v1/load_weights": "load_state",
+    "/api/v1/save_weights_for_sampler": "save_weights_for_sampler",
+}
+# Excluded from retry identity: the SDK re-mints this inside every retry attempt.
+FP_EXCLUDE = {"sampling_session_seq_id"}
 
 
 class TinkerHTTPServer(MultiLoRAHTTPServer):
@@ -17,7 +30,26 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
         super().__init__(backend, host, api_port)
         self._sessions: dict[str, dict] = {}
         self._models: dict[str, dict] = {}  # model_id -> {"name", "rank"}
+        self._queues: dict[str, OperationQueue] = {}  # model_id -> training-plane queue
         self._ready_futures: dict[str, dict] = {}  # request_id -> terminal body
+        self.poll_window_s = 15.0
+        self.poll_interval_s = 0.1
+
+    def create_app(self) -> FastAPI:
+        app = super().create_app()
+
+        @app.exception_handler(QueueFull)
+        async def queue_full_handler(request: Request, exc: QueueFull):
+            return JSONResponse({"detail": str(exc)}, status_code=429, headers={"Retry-After": "1"})
+
+        @app.exception_handler(RuntimeError)
+        async def runtime_error_handler(request: Request, exc: RuntimeError):
+            # The SDK retries 409 forever, so capacity maps to 429; everything else is a real 500.
+            if "No free adapter slots" in str(exc):
+                return JSONResponse({"detail": str(exc)}, status_code=429, headers={"Retry-After": "1"})
+            return JSONResponse({"detail": str(exc)}, status_code=500)
+
+        return app
 
     def add_routes(self, app: FastAPI) -> None:
         super().add_routes(app)
@@ -29,6 +61,8 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
         app.post("/api/v1/create_model")(self.create_model)
         app.post("/api/v1/get_info")(self.get_info)
         app.post("/api/v1/retrieve_future")(self.retrieve_future)
+        for path in KIND_BY_PATH:
+            app.post(path)(self.training_submit)
 
     async def get_server_capabilities(self) -> dict:
         # One trainer serves one base model; adapters register on top of it.
@@ -70,6 +104,7 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
                 name, AdapterRunConfig(data="", rank=lora.get("rank"), alpha=lora.get("alpha"))
             )
             self._models[model_id] = {"name": name, "rank": lora.get("rank")}
+            self._queues[model_id] = OperationQueue()
             self._ready_futures[request_id] = {"type": "create_model", "model_id": model_id}
         return {"request_id": request_id, "model_id": model_id}
 
@@ -89,10 +124,44 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
             "lora_rank": model["rank"],
         }
 
+    # ------------------------------ training operations ------------------------------
+
+    async def training_submit(self, request: Request):
+        body = await request.json()
+        model_id = body.get("model_id")
+        seq_id = body.get("seq_id")
+        queue = self._queues.get(model_id)
+        if queue is None:
+            return JSONResponse({"detail": f"unknown model '{model_id}'"}, status_code=404)
+        if not isinstance(seq_id, int) or seq_id < 1:
+            return JSONResponse({"detail": "seq_id must be an integer >= 1"}, status_code=400)
+        request_id = f"{model_id}:op{seq_id}"
+        fp_payload = {k: v for k, v in body.items() if k not in FP_EXCLUDE}
+        try:
+            queue.enqueue(seq_id, request_id, KIND_BY_PATH[request.url.path], fp_payload)
+        except BadRequest as exc:
+            # 422: same identity retried with different content; the SDK treats it as fatal.
+            return JSONResponse({"detail": str(exc)}, status_code=422)
+        return {"request_id": request_id}
+
     async def retrieve_future(self, request: Request):
         request_id = (await request.json()).get("request_id")
         result = self._ready_futures.get(request_id)
-        if result is None:
+        if result is not None:
+            return result
+        model_id, _, seq = request_id.rpartition(":op") if request_id else ("", "", "")
+        queue = self._queues.get(model_id)
+        if queue is None or not seq.isdigit():
             # 410 marks a broken/unknown promise; the SDK treats it as retryable, never fatal.
             return JSONResponse({"detail": f"no result for request '{request_id}'"}, status_code=410)
-        return result
+        deadline = time.monotonic() + self.poll_window_s
+        while True:
+            try:
+                kind, payload = queue.poll(int(seq))
+            except BadRequest:
+                return JSONResponse({"detail": f"no record of request '{request_id}'"}, status_code=410)
+            if kind != "try_again":
+                return payload
+            if time.monotonic() >= deadline:
+                return {"type": "try_again", "queue_state": "active"}
+            await asyncio.sleep(self.poll_interval_s)
