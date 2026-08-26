@@ -34,6 +34,7 @@ SHARED_TRAINER_OVERRIDES = dict(
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_rollout: int = 3
+    save_interval: int = 20
     num_gpus_per_node: int = 4
     solver_model_name: str = "Qwen2.5-0.5B-Instruct"
     verifier_model_name: str = "Qwen3-0.6B"
@@ -92,7 +93,12 @@ def build_train_args(
     events_dir = compute_events_dir(args)
     solver_path = args.model_path_of_model_id[SOLVER_MODEL_ID]
 
-    ckpt_args = f"--hf-checkpoint {solver_path}/ " f"--ref-load {solver_path}/ "
+    ckpt_args = (
+        f"--hf-checkpoint {solver_path}/ "
+        f"--ref-load {solver_path}/ "
+        f"--save {compute_save_dir(args)} "
+        f"--save-interval {args.save_interval} "
+    )
 
     policy_args = (
         f"--megatron-config {encode_pseudo_file(yaml.dump(megatron_config or compute_megatron_config(args)))} "
@@ -207,6 +213,10 @@ def compute_events_dir(config: ExecuteTrainConfig) -> Path:
 
 def compute_rollout_data_path_template(config: ExecuteTrainConfig) -> str:
     return str(compute_events_dir(config).parent / "rollout_data" / "{rollout_id}.pt")
+
+
+def compute_save_dir(config: ExecuteTrainConfig) -> Path:
+    return compute_events_dir(config).parent / "ckpt"
 
 
 def _compute_trainer_config(args: ScriptArgs, model_id: str) -> dict:
