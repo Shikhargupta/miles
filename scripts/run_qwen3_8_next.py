@@ -1,0 +1,179 @@
+"""Qwen3.8-Flash-Next (Qwen4Exp) RL training on the rdx-gb300 slurm cluster.
+
+Deliberately narrower than run_deepseek_v4.py: one model, one cluster, the paths
+this project actually uses. The heavy lifting (ray job submit, env plumbing) stays
+in miles.utils.external_utils.command_utils.execute_train.
+
+Assumes an ALREADY RUNNING ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1): on slurm the
+per-node containers and `ray start` are handled by scripts/qwen3_8_next/e2e_up.sh,
+not by this script.
+
+Usage (inside the head-node container):
+    python scripts/run_qwen3_8_next.py train --num-rollout 5
+"""
+
+from dataclasses import dataclass
+
+import typer
+
+import miles.utils.external_utils.command_utils as U
+
+app = typer.Typer()
+
+_MODEL_LOCAL = "/scratch/models/Qwen3.8-Flash-Next"  # node-local NVMe, staged on all 8 nodes
+_TORCH_DIST = "/data/home/zzeng/ckpt/qwen3.8-flash-next_torch_dist"
+_DATA_DIR = "/data/home/zzeng/datasets"
+_SAVE_DIR = "/data/home/zzeng/rl_runs"
+_MEGATRON_PATH = "/data/home/zzeng/repos/Megatron-hcslot"
+
+
+@dataclass
+class ScriptArgs(U.ExecuteTrainConfig):
+    num_nodes: int = 8
+    num_gpus_per_node: int = 4
+    output_dir: str = "/data/home/zzeng/rl_runs/shared"
+    run_id: str = "qwen38next-dapo"
+    num_rollout: int = 5
+    rollout_max_response_len: int = 4096
+    check_weight_update: bool = True
+    enable_r3: bool = False
+    skip_saving: bool = True
+    extra_args: str = ""
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    total_gpus = args.num_nodes * args.num_gpus_per_node
+    assert total_gpus == 32, "the parallel config below is shaped for 8 nodes x 4 GPUs"
+
+    ckpt_args = (
+        f"--hf-checkpoint {_MODEL_LOCAL} "
+        f"--ref-load {_TORCH_DIST} "
+    )
+    if not args.skip_saving:
+        load_save_path = f"{_SAVE_DIR}/{args.run_id}/checkpoints"
+        ckpt_args += f"--load {load_save_path} --save {load_save_path} --save-interval 20 "
+
+    rollout_args = (
+        "--label-key label "
+        "--apply-chat-template "
+        "--rollout-shuffle "
+        "--rm-type math "
+        f"--num-rollout {args.num_rollout} "
+        "--rollout-batch-size 32 "
+        "--n-samples-per-prompt 8 "
+        "--rollout-temperature 0.8 "
+        "--num-steps-per-rollout 1 "
+        "--balance-data "
+        f"--prompt-data {_DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
+        "--input-key prompt "
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
+        '--apply-chat-template-kwargs \'{"thinking_mode":"thinking"}\' '
+    )
+
+    # 48 layers / PP8 = 6 per stage, no first/last overrides needed. CP must stay 1:
+    # the GDN wrapper only implements context parallelism on the fla backend, and we
+    # train on flashqla (fla's chunk_fwd_o is nondeterministic on Blackwell).
+    perf_args = (
+        "--tensor-model-parallel-size 2 "
+        "--sequence-parallel "
+        "--pipeline-model-parallel-size 8 "
+        "--context-parallel-size 1 "
+        "--expert-model-parallel-size 4 "
+        "--expert-tensor-parallel-size 1 "
+        "--recompute-granularity full "
+        "--recompute-method uniform "
+        "--recompute-num-layers 1 "
+        "--micro-batch-size 1 "
+        "--max-tokens-per-gpu 8192 "
+    )
+
+    grpo_args = (
+        "--advantage-estimator grpo "
+        "--kl-loss-coef 0.00 "
+        "--kl-loss-type low_var_kl "
+        "--entropy-coef 0.00 "
+        "--eps-clip 0.2 "
+        "--eps-clip-high 0.28 "
+    )
+
+    optimizer_args = (
+        "--optimizer adam "
+        "--lr 1e-6 "
+        "--lr-decay-style constant "
+        "--weight-decay 0.1 "
+        "--adam-beta1 0.9 "
+        "--adam-beta2 0.98 "
+        "--optimizer-cpu-offload "
+        "--use-precision-aware-optimizer "
+        "--overlap-cpu-optimizer-d2h-h2d "
+    )
+
+    # One sglang engine spans two nodes (tp8 over 4-GPU nodes); GB300 prefers tp8.
+    sglang_args = (
+        "--rollout-num-gpus-per-engine 8 "
+        "--sglang-tp-size 8 "
+        "--sglang-dp-size 1 "
+        "--sglang-ep-size 8 "
+        "--sglang-linear-attn-prefill-backend flashinfer "
+        "--sglang-chunked-prefill-size 8192 "
+        "--router-health-success-threshold 1 "
+        "--router-health-check-interval-secs 15 "
+        "--router-health-failure-threshold 40 "
+    )
+
+    misc_args = (
+        "--attention-dropout 0.0 "
+        "--hidden-dropout 0.0 "
+        "--attention-softmax-in-fp32 "
+        "--accumulate-allreduce-grads-in-fp32 "
+        f"--update-weight-buffer-size {1 * 1024 ** 3} "
+        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
+        "--train-memory-margin-bytes 3221225472 "
+        "--sglang-mem-fraction-static 0.7 "
+        "--colocate "
+        # hf model_type is qwen4_exp and the bridge registers that alias; the
+        # default (hf config class name) would resolve to the aliased
+        # Qwen3_5MoeConfig and miss.
+        "--model-name qwen4_exp "
+        "--qkv-format thd "
+        "--linear-attention-backend flashqla "
+        "--rollout-health-check-interval 300 "
+        "--rollout-health-check-timeout 300 "
+    )
+    if args.check_weight_update:
+        misc_args += "--check-weight-update-equal "
+    if args.enable_r3:
+        misc_args += "--use-rollout-routing-replay "
+
+    train_args = (
+        f"{ckpt_args} {rollout_args} {optimizer_args} {grpo_args} "
+        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{perf_args} {sglang_args} {misc_args} {args.extra_args} "
+    )
+
+    extra_env_vars = {
+        "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
+        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
+        "SGLANG_DISABLE_MULTIMEM_AG": "1",
+        # rollout engines must import the ported sglang tree, and the training side
+        # needs miles_plugins on the path; both are prepended here and merged with
+        # execute_train's own entries.
+        "PYTHONPATH": "/data/home/zzeng/repos/sglang-B/python",
+    }
+
+    U.execute_train(
+        train_args=train_args,
+        config=args,
+        num_gpus_per_node=args.num_gpus_per_node,
+        megatron_model_type="qwen3.8-flash-next",
+        extra_env_vars=extra_env_vars,
+        megatron_path=_MEGATRON_PATH,
+    )
+
+
+if __name__ == "__main__":
+    app()

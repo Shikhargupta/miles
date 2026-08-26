@@ -87,22 +87,34 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         # padding that no arithmetic on the config would predict.
         self.rows_per_shard = getattr(config, "qwen3_8_next_ngram_rows_per_shard", None)
         if self.rows_per_shard is None:
+            hf = getattr(config, "qwen3_8_next_hf_checkpoint", None)
+            if hf is not None:
+                self.rows_per_shard = self._shard_height_from_hf(hf, layer_number - 1)
+        if self.rows_per_shard is None:
+            # Last resort, and known to be slightly wrong: each hash head's vocab is
+            # a distinct prime just above ngram_vocab_size_base (20000003, 20000023,
+            # ...), so the real total is 320,001,446 rather than 16 x 20,000,000, and
+            # this rounds to 2,500,000 per shard instead of 2,500,012. That
+            # 12-row-per-shard drift misaligns the whole table. Only reachable when
+            # initialising from scratch with no checkpoint to read.
             total = heads * config.qwen3_8_next_ngram_vocab_size_base
             self.rows_per_shard = -(-total // self.num_shards)
         self.row_start = self.shard_ids[0] * self.rows_per_shard
         self.row_end = (self.shard_ids[-1] + 1) * self.rows_per_shard
 
-        # persistent=False: excluded from state_dict, so it never enters the
-        # torch_dist checkpoint and never has to be resharded.
-        self.register_buffer(
-            "table",
-            torch.empty(
-                (self.row_end - self.row_start, self.embedding_dim),
-                dtype=torch.bfloat16,
-                device="cpu",
-                pin_memory=True,
-            ),
-            persistent=False,
+        # A plain attribute, deliberately NOT register_buffer. A registered buffer
+        # follows the module through .cuda(), and Megatron moves the model to the
+        # device after construction -- which silently relocated this 25.6 GB/rank
+        # table to HBM and defeated the entire host-resident design. It fit, so
+        # nothing failed; the only symptom was a numpy() call refusing a cuda
+        # tensor. Nothing is lost by not registering it: it is excluded from
+        # state_dict anyway (that is the point -- it must never enter the torch_dist
+        # checkpoint or need resharding) and its loading is managed here.
+        self.table = torch.empty(
+            (self.row_end - self.row_start, self.embedding_dim),
+            dtype=torch.bfloat16,
+            device="cpu",
+            pin_memory=True,
         )
         self._loaded = False
         # Path to load from, stashed on the config by the spec. Loading is lazy: the
@@ -130,6 +142,27 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         # After the buffers exist, not before.
         if self._hf_checkpoint is not None:
             self.load_metadata_from_hf(self._hf_checkpoint)
+
+    @staticmethod
+    def _shard_height_from_hf(hf_checkpoint: str, hf_layer_index: int) -> int | None:
+        """Read shard 0's row count out of the safetensors header.
+
+        Preferred over deriving it: the config's ngram_vocab_size_base is a base, not
+        the actual per-head vocab, so arithmetic on it is off by a few rows per shard
+        and silently misaligns every subsequent shard.
+        """
+        try:
+            index = json.load(
+                open(f"{hf_checkpoint}/model.safetensors.index.json")
+            )["weight_map"]
+            name = (
+                f"model.language_model.layers.{hf_layer_index}.ple.ple_embedding"
+                ".ngram_embedding.shard_0.weight"
+            )
+            _, _, shape = _safetensors_slice(f"{hf_checkpoint}/{index[name]}", name, {})
+            return int(shape[0])
+        except Exception:
+            return None
 
     @staticmethod
     def _num_heads(config: TransformerConfig) -> int:
@@ -208,6 +241,14 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
                     "would change the logits without failing."
                 )
             self.load_from_hf(self._hf_checkpoint)
+        # Assert rather than trust: a registered buffer would have been moved to the
+        # device by Megatron's .cuda(), and the kernel reads through a raw host
+        # pointer, so a relocated table is silent corruption rather than an error.
+        assert self.table.device.type == "cpu", (
+            f"PLE table must stay on the host, found {self.table.device}. Something "
+            "moved it -- most likely by registering it as a buffer again."
+        )
+        assert self.table.is_pinned(), "PLE table lost its pinning"
         rows = gather_ple_rows(self.table, ids, self.row_start, self.row_end)
         out = rows.flatten(start_dim=-2)
         if self.tp_group is not None and self.tp_group.size() > 1:

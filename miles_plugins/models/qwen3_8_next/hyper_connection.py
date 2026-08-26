@@ -46,6 +46,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
+from miles_plugins.models.qwen3_8_next.ops.parity_dump import parity_dump
 from miles_plugins.models.qwen3_8_next.ops.hc import (
     grouped_gemma_rmsnorm,
     hc_combine,
@@ -252,7 +253,17 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         super().__init__(config, layer_number, **kwargs)
         from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE
 
-        self.ple = Qwen38NextPLE(config, layer_number=layer_number)
+        # Without a TP group the table is not row-sharded at all: every rank would
+        # hold all 320 M rows, i.e. 102 GB of pinned host memory per rank instead of
+        # 25.6 GB at TP4.
+        from megatron.core import parallel_state
+
+        tp_group = None
+        try:
+            tp_group = parallel_state.get_tensor_model_parallel_group()
+        except AssertionError:
+            pass  # not initialised (shape audits); falls back to unsharded
+        self.ple = Qwen38NextPLE(config, layer_number=layer_number, tp_group=tp_group)
 
     def forward(
         self,
@@ -263,7 +274,37 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         from miles_plugins.models.qwen3_8_next.ops.ple_context import current_ple_batch
 
         ngram_ids, cu_seqlens = current_ple_batch()
-        hidden_states = hidden_states + self.ple(hidden_states, ngram_ids, cu_seqlens)
+
+        # The two sides disagree on layout and, at batch 1, agree on element count,
+        # so a bare reshape inside the PLE silently mixes them up: the HC state is
+        # Megatron's [S, B, H] while ngram ids are built per token in HF's [B, S, h]
+        # order. Flatten both to one explicit [S*B, ...] token axis -- transposing
+        # the ids first so token s*B+b lines up in both -- and assert, so any future
+        # layout change fails here rather than broadcasting into a wrong-but-running
+        # [S, S, H] tensor (which is how this surfaced: the GDN downstream reported
+        # "batch size is expected to be 1 rather than 621").
+        seq, batch = hidden_states.shape[0], hidden_states.shape[1]
+        if ngram_ids.dim() == 3:
+            if ngram_ids.shape[:2] != (batch, seq):
+                raise RuntimeError(
+                    f"PLE ngram ids are [B, S, heads]={tuple(ngram_ids.shape)}, which "
+                    f"does not match the hidden state's B={batch}, S={seq}"
+                )
+            ngram_ids = ngram_ids.transpose(0, 1)
+        flat_ids = ngram_ids.reshape(seq * batch, ngram_ids.shape[-1])
+        flat_state = hidden_states.reshape(seq * batch, hidden_states.shape[-1])
+
+        increment = self.ple(flat_state, flat_ids, cu_seqlens)
+
+        # Debug hook for the sglang parity comparison, off unless the dumper is
+        # enabled. Named to match what the sglang side dumps at the same two points
+        # inside _prepare_qwen4_exp_attn.
+        parity_dump(f"L{self.layer_number - 1:02d}.ple_query", hidden_states)
+        parity_dump(f"L{self.layer_number - 1:02d}.ple_out", increment.view_as(hidden_states))
+        assert increment.shape == flat_state.shape, (
+            f"PLE increment {tuple(increment.shape)} != state {tuple(flat_state.shape)}"
+        )
+        hidden_states = hidden_states + increment.view_as(hidden_states)
         return super().forward(
             hidden_states,
             mhc_recompute_manager=mhc_recompute_manager,

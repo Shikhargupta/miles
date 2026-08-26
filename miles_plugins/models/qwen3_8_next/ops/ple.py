@@ -15,7 +15,7 @@ Shape of the computation, transcribed from sglang's ``Qwen4ExpPLELayer.forward``
     s     = <norm_key(key), norm_query(query)> / sqrt(C)          [T, n, 1]
     g     = sigmoid( sign(s) * sqrt(max(|s|, 1e-6)) )             [T, n, 1]
     U     = g * value                                            [T, n, C]
-    O     = U + short_conv(norm_conv(U))                         [T, n*C]
+    O     = U + SiLU(dwconv(norm_conv(U)))                       [T, n*C]
 
     hc_state += O
 
@@ -38,6 +38,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
+from miles_plugins.models.qwen3_8_next.ops.parity_dump import parity_dump
 from miles_plugins.models.qwen3_8_next.ops.hc import grouped_gemma_rmsnorm
 from miles_plugins.models.qwen3_8_next.ops.ple_embedding import Qwen38NextFrozenNGramEmbedding
 
@@ -131,9 +132,27 @@ class Qwen38NextPLE(MegatronModule):
         Returns the increment rather than the updated state so the caller keeps
         ownership of the residual, matching how the HC modules are structured.
         """
+        # 2D only, and enforced: every reshape below derives its token count from
+        # hc_state.shape[0], which a 3D input would silently make wrong instead of
+        # raising (the element counts happen to match at batch 1).
+        if hc_state.dim() != 2 or ngram_ids.dim() != 2:
+            raise RuntimeError(
+                "PLE takes a flat token axis: expected hc_state [T, n*C] and ngram_ids "
+                f"[T, heads], got {tuple(hc_state.shape)} and {tuple(ngram_ids.shape)}"
+            )
+        if hc_state.shape[0] != ngram_ids.shape[0]:
+            raise RuntimeError(
+                f"PLE token counts differ: state {hc_state.shape[0]} vs ids {ngram_ids.shape[0]}"
+            )
+
         embeddings = self.ple_embedding(ngram_ids)
         key, _ = self.key_proj(embeddings)
         value, _ = self.value_proj(embeddings)
+
+        layer_tag = f"L{self.layer_number - 1:02d}"
+        parity_dump(f"{layer_tag}.ple_emb", embeddings, dims="t h # tp:replicated")
+        parity_dump(f"{layer_tag}.ple_key", key, dims="t h # tp:replicated")
+        parity_dump(f"{layer_tag}.ple_value", value, dims="t h # tp:replicated")
 
         tokens = hc_state.shape[0]
         if hc_state.shape[-1] != self.n * self.hidden_size:
@@ -151,6 +170,7 @@ class Qwen38NextPLE(MegatronModule):
             self.hidden_size
         )
         gate = torch.sigmoid(score.abs().clamp_min(1e-6).sqrt() * score.sign())
+        parity_dump(f"{layer_tag}.ple_gate", gate, dims="t c 1 # tp:replicated")
         gated = (gate * value.unsqueeze(-2)).flatten(-2)
 
         gated_normed = grouped_gemma_rmsnorm(gated, self.norm_conv, self.n, self.norm_eps)
@@ -160,4 +180,11 @@ class Qwen38NextPLE(MegatronModule):
             self.conv_dilation,
             cu_seqlens,
         )
+        # O = U + SiLU(DWConv(RMSNorm(U))). The activation is part of the short
+        # conv, not of the conv operator: sglang's _short_conv returns
+        # F.silu(conv_output) on both its prefill and decode paths. Omitting it left
+        # the PLE increment ~88% wrong while every weight and every other
+        # intermediate in the layer was exact.
+        conv_out = F.silu(conv_out)
+        parity_dump(f"{layer_tag}.ple_conv", conv_out, dims="t h # tp:replicated")
         return (gated.to(conv_out.dtype) + conv_out).to(hc_state.dtype)

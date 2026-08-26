@@ -1,0 +1,114 @@
+# Dumps the hyper-connection residual stream at every layer boundary of the sglang
+# reference, for comparison against the Megatron port. Kept as a source patch
+# rather than an edit to sglang's tree so the reference implementation stays
+# untouched and the two sides cannot silently drift apart.
+#
+# Names must match the Megatron side exactly -- the comparator groups dump files
+# into bundles by name.
+patches:
+  - target: "sglang.srt.models.qwen4_exp.Qwen4ExpModel.forward"
+    edits:
+      - match: |
+          hidden_states = self.embed_tokens(input_ids)
+        append: |
+          dumper.dump("emb", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          hidden_states, residual = layer(
+              positions=positions,
+              hidden_states=hidden_states,
+              residual=residual,
+              forward_batch=forward_batch,
+              ple_batch=ple_batch,
+              captured_last_layer_outputs=(
+                  aux_hidden_states
+                  if getattr(layer, "_is_layer_to_capture", False)
+                  else None
+              ),
+          )
+        append: |
+          dumper.dump(f"hc_L{i:02d}", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          hidden_states, _ = self.hyper_connection_mixer.mix(hidden_states)
+        append: |
+          dumper.dump("final_mix", hidden_states, dims="t h # tp:replicated")
+  - target: "sglang.srt.models.qwen4_exp.Qwen4ExpLinearDecoderLayer.forward"
+    edits:
+      - match: |
+          hidden_states, residual = self._prepare_qwen4_exp_attn(
+              hidden_states,
+              residual,
+              forward_batch,
+              ple_batch=kwargs.get("ple_batch"),
+          )
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.attn_mix", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          hidden_states = self.linear_attn(hidden_states, forward_batch)
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.attn_out", hidden_states, dims="t h[tp:partial]")
+      - match: |
+          hidden_states, residual = self._prepare_qwen4_exp_mlp(
+              hidden_states, residual, forward_batch
+          )
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.mlp_mix", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          hidden_states = self._run_qwen4_exp_mlp(hidden_states, forward_batch)
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.mlp_out", hidden_states, dims="t h # tp:replicated")
+  - target: "sglang.srt.models.qwen4_exp.Qwen4ExpLayerExtensionMixin._prepare_qwen4_exp_attn"
+    edits:
+      - match: |
+          hidden_states = hidden_states + self.ple(
+              ple_query, forward_batch, ple_batch
+          )
+        replacement: |
+          _ple_inc = self.ple(ple_query, forward_batch, ple_batch)
+          dumper.dump(f"L{self.layer_id:02d}.ple_query", ple_query, dims="t h # tp:replicated")
+          dumper.dump(f"L{self.layer_id:02d}.ple_out", _ple_inc, dims="t h # tp:replicated")
+          hidden_states = hidden_states + _ple_inc
+  - target: "sglang.srt.models.qwen4_exp.Qwen4ExpPLELayer.forward"
+    edits:
+      - match: |
+          value, _ = self.value_proj(embeddings)
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.ple_emb", embeddings, dims="t h # tp:replicated")
+          dumper.dump(f"L{self.layer_id:02d}.ple_key", key, dims="t h # tp:replicated")
+          dumper.dump(f"L{self.layer_id:02d}.ple_value", value, dims="t h # tp:replicated")
+      - match: |
+          gated_value = gate * value.unsqueeze(-2)
+        prepend: |
+          dumper.dump(f"L{self.layer_id:02d}.ple_gate", gate, dims="t c 1 # tp:replicated")
+      - match: |
+          output = gated_value + conv_output
+        prepend: |
+          dumper.dump(f"L{self.layer_id:02d}.ple_conv", conv_output, dims="t h # tp:replicated")
+  - target: "sglang.srt.models.qwen4_exp.Qwen4ExpAttentionDecoderLayer.forward"
+    edits:
+      - match: |
+          hidden_states, residual = self._prepare_qwen4_exp_attn(
+              hidden_states,
+              residual,
+              forward_batch,
+              ple_batch=kwargs.get("ple_batch"),
+          )
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.attn_mix", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          hidden_states = self.self_attention(
+              positions=positions,
+              hidden_states=hidden_states,
+              forward_batch=forward_batch,
+          )
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.attn_out", hidden_states, dims="t h[tp:partial]")
+      - match: |
+          hidden_states, residual = self._prepare_qwen4_exp_mlp(
+              hidden_states, residual, forward_batch
+          )
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.mlp_mix", hidden_states, dims="t h # tp:replicated")
+      - match: |
+          hidden_states = self._run_qwen4_exp_mlp(hidden_states, forward_batch)
+        append: |
+          dumper.dump(f"L{self.layer_id:02d}.mlp_out", hidden_states, dims="t h # tp:replicated")

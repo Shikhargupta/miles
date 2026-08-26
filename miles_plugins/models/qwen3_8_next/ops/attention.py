@@ -40,6 +40,7 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         # the module graph cyclic and duplicate every parameter in the state dict.
         object.__setattr__(self, "_owner", owner)
         self.softmax_scale = config.kv_channels**-0.5
+        self.compress_ratio = config.qwen3_8_next_indexer_compress_ratio
 
     def forward(self, query: Tensor, key: Tensor, value: Tensor, attention_mask=None, **kwargs):
         selection = getattr(self._owner, "_qsa_selection", None)
@@ -49,15 +50,38 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                 "Qwen38NextAttention.forward sets it before delegating; reaching here "
                 "means core_attention was called out of band."
             )
-        # Megatron hands these in [s, b, h, d]; the sparse path is per sequence.
-        s, b, hq, d = query.shape
-        out = []
-        for i in range(b):
-            out.append(
-                qsa_sparse_attention(
-                    query[:, i], key[:, i], value[:, i], selection, scale=self.softmax_scale
-                )
+        cu_seqlens = getattr(self._owner, "_qsa_cu_seqlens", None)
+
+        # Two layouts reach here. With packed_seq_params.qkv_format == 'thd' -- which
+        # is what miles always feeds, since the linear-attention layers require
+        # cu_seqlens -- Megatron has already squeezed the dummy batch dim away and
+        # hands [t, np, hn], then reshapes whatever comes back to (t, 1, -1) itself.
+        # Without packing it is [s, b, np, hn]. Handle both explicitly instead of
+        # unpacking four names and failing on the layout that actually occurs.
+        if query.dim() == 3:
+            return qsa_sparse_attention(
+                query, key, value, selection,
+                scale=self.softmax_scale,
+                cu_seqlens=cu_seqlens,
+                compress_ratio=self.compress_ratio,
             )
+
+        if query.dim() != 4:
+            raise RuntimeError(
+                f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got "
+                f"{tuple(query.shape)}"
+            )
+
+        s, b, hq, d = query.shape
+        out = [
+            qsa_sparse_attention(
+                query[:, i], key[:, i], value[:, i], selection,
+                scale=self.softmax_scale,
+                cu_seqlens=cu_seqlens,
+                compress_ratio=self.compress_ratio,
+            )
+            for i in range(b)
+        ]
         return torch.stack(out, dim=1).reshape(s, b, hq * d)
 
 
@@ -70,19 +94,38 @@ class Qwen38NextAttention(SelfAttention):
         self.core_attention = Qwen38NextQSACoreAttention(config, layer_number, owner=self)
         self._qsa_selection = None
 
+    @staticmethod
+    def _packed_positions(cu_seqlens: Tensor, total: int) -> Tensor:
+        """Positions restarting at 0 for each sequence in a packed batch.
+
+        A single ``arange`` over the pack would place every sequence after the first
+        at the wrong offsets, which changes both the RoPE the indexer applies and
+        which compressed blocks count as causally visible -- silently, since the
+        shapes are unaffected.
+        """
+        idx = torch.arange(total, device=cu_seqlens.device)
+        starts = cu_seqlens[:-1].long()
+        seg = torch.zeros(total, dtype=torch.long, device=cu_seqlens.device)
+        seg[starts[1:]] = 1
+        seg = seg.cumsum(0)
+        return idx - starts[seg]
+
     def forward(self, hidden_states: Tensor, *args, **kwargs):
-        # [s, b, h] -> positions along the sequence. Packed (THD) batches carry their
-        # own offsets in packed_seq_params; handling those is still open, so refuse
-        # rather than silently score against the wrong positions.
         packed = kwargs.get("packed_seq_params")
-        if packed is not None:
-            raise NotImplementedError(
-                "QSA with packed sequences needs per-sequence positions from "
-                "packed_seq_params; scoring against a single arange would place every "
-                "sequence after the first at the wrong offsets."
-            )
         seq = hidden_states.shape[0]
-        positions = torch.arange(seq, device=hidden_states.device)
+        if packed is not None:
+            cu = getattr(packed, "cu_seqlens_q", None)
+            if cu is None:
+                raise NotImplementedError(
+                    "packed_seq_params without cu_seqlens_q: QSA needs the sequence "
+                    "boundaries to place positions and to keep attention inside a "
+                    "document."
+                )
+            self._qsa_cu_seqlens = cu
+            positions = self._packed_positions(cu, seq)
+        else:
+            self._qsa_cu_seqlens = None
+            positions = torch.arange(seq, device=hidden_states.device)
         # The indexer works on one sequence's [T, hidden]; batch is folded per item
         # inside the core attention, so score on the first batch element's states.
         self._qsa_selection = self.indexer(hidden_states[:, 0], positions)
@@ -90,3 +133,4 @@ class Qwen38NextAttention(SelfAttention):
             return super().forward(hidden_states, *args, **kwargs)
         finally:
             self._qsa_selection = None
+            self._qsa_cu_seqlens = None

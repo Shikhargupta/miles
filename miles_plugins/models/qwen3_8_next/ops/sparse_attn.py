@@ -42,6 +42,8 @@ def qsa_sparse_attention(
     v: Tensor,
     topk_indices: Tensor,
     scale: float | None = None,
+    cu_seqlens: Tensor | None = None,
+    compress_ratio: int = 4,
 ) -> Tensor:
     """``q`` ``[T, Hq, D]``, ``k``/``v`` ``[S, Hkv, D]`` -> ``[T, Hq, D]``.
 
@@ -55,12 +57,43 @@ def qsa_sparse_attention(
     repeat = hq // hkv
 
     mask = selection_to_mask(topk_indices, seq)          # [T, S]
-    # Causality is already implied by the indexer's block-causal scoring, but assert
-    # it here so a selection bug cannot leak future tokens into training.
+
+    # The tail: each query also sees its own partial block. The indexer scores only
+    # complete blocks, so without this a query can never attend the last
+    # ``(pos+1) % compress_ratio`` tokens -- including itself. sglang appends
+    # exactly these positions after the top-k expansion
+    # (qsa/kernel.py expand_qsa_block_indices: tail_start = floor((pos+1)/r)*r),
+    # and dropping them is a systematic modeling change in every full-attention
+    # layer, not a rounding difference: it surfaced as Megatron being consistently
+    # more confident than sglang on the same tokens.
+    idx = torch.arange(seq, device=q.device)
+    if cu_seqlens is not None:
+        starts = cu_seqlens[:-1].long()
+        seg = torch.zeros(seq, dtype=torch.long, device=q.device)
+        seg[cu_seqlens[1:-1].long()] = 1
+        seg = seg.cumsum(0)
+        pos = idx - starts[seg]           # position within each sequence
+        seq_start = idx - pos             # pack index of each sequence's first token
+    else:
+        pos = idx
+        seq_start = torch.zeros_like(idx)
+    tail_start = (pos + 1) // compress_ratio * compress_ratio  # in-sequence
+    col_pos = pos.unsqueeze(0)                                  # [1, S]
+    row_tail = (seq_start + tail_start)[:tokens].unsqueeze(1)   # [T, 1], pack index
+    mask |= idx.unsqueeze(0) >= row_tail
+
+    # Causality is already implied by the indexer's block-causal scoring and by the
+    # tail construction, but assert it here so a selection bug cannot leak future
+    # tokens into training.
     causal = torch.ones(tokens, seq, dtype=torch.bool, device=q.device).tril(
         diagonal=seq - tokens
     )
     mask &= causal
+    if cu_seqlens is not None:
+        # Packed (THD) batches put several sequences in one tensor. Attention must
+        # not cross a boundary, and the indexer's selection is expressed in
+        # positions within the pack, so confine each query to its own segment.
+        mask &= seg[:tokens].unsqueeze(1) == seg.unsqueeze(0)
 
     qh = q.transpose(0, 1)                               # [Hq, T, D]
     kh = k.transpose(0, 1).repeat_interleave(repeat, dim=0)  # [Hq, S, D]

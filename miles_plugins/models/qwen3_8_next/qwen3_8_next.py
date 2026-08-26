@@ -151,7 +151,13 @@ def _apply_qwen3_8_next_config(config, text_config) -> None:
     )
     config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
     config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
-    config.qwen3_8_next_ple_conv_dilation = getattr(text_config, "ple_conv_dilation", 3)
+    # The PLE short conv's dilation is the n-gram size, not a config field of its
+    # own: sglang sets short_conv_dilation = ple_embedding.ngram_size, and this
+    # checkpoint has no ple_conv_dilation key at all, so a literal default here
+    # would silently be right only for ngram_size == 3.
+    config.qwen3_8_next_ple_conv_dilation = getattr(
+        text_config, "ple_conv_dilation", None
+    ) or config.qwen3_8_next_ngram_size
     config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
 
     config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)

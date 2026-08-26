@@ -23,7 +23,10 @@ def main():
     s = torch.load(a.sglang)
     assert torch.equal(m["input_ids"], s["input_ids"]), "different token ids on the two sides"
 
-    x, y = m["logprobs"].float(), s["logprobs"].float()
+    # reshape(-1): compute_log_probs returns [T, 1] (it works in Megatron's
+    # [s, b, v] layout internally), so without this the diff is 2-D and argsort
+    # yields row indices.
+    x, y = m["logprobs"].float().reshape(-1), s["logprobs"].float().reshape(-1)
     n = min(x.numel(), y.numel())
     x, y = x[:n], y[:n]
     d = (x - y).abs()
