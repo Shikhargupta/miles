@@ -80,7 +80,12 @@ async def _execute_control_op(actor_model, op: dict) -> dict:
         return _failure(op, str(exc), "user")
     try:
         metrics = await actor_model.optim_step_adapter(op["slot"], request.adam_params.model_dump(), op["ordinal"])
-        return {"name": op["name"], "ordinal": op["ordinal"], "ok": True, "result": {"metrics": dict(metrics or {})}}
+        return {
+            "name": op["name"],
+            "ordinal": op["ordinal"],
+            "ok": True,
+            "result": {"metrics": _first_rank_metrics(metrics)},
+        }
     except Exception:  # noqa: BLE001 - a failed control op answers its future, not the driver loop
         logger.exception(f"optim_step failed for '{op['name']}'")
         return _failure(op, "optim_step failed on the trainer", "server")
@@ -109,13 +114,20 @@ async def _train_co_batch(args, actor_model, rollout_id: int, samples: list, spa
     return [_forward_backward_success(span, metrics) for span in spans]
 
 
+def _first_rank_metrics(result) -> dict:
+    """Group broadcasts return one payload per actor; rank 0 speaks for the collective."""
+    if isinstance(result, list):
+        result = result[0] if result else None
+    return dict(result or {})
+
+
 def _forward_backward_success(span: dict, metrics) -> dict:
     # Zeroed per-token logprobs until the tinker loss function emits real ones.
     outs = [{"logprobs": {"data": [0.0] * n, "dtype": "float32", "shape": [n]}} for n in span["lengths"]]
     body = {
         "loss_fn_output_type": "ArrayRecord",
         "loss_fn_outputs": outs,
-        "metrics": dict(metrics or {}) | {"num_tokens:sum": float(sum(span["lengths"]))},
+        "metrics": _first_rank_metrics(metrics) | {"num_tokens:sum": float(sum(span["lengths"]))},
     }
     op = span["op"]
     return {"name": op["name"], "ordinal": op["ordinal"], "ok": True, "result": body}
