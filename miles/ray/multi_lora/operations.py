@@ -47,6 +47,7 @@ class OperationQueue:
     by_request_id: dict[str, int] = field(default_factory=dict)
     next_to_run: int = 1
     poisoned: bool = False  # a forward_backward FAILED since the last optim_step terminal
+    fenced: bool = False  # retired registration: replays still answer, new ops are rejected
 
     def __post_init__(self):
         # Retained delivered terminals consume capacity: keep_delivered >= cap wedges the queue permanently.
@@ -65,6 +66,8 @@ class OperationQueue:
             if rec.fingerprint != fp or rec.ordinal != ordinal:
                 raise BadRequest(f"request '{request_id}' retried with different content; retries must be identical")
             return known
+        if self.fenced:
+            raise BadRequest("registration retired; new operations are fenced")
         if ordinal in self.ops:
             raise BadRequest(f"ordinal {ordinal} already taken by request '{self.ops[ordinal].request_id}'")
         if ordinal < self.next_to_run:
@@ -150,8 +153,17 @@ class OperationQueue:
             ordinal += 1
         return out
 
+    def fence(self, reason: str) -> None:
+        """Retire the queue: every non-terminal op fails as a user error; replays keep answering."""
+        self.fenced = True
+        for rec in list(self.ops.values()):
+            if rec.status in ("QUEUED", "RUNNING"):
+                self.fail(rec.ordinal, reason, "user")
+
     def complete(self, ordinal: int, result: dict | None = None) -> None:
         rec = self.ops[ordinal]
+        if rec.status in ("DONE", "FAILED"):  # fence-vs-driver races resolve to the first terminal
+            return
         rec.status = "DONE"
         rec.result = result
         if rec.kind == "optim_step":
@@ -160,6 +172,8 @@ class OperationQueue:
 
     def fail(self, ordinal: int, error: str, kind: str = "server") -> None:
         rec = self.ops[ordinal]
+        if rec.status in ("DONE", "FAILED"):
+            return
         rec.status = "FAILED"
         rec.error = error
         rec.error_kind = kind

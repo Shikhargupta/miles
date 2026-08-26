@@ -28,6 +28,9 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
 
     def __init__(self, backend, host="127.0.0.1", api_port=0):
         super().__init__(backend, host, api_port)
+        assert hasattr(
+            backend, "operation_queue"
+        ), "TinkerHTTPServer needs MultiLoRAOperationBackend (--multi-lora-backend-path)"
         self._sessions: dict[str, dict] = {}
         self._models: dict[str, dict] = {}  # model_id -> {"name", "rank"}
         self._queues: dict[str, OperationQueue] = {}  # model_id -> training-plane queue
@@ -104,7 +107,7 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
                 name, AdapterRunConfig(data="", rank=lora.get("rank"), alpha=lora.get("alpha"))
             )
             self._models[model_id] = {"name": name, "rank": lora.get("rank")}
-            self._queues[model_id] = OperationQueue()
+            self._queues[model_id] = self.backend.operation_queue(name)
             self._ready_futures[request_id] = {"type": "create_model", "model_id": model_id}
         return {"request_id": request_id, "model_id": model_id}
 
