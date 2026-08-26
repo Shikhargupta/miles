@@ -737,7 +737,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
 
-
     def _named_actor_weights(self):
         return named_params_and_buffers(
             self.args, self.model, convert_to_global_name=self.args.megatron_to_hf_mode == "raw"
