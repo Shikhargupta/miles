@@ -107,8 +107,6 @@ class WeightUpdater:
             return
         self.weight_version += 1
 
-        # LoRA runs sync the adapters; the frozen base rides along only when the
-        # engines do not keep it (protocol fact).
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
 
