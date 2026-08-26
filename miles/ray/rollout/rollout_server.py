@@ -135,30 +135,15 @@ class RolloutServer:
 
     @requires_lock
     async def offload(self, tags: list[str] | None = None):
-        cells = [cell for cell in self._addressable_cells() if cell.meta.needs_offload]
-        async with self.context_lock.with_released():
-            results = await asyncio.gather(*[cell.offload(tags=tags) for cell in cells], return_exceptions=True)
-        return self._resolve_memory_operation_results(cells=cells, results=results)
+        return await asyncio.gather(
+            *[cell.offload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
+        )
 
     @requires_lock
     async def onload(self, tags: list[str] | None = None):
-        cells = [cell for cell in self._addressable_cells() if cell.meta.needs_offload]
-        async with self.context_lock.with_released():
-            results = await asyncio.gather(*[cell.onload(tags=tags) for cell in cells], return_exceptions=True)
-        return self._resolve_memory_operation_results(cells=cells, results=results)
-
-    @requires_lock
-    def _resolve_memory_operation_results(self, *, cells: list[ServerCell], results: list[Any]) -> list[Any]:
-        live_results: list[Any] = []
-        for cell, result in zip(cells, results, strict=True):
-            if isinstance(result, Exception):
-                if self.server_cells.get(cell.meta.cell_id) is cell:
-                    raise result
-            elif isinstance(result, BaseException):
-                raise result
-            else:
-                live_results.append(result)
-        return live_results
+        return await asyncio.gather(
+            *[cell.onload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
+        )
 
     @requires_lock
     async def abort_all(self) -> None:
