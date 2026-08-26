@@ -20,6 +20,7 @@ _SPEC_INFO_FIELDS = frozenset(
     }
 )
 
+
 def build_session_rollout_metrics(args: Namespace, session_id: str, nodes: list[TrajectoryNode]) -> dict:
     spec_info = Sample.SpecInfo()
     if args.sglang_speculative_algorithm:
