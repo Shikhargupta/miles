@@ -4,6 +4,8 @@ from miles.ray.multi_lora.operations import BadRequest
 from miles.ray.multi_lora.tinker.api_data_types import LOSS_FNS, Datum, ForwardBackwardInput, TensorData
 from miles.utils.types import Sample
 
+LOSS_KIND_IDS = {name: index for index, name in enumerate(LOSS_FNS)}
+
 
 def tensor_values(tensor: TensorData) -> list:
     """Dense 1-D values, int-cast for int64; per-datum tensors never arrive sparse (the SDK only sparsifies 2-D)."""
@@ -28,17 +30,27 @@ def datum_to_sample(datum: Datum) -> Sample:
     overlap = input_tokens[len(input_tokens) - len(target_tokens) + 1 :]
     if overlap != target_tokens[:-1]:
         raise BadRequest("target_tokens must be the model_input tokens shifted left by one")
-    weights_tensor = datum.loss_fn_inputs.get("weights")
-    loss_weights = tensor_values(weights_tensor) if weights_tensor is not None else [1.0] * len(target_tokens)
-    if len(loss_weights) != len(target_tokens):
-        raise BadRequest("weights length must match target_tokens length")
+    loss_weights = _per_token_values(datum, "weights", len(target_tokens), default=1.0)
+    advantages = _per_token_values(datum, "advantages", len(target_tokens), default=0.0)
     return Sample(
         tokens=input_tokens + [target_tokens[-1]],
         response_length=len(target_tokens),
         loss_mask=[1] * len(target_tokens),
         loss_weights=loss_weights,
+        advantages=advantages,
         status=Sample.Status.COMPLETED,
     )
+
+
+def _per_token_values(datum: Datum, key: str, length: int, default: float) -> list[float]:
+    """Channels stay homogeneous across mixed-loss co-batches, so absent inputs fill with the default."""
+    tensor = datum.loss_fn_inputs.get(key)
+    if tensor is None:
+        return [default] * length
+    values = tensor_values(tensor)
+    if len(values) != length:
+        raise BadRequest(f"{key} length must match target_tokens length")
+    return values
 
 
 def forward_backward_samples(forward_backward_input: ForwardBackwardInput) -> list[Sample]:
@@ -49,5 +61,6 @@ def forward_backward_samples(forward_backward_input: ForwardBackwardInput) -> li
     for index, datum in enumerate(forward_backward_input.data):
         sample = datum_to_sample(datum)
         sample.index = index
+        sample.loss_kind = LOSS_KIND_IDS[forward_backward_input.loss_fn]
         samples.append(sample)
     return samples
