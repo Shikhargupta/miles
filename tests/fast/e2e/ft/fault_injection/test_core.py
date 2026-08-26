@@ -23,6 +23,7 @@ def _run_injection_loop(
     quiescent_polls_required: int = 1,
     event_log: state.EventLog | None = None,
     cell_fault_forms: fault_forms.CellFaultForms | None = None,
+    virtual_cells: list[dict] | None = None,
     stop_event: threading.Event,
 ) -> None:
     with patched_requests() as mock_requests:
@@ -36,6 +37,7 @@ def _run_injection_loop(
             stop_event=stop_event,
             event_log=event_log or state.EventLog(),
             cell_fault_forms=cell_fault_forms or api_server_fault_forms(),
+            virtual_cells=virtual_cells,
             poll_interval_seconds=1e-6,
             quiescent_polls_required=quiescent_polls_required,
         )
@@ -90,6 +92,34 @@ def test_successive_injections_are_spaced_by_the_quiescence_gate() -> None:
     assert len(injection_polls) >= 2, injection_polls
     gaps = [after - before for before, after in zip(injection_polls, injection_polls[1:], strict=False)]
     assert all(gap >= required for gap in gaps), injection_polls
+
+
+def test_virtual_cells_use_the_regular_targeted_injection_path() -> None:
+    """Synthetic replicas satisfy the ordinary scheduler without a real FT cell."""
+    injected: list[str] = []
+    stop_event = threading.Event()
+    virtual_cells = [
+        typed_cell("virtual-0", "virtual"),
+        typed_cell("virtual-1", "virtual"),
+    ]
+
+    def inject(target: dict, _rng: random.Random) -> None:
+        injected.append(target["metadata"]["name"])
+        stop_event.set()
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        return mock_response({"items": []})
+
+    _run_injection_loop(
+        fake_get=fake_get,
+        cell_types=("virtual",),
+        cell_fault_forms={"virtual": [StubFaultForm("virtual-fault", inject)]},
+        virtual_cells=virtual_cells,
+        stop_event=stop_event,
+    )
+
+    assert len(injected) == 1
+    assert injected[0] in {"virtual-0", "virtual-1"}
 
 
 def test_a_kind_with_a_dead_replica_is_not_quiescent() -> None:
