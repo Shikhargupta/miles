@@ -1,4 +1,4 @@
-"""Pydantic mirrors of the tinker==0.24.1 training-request wire shapes (field names verified against SDK dumps)."""
+"""Typed mirrors of the tinker==0.24.1 HTTP API payloads; validation only, no inference or training."""
 
 from typing import Literal
 
