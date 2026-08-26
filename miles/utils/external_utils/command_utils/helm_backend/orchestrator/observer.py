@@ -15,6 +15,7 @@ _POLL_INTERVAL_SECONDS = 10.0
 _DEAD_POD_PHASES = frozenset({"Failed", "Succeeded"})
 _UNREADABLE_PHASE = "Unknown"
 _MISSING_POD_POLLS = 3
+_DEAD_POD_POLLS = 3
 _NO_VERDICT_EXIT_CODE = 1
 
 
@@ -31,6 +32,7 @@ def wait_for_run(
 ) -> _RunOutcome:
     state_file = Path(state_file)
     missing_polls = 0
+    dead_polls = 0
     while True:
         try:
             active_state_file = read_active_state_file()
@@ -43,17 +45,23 @@ def wait_for_run(
             logger.info(f"The active orchestrator generation moved from {state_file} to {active_state_file}")
             state_file = active_state_file
             missing_polls = 0
+            dead_polls = 0
 
         try:
             phase = read_pod_phase()
         except Exception:
             logger.warning("Could not read the orchestrator pod's phase; retrying", exc_info=True)
             phase = _UNREADABLE_PHASE
+            dead_polls = 0
         else:
             missing_polls = missing_polls + 1 if phase is None else 0
+            dead_polls = dead_polls + 1 if phase in _DEAD_POD_PHASES else 0
 
         outcome = _compute_run_outcome(
-            state=OrchestratorState.read(state_file), phase=phase, missing_polls=missing_polls
+            state=OrchestratorState.read(state_file),
+            phase=phase,
+            missing_polls=missing_polls,
+            dead_polls=dead_polls,
         )
         if outcome is not None:
             logger.info(f"Run finished: {outcome.reason} (exit code {outcome.exit_code})")
@@ -62,7 +70,7 @@ def wait_for_run(
 
 
 def _compute_run_outcome(
-    *, state: OrchestratorState | None, phase: str | None, missing_polls: int
+    *, state: OrchestratorState | None, phase: str | None, missing_polls: int, dead_polls: int
 ) -> _RunOutcome | None:
     if state is not None and state.is_terminal:
         if state.exit_code is None:
@@ -80,6 +88,8 @@ def _compute_run_outcome(
         )
 
     if phase in _DEAD_POD_PHASES:
+        if dead_polls < _DEAD_POD_POLLS:
+            return None
         return _RunOutcome(
             exit_code=_NO_VERDICT_EXIT_CODE,
             reason=f"the orchestrator pod reached {phase} without writing an exit code",
