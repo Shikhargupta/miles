@@ -142,7 +142,9 @@ def _iter_mm_tower_units(args, *, materialize):
         with open(os.path.join(ckpt_dir, "model.safetensors.index.json"), encoding="utf-8") as f:
             weight_map = json.load(f)["weight_map"]
         tower_keys = sorted(
-            k for k in weight_map if ".visual." in f".{k}" or ".audio." in f".{k}" or k.startswith(("visual.", "audio."))
+            k
+            for k in weight_map
+            if ".visual." in f".{k}" or ".audio." in f".{k}" or k.startswith(("visual.", "audio."))
         )
         by_shard: dict[str, list[str]] = {}
         for k in tower_keys:
