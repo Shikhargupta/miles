@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+from collections import deque
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 DATA_KINDS = ("forward_backward", "forward")
@@ -201,3 +203,64 @@ class OperationQueue:
         if rec.kind == "optim_step":
             self.poisoned = False  # any optim terminal closes the window
         self.next_to_run = max(self.next_to_run, rec.ordinal + 1)
+
+
+class OperationQueueSet:
+    """Rotation-fair container of per-registration queues; eligibility is the caller's knowledge."""
+
+    def __init__(self) -> None:
+        self.queues: dict[str, OperationQueue] = {}
+        self._rotation: deque[str] = deque()
+
+    def get_or_create(self, name: str) -> OperationQueue:
+        if name not in self.queues:
+            self.queues[name] = OperationQueue()
+            self._rotation.append(name)
+        return self.queues[name]
+
+    def replace(self, name: str) -> OperationQueue:
+        """Fresh queue for a new registration life; the predecessor drops with its tombstones."""
+        self.queues[name] = OperationQueue()
+        if name not in self._rotation:
+            self._rotation.append(name)
+        return self.queues[name]
+
+    def fence(self, name: str, reason: str) -> None:
+        queue = self.queues.get(name)
+        if queue is not None:
+            queue.fence(reason)
+
+    def rotation_pass(self) -> list[str]:
+        """Snapshot in rotation order (pruning names whose queue is gone), then advance the head."""
+        live = [name for name in self._rotation if name in self.queues]
+        self._rotation = deque(live)
+        if self._rotation:
+            self._rotation.rotate(-1)
+        return live
+
+    def claim_rounds(self, eligible: Collection[str]) -> list[tuple[str, list[OperationRecord]]]:
+        """One claim per eligible queue in rotation order; empty claims drop out."""
+        rounds = []
+        for name in self.rotation_pass():
+            if name not in eligible:
+                continue
+            claimed = self.queues[name].claim_next_runnable_ops()
+            if claimed:
+                rounds.append((name, claimed))
+        return rounds
+
+    def complete(self, results: list[dict]) -> None:
+        """Apply executor outcomes; first-terminal-wins in each queue makes fence races safe."""
+        for outcome in results:
+            queue = self.queues.get(outcome["name"])
+            if queue is None:
+                continue
+            if outcome.get("ok", False):
+                queue.complete(outcome["ordinal"], outcome.get("result"))
+            else:
+                queue.fail(
+                    outcome["ordinal"], outcome.get("error", "operation failed"), outcome.get("category", "server")
+                )
+
+    def depths(self) -> dict[str, int]:
+        return {name: queue.open_count() for name, queue in self.queues.items()}
