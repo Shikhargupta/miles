@@ -328,12 +328,10 @@ def all_gather_params_async(
     dist.all_gather(async_op=True) on expert-TP/regular-TP group (skip expert_bias/non-TP/duplicated).
     Loop 2: wait all NCCL handles (enables overlap). Loop 3: concat partitions + apply GLU rechunk/MoE dim fix.
     """
-    # Phase 1: Start all async all_gather operations
     gather_tasks = []
     handles = []
 
     for info, param in param_infos_and_params:
-        # Prepare async all_gather
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
@@ -343,7 +341,6 @@ def all_gather_params_async(
             gather_tasks.append((info, param.data, None, None, None, None))
             handles.append(None)
         else:
-            # Start async all_gather
             if is_routed_expert_param(info.name):
                 tp_size = get_parallel_state().etp.size
                 tp_group = get_parallel_state().etp.group
@@ -361,17 +358,13 @@ def all_gather_params_async(
             gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
             handles.append(handle)
 
-    # Phase 2: Wait for ALL async operations to complete at once
-    # This ensures maximum parallelism by not blocking on individual operations
     for handle in handles:
         if handle is not None:
             handle.wait()
 
-    # Phase 3: Process all results after all communications are done
     gathered_params = []
     for info, direct_param, handle, param_partitions, partition_dim, partition_stride in gather_tasks:
         if handle is None:
-            # No all_gather needed
             param = direct_param
         else:
             partition_stride, partition_dim = _check_and_fix_partition(

@@ -103,7 +103,6 @@ def export_hf_model_direct(
 
 @cache
 def _get_hf_bridge(hf_checkpoint: str):
-    # Local: megatron.bridge is only needed on the bridge export path.
     from megatron.bridge import AutoBridge
 
     return AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
@@ -180,7 +179,6 @@ def save_hf_model(
             logger.error(f"Failed to save HuggingFace format: {e}")
         return
 
-    # Additionally save adapter-only checkpoint for LoRA models
     if is_lora_model(model):
         try:
             adapter_path = path / "adapter"
