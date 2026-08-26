@@ -89,3 +89,37 @@ class OperationQueue:
         while ordinal in self.ops:
             ordinal += 1
         return ordinal
+
+    # ------------------------------ poll / eviction ------------------------------
+
+    def poll(self, ordinal: int) -> tuple[str, dict | None]:
+        """Answer ("result", payload) | ("error", {error, category}) | ("try_again", None)."""
+        rec = self.ops.get(ordinal)
+        if rec is None:
+            raise BadRequest(f"unknown ordinal {ordinal}")
+        if rec.evicted:
+            return ("error", {"error": "result expired (already delivered once)", "category": "user"})
+        if rec.status == "DONE":
+            rec.delivered = True
+            # Delivery order is not ordinal order: capture the answer BEFORE eviction can null it.
+            result = rec.result
+            self._evict()
+            return ("result", result)
+        if rec.status == "FAILED":
+            rec.delivered = True
+            error = {"error": rec.error, "category": rec.error_kind or "server"}
+            self._evict()
+            return ("error", error)
+        return ("try_again", None)
+
+    def _evict(self) -> None:
+        """Strip delivered terminals beyond keep_delivered; tombstones keep ordinal + request-id identity."""
+        delivered = sorted(
+            (r for r in self.ops.values() if r.delivered and not r.evicted and r.status in ("DONE", "FAILED")),
+            key=lambda r: r.ordinal,
+        )
+        while len(delivered) > self.keep_delivered:
+            victim = delivered.pop(0)
+            victim.payload = {}
+            victim.result = None
+            victim.evicted = True
