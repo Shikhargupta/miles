@@ -22,20 +22,19 @@ they reach this class through four methods:
 Both directory arguments are checkpoint *bases*; the per-rank layout underneath is
 this file's business, matching the layout of the live scratch directory.
 
-Muon reaches disk by a different route. Its state already rides Megatron's
+Muon takes a different route. Its state already rides Megatron's
 ``ChunkedOptimizerStateOffloader``, whose only tie to host memory is one allocator, so
 ``setup_muon_state_on_disk`` swaps that allocator for file-backed tensors and leaves the
-rest of the offloader alone. Those buffers are unlinked once mapped, so their footprint
-shows up in ``df`` but not ``du``.
+rest alone. Those buffers are unlinked once mapped, so they show up in ``df``, not ``du``.
 """
 
 import atexit
 import errno
-import itertools
 import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 from types import MethodType
 from typing import TYPE_CHECKING, NamedTuple
@@ -96,15 +95,13 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
         done += n
 
 
-_next_index = itertools.count().__next__
-
-
 def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
-    nbytes = tensor.numel() * tensor.element_size()
-    path = os.path.join(directory, f"state_{os.getpid()}_{_next_index():06d}.bin")
-    storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=max(nbytes, 1))
+    nbytes = max(tensor.numel() * tensor.element_size(), 1)
+    fd, path = tempfile.mkstemp(dir=directory, suffix=".bin")
+    os.close(fd)
+    storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=nbytes)
     os.unlink(path)
-    return torch.empty(0, dtype=tensor.dtype, device="cpu").set_(storage).view(tensor.size())
+    return torch.empty(0, dtype=tensor.dtype).set_(storage, 0, tensor.shape)
 
 
 def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -> list[list[_Entry]]:
