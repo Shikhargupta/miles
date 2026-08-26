@@ -62,7 +62,7 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
         app.post("/api/v1/get_info")(self.get_info)
         app.post("/api/v1/retrieve_future")(self.retrieve_future)
         for path in KIND_BY_PATH:
-            app.post(path)(self.training_submit)
+            app.post(path)(self.enqueue_operation_for_trainer)
 
     async def get_server_capabilities(self) -> dict:
         # One trainer serves one base model; adapters register on top of it.
@@ -126,7 +126,7 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
 
     # ------------------------------ training operations ------------------------------
 
-    async def training_submit(self, request: Request):
+    async def enqueue_operation_for_trainer(self, request: Request):
         body = await request.json()
         model_id = body.get("model_id")
         seq_id = body.get("seq_id")
