@@ -454,12 +454,12 @@ async def test_buffer_staleness_metrics():
     assert metrics["rollout/fully_async/buffer_max_staleness"] == 4
 
 
-def make_multi_policy_group(group_index: int, *trainer_model_ids: str) -> list[Sample]:
-    """One prompt group whose samples train different policy models, as a multi policy generate fn returns."""
-    group = make_group(group_index)
-    for sample, trainer_model_id in zip(group, trainer_model_ids, strict=True):
-        sample.trainer_model_id = trainer_model_id
-    return group
+def make_multi_policy_group(group_index: int, *trainer_model_ids: str) -> list[list[Sample]]:
+    """One prompt group whose every trajectory produces samples for the named policy models."""
+    return [
+        [replace(sample, trainer_model_id=trainer_model_id) for trainer_model_id in trainer_model_ids]
+        for sample in make_group(group_index)
+    ]
 
 
 def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None):
@@ -478,6 +478,53 @@ def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None)
 
 
 class TestPerPolicyQueues:
+    async def test_an_incomplete_policy_subgroup_is_not_enqueued(self):
+        """A missing policy trajectory must not reach training as a short prompt group."""
+        buffer, unused = make_multi_buffer("solver", "verifier")
+        solver_first, solver_second = make_group(1)
+        [verifier_first, _] = make_group(1)
+        solver_first.trainer_model_id = solver_second.trainer_model_id = "solver"
+        verifier_first.trainer_model_id = "verifier"
+
+        await put_group(buffer, [[solver_first, verifier_first], [solver_second]])
+        solver = await buffer.get(trainer_model_id="solver")
+        verifier = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        await asyncio.sleep(0.01)
+
+        assert solver.group == [[solver_first], [solver_second]]
+        assert not verifier.done()
+        assert unused == []
+        verifier.cancel()
+
+    async def test_an_outer_group_with_the_wrong_number_of_trajectories_is_refused(self):
+        """The composite must not reinterpret an already-short outer prompt group as complete."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        with pytest.raises(AssertionError, match="must carry 2 trajectories"):
+            await put_group(buffer, make_multi_policy_group(1, "solver", "verifier")[:1])
+
+    async def test_a_later_complete_policy_group_wakes_a_waiting_consumer(self):
+        """Dropping one short group must not mix it into the next prompt or starve its policy."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        first_solver, first_verifier = make_group(1)
+        first_solver.trainer_model_id = "solver"
+        first_verifier.trainer_model_id = "verifier"
+        await put_group(buffer, [[first_solver, first_verifier], [make_tagged_sample(1, "solver")]])
+        waiting = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        await asyncio.sleep(0.01)
+
+        second_solver = make_group(2)
+        second_verifier = make_group(2)
+        for sample in second_solver:
+            sample.trainer_model_id = "solver"
+        for sample in second_verifier:
+            sample.trainer_model_id = "verifier"
+        await put_group(buffer, [[second_solver[0], second_verifier[0]], [second_solver[1], second_verifier[1]]])
+
+        verifier = await waiting
+        assert verifier.group == [[second_verifier[0]], [second_verifier[1]]]
+        assert {sample.group_index for sample in data_buffer.iter_samples(verifier.group)} == {2}
+
     async def test_a_group_of_two_policies_lands_in_a_queue_of_each(self):
         """One generate call feeds both policies, and a shared queue would hand them each other's samples."""
         buffer, _ = make_multi_buffer("solver", "verifier")
@@ -494,7 +541,10 @@ class TestPerPolicyQueues:
 
         entry = await buffer.get(trainer_model_id="verifier")
 
-        assert [sample.trainer_model_id for sample in data_buffer.iter_samples(entry.group)] == ["verifier"]
+        assert [sample.trainer_model_id for sample in data_buffer.iter_samples(entry.group)] == [
+            "verifier",
+            "verifier",
+        ]
 
     async def test_a_policy_waits_for_its_own_queue_instead_of_taking_from_another(self):
         """A policy that consumed a queue it does not own would starve the policy that does."""
@@ -524,8 +574,11 @@ class TestPerPolicyQueues:
     async def test_the_prompt_group_of_a_split_group_stays_whole(self):
         """Recycling a rejected group resubmits prompts, which are not owned by either policy."""
         buffer, unused = make_multi_buffer("solver", "verifier", max_staleness=0)
-        group = make_group(1, weight_versions=["1"])
-        group[0].trainer_model_id, group[1].trainer_model_id = "solver", "verifier"
+        group = make_multi_policy_group(1, "solver", "verifier")
+        for sample in data_buffer.iter_samples(group):
+            sample.weight_versions = [
+                WeightVersionsPerCall(spans=[WeightVersionSpan(version="1", abs_start=0, abs_end=1)])
+            ]
 
         await put_group(buffer, group)
         drained = asyncio.create_task(buffer.get(current_version=9, trainer_model_id="solver"))
@@ -846,7 +899,6 @@ class TestDisposal:
         await fn.dispose()
 
         assert fn._worker is None
-
 
 
 class RecordingMultiBuffer(data_buffer.DefaultMultiDataBuffer):

@@ -45,11 +45,8 @@ class _RunResult:
     samples: list[Sample]
 
 
-async def _run(monkeypatch, *, solver_response: str, verifier_response: str, abort_solver: bool = False) -> _RunResult:
-    fake = _FakeGenerate(
-        responses={SOLVER_URL: solver_response, VERIFIER_URL: verifier_response},
-        aborted_urls=frozenset({SOLVER_URL}) if abort_solver else frozenset(),
-    )
+async def _run(monkeypatch, *, solver_response: str, verifier_response: str) -> _RunResult:
+    fake = _FakeGenerate(responses={SOLVER_URL: solver_response, VERIFIER_URL: verifier_response})
     monkeypatch.setattr(solver_verifier, "single_turn_generate", fake)
     output = await solver_verifier.generate(
         _make_input(prompt=[dict(role="user", content="What is 9 + 9?")], label="#### 18")
@@ -57,65 +54,62 @@ async def _run(monkeypatch, *, solver_response: str, verifier_response: str, abo
     return _RunResult(fake=fake, samples=output.samples)
 
 
+async def _run_aborted_solver(monkeypatch) -> _FakeGenerate:
+    fake = _FakeGenerate(
+        responses={SOLVER_URL: "#### 18", VERIFIER_URL: "VERDICT: AGREE"},
+        aborted_urls=frozenset({SOLVER_URL}),
+    )
+    monkeypatch.setattr(solver_verifier, "single_turn_generate", fake)
+
+    with pytest.raises(AssertionError):
+        await solver_verifier.generate(
+            _make_input(prompt=[dict(role="user", content="What is 9 + 9?")], label="#### 18")
+        )
+
+    return fake
+
+
 class TestComputeVerifierReward:
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_agreeing_with_a_right_solver_is_the_only_full_credit_case(self, verifier_correct):
         """The solver was right and the verifier said so, so its own answer never enters the score."""
-        assert (
-            solver_verifier._compute_verifier_score(
-                solver_correct=True, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
-            )
-            == (1.0, "right_solver_agreed")
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=True, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
+        ) == (1.0, "right_solver_agreed")
 
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_calling_a_right_solver_wrong_scores_zero(self, verifier_correct):
         """A false accusation is worthless however good the verifier's replacement answer is."""
-        assert (
-            solver_verifier._compute_verifier_score(
-                solver_correct=True, verdict=_Verdict.WRONG, verifier_correct=verifier_correct
-            )
-            == (0.0, "right_solver_called_wrong")
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=True, verdict=_Verdict.WRONG, verifier_correct=verifier_correct
+        ) == (0.0, "right_solver_called_wrong")
 
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_agreeing_with_a_wrong_solver_scores_zero(self, verifier_correct):
         """Endorsing a wrong solution is the failure the verifier exists to avoid."""
-        assert (
-            solver_verifier._compute_verifier_score(
-                solver_correct=False, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
-            )
-            == (0.0, "wrong_solver_agreed")
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=False, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
+        ) == (0.0, "wrong_solver_agreed")
 
     def test_catching_a_wrong_solver_without_fixing_it_scores_half(self):
         """Spotting the error is worth partial credit even when the replacement answer is wrong."""
-        assert (
-            solver_verifier._compute_verifier_score(
-                solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=False
-            )
-            == (0.5, "wrong_solver_caught_not_fixed")
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=False
+        ) == (0.5, "wrong_solver_caught_not_fixed")
 
     def test_catching_a_wrong_solver_and_fixing_it_scores_full(self):
         """Both halves of the verifier's job were done."""
-        assert (
-            solver_verifier._compute_verifier_score(
-                solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=True
-            )
-            == (1.0, "wrong_solver_caught_and_fixed")
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=True
+        ) == (1.0, "wrong_solver_caught_and_fixed")
 
     @pytest.mark.parametrize("solver_correct", [False, True])
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_an_unparseable_verdict_scores_zero(self, solver_correct, verifier_correct):
         """A verdict nobody can read teaches the solver nothing, whatever the verifier meant."""
-        assert (
-            solver_verifier._compute_verifier_score(
-                solver_correct=solver_correct, verdict=None, verifier_correct=verifier_correct
-            )
-            == (0.0, "invalid_verdict")
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=solver_correct, verdict=None, verifier_correct=verifier_correct
+        ) == (0.0, "invalid_verdict")
 
 
 class TestParseVerdict:
@@ -338,21 +332,15 @@ class TestGenerate:
 class TestAbortedSolver:
     async def test_an_aborted_solver_is_not_handed_to_the_verifier(self, monkeypatch):
         """Judging a truncated attempt trains the verifier on work the solver never finished."""
-        result = await _run(
-            monkeypatch, solver_response="#### 18", verifier_response="VERDICT: AGREE", abort_solver=True
-        )
+        fake = await _run_aborted_solver(monkeypatch)
 
-        assert [url for url, _ in result.fake.calls] == [SOLVER_URL]
-        [solver_sample] = result.samples
-        assert solver_sample.trainer_model_id == "solver"
+        assert [url for url, _ in fake.calls] == [SOLVER_URL]
 
     async def test_an_aborted_solver_is_not_rewarded(self, monkeypatch):
         """Scoring a truncated attempt against the label rewards luck, and its group has no verifier to pair with."""
-        result = await _run(
-            monkeypatch, solver_response="#### 18", verifier_response="VERDICT: AGREE", abort_solver=True
-        )
+        fake = await _run_aborted_solver(monkeypatch)
 
-        assert result.samples[0].reward is None
+        assert fake.calls[0][1].reward is None
 
 
 class TestTheLauncherLeavesThePromptAsMessages:

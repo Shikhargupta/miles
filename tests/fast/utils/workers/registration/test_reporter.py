@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from miles.utils.workers.naming import compute_cell_id, _worker_name_of_cell
+from miles.utils.workers.naming import _worker_name_of_cell, compute_cell_id
 from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.registration.reporter import (
     SNAPSHOT_INTERVAL_SECONDS,
