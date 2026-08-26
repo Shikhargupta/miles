@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -132,7 +133,7 @@ class WeightUpdater:
             ):
                 if protocol.is_sender:
                     if driver and checksums is not None:
-                        _record_lora_checksums(bucket, checksums)
+                        record_lora_checksums(bucket, checksums)
                     protocol.send_bucket(bucket, self.weight_version)
                     pbar.update(1)
             protocol.after_base_weights()
@@ -173,17 +174,3 @@ class WeightUpdater:
             new.append((lora_name, config))
             self._registered_adapters.add(lora_name)
         return new
-
-
-def _record_lora_checksums(bucket, checksums) -> None:
-    """Accumulate the sha256 manifest the engines verify at end_weight_update."""
-    import hashlib
-
-    for name, tensor in bucket:
-        if ":" not in name:
-            continue
-        lora_name, hf_key = name.split(":", 1)
-        digest = hashlib.sha256(
-            tensor.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
-        ).hexdigest()
-        checksums[lora_name][hf_key] = digest
