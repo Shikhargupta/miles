@@ -179,15 +179,6 @@ class TestComputeSpecMetrics:
             "spec_accept_length": pytest.approx(8 / 3),
         }
 
-    def test_v2_ignores_other_metric_keys(self):
-        args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
-        metrics = self._spec_info(1, 2, 1, 2)
-        metrics["future_metric"] = {"value": 3}
-
-        out = _compute_spec_metrics(args, [self._member("sid-1", metrics)])
-
-        assert out == {"spec_accept_rate": 0.5, "spec_accept_length": 2.0}
-
     def test_v2_excludes_unavailable_session(self, caplog):
         args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
         samples = [

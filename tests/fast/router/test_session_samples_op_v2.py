@@ -471,16 +471,7 @@ def _single_turn_record(prompt_ids, output_ids, weight_version="w1", spec_info=N
     return record
 
 
-def _fabricate_node(
-    state,
-    parent,
-    record,
-    token_ids,
-    *,
-    completion_span,
-    response_id="",
-    committed_at=None,
-):
+def _fabricate_node(state, parent, record, token_ids, *, completion_span, response_id="", committed_at=None):
     return state.tree.create_node(
         parent,
         delta_messages=[],
