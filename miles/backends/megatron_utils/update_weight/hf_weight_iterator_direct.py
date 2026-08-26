@@ -361,13 +361,17 @@ def all_gather_params_async(
             gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
             handles.append(handle)
 
+    # Phase 2: Wait for ALL async operations to complete at once
+    # This ensures maximum parallelism by not blocking on individual operations
     for handle in handles:
         if handle is not None:
             handle.wait()
 
+    # Phase 3: Process all results after all communications are done
     gathered_params = []
     for info, direct_param, handle, param_partitions, partition_dim, partition_stride in gather_tasks:
         if handle is None:
+            # No all_gather needed
             param = direct_param
         else:
             partition_stride, partition_dim = _check_and_fix_partition(
