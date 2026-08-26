@@ -123,3 +123,52 @@ class OperationQueue:
             victim.payload = {}
             victim.result = None
             victim.evicted = True
+
+    # ------------------------------ collect / terminals ------------------------------
+
+    def collect_runnable_prefix(self) -> list[OperationRecord]:
+        """Pop the executable prefix at the cursor: consecutive data ops, or one control op alone."""
+        out: list[OperationRecord] = []
+        ordinal = self.next_to_run
+        while (rec := self.ops.get(ordinal)) is not None and rec.status == "QUEUED":
+            if rec.kind in CONTROL_KINDS:
+                if out:
+                    break
+                if rec.kind == "optim_step" and self.poisoned:
+                    # A failed forward_backward left partial grads: stepping would corrupt the adapter.
+                    self._fail_inline(rec, "a forward_backward in this optimizer window failed; redo the cycle", "user")
+                    ordinal += 1
+                    continue
+                rec.status = "RUNNING"
+                return [rec]
+            rec.status = "RUNNING"
+            out.append(rec)
+            ordinal += 1
+        return out
+
+    def complete(self, ordinal: int, result: dict | None = None) -> None:
+        rec = self.ops[ordinal]
+        rec.status = "DONE"
+        rec.result = result
+        if rec.kind == "optim_step":
+            self.poisoned = False
+        self.next_to_run = max(self.next_to_run, ordinal + 1)
+
+    def fail(self, ordinal: int, error: str, kind: str = "server") -> None:
+        rec = self.ops[ordinal]
+        rec.status = "FAILED"
+        rec.error = error
+        rec.error_kind = kind
+        if rec.kind in DATA_KINDS:
+            self.poisoned = True
+        elif rec.kind == "optim_step":
+            self.poisoned = False
+        self.next_to_run = max(self.next_to_run, ordinal + 1)
+
+    def _fail_inline(self, rec: OperationRecord, error: str, kind: str) -> None:
+        rec.status = "FAILED"
+        rec.error = error
+        rec.error_kind = kind
+        if rec.kind == "optim_step":
+            self.poisoned = False  # any optim terminal closes the window
+        self.next_to_run = max(self.next_to_run, rec.ordinal + 1)
