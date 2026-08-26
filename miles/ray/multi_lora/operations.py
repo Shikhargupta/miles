@@ -52,3 +52,40 @@ class OperationQueue:
         # Retained delivered terminals consume capacity: keep_delivered >= cap wedges the queue permanently.
         if self.cap is not None and self.keep_delivered >= self.cap:
             raise ValueError("keep_delivered must be < cap (retained terminals consume capacity)")
+
+    # ------------------------------ enqueue ------------------------------
+
+    def enqueue(self, ordinal: int, request_id: str, kind: str, payload: dict | None = None) -> int:
+        """Buffer one operation; idempotent on (request_id, fingerprint), returns the holding ordinal."""
+        fp = payload_fingerprint(kind, payload)
+        if (known := self.by_request_id.get(request_id)) is not None:
+            rec = self.ops[known]
+            if rec.fingerprint != fp or rec.ordinal != ordinal:
+                raise BadRequest(f"request '{request_id}' retried with different content; retries must be identical")
+            return known
+        if ordinal in self.ops:
+            raise BadRequest(f"ordinal {ordinal} already taken by request '{self.ops[ordinal].request_id}'")
+        if ordinal < self.next_to_run:
+            raise BadRequest(f"ordinal {ordinal} is in the executed past (cursor at {self.next_to_run})")
+        if self.cap is not None and self._live_count() >= self.cap and not self._fills_blocking_gap(ordinal):
+            raise QueueFull(f"{self._live_count()} operations held (cap {self.cap})")
+        self.ops[ordinal] = OperationRecord(ordinal, request_id, kind, dict(payload or {}), fp)
+        self.by_request_id[request_id] = ordinal
+        return ordinal
+
+    def _live_count(self) -> int:
+        return sum(1 for r in self.ops.values() if not r.evicted)
+
+    def _fills_blocking_gap(self, ordinal: int) -> bool:
+        """Admit past cap only the ordinal that unblocks queued ops above it, hard-ceilinged at 2*cap."""
+        if not self.ops:
+            return False
+        if self._live_count() >= 2 * self.cap:
+            return False
+        return ordinal == self._first_missing() and ordinal < max(self.ops)
+
+    def _first_missing(self) -> int:
+        ordinal = self.next_to_run
+        while ordinal in self.ops:
+            ordinal += 1
+        return ordinal
