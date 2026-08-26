@@ -22,8 +22,6 @@ class WeightTransferProtocol(ABC):
 
     required_placement: ClassVar[WeightUpdatePlacement] = WeightUpdatePlacement(gather_pp=False)
     supports_lora: ClassVar[bool] = False
-    # disk-delta transfers asynchronously behind the engines' own locking and
-    # never quiesces them.
     use_weight_update_session: ClassVar[bool] = True
 
     def __init__(self, args: Namespace) -> None:
@@ -77,7 +75,6 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
-    # Local: protocol modules import megatron/sglang-heavy deps.
     if args.update_weight_transfer_mode == "broadcast":
         from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
             UpdateWeightFromDistributed,
