@@ -126,7 +126,7 @@ class OperationQueue:
 
     # ------------------------------ collect / terminals ------------------------------
 
-    def collect_runnable_prefix(self) -> list[OperationRecord]:
+    def claim_next_runnable_ops(self) -> list[OperationRecord]:
         """Pop the executable prefix at the cursor: consecutive data ops, or one control op alone."""
         out: list[OperationRecord] = []
         ordinal = self.next_to_run
