@@ -55,7 +55,12 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
 
     def __init__(self, config: TransformerConfig, layer_number: int, tp_group=None):
         super().__init__(config)
+        # Megatron numbers transformer layers from 1; the checkpoint indexes them
+        # from 0. Getting this wrong does not fail at the table (every shard has the
+        # same shape) -- it only fails here, on the metadata lookup, which is one
+        # reason the metadata is loaded eagerly.
         self.layer_number = layer_number
+        self.hf_layer_index = layer_number - 1
         heads = self._num_heads(config)
         self.embedding_dim = config.qwen3_8_next_ple_embed_dim // heads
         self.num_shards = config.qwen3_8_next_split_ngram_parts
@@ -105,31 +110,62 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         # 102 GB it is not going to save would be pure waste.
         self._hf_checkpoint = getattr(config, "qwen3_8_next_hf_checkpoint", None)
 
-        # Integer hash metadata. Persistent -- tiny, and the hash is meaningless
-        # without it, so it should travel with the checkpoint.
+        # Integer hash metadata: 35 int64 values total. Non-persistent for the same
+        # reason as the table -- it comes from the HF checkpoint, not from training --
+        # but loaded eagerly rather than lazily, because compute_ngram_ids is called
+        # from outside this module (the model wrapper hashes the input tokens) and so
+        # can run before any forward of the embedding would have triggered the table
+        # load. mbridge walks buffers as well as parameters, so leaving these
+        # persistent also made it demand mappings for them.
         self.register_buffer(
-            "layer_multipliers", torch.zeros(self.ngram_size, dtype=torch.long), persistent=True
+            "layer_multipliers", torch.zeros(self.ngram_size, dtype=torch.long), persistent=False
         )
         self.register_buffer(
-            "ngram_heads_vocab_sizes", torch.zeros(heads, dtype=torch.long), persistent=True
+            "ngram_heads_vocab_sizes", torch.zeros(heads, dtype=torch.long), persistent=False
         )
         self.register_buffer(
-            "ngram_heads_offsets", torch.zeros(heads, dtype=torch.long), persistent=True
+            "ngram_heads_offsets", torch.zeros(heads, dtype=torch.long), persistent=False
         )
+
+        # After the buffers exist, not before.
+        if self._hf_checkpoint is not None:
+            self.load_metadata_from_hf(self._hf_checkpoint)
 
     @staticmethod
     def _num_heads(config: TransformerConfig) -> int:
         return (config.qwen3_8_next_ngram_size - 1) * config.qwen3_8_next_heads_per_ngram
 
+    def _hf_index_and_prefix(self, hf_checkpoint: str):
+        index = json.load(open(f"{hf_checkpoint}/model.safetensors.index.json"))["weight_map"]
+        prefix = f"model.language_model.layers.{self.hf_layer_index}.ple.ple_embedding"
+        return index, prefix
+
+    def load_metadata_from_hf(self, hf_checkpoint: str) -> None:
+        """Load the three integer tensors that parameterise the hash.
+
+        Eager, because the ids are computed outside this module and the hash is
+        meaningless with zeros: every token would hash to row `offset`.
+        """
+        index, prefix = self._hf_index_and_prefix(hf_checkpoint)
+        cache: dict = {}
+        for buf_name in ("layer_multipliers", "ngram_heads_vocab_sizes", "ngram_heads_offsets"):
+            name = f"{prefix}.{buf_name}"
+            path = f"{hf_checkpoint}/{index[name]}"
+            start, end, shape = _safetensors_slice(path, name, cache)
+            with open(path, "rb") as f:
+                f.seek(start)
+                raw = f.read(end - start)
+            vals = torch.frombuffer(bytearray(raw), dtype=torch.int64).clone()
+            getattr(self, buf_name).copy_(vals.reshape(shape))
+
     def load_from_hf(self, hf_checkpoint: str) -> None:
-        """Fill the table and the hash metadata from the HF safetensors.
+        """Fill the table from the HF safetensors.
 
         Reads only this rank's shards. Changing TP changes which shards that is and
         nothing else -- no checkpoint resharding, because the HF layout's 128 shards
         are fixed and TP-agnostic.
         """
-        index = json.load(open(f"{hf_checkpoint}/model.safetensors.index.json"))["weight_map"]
-        prefix = f"model.language_model.layers.{self.layer_number}.ple.ple_embedding"
+        index, prefix = self._hf_index_and_prefix(hf_checkpoint)
         cache: dict = {}
 
         for i, shard_id in enumerate(self.shard_ids):
@@ -144,20 +180,6 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
                 # Read straight into the pinned buffer's memory.
                 mv = memoryview(dst.view(torch.uint8).reshape(-1).numpy())  # type: ignore[arg-type]
                 f.readinto(mv)
-
-        for buf_name, tensor_name in (
-            ("layer_multipliers", "layer_multipliers"),
-            ("ngram_heads_vocab_sizes", "ngram_heads_vocab_sizes"),
-            ("ngram_heads_offsets", "ngram_heads_offsets"),
-        ):
-            name = f"{prefix}.{tensor_name}"
-            path = f"{hf_checkpoint}/{index[name]}"
-            start, end, shape = _safetensors_slice(path, name, cache)
-            with open(path, "rb") as f:
-                f.seek(start)
-                raw = f.read(end - start)
-            vals = torch.frombuffer(bytearray(raw), dtype=torch.int64).clone()
-            getattr(self, buf_name).copy_(vals.reshape(shape))
 
         self._loaded = True
 
