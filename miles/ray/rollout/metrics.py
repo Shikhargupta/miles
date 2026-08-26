@@ -233,35 +233,19 @@ def _compute_spec_metrics(args, all_samples: list[Sample]):
     if args.sglang_speculative_algorithm is None:
         return {}
     if args.use_session_server == "v2":
-        session_metrics = []
-        unavailable_session_ids = []
-        for sample in all_samples:
-            # NOTE: v2 stores one session-level carrier on sample 0; siblings omit it.
-            # The owner must survive until rollout metrics are collected.
-            if SESSION_ROLLOUT_METRICS_KEY not in sample.metadata:
-                continue
-            envelope = sample.metadata[SESSION_ROLLOUT_METRICS_KEY]
-            metrics = envelope["metrics"]
-            if metrics is None:
-                unavailable_session_ids.append(envelope["session_id"])
-            else:
-                session_metrics.append(metrics)
-        if unavailable_session_ids:
-            logger.warning(
-                "Speculative metrics unavailable for %d v2 sessions: %s",
-                len(unavailable_session_ids),
-                unavailable_session_ids,
-            )
-        spec_infos = [metrics["spec_info"] for metrics in session_metrics]
-        num_correct_drafts = sum(info["spec_num_correct_drafts"] for info in spec_infos)
-        num_proposed_drafts = sum(info["spec_num_proposed_drafts"] for info in spec_infos)
-        spec_verify_ct = sum(info["spec_verify_ct"] for info in spec_infos)
-        completion_tokens = sum(info["completion_tokens"] for info in spec_infos)
+        # NOTE: Successful v2 sessions store one carrier on sample 0; siblings
+        # and failed collects omit it. Owners must survive until metrics collection.
+        spec_infos = [
+            Sample.SpecInfo(**sample.metadata[SESSION_ROLLOUT_METRICS_KEY]["metrics"]["spec_info"])
+            for sample in all_samples
+            if SESSION_ROLLOUT_METRICS_KEY in sample.metadata
+        ]
     else:
-        num_correct_drafts = sum(sample.spec_info.spec_num_correct_drafts for sample in all_samples)
-        num_proposed_drafts = sum(sample.spec_info.spec_num_proposed_drafts for sample in all_samples)
-        spec_verify_ct = sum(sample.spec_info.spec_verify_ct for sample in all_samples)
-        completion_tokens = sum(sample.spec_info.completion_tokens for sample in all_samples)
+        spec_infos = [sample.spec_info for sample in all_samples]
+    num_correct_drafts = sum(info.spec_num_correct_drafts for info in spec_infos)
+    num_proposed_drafts = sum(info.spec_num_proposed_drafts for info in spec_infos)
+    spec_verify_ct = sum(info.spec_verify_ct for info in spec_infos)
+    completion_tokens = sum(info.completion_tokens for info in spec_infos)
     return {
         "spec_accept_rate": num_correct_drafts / num_proposed_drafts if num_proposed_drafts > 0 else 0.0,
         "spec_accept_length": completion_tokens / spec_verify_ct if spec_verify_ct > 0 else 0.0,

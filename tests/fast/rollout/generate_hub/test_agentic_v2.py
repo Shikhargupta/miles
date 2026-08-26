@@ -151,18 +151,17 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
 
 
 @pytest.mark.asyncio
-async def test_transport_collection_error_marks_session_metrics_unavailable(monkeypatch):
+async def test_transport_collection_error_has_no_metrics_owner(monkeypatch):
     tracer = _Tracer(error=TimeoutError("samples unavailable"))
     _patch_agent(monkeypatch, tracer)
+    generate_input = _generate_input()
+    generate_input.sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {"session_id": "stale", "metrics": {}}
 
-    output = await agentic_tool_call.generate(_generate_input())
+    output = await agentic_tool_call.generate(generate_input)
 
     (sample,) = output.samples
     assert sample.status == Sample.Status.ABORTED
-    assert sample.metadata[SESSION_ROLLOUT_METRICS_KEY] == {
-        "session_id": "sid-1",
-        "metrics": None,
-    }
+    assert SESSION_ROLLOUT_METRICS_KEY not in sample.metadata
 
 
 @pytest.mark.asyncio

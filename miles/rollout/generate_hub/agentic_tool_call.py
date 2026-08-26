@@ -105,7 +105,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
         if use_v2:
-            sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {"session_id": tracer.session_id, "metrics": None}
+            sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
         return GenerateFnOutput(samples=[sample] if use_v2 else sample)
 
     if use_v2:

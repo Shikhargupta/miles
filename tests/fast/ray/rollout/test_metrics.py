@@ -179,18 +179,6 @@ class TestComputeSpecMetrics:
             "spec_accept_length": pytest.approx(8 / 3),
         }
 
-    def test_v2_excludes_unavailable_session(self, caplog):
-        args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
-        samples = [
-            self._member("sid-1", self._spec_info(1, 2, 1, 2)),
-            self._member("sid-2", None, rollout_id=1),
-        ]
-
-        out = _compute_spec_metrics(args, samples)
-
-        assert out == {"spec_accept_rate": 0.5, "spec_accept_length": 2.0}
-        assert "Speculative metrics unavailable for 1 v2 sessions" in caplog.text
-
 
 class TestTitoMismatchMetrics:
     def test_no_tito_metadata_emits_no_tito_keys(self):
