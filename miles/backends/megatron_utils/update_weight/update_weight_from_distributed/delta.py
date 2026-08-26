@@ -45,6 +45,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
+        self._pool: ThreadPoolExecutor | None = None
         self.delta_dir = args.update_weight_disk_dir
         os.makedirs(self.delta_dir, exist_ok=True)
         self.delta_encoding = args.update_weight_delta_encoding
@@ -110,6 +111,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         while self._inflight:
             self._collect(self._inflight.popleft())
         self._pool.shutdown()
+        self._pool = None
 
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
@@ -174,6 +176,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         """Set up this version's diff/compress pipeline: each ``send_bucket`` copies one tensor at
         a time to a pinned buffer and submits it; pool workers diff against the snapshot and
         compress in parallel (each is a few big GIL-releasing numpy/zstd calls)."""
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
         self._version_dir = os.path.join(self.delta_dir, f"weight_v{weight_version:06d}")
         if self.is_sender:
             os.makedirs(self._version_dir, exist_ok=True)
