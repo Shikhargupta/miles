@@ -15,8 +15,8 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.types import ParamInfo
 
 from ..megatron_to_hf import convert_to_hf
-from ..sglang import monkey_patch_torch_reductions
 from ..named_weights import named_params_and_buffers
+from ..sglang import monkey_patch_torch_reductions
 
 
 class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
