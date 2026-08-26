@@ -66,7 +66,9 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
         if model_id not in self._models:  # an SDK retry replays the same ack
             name = f"tinker-{session_id.removeprefix('sess-')[:8]}-t{body['model_seq_id']}"
             lora = body.get("lora_config") or {}
-            await self.backend.register(name, AdapterRunConfig(data="", rank=lora.get("rank"), alpha=lora.get("alpha")))
+            await self.backend.register(
+                name, AdapterRunConfig(data="", rank=lora.get("rank"), alpha=lora.get("alpha"))
+            )
             self._models[model_id] = {"name": name, "rank": lora.get("rank")}
             self._ready_futures[request_id] = {"type": "create_model", "model_id": model_id}
         return {"request_id": request_id, "model_id": model_id}

@@ -136,7 +136,9 @@ class OperationQueue:
                     break
                 if rec.kind == "optim_step" and self.poisoned:
                     # A failed forward_backward left partial grads: stepping would corrupt the adapter.
-                    self._fail_inline(rec, "a forward_backward in this optimizer window failed; redo the cycle", "user")
+                    self._fail_inline(
+                        rec, "a forward_backward in this optimizer window failed; redo the cycle", "user"
+                    )
                     ordinal += 1
                     continue
                 rec.status = "RUNNING"
