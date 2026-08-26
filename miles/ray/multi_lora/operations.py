@@ -11,9 +11,17 @@ CONTROL_KINDS = ("optim_step", "save_weights_for_sampler", "save_state", "load_s
 class QueueFull(RuntimeError):
     """Capacity reached; the wire layer maps this to 429 (sampling plane only, never training)."""
 
+    def __init__(self, client_detail: str):
+        super().__init__(client_detail)
+        self.client_detail = client_detail  # authored contract text, safe for external responses
+
 
 class BadRequest(ValueError):
     """Contract violation by the client; ValueError so the control-plane handler maps it to 400."""
+
+    def __init__(self, client_detail: str):
+        super().__init__(client_detail)
+        self.client_detail = client_detail  # authored contract text, safe for external responses
 
 
 def payload_fingerprint(kind: str, payload: dict) -> str:

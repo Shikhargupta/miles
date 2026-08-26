@@ -1,6 +1,7 @@
 """Tinker wire layer; mount via --multi-lora-http-server-path miles.ray.multi_lora.tinker.http_server.TinkerHTTPServer."""
 
 import asyncio
+import logging
 import time
 import uuid
 
@@ -21,6 +22,8 @@ KIND_BY_PATH = {
 }
 # Excluded from retry identity: the SDK re-mints this inside every retry attempt.
 FP_EXCLUDE = {"sampling_session_seq_id"}
+
+logger = logging.getLogger(__name__)
 
 
 class TinkerHTTPServer(MultiLoRAHTTPServer):
@@ -43,14 +46,16 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
 
         @app.exception_handler(QueueFull)
         async def queue_full_handler(request: Request, exc: QueueFull):
-            return JSONResponse({"detail": str(exc)}, status_code=429, headers={"Retry-After": "1"})
+            return JSONResponse({"detail": exc.client_detail}, status_code=429, headers={"Retry-After": "1"})
 
         @app.exception_handler(RuntimeError)
         async def runtime_error_handler(request: Request, exc: RuntimeError):
             # The SDK retries 409 forever, so capacity maps to 429; everything else is a real 500.
             if "No free adapter slots" in str(exc):
-                return JSONResponse({"detail": str(exc)}, status_code=429, headers={"Retry-After": "1"})
-            return JSONResponse({"detail": str(exc)}, status_code=500)
+                detail = "no free adapter slots; retry shortly"
+                return JSONResponse({"detail": detail}, status_code=429, headers={"Retry-After": "1"})
+            logger.exception("unhandled server error")  # internals stay in the server log, never in the response
+            return JSONResponse({"detail": "internal server error"}, status_code=500)
 
         return app
 
@@ -146,7 +151,7 @@ class TinkerHTTPServer(MultiLoRAHTTPServer):
             queue.enqueue(seq_id, request_id, kind, body, fingerprint=fingerprint)
         except BadRequest as exc:
             # 422: same identity retried with different content; the SDK treats it as fatal.
-            return JSONResponse({"detail": str(exc)}, status_code=422)
+            return JSONResponse({"detail": exc.client_detail}, status_code=422)
         return {"request_id": request_id}
 
     async def retrieve_future(self, request: Request):
