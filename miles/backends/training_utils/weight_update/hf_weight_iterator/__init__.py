@@ -90,7 +90,8 @@ class HfWeightIteratorBase(ABC):
             hf_param_units = itertools.chain(
                 hf_param_units, self._iter_hf_adapter_units(lora_name, adapter, materialize=materialize)
             )
-        hf_param_units = assemble_atomic_update_groups(hf_param_units, self._hf_atomic_update_groups())
+        atomic_update_groups = self._hf_atomic_update_groups() if include_base and materialize else []
+        hf_param_units = assemble_atomic_update_groups(hf_param_units, atomic_update_groups)
         yield from pack_units_by_size(hf_param_units, self.args.update_weight_buffer_size)
 
     @abstractmethod
