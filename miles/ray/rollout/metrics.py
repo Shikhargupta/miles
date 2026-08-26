@@ -168,13 +168,6 @@ def _rollout_key(sample: Sample, position: int) -> tuple[str, int | None, int]:
     return ("position", sample.group_index, position)
 
 
-def _group_samples_by_rollout(samples: list[Sample]) -> list[list[Sample]]:
-    groups: dict[tuple[str, int | None, int], list[Sample]] = {}
-    for position, sample in enumerate(samples):
-        groups.setdefault(_rollout_key(sample, position), []).append(sample)
-    return list(groups.values())
-
-
 def _compute_perf_metrics_from_samples(args, samples, rollout_time):
     non_generation_time = [sample.non_generation_time for sample in samples]
 
@@ -242,8 +235,12 @@ def _compute_spec_metrics(args, all_samples: list[Sample]):
     if args.use_session_server == "v2":
         session_metrics = []
         unavailable_session_ids = []
-        for rollout_samples in _group_samples_by_rollout(all_samples):
-            envelope = rollout_samples[0].metadata[SESSION_ROLLOUT_METRICS_KEY]
+        for sample in all_samples:
+            # NOTE: v2 stores one session-level carrier on sample 0; siblings omit it.
+            # The owner must survive until rollout metrics are collected.
+            if SESSION_ROLLOUT_METRICS_KEY not in sample.metadata:
+                continue
+            envelope = sample.metadata[SESSION_ROLLOUT_METRICS_KEY]
             metrics = envelope["metrics"]
             if metrics is None:
                 unavailable_session_ids.append(envelope["session_id"])

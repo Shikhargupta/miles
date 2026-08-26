@@ -161,12 +161,12 @@ class TestComputeSpecMetrics:
             }
         }
 
-    def test_v2_counts_shared_metrics_once_per_compacted_rollout(self):
+    def test_v2_counts_single_owner_metrics_once_per_compacted_rollout(self):
         args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
         session_1_metrics = self._spec_info(2, 4, 2, 6)
         samples = [
             self._member("sid-1", session_1_metrics, rollout_id=10),
-            self._member("sid-1", session_1_metrics, rollout_id=10),
+            Sample(group_index=0, index=10, rollout_id=10),
             self._member("sid-2", self._spec_info(3, 6, 1, 2), rollout_id=11),
         ]
         for sample in samples:
