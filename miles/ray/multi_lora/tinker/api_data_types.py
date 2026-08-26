@@ -65,6 +65,62 @@ class ForwardRequest(WireModel):
     forward_input: ForwardBackwardInput
 
 
+class SamplingParams(WireModel):
+    max_tokens: int | None = None
+    seed: int | None = None
+    stop: str | list[str] | list[int] | None = None
+    temperature: float = 1.0
+    top_k: int = -1
+    top_p: float = 1.0
+
+
+class SampleRequest(WireModel):
+    sampling_session_id: str
+    seq_id: int  # sampling seq ids are 0-based, unlike 1-based training ordinals
+    prompt: ModelInput
+    sampling_params: SamplingParams
+    num_samples: int = 1
+    prompt_logprobs: bool = False
+    topk_prompt_logprobs: int = 0
+
+
+class CreateSamplingSessionRequest(WireModel):
+    session_id: str
+    sampling_session_seq_id: int
+    base_model: str | None = None
+    model_path: str | None = None  # tinker://... when sampling published adapter weights
+
+
+class SampledSequence(WireModel):
+    stop_reason: Literal["length", "stop"]
+    tokens: list[int]
+    logprobs: list[float] | None = None
+
+
+class SampleResponse(WireModel):
+    type: Literal["sample"] = "sample"
+    sequences: list[SampledSequence]
+    prompt_logprobs: list[float | None] | None = None  # position 0 is null (no prior context)
+    topk_prompt_logprobs: list | None = None
+    prompt_cache_hit_tokens: int = 0
+
+
+class FutureAck(WireModel):
+    request_id: str
+    model_id: str | None = None
+
+
+class TryAgain(WireModel):
+    type: Literal["try_again"] = "try_again"
+    queue_state: Literal["active", "paused_capacity"] = "active"
+    queue_state_reason: str | None = None
+
+
+class TerminalError(WireModel):
+    error: str
+    category: Literal["unknown", "server", "user"]
+
+
 class AdamParams(WireModel):
     learning_rate: float
     beta1: float = 0.9
