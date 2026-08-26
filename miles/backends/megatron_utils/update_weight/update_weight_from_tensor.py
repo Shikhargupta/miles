@@ -81,6 +81,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
                 engine_gpu_offsets.append(offset)
                 offset += c
 
+        # Compute colocated engine count: engines whose GPUs fall within actor GPU range.
         total_actor_gpus = self.args.actor_num_nodes * self.args.actor_num_gpus_per_node
         colocate_engine_nums = 0
         for gpu_offset, gpu_count in zip(engine_gpu_offsets, engine_gpu_counts, strict=True):
@@ -114,6 +115,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
         colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]
 
+        # Determine whether this rank is covered by any colocated engine.
         all_colocated_ranks = set()
         for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True):
             all_colocated_ranks.update(range(offset, offset + count))
@@ -137,6 +139,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             self._ipc_gather_group = None
             self._ipc_gather_src = None
 
+        # Map training ranks to colocated engine actors.
         self._ipc_engine = None
         for i, engine in enumerate(self.rollout_engines):
             start = colocate_gpu_offsets[i]
