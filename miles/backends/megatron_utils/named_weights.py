@@ -111,6 +111,7 @@ def _named_params_and_buffers_global(
             else:
                 yield f"module.module.decoder.layers.{layer_idx}.{rest}", param
 
+        # treat expert bias as normal parameters
         for name, buffer in model_module.named_buffers():
             # TODO shall we handle (almost) all buffers like Megatron Bridge
             if "expert_bias" not in name:
