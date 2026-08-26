@@ -399,3 +399,36 @@ class TestARunThatCancellationCannotEnd:
         )
 
         assert absorbed
+
+
+class TestEvalDispatch:
+    async def test_eval_fires_once_per_point_however_many_policies_train(self):
+        """One shared-engine eval scores every policy through the generate chain; a per-policy dispatch would double it."""
+        context = await _run(_make_args(num_rollout=2, eval_interval=2))
+
+        eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
+        assert eval_rollout_ids == [0, 1]
+        assert context["inference_controller"].prepare_eval.await_count == 2
+
+    async def test_a_run_without_an_eval_interval_never_evaluates(self):
+        """--eval-interval is the only opt-in; a surprise eval pauses production for the whole test split."""
+        context = await _run(_make_args(num_rollout=2))
+
+        context["rollout_executor"].eval.assert_not_awaited()
+        context["inference_controller"].prepare_eval.assert_not_awaited()
+
+    async def test_skip_eval_before_train_drops_only_the_starting_point(self):
+        """The flag exists to skip the expensive untrained point, not to turn eval off."""
+        context = await _run(_make_args(num_rollout=2, eval_interval=2, skip_eval_before_train=True))
+
+        eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
+        assert eval_rollout_ids == [1]
+
+    async def test_a_resumed_run_does_not_re_evaluate_the_untrained_model(self):
+        """The rollout-0 point describes the base checkpoint; a resume from rollout 1 is past it."""
+        context = await _run(
+            _make_args(num_rollout=2, eval_interval=2), start_rollout_ids={"a": 1, "b": 1}
+        )
+
+        eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
+        assert eval_rollout_ids == [1]

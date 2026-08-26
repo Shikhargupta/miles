@@ -61,6 +61,11 @@ async def train_multi_policy(args) -> None:
                 model_id=model_id,
             )
 
+    leader_start_rollout_id = trainers[megatron_config.leader_model_id].start_rollout_id
+    if args.eval_interval is not None and leader_start_rollout_id == 0 and not args.skip_eval_before_train:
+        await inference_controller.prepare_eval()
+        await rollout_executor.eval(0)
+
     parker = Parker(num_followers=len(trainers) - 1)
     run_ended = asyncio.Event()
     rollout_ids: dict[str, int] = {}
@@ -140,6 +145,12 @@ async def _run_policy(
                 rollout_id=rollout_id,
                 trainer_model_id=model_id,
             )
+
+        if is_leader and should_run_periodic_action(
+            rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout
+        ):
+            await inference_controller.prepare_eval()
+            await rollout_executor.eval(rollout_id)
 
         if (
             is_leader
