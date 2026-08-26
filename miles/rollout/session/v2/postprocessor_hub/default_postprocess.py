@@ -15,7 +15,7 @@ def assign_reward(samples: list[Sample], trajectory_reward: float) -> None:
 def default_postprocess(leaf_samples: list[Sample], session_metadata: dict) -> list[Sample]:
     """Finalize the leaf samples kept by the picker.
 
-    A shared completion belongs only to the earliest committed kept leaf.
+    A shared completion is trainable only in the earliest committed kept leaf.
     Ownership is computed after picking, so a dropped leaf cannot own it.
 
     Agent metadata cannot replace server-owned fields. A provided trajectory reward is assigned to every kept sample.
