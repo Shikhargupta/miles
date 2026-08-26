@@ -56,7 +56,6 @@ def _session_metadata(spec_info=None):
     return {
         SESSION_ROLLOUT_METRICS_KEY: {
             "session_id": "sid-1",
-            "available": True,
             "metrics": {"spec_info": spec_info or Sample.SpecInfo().to_dict()},
         }
     }
@@ -144,7 +143,6 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
     assert output.samples[0].status == Sample.Status.ABORTED
     assert output.samples[0].metadata[SESSION_ROLLOUT_METRICS_KEY] == {
         "session_id": "sid-1",
-        "available": True,
         "metrics": {"spec_info": spec_info},
     }
 
@@ -160,14 +158,13 @@ async def test_transport_collection_error_marks_session_metrics_unavailable(monk
     assert sample.status == Sample.Status.ABORTED
     assert sample.metadata[SESSION_ROLLOUT_METRICS_KEY] == {
         "session_id": "sid-1",
-        "available": False,
         "metrics": None,
     }
 
 
 @pytest.mark.asyncio
 async def test_v2_replaces_stale_metrics_on_every_compacted_sample(monkeypatch):
-    stale = {"session_id": "stale", "available": True, "metrics": {"agent": "plant"}}
+    stale = {"session_id": "stale", "metrics": {"agent": "plant"}}
     leaves = [
         Sample(metadata={SESSION_ROLLOUT_METRICS_KEY: stale}),
         Sample(metadata={SESSION_ROLLOUT_METRICS_KEY: stale}),
@@ -184,7 +181,7 @@ async def test_v2_replaces_stale_metrics_on_every_compacted_sample(monkeypatch):
     output = await agentic_tool_call.generate(_generate_input())
 
     envelopes = [sample.metadata[SESSION_ROLLOUT_METRICS_KEY] for sample in output.samples]
-    expected = {"session_id": "sid-1", "available": True, "metrics": {"spec_info": spec_info}}
+    expected = {"session_id": "sid-1", "metrics": {"spec_info": spec_info}}
     assert envelopes == [expected, expected]
 
 
@@ -193,7 +190,29 @@ async def test_v2_rejects_missing_server_session_metrics(monkeypatch):
     tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata={}, empty_reason=None))
     _patch_agent(monkeypatch, tracer)
 
-    with pytest.raises(ValueError, match="missing session_rollout_metrics"):
+    with pytest.raises(KeyError, match=SESSION_ROLLOUT_METRICS_KEY):
+        await agentic_tool_call.generate(_generate_input())
+
+
+@pytest.mark.asyncio
+async def test_v2_rejects_metrics_from_another_session(monkeypatch):
+    session_metadata = _session_metadata()
+    session_metadata[SESSION_ROLLOUT_METRICS_KEY]["session_id"] = "sid-2"
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata=session_metadata, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    with pytest.raises(ValueError, match="does not match the collected session"):
+        await agentic_tool_call.generate(_generate_input())
+
+
+@pytest.mark.asyncio
+async def test_v2_rejects_unavailable_metrics_from_successful_collect(monkeypatch):
+    session_metadata = _session_metadata()
+    session_metadata[SESSION_ROLLOUT_METRICS_KEY]["metrics"] = None
+    tracer = _Tracer(SamplesReply(samples=[Sample()], session_metadata=session_metadata, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+
+    with pytest.raises(ValueError, match="successful session collect must carry metrics"):
         await agentic_tool_call.generate(_generate_input())
 
 

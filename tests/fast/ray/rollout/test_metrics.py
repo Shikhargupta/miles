@@ -142,11 +142,10 @@ class TestComputeSpecMetrics:
         }
 
     @staticmethod
-    def _member(session_id, metrics, *, rollout_id=0, available=True):
+    def _member(session_id, metrics, *, rollout_id=0):
         sample = Sample(group_index=0, index=rollout_id, rollout_id=rollout_id)
         sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
             "session_id": session_id,
-            "available": available,
             "metrics": metrics,
         }
         return sample
@@ -180,55 +179,20 @@ class TestComputeSpecMetrics:
             "spec_accept_length": pytest.approx(8 / 3),
         }
 
-    def test_v2_rejects_inconsistent_metrics_within_compacted_rollout(self):
+    def test_v2_ignores_other_metric_keys(self):
         args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
-        samples = [
-            self._member("sid-1", self._spec_info(1, 2, 1, 2)),
-            self._member("sid-1", self._spec_info(2, 2, 1, 2)),
-        ]
+        metrics = self._spec_info(1, 2, 1, 2)
+        metrics["future_metric"] = {"value": 3}
 
-        with pytest.raises(ValueError, match="inconsistent metrics"):
-            _compute_spec_metrics(args, samples)
+        out = _compute_spec_metrics(args, [self._member("sid-1", metrics)])
 
-    @pytest.mark.parametrize(
-        "metadata",
-        [
-            {},
-            {
-                SESSION_ROLLOUT_METRICS_KEY: {
-                    "session_id": "sid-1",
-                    "available": True,
-                    "metrics": {"spec_info": {"spec_num_correct_drafts": 1}},
-                }
-            },
-            {
-                SESSION_ROLLOUT_METRICS_KEY: {
-                    "session_id": "sid-1",
-                    "available": True,
-                    "metrics": {
-                        "spec_info": {
-                            "spec_num_correct_drafts": True,
-                            "spec_num_proposed_drafts": 2,
-                            "spec_verify_ct": 1,
-                            "completion_tokens": 2,
-                        }
-                    },
-                }
-            },
-        ],
-    )
-    def test_v2_rejects_missing_or_bad_schema(self, metadata):
-        args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
-        sample = Sample(metadata=metadata)
-
-        with pytest.raises(ValueError):
-            _compute_spec_metrics(args, [sample])
+        assert out == {"spec_accept_rate": 0.5, "spec_accept_length": 2.0}
 
     def test_v2_excludes_unavailable_session(self, caplog):
         args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
         samples = [
             self._member("sid-1", self._spec_info(1, 2, 1, 2)),
-            self._member("sid-2", None, rollout_id=1, available=False),
+            self._member("sid-2", None, rollout_id=1),
         ]
 
         out = _compute_spec_metrics(args, samples)

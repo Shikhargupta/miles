@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from miles.rollout.session.v2.metrics import read_sample_rollout_metrics
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -243,9 +243,10 @@ def _compute_spec_metrics(args, all_samples: list[Sample]):
         session_metrics = []
         unavailable_session_ids = []
         for rollout_samples in _group_samples_by_rollout(all_samples):
-            metrics, session_id = read_sample_rollout_metrics(rollout_samples)
+            envelope = rollout_samples[0].metadata[SESSION_ROLLOUT_METRICS_KEY]
+            metrics = envelope["metrics"]
             if metrics is None:
-                unavailable_session_ids.append(session_id)
+                unavailable_session_ids.append(envelope["session_id"])
             else:
                 session_metrics.append(metrics)
         if unavailable_session_ids:
