@@ -19,7 +19,9 @@ class TestMetricGathererUnfilteredRawReward:
         """Multi-turn groups arrive as lists of lists; counting outer items would weight turns unevenly."""
         gatherer = MetricGatherer()
 
-        gatherer.on_group_before_dynamic_filter(_args(), [[_sample(reward=1.0)], [_sample(reward=0.0), _sample(reward=0.5)]])
+        gatherer.on_group_before_dynamic_filter(
+            _args(), [[_sample(reward=1.0)], [_sample(reward=0.0), _sample(reward=0.5)]]
+        )
 
         assert gatherer.collect()["rollout/raw_reward_unfiltered"] == 0.5
 
