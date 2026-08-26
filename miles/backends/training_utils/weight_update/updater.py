@@ -17,7 +17,6 @@ from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
-from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -27,6 +26,7 @@ from miles.backends.training_utils.weight_update.session import (
     set_weight_version,
     weight_update_selector,
 )
+from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.multi_lora import is_multi_lora_enabled, slot_lora_name
