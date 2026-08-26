@@ -115,6 +115,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         """
         if not self.is_sender or not converted_named_tensors:
             return
+        # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
         transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
 
         if transfer_ready_params and ready_hf_tensors:
@@ -191,9 +192,13 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             for target in targets:
                 targets_grouped_by_engine_rank.setdefault(target.engine_rank, []).append(target)
 
+            # Create ONE transfer engine for all engine ranks
             self._transfer_engine = create_transfer_engine()
             self._shared_params_dict: dict[str, torch.Tensor] = {}
             self._shared_param_mapper: ParameterMapper | None = None
+            # in self._transfer_engine_meta_list: tuple of
+            # - single CPU replica shared among all sessions
+            # - related remote weight info
             self._transfer_engine_meta_list: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]] = []
             first_engine_rank = True
             for rank_targets in targets_grouped_by_engine_rank.values():
@@ -299,6 +304,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         params_dict = self._shared_params_dict
 
         for name, tensor in converted_named_tensors:
+            # map the tensor name of huggingface to the one of sglang.
             mapped_result = self._shared_param_mapper.map(name)
             mapped, num_shards, num_experts = (
                 mapped_result.sglang_name,

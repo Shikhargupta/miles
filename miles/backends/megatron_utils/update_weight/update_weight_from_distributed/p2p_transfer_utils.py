@@ -90,6 +90,7 @@ class RemoteTransferPlan:
 
         # Total number of source-to-target P2P connections established.
         p2p_count = 0
+        # step 1: assign engine ranks in a round-robin way
         for source_rank, (_, target) in zip(range(self._gathered_dp_size), enumerate(all_targets), strict=False):
             p2p_count += 1
             engine_idx, engine_rank = target
@@ -99,13 +100,16 @@ class RemoteTransferPlan:
             return [len(assignments[source][engine_rank]) for source in range(self._gathered_dp_size)]
 
         cur_source_index = 0
+        # step 2: assign the left engine ranks.
         if p2p_count < len(all_targets):
             for target in all_targets[p2p_count:]:
                 engine_idx, engine_rank = target
                 counted = count_engine_index_assignments(engine_rank)
                 if max(counted) > 0:
+                    # assign it to existing source rank assigned to the same target engine_rank, with lowest load
                     _, select_source = min((val, idx) for (idx, val) in enumerate(counted) if val > 0)
                 else:
+                    # otherwise round robin
                     select_source = cur_source_index % self._gathered_dp_size
                     cur_source_index += 1
                 assignments[select_source][engine_rank].append(engine_idx)
@@ -185,6 +189,8 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
     for name, cpu_tensor in params_dict.items():
         addr = cpu_tensor.data_ptr()
         size = cpu_tensor.numel() * cpu_tensor.element_size()
+        # NOTE: theoretically using huge page allocator
+        # in torch backend could imporve registration speed.
         ret = transfer_engine.register_memory(addr, size)
         if ret != 0:
             raise RuntimeError(f"register CPU memory failed for weight {name}, error: {ret}")
@@ -194,6 +200,7 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
 
 
 def create_transfer_engine():
+    # Lazy: the RDT path imports this module but does not need mooncake.
     from mooncake.engine import TransferEngine
 
     transfer_engine = TransferEngine()
