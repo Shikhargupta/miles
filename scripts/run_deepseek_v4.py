@@ -553,7 +553,7 @@ def _train(args: ScriptArgs):
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
-        "--use-dynamic-batch-size "
+        f"{'--use-dynamic-batch-size ' if args.dsv4_impl == 'megatron' else '--micro-batch-size 1 '}"
         f"--max-tokens-per-gpu {4096 if args.dsv4_impl == 'megatron' else 2048} "
     )
 
