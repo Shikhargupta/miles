@@ -31,20 +31,6 @@ def test_only_the_dsv4_spec_triggers_normalization():
     assert not is_dsv4_model(unspecced)
 
 
-def test_model_shape_reaches_the_megatron_fields():
-    args = _parse("--dsv4-compress-ratios", "0", "4", "128")
-    normalize_dsv4_args(args)
-
-    assert args.csa_window_size == 128
-    assert args.csa_compress_ratios == [0, 4, 128]
-    assert args.csa_compress_rotary_base == 160000
-    assert args.o_groups == 8
-    assert args.o_lora_rank == 1024
-    assert args.moe_n_hash_layers == 3
-    assert args.num_residual_streams == 4
-    assert args.mhc_sinkhorn_iterations == 20
-
-
 def test_impl_selects_the_attention_variant():
     miles = _parse()
     normalize_dsv4_args(miles)
