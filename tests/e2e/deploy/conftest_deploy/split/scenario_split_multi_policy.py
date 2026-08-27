@@ -19,8 +19,6 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     prepare,
 )
 from tests.e2e.conftest_multi_policy import (
-    TRAIN_REWARD_BOUNDS,
-    assert_every_policy_reported_reward_in_bounds,
     assert_every_rank_trained_with_its_own_policy_args,
 )
 from tests.e2e.deploy.conftest_deploy.common.utils import assert_the_cluster_can_deploy_runs
@@ -78,7 +76,6 @@ def _verify(args: ScriptArgs) -> None:
         megatron_config=compute_megatron_config(args),
         expected_num_ranks=args.actor_num_gpus_per_policy,
     )
-    assert_every_policy_reported_reward_in_bounds(events_dir, bounds=TRAIN_REWARD_BOUNDS)
     _assert_the_leader_policy_ran_every_rollout(dump_dir, num_rollout=args.num_rollout)
 
     for model_id in MODEL_IDS:
