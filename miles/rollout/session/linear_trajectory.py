@@ -311,7 +311,6 @@ class SessionRegistry:
         self.message_matcher: SessionMessageMatcher = (
             message_matcher if message_matcher is not None else strict_message_matches
         )
-        self.latest_weight_version: int | None = None
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex

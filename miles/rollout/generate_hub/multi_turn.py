@@ -18,6 +18,7 @@ from miles.rollout.generate_utils.tool_call_utils import (
     execute_tool_calls,
     update_sample_with_tool_responses,
 )
+from miles.rollout.generate_utils.weight_version_partition import lock_weight_version_extra_key
 from miles.utils.http_utils import post
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.misc import load_function
@@ -55,6 +56,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if payload is None:
             sample.status = halt_status
             break
+        payload["extra_key"] = lock_weight_version_extra_key(sample)
 
         gen_t0 = time.time()
         output = await post(url, payload, headers=compute_routing_headers(args, sample))
