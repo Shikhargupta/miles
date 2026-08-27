@@ -70,29 +70,10 @@ def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
         return [None] * len(gpu_ids)
 
 
-def _strip_host_brackets(server_args: ServerArgs) -> None:
-    """Drop IPv6 brackets from server_args.host without tripping the write guard.
-
-    Newer sglang makes ServerArgs read-only after resolution (every attribute write
-    raises), and the common case here is a plain IPv4 host where the strip is a
-    no-op anyway -- so skip the write entirely unless it changes the value, and for
-    a genuinely bracketed IPv6 host use the object-level write the guard itself
-    uses internally. Older sglang has no guard and both paths behave as before.
-    """
-    stripped = server_args.host.strip("[]")
-    if stripped == server_args.host:
-        return
-    try:
-        server_args.host = stripped
-    except AttributeError:
-        object.__setattr__(server_args, "host", stripped)
-
-
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
-    _strip_host_brackets(server_args)
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
@@ -110,7 +91,6 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
 
 def _launch_sglang_server(server_args: ServerArgs, bundle_indices: list[int]):
     """Host the Ray HTTP server in a same-job child actor. Returns (actor, scheduler_actors)."""
-    _strip_host_brackets(server_args)
     placement_group = ray.util.get_current_placement_group()
     assert placement_group is not None
     http_actor = (
@@ -311,7 +291,10 @@ class SGLangEngine(RayActor):
             f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
             f"{' (use_ray=True for RDT)' if use_rdt else ''}"
         )
-        server_args = ServerArgs(**server_args_dict)
+        # ServerArgs refuses writes once its declarations materialise, so the ipv6
+        # host loses its brackets here rather than at the launch sites. The dict
+        # keeps the bracketed form, which self.server_host uses to build urls.
+        server_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
         if use_rdt:
             self._sglang_server_actor, self._scheduler_actors = _launch_sglang_server(
                 server_args, bundle_indices=self.pg_bundles
