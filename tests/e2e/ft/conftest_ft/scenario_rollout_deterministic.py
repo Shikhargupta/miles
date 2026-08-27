@@ -9,11 +9,7 @@ from datetime import datetime
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
-from tests.e2e.ft.conftest_ft.execution import (
-    get_common_train_args,
-    get_ft_args,
-    get_train_env_vars_arg,
-)
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
     FaultInjectorHandle,
