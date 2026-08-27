@@ -9,12 +9,7 @@ from datetime import datetime
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
-from tests.e2e.ft.conftest_ft.execution import (
-    get_common_train_args,
-    get_ft_args,
-    get_train_env_vars_arg,
-    get_true_on_policy_args,
-)
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
     FaultInjectorHandle,
@@ -51,9 +46,7 @@ def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> 
         f"got ft_components={mode.ft_components}"
     )
 
-    args = get_common_train_args(
-        mode, dump_dir=dump_dir, num_steps=NUM_ROLLOUTS, enable_dumper=enable_dumper, deterministic_rollout=False
-    )
+    args = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_ROLLOUTS, enable_dumper=enable_dumper)
     args += get_ft_args(mode)
     args += f"--api-server-port {API_SERVER_PORT} --mini-ft-controller-enable "
     args += "--debug-deterministic-collective "
@@ -63,7 +56,6 @@ def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> 
         # and the trainer dies needing 58, so they get the smaller half of the card
         args += f"--sglang-mem-fraction-static {COLOCATED_MEM_FRACTION_STATIC} "
     args += f"--rollout-health-check-interval {HEALTH_CHECK_INTERVAL_SECONDS} "
-    args += get_true_on_policy_args(mode)
     args += "--weight-decay 0 "
     args += get_train_env_vars_arg(mode, deterministic=True)
     return args

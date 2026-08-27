@@ -318,9 +318,8 @@ Compare: dumps rel <= 0 (bitwise); metrics rtol=0 / atol=0 over train/* and roll
          train/grad_norm included
 
 Regime (both sides):
-  - true-on-policy flags from build_true_on_policy_launch_plan, plus --cp-comm-type a2a at CP2
-  - the shared deterministic rollout recipe is switched off, since the plan carries its own
-    --deterministic-mode, --sglang-enable-deterministic-inference and attention backend
+  - the shared deterministic rollout recipe: --sglang-enable-deterministic-inference,
+    --sglang-attention-backend flashinfer and --deterministic-mode
   - --debug-deterministic-collective and scenario_trainer_deterministic's deterministic env vars
   - --sglang-disable-radix-cache
   - --rollout-health-check-interval 5
@@ -340,8 +339,7 @@ Assertions:
 ```
 
 - **Why it exists**: an engine dying and being replaced mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak only ever asserted survival.
-- **Why the flags come from `build_true_on_policy_launch_plan`**: spelling them out would let the test drift from the shipped contract. CP2 also needs `--cp-comm-type a2a`, without which true-on-policy's loss scaling silently takes its non-Ulysses branch.
-- **Why the shared recipe is switched off**: the model's true-on-policy contract picks the attention backend, and `get_common_train_args` picks one too. Both on one command line leaves argv order to decide which the run gets, so the scenario takes the plan's and asserts the plan really carries the determinism flags it is now trusted for.
+- **Why the shared deterministic recipe**: the assertion is deterministic replay across fresh inference engines, not true-on-policy training. Reusing the same FlashInfer recipe as the main deterministic trainer-FT test avoids a second, incompatible attention-backend contract.
 - **Why `--sglang-disable-radix-cache`**: a replacement engine serves with a cold prefix cache where the baseline's was warm, and deterministic inference is nowhere documented as prefix-cache-length invariant.
 - **Why `--rollout-health-check-interval 5`**: the generation retry loop gives up after ~60s while the default health check needs 90-120s to evict a dead worker, so a request could exhaust its retries against a corpse.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.

@@ -5,13 +5,11 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
 from tests.fast.cluster_backends import create_backend_for_run
 
-from miles.true_on_policy import build_true_on_policy_launch_plan
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.common import data_dir, model_dir
@@ -78,7 +76,6 @@ def get_common_train_args(
     num_steps: int | None = None,
     enable_dumper: bool = True,
     debug_rollout_data_dir: str | None = None,
-    deterministic_rollout: bool = True,
 ) -> str:
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{mode.model_name} --ref-load {MODEL_DIR}/{mode.model_name}_torch_dist "
 
@@ -116,8 +113,7 @@ def get_common_train_args(
             "--rollout-batch-size 32 "
             "--n-samples-per-prompt 8 "
             # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
-            + (DETERMINISTIC_ROLLOUT_ARGS if deterministic_rollout else "")
-            + f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
+            + DETERMINISTIC_ROLLOUT_ARGS + f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
             f"--rollout-num-gpus {mode.total_rollout_gpus} "
             f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} " + ("--colocate " if mode.colocate else "")
         )
@@ -181,45 +177,6 @@ def get_fully_async_args(*, fully_async: bool) -> str:
     if not fully_async:
         return ""
     return "--fully-async --pause-generation-mode in_place "
-
-
-def get_true_on_policy_args(mode: FTTestMode) -> str:
-    assert "--sequence-parallel" not in mode.parallel_args, (
-        f"mode {mode.model_name} enables Megatron sequence parallelism, which the true-on-policy "
-        f"contract disables (parallel_args={mode.parallel_args!r})"
-    )
-
-    context_parallel_size = _get_parallel_size(mode, "--context-parallel-size")
-    plan = build_true_on_policy_launch_plan(
-        SimpleNamespace(
-            true_on_policy=True,
-            model_name=mode.model_name,
-            train_backend="megatron",
-            tensor_model_parallel_size=_get_parallel_size(mode, "--tensor-model-parallel-size"),
-            context_parallel_size=context_parallel_size,
-            pipeline_model_parallel_size=_get_parallel_size(mode, "--pipeline-model-parallel-size"),
-            rollout_num_gpus_per_engine=mode.rollout_gpus_per_engine,
-            true_on_policy_contract=None,
-        )
-    )
-    assert plan.env_vars.items() <= _DETERMINISTIC_ENV_VARS.items(), (
-        f"the true-on-policy launch plan wants env vars {plan.env_vars} that the deterministic "
-        f"recipe {_DETERMINISTIC_ENV_VARS} does not already set"
-    )
-
-    for required in ("--sglang-enable-deterministic-inference", "--deterministic-mode", "--sglang-attention-backend"):
-        assert required in plan.train_args, (
-            f"the true-on-policy launch plan omits {required}, so a caller that dropped the deterministic rollout "
-            f"recipe in favour of this plan would run without it"
-        )
-
-    ulysses_args: str = "--cp-comm-type a2a " if context_parallel_size > 1 else ""
-    return plan.train_args + ulysses_args
-
-
-def _get_parallel_size(mode: FTTestMode, flag: str) -> int:
-    tokens: list[str] = mode.parallel_args.split()
-    return int(tokens[tokens.index(flag) + 1]) if flag in tokens else 1
 
 
 DETERMINISTIC_ROLLOUT_ARGS: str = (
