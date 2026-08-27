@@ -298,27 +298,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         return start_rollout_id
 
-    # Pause the grad_buffer region at most once per sleep/wake cycle.
-    _grad_buffer_offloaded = False
-
-    @with_logs
-    @timer
-    def offload_grad_buffer(self) -> None:
-        """Free the grad buffers before the engine weights resume onto the GPU.
-
-        Only LoRA needs this: its adapter buffers live in no-backup regions that
-        sleep() does not pause (the adapter params must stay resident for
-        update_weights). Full-parameter runs pause the grad_buffer region inside
-        sleep() itself, so releasing it here would pause it twice.
-        """
-        assert self.args.offload_train
-        if not is_lora_enabled(self.args) or self._asleep or self._grad_buffer_offloaded:
-            return
-        print_memory("before offload grad_buffer")
-        torch_memory_saver.pause(tag="grad_buffer")
-        self._grad_buffer_offloaded = True
-        print_memory("after offload grad_buffer")
-
     @with_logs
     @timer
     def sleep(self) -> None:
@@ -364,7 +343,6 @@ class MegatronTrainRayActor(TrainRayActor):
         reload_process_groups()
         self._asleep = False
         print_memory("after wake_up model")
-        self._grad_buffer_offloaded = False
 
     @property
     def _enable_weight_backup(self) -> bool:

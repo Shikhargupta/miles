@@ -141,11 +141,10 @@ async def train(args):
                 os.remove(args.save_trigger_sentinel)
 
         if args.colocate_memory_peak_device == "gpu":
-            # Resume the engine weights while the trainer is still resident (its
-            # caches and grad buffers returned first); the trainer's host backup
-            # is built only after the engine's host mirror is gone.
+            # Resume the engine weights while the trainer is still resident; the
+            # trainer's host backup is built only after the engine's host mirror
+            # is gone.
             await actor_model.clear_memory()
-            await actor_model.offload_grad_buffer()
             await rollout_manager.onload_weights.remote()
             await offload_train()
         else:
