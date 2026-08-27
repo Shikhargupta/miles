@@ -37,9 +37,7 @@ def _install_ple_context_hooks(model: GPTModel) -> None:
         packed = kwargs.get("packed_seq_params")
         cu_seqlens = getattr(packed, "cu_seqlens_q", None) if packed is not None else None
         flat = input_ids.reshape(-1)
-        contexts = build_ngram_contexts_packed(
-            flat, cu_seqlens, ple_embedding.ngram_size, ple_embedding.eos_token_id
-        )
+        contexts = build_ngram_contexts_packed(flat, cu_seqlens, ple_embedding.ngram_size, ple_embedding.eos_token_id)
         ngram_ids = ple_embedding.compute_ngram_ids(contexts)
         publish_ple_batch(ngram_ids, cu_seqlens)
 
@@ -67,4 +65,3 @@ def get_qwen3_8_next_model_provider(pre_process: bool = True, post_process: bool
     model = base_provider(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
     _install_ple_context_hooks(model)
     return model
-

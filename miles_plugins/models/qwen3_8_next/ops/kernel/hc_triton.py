@@ -184,9 +184,7 @@ def _norm_fwd(x2d: torch.Tensor, weight: torch.Tensor, n: int, eps: float):
     normed = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
     rstd = torch.empty(T, n, dtype=torch.float32, device=x2d.device)
     if T > 0:
-        _grouped_rmsnorm_fwd_kernel[(T * n,)](
-            x2d, weight, normed, rstd, T, N=n, C=C, EPS=eps, BLOCK_C=_block_c(C)
-        )
+        _grouped_rmsnorm_fwd_kernel[(T * n,)](x2d, weight, normed, rstd, T, N=n, C=C, EPS=eps, BLOCK_C=_block_c(C))
     return normed, rstd
 
 
@@ -208,9 +206,7 @@ class _HCMixInject(torch.autograd.Function):
         gate, _ = _gate_chain_fwd(normed, w_down, w_up, n)
         mixed = torch.empty(T, C, dtype=x2d.dtype, device=x2d.device)
         if T > 0:
-            _gate_mul_mean_fwd_kernel[(T,)](
-                gate, normed, mixed, T, N=n, C=C, BLOCK_C=_block_c(C)
-            )
+            _gate_mul_mean_fwd_kernel[(T,)](gate, normed, mixed, T, N=n, C=C, BLOCK_C=_block_c(C))
         if w_inject is not None:
             h_post = 2.0 * torch.sigmoid(F.linear(normed, w_inject.float()) / n)
         else:
@@ -233,9 +229,7 @@ class _HCMixInject(torch.autograd.Function):
         dgate = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
         dnormed = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
         if T > 0:
-            _gate_mul_mean_bwd_kernel[(T,)](
-                dmixed, gate, normed, dgate, dnormed, T, N=n, C=C, BLOCK_C=_block_c(C)
-            )
+            _gate_mul_mean_bwd_kernel[(T,)](dmixed, gate, normed, dgate, dnormed, T, N=n, C=C, BLOCK_C=_block_c(C))
 
         dz2 = dgate * gate * (1.0 - gate)
         dw_up = dz2.t() @ s1
@@ -260,9 +254,7 @@ class _HCMixInject(torch.autograd.Function):
 
         dx = torch.empty_like(x2d)
         if T > 0:
-            _grouped_rmsnorm_bwd_kernel[(T * n,)](
-                x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=_block_c(C)
-            )
+            _grouped_rmsnorm_bwd_kernel[(T * n,)](x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=_block_c(C))
         return (
             dx,
             dweight,
@@ -285,9 +277,7 @@ class _HCCombine(torch.autograd.Function):
         h_post = h_post.float().contiguous()
         out = torch.empty_like(residual2d)
         if T > 0:
-            _combine_fwd_kernel[(T * n,)](
-                residual2d, y2d, h_post, out, T, N=n, C=C, BLOCK_C=_block_c(C)
-            )
+            _combine_fwd_kernel[(T * n,)](residual2d, y2d, h_post, out, T, N=n, C=C, BLOCK_C=_block_c(C))
         ctx.save_for_backward(y2d, h_post)
         ctx.n = n
         return out
@@ -302,9 +292,7 @@ class _HCCombine(torch.autograd.Function):
         dy = torch.empty_like(y2d)
         dh_post = torch.empty(T, n, dtype=torch.float32, device=dout.device)
         if T > 0:
-            _combine_bwd_kernel[(T,)](
-                dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=_block_c(C)
-            )
+            _combine_bwd_kernel[(T,)](dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=_block_c(C))
         return dout, dy, dh_post.to(ctx.h_post_dtype), None
 
 
@@ -327,4 +315,3 @@ def hc_combine_triton(residual, block_output, h_post, n: int):
     hp2d = h_post.reshape(-1, n)
     out = _HCCombine.apply(r2d, y2d, hp2d, n)
     return out.reshape(*lead, -1)
-

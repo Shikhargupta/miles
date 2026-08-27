@@ -18,16 +18,10 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
-    hc_combine_triton,
-    hc_mix_inject_triton,
-)
+from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import hc_combine_triton, hc_mix_inject_triton
 from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import (
-    qsa_sparse_attention_triton,
-)
+from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.ple import ngram_hash_ids, shift_right_ignore_eos
-
 
 # ---- torch references ----
 
@@ -72,7 +66,7 @@ def causal_depthwise_conv(x, weight, dilation, cu_seqlens=None):
         return _conv(x)
     out = torch.empty_like(x)
     bounds = cu_seqlens.tolist()
-    for lo, hi in zip(bounds[:-1], bounds[1:]):
+    for lo, hi in zip(bounds[:-1], bounds[1:], strict=False):
         if hi > lo:
             out[lo:hi] = _conv(x[lo:hi])
     return out
@@ -121,22 +115,46 @@ EOS = 248044
 VOCAB = 248320
 # The three tensors the checkpoint ships (read out of the safetensors headers).
 MULT = [23703573157769, 20109073645365, 8052911324071]
-SIZES = [20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
-         20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171]
+SIZES = [
+    20000003,
+    20000023,
+    20000033,
+    20000047,
+    20000059,
+    20000063,
+    20000069,
+    20000077,
+    20000081,
+    20000093,
+    20000107,
+    20000147,
+    20000153,
+    20000159,
+    20000161,
+    20000171,
+]
 OFFS = [0]
 for s in SIZES[:-1]:
     OFFS.append(OFFS[-1] + s)
 
 
 def _hash_tensors():
-    t = lambda v: torch.tensor(v, dtype=torch.long, device="cuda")
+    def t(v):
+        return torch.tensor(v, dtype=torch.long, device="cuda")
+
     return t(MULT), t(SIZES), t(OFFS)
 
 
 def test_ngram_hash_ids_land_in_each_heads_row_range():
     mult, sizes, offs = _hash_tensors()
-    ctx = torch.randint(0, VOCAB, (256, NGRAM_SIZE), device="cuda", dtype=torch.long,
-                        generator=torch.Generator(device="cuda").manual_seed(0))
+    ctx = torch.randint(
+        0,
+        VOCAB,
+        (256, NGRAM_SIZE),
+        device="cuda",
+        dtype=torch.long,
+        generator=torch.Generator(device="cuda").manual_seed(0),
+    )
     ids = ngram_hash_ids(ctx, mult, sizes, offs, NGRAM_SIZE, HEADS_PER_NGRAM, EOS)
     assert ids.shape == (256, len(SIZES))
     for h in range(ids.shape[-1]):
@@ -217,7 +235,7 @@ def test_hc_mix_inject(T, C, n, R, dtype, tol_mix, tol_comb, with_inject):
     else:
         mix_tri.backward(dmix)
     assert rel_err(mix_tri, mix_ref) < tol_mix
-    for name, r, p in zip(["dx", "dw_norm", "dw_down", "dw_up", "dw_inj"], ref_grads, params):
+    for name, r, p in zip(["dx", "dw_norm", "dw_down", "dw_up", "dw_inj"], ref_grads, params, strict=False):
         err = rel_err(p.grad, r)
         assert err < tol_mix, f"{name}: {err:.2e} > {tol_mix}"
 
@@ -241,7 +259,7 @@ def test_hc_combine(T, C, n, R, dtype, tol_mix, tol_comb):
     out_tri = hc_combine_triton(res, y, hp, n)
     out_tri.backward(dout)
     assert rel_err(out_tri, out_ref) < tol_comb
-    for name, r, t in zip(["dres", "dy", "dhpost"], ref_grads, (res, y, hp)):
+    for name, r, t in zip(["dres", "dy", "dhpost"], ref_grads, (res, y, hp), strict=False):
         err = rel_err(t.grad, r)
         assert err < tol_comb, f"{name}: {err:.2e} > {tol_comb}"
 
@@ -269,7 +287,10 @@ PLE_CASES = [
 def test_ple_gate_conv(T, C, n, segs, dtype, tol):
     g = torch.Generator(device="cuda").manual_seed(T)
     W, eps, K, dil = n * C, 1e-6, 4, 3
-    mk = lambda *s: torch.randn(*s, device="cuda", dtype=dtype, generator=g)
+
+    def mk(*shape):
+        return torch.randn(*shape, device="cuda", dtype=dtype, generator=g)
+
     hc = mk(T, W).requires_grad_()
     key = mk(T, W).requires_grad_()
     value = mk(T, C).requires_grad_()
@@ -291,7 +312,7 @@ def test_ple_gate_conv(T, C, n, segs, dtype, tol):
     tri.backward(dout)
     assert rel_err(tri, ref) < tol
     names = ["dhc", "dkey", "dvalue", "dwk", "dwq", "dwc", "dconvw"]
-    for name, r, p in zip(names, ref_grads, params):
+    for name, r, p in zip(names, ref_grads, params, strict=False):
         err = rel_err(p.grad, r)
         assert err < tol, f"{name}: {err:.2e} > {tol}"
 
@@ -334,6 +355,6 @@ def test_qsa_sparse_attention(T, S, Hq, Hkv, D, K, dtype):
 
     tol = 2e-2 if dtype == torch.bfloat16 else 2e-4
     assert rel_err(out_t, out_r) < tol
-    for name, t, r in zip(["dq", "dk", "dv"], grads_t, (q2.grad, k2.grad, v2.grad)):
+    for name, t, r in zip(["dq", "dk", "dv"], grads_t, (q2.grad, k2.grad, v2.grad), strict=False):
         err = rel_err(t, r)
         assert err < tol, f"{name}: {err:.2e} > {tol}"

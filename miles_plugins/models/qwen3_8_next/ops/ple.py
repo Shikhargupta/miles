@@ -31,15 +31,11 @@ def shift_right_ignore_eos(tokens: Tensor, n: int, eos_token_id: int) -> Tensor:
 
     eos_pos = torch.where(tokens == eos_token_id, idx, torch.full_like(idx, -1))
     prev_eos_inclusive = torch.cummax(eos_pos, dim=1).values
-    prev_eos = torch.cat(
-        [eos_pos.new_full((batch_size, 1), -1), prev_eos_inclusive[:, :-1]], dim=1
-    )
+    prev_eos = torch.cat([eos_pos.new_full((batch_size, 1), -1), prev_eos_inclusive[:, :-1]], dim=1)
     pos_in_segment = idx.unsqueeze(0) - (prev_eos + 1)
 
     src_idx = idx - n
-    gathered = tokens.gather(
-        dim=1, index=torch.clamp(src_idx, min=0).unsqueeze(0).expand(batch_size, -1)
-    )
+    gathered = tokens.gather(dim=1, index=torch.clamp(src_idx, min=0).unsqueeze(0).expand(batch_size, -1))
     valid = (pos_in_segment >= n) & (src_idx.unsqueeze(0) >= 0)
     return torch.where(valid, gathered, tokens.new_full((), eos_token_id))
 
@@ -65,11 +61,10 @@ def ngram_hash_ids(
         mix = shifted[0] * layer_multipliers[0]
         for pos in range(1, ngram):
             mix = torch.bitwise_xor(mix, shifted[pos] * layer_multipliers[pos])
-        ids = torch.remainder(
-            mix[:, -1:].unsqueeze(-1), head_vocab_sizes[start:end].view(1, 1, -1)
-        )
+        ids = torch.remainder(mix[:, -1:].unsqueeze(-1), head_vocab_sizes[start:end].view(1, 1, -1))
         blocks.append((ids + head_offsets[start:end].view(1, 1, -1))[:, 0])
     return torch.cat(blocks, dim=-1)
+
 
 def build_ngram_contexts(tokens: Tensor, ngram_size: int, eos_token_id: int) -> Tensor:
     """``[T]`` token ids -> ``[T, ngram_size]`` sliding windows, one row per token."""
@@ -87,7 +82,7 @@ def build_ngram_contexts_packed(
     bounds = cu_seqlens.tolist()
     parts = [
         build_ngram_contexts(tokens[lo:hi], ngram_size, eos_token_id)
-        for lo, hi in zip(bounds[:-1], bounds[1:])
+        for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
         if hi > lo
     ]
     return torch.cat(parts, dim=0)
@@ -163,9 +158,7 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
                 "changing TP only changes which of the fixed HF shards a rank reads."
             )
         self.shards_per_rank = self.num_shards // tp_size
-        self.shard_ids = list(
-            range(tp_rank * self.shards_per_rank, (tp_rank + 1) * self.shards_per_rank)
-        )
+        self.shard_ids = list(range(tp_rank * self.shards_per_rank, (tp_rank + 1) * self.shards_per_rank))
 
         self.rows_per_shard = getattr(config, "qwen3_8_next_ngram_rows_per_shard", None)
         if self.rows_per_shard is None:
@@ -186,15 +179,9 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         self._loaded = False
         self._hf_checkpoint = getattr(config, "qwen3_8_next_hf_checkpoint", None)
 
-        self.register_buffer(
-            "layer_multipliers", torch.zeros(self.ngram_size, dtype=torch.long), persistent=False
-        )
-        self.register_buffer(
-            "ngram_heads_vocab_sizes", torch.zeros(heads, dtype=torch.long), persistent=False
-        )
-        self.register_buffer(
-            "ngram_heads_offsets", torch.zeros(heads, dtype=torch.long), persistent=False
-        )
+        self.register_buffer("layer_multipliers", torch.zeros(self.ngram_size, dtype=torch.long), persistent=False)
+        self.register_buffer("ngram_heads_vocab_sizes", torch.zeros(heads, dtype=torch.long), persistent=False)
+        self.register_buffer("ngram_heads_offsets", torch.zeros(heads, dtype=torch.long), persistent=False)
 
         if self._hf_checkpoint is not None:
             self.load_metadata_from_hf(self._hf_checkpoint)
@@ -280,18 +267,26 @@ class Qwen38NextPLE(MegatronModule):
         self.embed_dim = config.qwen3_8_next_ple_embed_dim
         wide = self.n * self.hidden_size
 
-        self.ple_embedding = Qwen38NextFrozenNGramEmbedding(
-            config, layer_number=layer_number, tp_group=tp_group
-        )
+        self.ple_embedding = Qwen38NextFrozenNGramEmbedding(config, layer_number=layer_number, tp_group=tp_group)
 
         self.key_proj = TELinear(
-            self.embed_dim, wide, config=config, init_method=config.init_method,
-            bias=False, skip_bias_add=False, skip_weight_param_allocation=False,
+            self.embed_dim,
+            wide,
+            config=config,
+            init_method=config.init_method,
+            bias=False,
+            skip_bias_add=False,
+            skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
         self.value_proj = TELinear(
-            self.embed_dim, self.hidden_size, config=config, init_method=config.init_method,
-            bias=False, skip_bias_add=False, skip_weight_param_allocation=False,
+            self.embed_dim,
+            self.hidden_size,
+            config=config,
+            init_method=config.init_method,
+            bias=False,
+            skip_bias_add=False,
+            skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
 
@@ -305,11 +300,9 @@ class Qwen38NextPLE(MegatronModule):
         self.conv1d_weight = torch.nn.Parameter(torch.zeros(wide, 1, kernel, dtype=dtype))
 
         for p in (self.norm_key, self.norm_query, self.norm_conv, self.conv1d_weight):
-            setattr(p, "sequence_parallel", config.sequence_parallel)
+            p.sequence_parallel = config.sequence_parallel
 
-    def forward(
-        self, hc_state: Tensor, ngram_ids: Tensor, cu_seqlens: Tensor | None = None
-    ) -> Tensor:
+    def forward(self, hc_state: Tensor, ngram_ids: Tensor, cu_seqlens: Tensor | None = None) -> Tensor:
         """``hc_state`` ``[T, n*C]``, ``ngram_ids`` ``[T, n_heads]`` -> increment ``[T, n*C]``."""
         if hc_state.dim() != 2 or ngram_ids.dim() != 2:
             raise RuntimeError(
@@ -317,15 +310,12 @@ class Qwen38NextPLE(MegatronModule):
                 f"[T, heads], got {tuple(hc_state.shape)} and {tuple(ngram_ids.shape)}"
             )
         if hc_state.shape[0] != ngram_ids.shape[0]:
-            raise RuntimeError(
-                f"PLE token counts differ: state {hc_state.shape[0]} vs ids {ngram_ids.shape[0]}"
-            )
+            raise RuntimeError(f"PLE token counts differ: state {hc_state.shape[0]} vs ids {ngram_ids.shape[0]}")
 
         embeddings = self.ple_embedding(ngram_ids)
         key, _ = self.key_proj(embeddings)
         value, _ = self.value_proj(embeddings)
 
-        tokens = hc_state.shape[0]
         if hc_state.shape[-1] != self.n * self.hidden_size:
             raise RuntimeError(
                 "PLE hidden size does not match the hyper-connection layout: expected "
@@ -333,8 +323,15 @@ class Qwen38NextPLE(MegatronModule):
             )
 
         return ple_gate_conv_triton(
-            hc_state, key, value,
-            self.norm_key, self.norm_query, self.norm_conv,
-            self.conv1d_weight, self.n, self.norm_eps,
-            self.conv_dilation, cu_seqlens,
+            hc_state,
+            key,
+            value,
+            self.norm_key,
+            self.norm_query,
+            self.norm_conv,
+            self.conv1d_weight,
+            self.n,
+            self.norm_eps,
+            self.conv_dilation,
+            cu_seqlens,
         )

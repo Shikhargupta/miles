@@ -46,12 +46,9 @@ _HC_SUFFIX_MAPPING = {
 # Model-level final mixer (contracts n*C -> C before the LM head). There is no
 # decoder.final_layernorm on the mcore side -- the mixer's hc_norm plays that role.
 _HEAD_CONTRACTION_MAPPING = {
-    "module.module.decoder.hc_head_contraction.hc_norm_weight":
-        "model.language_model.hyper_connection_mixer.hc_norm.weight",
-    "module.module.decoder.hc_head_contraction.input_mix_weight_down":
-        "model.language_model.hyper_connection_mixer.input_mix_weight_down.weight",
-    "module.module.decoder.hc_head_contraction.input_mix_weight_up":
-        "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight",
+    "module.module.decoder.hc_head_contraction.hc_norm_weight": "model.language_model.hyper_connection_mixer.hc_norm.weight",
+    "module.module.decoder.hc_head_contraction.input_mix_weight_down": "model.language_model.hyper_connection_mixer.input_mix_weight_down.weight",
+    "module.module.decoder.hc_head_contraction.input_mix_weight_up": "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight",
 }
 
 _LAYER_PATTERN = re.compile(r"module\.module\.decoder\.layers\.(\d+)\.(.+)")

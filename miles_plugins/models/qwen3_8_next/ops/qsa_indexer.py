@@ -14,6 +14,7 @@ import torch
 def _indexer_acc_dtype(x):
     return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
 
+
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -79,7 +80,7 @@ class Qwen38NextQSAIndexer(MegatronModule):
         self.q_layernorm = torch.nn.Parameter(torch.zeros(self.head_dim, dtype=dtype))
         self.k_layernorm = torch.nn.Parameter(torch.zeros(self.head_dim, dtype=dtype))
         for p in (self.q_layernorm, self.k_layernorm):
-            setattr(p, "sequence_parallel", config.sequence_parallel)
+            p.sequence_parallel = config.sequence_parallel
 
     def project_qk(self, hidden_states: Tensor, positions: Tensor):
         """``[T, hidden] -> (q [T, n_heads, head_dim], block_k [B, head_dim])``."""
@@ -87,19 +88,15 @@ class Qwen38NextQSAIndexer(MegatronModule):
         split = self.n_heads * self.head_dim
         q_raw, token_k = qk[..., :split], qk[..., split:]
 
-        q = gemma_rmsnorm_last_dim(
-            q_raw.reshape(-1, self.head_dim), self.q_layernorm, self.norm_eps
-        ).reshape(-1, self.n_heads, self.head_dim)
-
-        block_k = compress_keys_by_mean(
-            token_k.reshape(-1, self.head_dim), self.compress_ratio
+        q = gemma_rmsnorm_last_dim(q_raw.reshape(-1, self.head_dim), self.q_layernorm, self.norm_eps).reshape(
+            -1, self.n_heads, self.head_dim
         )
+
+        block_k = compress_keys_by_mean(token_k.reshape(-1, self.head_dim), self.compress_ratio)
         block_k = gemma_rmsnorm_last_dim(block_k, self.k_layernorm, self.norm_eps)
 
         if self.rotary_emb is not None:
-            block_positions = (
-                torch.arange(block_k.shape[0], device=positions.device) * self.compress_ratio
-            )
+            block_positions = torch.arange(block_k.shape[0], device=positions.device) * self.compress_ratio
             q = self._apply_rope(positions, q)
             block_k = self._apply_rope(block_positions, block_k.unsqueeze(1)).squeeze(1)
         return q, block_k

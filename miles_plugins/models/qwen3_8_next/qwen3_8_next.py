@@ -6,16 +6,15 @@ hc_norm is the pre-block norm); a leftover TE fused norm silently corrupts.
 
 import copy
 
+import torch
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+
 from miles.utils.hf_config import load_hf_config, register_hf_config_aliases
-
-import torch
-
 from miles_plugins.models.qwen3_5 import Attention as Qwen35LinearAttention
 from miles_plugins.models.qwen3_5 import _get_text_config
 from miles_plugins.models.qwen3_8_next.hyper_connection import (
@@ -104,20 +103,16 @@ def _apply_qwen3_8_next_config(config, text_config) -> None:
     config.num_residual_streams = getattr(text_config, "hc_count", 4)
     config.qwen3_8_next_hc_lowrank = getattr(text_config, "hc_lowrank", 320)
 
-    config.qwen3_8_next_ple_layer_ids = sorted(
-        {int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []}
-    )
+    config.qwen3_8_next_ple_layer_ids = sorted({int(i) - 1 for i in getattr(text_config, "ple_layer_ids", None) or []})
     config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
     config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
     config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
-    config.qwen3_8_next_ngram_vocab_size_base = getattr(
-        text_config, "ngram_vocab_size_base", 20000000
-    )
+    config.qwen3_8_next_ngram_vocab_size_base = getattr(text_config, "ngram_vocab_size_base", 20000000)
     config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
     config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
-    config.qwen3_8_next_ple_conv_dilation = getattr(
-        text_config, "ple_conv_dilation", None
-    ) or config.qwen3_8_next_ngram_size
+    config.qwen3_8_next_ple_conv_dilation = (
+        getattr(text_config, "ple_conv_dilation", None) or config.qwen3_8_next_ngram_size
+    )
     config.qwen3_8_next_eos_token_id = getattr(text_config, "eos_token_id", 0)
 
     config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
@@ -159,8 +154,7 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
 
     layer_types = _layer_types(text_config)
 
-    ple_here = [i for i in config.qwen3_8_next_ple_layer_ids
-                if offset <= i < offset + num_layers_to_build]
+    ple_here = [i for i in config.qwen3_8_next_ple_layer_ids if offset <= i < offset + num_layers_to_build]
     if ple_here and offset > 0:
         raise NotImplementedError(
             f"PLE layers {ple_here} landed on pipeline stage starting at layer {offset}, "
@@ -173,9 +167,7 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
         layer_spec = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
 
         with_ple = global_layer_id in config.qwen3_8_next_ple_layer_ids
-        layer_spec.submodules.self_attention_hyper_connection = _hc_spec(
-            config, with_ple=with_ple
-        )
+        layer_spec.submodules.self_attention_hyper_connection = _hc_spec(config, with_ple=with_ple)
         layer_spec.submodules.mlp_hyper_connection = _hc_spec(config)
 
         if layer_types[global_layer_id] == "linear_attention":

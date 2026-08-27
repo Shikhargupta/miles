@@ -4,9 +4,6 @@ Differs from Megatron's mHC (DeepSeek-V4): per-stream per-feature low-rank read
 gate with a MEAN over streams, and identity residual mixing (h_res is None).
 """
 
-import os
-from typing import Optional, Tuple
-
 import torch
 import torch.nn.functional as F
 from megatron.core.parallel_state import (
@@ -20,10 +17,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
-    hc_combine_triton,
-    hc_mix_inject_triton,
-)
+from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import hc_combine_triton, hc_mix_inject_triton
 from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch
 
 
@@ -35,7 +29,7 @@ class Qwen38NextHyperConnection(MegatronModule):
         self,
         config: TransformerConfig,
         layer_number: int,
-        hc_count: Optional[int] = None,
+        hc_count: int | None = None,
         use_combine: bool = True,
     ):
         super().__init__(config)
@@ -61,7 +55,7 @@ class Qwen38NextHyperConnection(MegatronModule):
             self.block_inject_weight = None
 
         for p in params:
-            setattr(p, "sequence_parallel", config.sequence_parallel)
+            p.sequence_parallel = config.sequence_parallel
 
         with torch.no_grad():
             torch.nn.init.xavier_uniform_(self.input_mix_weight_down)
@@ -74,7 +68,7 @@ class Qwen38NextHyperConnection(MegatronModule):
         hidden_states: Tensor,
         mhc_recompute_manager=None,
         output_slot=None,
-    ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor | None, Tensor, Tensor]:
         """Returns (aggregated, h_res=None, h_post, residual)."""
         if mhc_recompute_manager is not None or output_slot is not None:
             raise NotImplementedError(
@@ -95,7 +89,7 @@ class Qwen38NextHyperConnection(MegatronModule):
 
     def fused_h_res_h_post_bda(
         self,
-        h_res: Optional[Tensor],
+        h_res: Tensor | None,
         original_residual: Tensor,
         h_post: Tensor,
         layer_output_with_bias,
@@ -125,7 +119,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
     """Model-level output contraction [s,b,n*C]->[s,b,C]: same gated mean as the
     per-layer HC (per-stream RMS) -- NOT interchangeable with DSv4's built-in."""
 
-    def __init__(self, config: TransformerConfig, hc_count: Optional[int] = None):
+    def __init__(self, config: TransformerConfig, hc_count: int | None = None):
         super().__init__(config)
         self.n = hc_count if hc_count is not None else config.num_residual_streams
         self.hidden_size = config.hidden_size
@@ -140,7 +134,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
         self.input_mix_weight_up = torch.nn.Parameter(torch.empty(wide, lowrank, dtype=dtype))
 
         for p in (self.hc_norm_weight, self.input_mix_weight_down, self.input_mix_weight_up):
-            setattr(p, "sequence_parallel", config.sequence_parallel)
+            p.sequence_parallel = config.sequence_parallel
         with torch.no_grad():
             torch.nn.init.xavier_uniform_(self.input_mix_weight_down)
             torch.nn.init.xavier_uniform_(self.input_mix_weight_up)
@@ -157,6 +151,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
         )
         return mixed
 
+
 class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
     """Attention-site HC for the PLE layer: applies the PLE increment (full-seq
     under SP) before the read."""
@@ -170,7 +165,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         except AssertionError:
             pass  # not initialised (shape audits); falls back to unsharded
         self.ple = Qwen38NextPLE(config, layer_number=layer_number, tp_group=tp_group)
-
 
     def _resolve_ple_batch(self):
         """The published batch, made safe under activation recompute.
@@ -219,9 +213,9 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
 
         increment = self.ple(flat_state, flat_ids, cu_seqlens)
 
-        assert increment.shape == flat_state.shape, (
-            f"PLE increment {tuple(increment.shape)} != state {tuple(flat_state.shape)}"
-        )
+        assert (
+            increment.shape == flat_state.shape
+        ), f"PLE increment {tuple(increment.shape)} != state {tuple(flat_state.shape)}"
         hidden_states = hidden_states + increment.view_as(hidden_states)
         return hidden_states
 
@@ -230,7 +224,7 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         hidden_states: Tensor,
         mhc_recompute_manager=None,
         output_slot=None,
-    ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor | None, Tensor, Tensor]:
 
         ngram_ids, cu_seqlens = self._resolve_ple_batch()
 

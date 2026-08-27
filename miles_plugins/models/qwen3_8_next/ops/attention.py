@@ -7,18 +7,13 @@ per query; attention then reads only those.
 """
 
 import torch
-from megatron.core.parallel_state import (
-    get_tensor_model_parallel_group,
-    get_tensor_model_parallel_world_size,
-)
+from megatron.core.parallel_state import get_tensor_model_parallel_group, get_tensor_model_parallel_world_size
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import (
-    qsa_sparse_attention_triton,
-)
+from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import Qwen38NextQSAIndexer
 
 
@@ -41,21 +36,18 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                 "means core_attention was called out of band."
             )
         if query.dim() == 3:
-            return qsa_sparse_attention_triton(
-                query, key, value, selection, self.softmax_scale
-            ).reshape(query.shape[0], -1)
+            return qsa_sparse_attention_triton(query, key, value, selection, self.softmax_scale).reshape(
+                query.shape[0], -1
+            )
 
         if query.dim() != 4:
             raise RuntimeError(
-                f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got "
-                f"{tuple(query.shape)}"
+                f"QSA core attention expected a 3D (thd) or 4D (sbhd) query, got " f"{tuple(query.shape)}"
             )
 
         s, b, hq, d = query.shape
         out = [
-            qsa_sparse_attention_triton(
-                query[:, i], key[:, i], value[:, i], selection, self.softmax_scale
-            )
+            qsa_sparse_attention_triton(query[:, i], key[:, i], value[:, i], selection, self.softmax_scale)
             for i in range(b)
         ]
         return torch.stack(out, dim=1).reshape(s, b, hq * d)
@@ -113,19 +105,18 @@ class Qwen38NextAttention(SelfAttention):
             r = self.compress_ratio
             tail_in_seq = (positions + 1) // r * r
             offs = torch.arange(r, device=positions.device)
-            tail_pos = tail_in_seq.unsqueeze(1) + offs.unsqueeze(0)          # in-seq
-            tail_idx = seq_start.unsqueeze(1) + tail_pos                     # pack index
+            tail_pos = tail_in_seq.unsqueeze(1) + offs.unsqueeze(0)  # in-seq
+            tail_idx = seq_start.unsqueeze(1) + tail_pos  # pack index
             tail_idx = torch.where(
-                tail_pos <= positions.unsqueeze(1), tail_idx,
+                tail_pos <= positions.unsqueeze(1),
+                tail_idx,
                 torch.full_like(tail_idx, -1),
             )
             merged = torch.cat([selection, tail_idx.to(selection.dtype)], dim=1)
             pack_pos = torch.arange(seq, device=positions.device).unsqueeze(1)
             seg_lo = seq_start.unsqueeze(1)
             ok = (merged >= seg_lo) & (merged <= pack_pos) & (merged >= 0)
-            self._qsa_selection = torch.where(
-                ok, merged, torch.full_like(merged, -1)
-            )
+            self._qsa_selection = torch.where(ok, merged, torch.full_like(merged, -1))
         try:
             return super().forward(hidden_states, *args, **kwargs)
         finally:

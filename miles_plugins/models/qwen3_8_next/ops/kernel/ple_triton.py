@@ -12,13 +12,7 @@ import torch
 import triton
 import triton.language as tl
 
-
-from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
-    _grouped_rmsnorm_bwd_kernel,
-    _grouped_rmsnorm_fwd_kernel,
-    _block_c,
-    _norm_fwd,
-)
+from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import _block_c, _grouped_rmsnorm_bwd_kernel, _norm_fwd
 
 
 @triton.jit(do_not_specialize=["T"])
@@ -255,8 +249,21 @@ class _PLEGateConv(torch.autograd.Function):
         rstdq = torch.empty(T, n, dtype=torch.float32, device=dev)
         if T > 0:
             _ple_gate_fwd_kernel[(T * n,)](
-                key, hc_state, value, wk, wq, gated, gate, rstdk, rstdq,
-                T, N=n, C=C, EPS=eps, SQRTC=math.sqrt(C), BLOCK_C=_block_c(C),
+                key,
+                hc_state,
+                value,
+                wk,
+                wq,
+                gated,
+                gate,
+                rstdk,
+                rstdq,
+                T,
+                N=n,
+                C=C,
+                EPS=eps,
+                SQRTC=math.sqrt(C),
+                BLOCK_C=_block_c(C),
             )
 
         normed, rstdc = _norm_fwd(gated, wc, n, eps)
@@ -268,19 +275,30 @@ class _PLEGateConv(torch.autograd.Function):
         BW = 256
         if T > 0:
             _ple_conv_fwd_kernel[(T, triton.cdiv(W, BW))](
-                normed, gated, convw2d, seg_lo, out, conv_pre,
-                T, W, K=Kk, DIL=dilation, BLOCK_W=BW,
+                normed,
+                gated,
+                convw2d,
+                seg_lo,
+                out,
+                conv_pre,
+                T,
+                W,
+                K=Kk,
+                DIL=dilation,
+                BLOCK_W=BW,
             )
 
-        ctx.save_for_backward(hc_state, key, value, wk, wq, wc, convw2d,
-                              gate, rstdk, rstdq, rstdc, seg_lo, seg_hi, conv_pre)
+        ctx.save_for_backward(
+            hc_state, key, value, wk, wq, wc, convw2d, gate, rstdk, rstdq, rstdc, seg_lo, seg_hi, conv_pre
+        )
         ctx.dims = (n, eps, dilation, Kk, conv_w.dtype)
         return out
 
     @staticmethod
     def backward(ctx, dout):
-        (hc_state, key, value, wk, wq, wc, convw2d,
-         gate, rstdk, rstdq, rstdc, seg_lo, seg_hi, conv_pre) = ctx.saved_tensors
+        (hc_state, key, value, wk, wq, wc, convw2d, gate, rstdk, rstdq, rstdc, seg_lo, seg_hi, conv_pre) = (
+            ctx.saved_tensors
+        )
         n, eps, dilation, Kk, conv_w_dtype = ctx.dims
         T, W = hc_state.shape
         C = W // n
@@ -293,8 +311,21 @@ class _PLEGateConv(torch.autograd.Function):
         _rq = torch.empty(T, n, dtype=torch.float32, device=dev)
         if T > 0:
             _ple_gate_fwd_kernel[(T * n,)](
-                key, hc_state, value, wk, wq, gated, _g, _rk, _rq,
-                T, N=n, C=C, EPS=eps, SQRTC=math.sqrt(C), BLOCK_C=_block_c(C),
+                key,
+                hc_state,
+                value,
+                wk,
+                wq,
+                gated,
+                _g,
+                _rk,
+                _rq,
+                T,
+                N=n,
+                C=C,
+                EPS=eps,
+                SQRTC=math.sqrt(C),
+                BLOCK_C=_block_c(C),
             )
         normed, _ = _norm_fwd(gated, wc, n, eps)
 
@@ -304,9 +335,20 @@ class _PLEGateConv(torch.autograd.Function):
         BW = 256
         if T > 0:
             _ple_conv_bwd_kernel[(T, triton.cdiv(W, BW))](
-                dout, conv_pre, normed, convw2d, seg_lo, seg_hi,
-                dnormed, dconvw, dgated,
-                T, W, K=Kk, DIL=dilation, BLOCK_W=BW,
+                dout,
+                conv_pre,
+                normed,
+                convw2d,
+                seg_lo,
+                seg_hi,
+                dnormed,
+                dconvw,
+                dgated,
+                T,
+                W,
+                K=Kk,
+                DIL=dilation,
+                BLOCK_W=BW,
             )
 
         x_hat = (gated.view(T, n, C) * rstdc.unsqueeze(-1)).view(T, W)
@@ -325,25 +367,58 @@ class _PLEGateConv(torch.autograd.Function):
         dwq_part = torch.empty(T, W, dtype=torch.float32, device=dev)
         if T > 0:
             _ple_gate_bwd_kernel[(T * n,)](
-                dgated, key, hc_state, value, wk, wq, gate, rstdk, rstdq,
-                dkey, dquery, dvalue_pern, dwk_part, dwq_part,
-                T, N=n, C=C, SQRTC=math.sqrt(C), BLOCK_C=_block_c(C),
+                dgated,
+                key,
+                hc_state,
+                value,
+                wk,
+                wq,
+                gate,
+                rstdk,
+                rstdq,
+                dkey,
+                dquery,
+                dvalue_pern,
+                dwk_part,
+                dwq_part,
+                T,
+                N=n,
+                C=C,
+                SQRTC=math.sqrt(C),
+                BLOCK_C=_block_c(C),
             )
         dvalue = dvalue_pern.sum(dim=1).to(value.dtype)
         dwk = dwk_part.sum(dim=0).to(wk.dtype)
         dwq = dwq_part.sum(dim=0).to(wq.dtype)
         dconv_w = dconvw.view(W, 1, Kk).to(conv_w_dtype)
 
-        return (dquery, dkey, dvalue, dwk, dwq, dwc, dconv_w,
-                None, None, None, None)
+        return (dquery, dkey, dvalue, dwk, dwq, dwc, dconv_w, None, None, None, None)
 
 
-def ple_gate_conv_triton(hc_state, key, value, norm_key_w, norm_query_w, norm_conv_w,
-                         conv1d_weight, n: int, eps: float, dilation: int, cu_seqlens):
+def ple_gate_conv_triton(
+    hc_state,
+    key,
+    value,
+    norm_key_w,
+    norm_query_w,
+    norm_conv_w,
+    conv1d_weight,
+    n: int,
+    eps: float,
+    dilation: int,
+    cu_seqlens,
+):
     """Full PLE increment (gate chain + norm + causal conv + SiLU + residual)."""
     return _PLEGateConv.apply(
-        hc_state.contiguous(), key.contiguous(), value.contiguous(),
-        norm_key_w, norm_query_w, norm_conv_w, conv1d_weight,
-        n, eps, dilation, cu_seqlens,
+        hc_state.contiguous(),
+        key.contiguous(),
+        value.contiguous(),
+        norm_key_w,
+        norm_query_w,
+        norm_conv_w,
+        conv1d_weight,
+        n,
+        eps,
+        dilation,
+        cu_seqlens,
     )
-

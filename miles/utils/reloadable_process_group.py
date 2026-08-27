@@ -156,9 +156,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
             try:
                 self._register_backend(device, backend_type, backend)
             except Exception as exc:
-                logger.warning(
-                    f"Could not register {device_type} backend on reloadable group: {exc}"
-                )
+                logger.warning(f"Could not register {device_type} backend on reloadable group: {exc}")
 
     def __getattr__(self, name):
         return getattr(self.group, name)

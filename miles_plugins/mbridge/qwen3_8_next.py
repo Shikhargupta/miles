@@ -117,14 +117,26 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         "mlp_hyper_connection.block_inject_weight": [
             "model.language_model.layers.{layer_number}.mlp_hyper_connection.block_inject_weight.weight"
         ],
-        "self_attention_hyper_connection.ple.key_proj.weight": ["model.language_model.layers.{layer_number}.ple.key_proj.weight"],
-        "self_attention_hyper_connection.ple.value_proj.weight": ["model.language_model.layers.{layer_number}.ple.value_proj.weight"],
+        "self_attention_hyper_connection.ple.key_proj.weight": [
+            "model.language_model.layers.{layer_number}.ple.key_proj.weight"
+        ],
+        "self_attention_hyper_connection.ple.value_proj.weight": [
+            "model.language_model.layers.{layer_number}.ple.value_proj.weight"
+        ],
         # HF wraps each of these in a submodule holding a .weight; on our side they
         # are plain nn.Parameters, so the names differ by that one level.
-        "self_attention_hyper_connection.ple.conv1d_weight": ["model.language_model.layers.{layer_number}.ple.conv1d.weight"],
-        "self_attention_hyper_connection.ple.norm_conv": ["model.language_model.layers.{layer_number}.ple.norm_conv.weight"],
-        "self_attention_hyper_connection.ple.norm_key": ["model.language_model.layers.{layer_number}.ple.norm_key.weight"],
-        "self_attention_hyper_connection.ple.norm_query": ["model.language_model.layers.{layer_number}.ple.norm_query.weight"],
+        "self_attention_hyper_connection.ple.conv1d_weight": [
+            "model.language_model.layers.{layer_number}.ple.conv1d.weight"
+        ],
+        "self_attention_hyper_connection.ple.norm_conv": [
+            "model.language_model.layers.{layer_number}.ple.norm_conv.weight"
+        ],
+        "self_attention_hyper_connection.ple.norm_key": [
+            "model.language_model.layers.{layer_number}.ple.norm_key.weight"
+        ],
+        "self_attention_hyper_connection.ple.norm_query": [
+            "model.language_model.layers.{layer_number}.ple.norm_query.weight"
+        ],
         # The n-gram table and its hash metadata are deliberately absent here: the
         # table is a non-persistent buffer read straight from the HF safetensors on
         # first use (so it never enters the torch_dist checkpoint and never needs
@@ -181,10 +193,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
             rest = mcore_weights_name[len(prefix) :]
             layer_number, _, tail = rest.partition(".")
             if tail in self._VISION_LAYER_MAPPING:
-                return [
-                    t.format(layer_number=int(layer_number))
-                    for t in self._VISION_LAYER_MAPPING[tail]
-                ]
+                return [t.format(layer_number=int(layer_number)) for t in self._VISION_LAYER_MAPPING[tail]]
 
         raise NotImplementedError(f"Unsupported vision parameter name: {mcore_weights_name}")
 
@@ -210,10 +219,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         layer_ids = self._ple_layer_ids()
         if not layer_ids:
             return None
-        key = (
-            f"model.language_model.layers.{layer_ids[0]}.ple.ple_embedding"
-            ".ngram_embedding.shard_0.weight"
-        )
+        key = f"model.language_model.layers.{layer_ids[0]}.ple.ple_embedding" ".ngram_embedding.shard_0.weight"
         try:
             shape = self.safetensor_io.get_tensor_shape(key)
         except Exception:
@@ -344,9 +350,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         config.qwen3_8_next_ple_embed_dim = getattr(text_config, "ple_embed_dim", 2560)
         config.qwen3_8_next_ngram_size = getattr(text_config, "ngram_size", 3)
         config.qwen3_8_next_heads_per_ngram = getattr(text_config, "heads_per_ngram", 8)
-        config.qwen3_8_next_ngram_vocab_size_base = getattr(
-            text_config, "ngram_vocab_size_base", 20000000
-        )
+        config.qwen3_8_next_ngram_vocab_size_base = getattr(text_config, "ngram_vocab_size_base", 20000000)
         config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
         config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
         config.qwen3_8_next_ple_conv_dilation = getattr(text_config, "ple_conv_dilation", 3)
@@ -358,9 +362,7 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         config.qwen3_8_next_ngram_rows_per_shard = self._ngram_rows_per_shard()
 
         config.qwen3_8_next_indexer_budget = getattr(text_config, "indexer_budget", 2048)
-        config.qwen3_8_next_indexer_compress_ratio = getattr(
-            text_config, "indexer_compress_ratio", 4
-        )
+        config.qwen3_8_next_indexer_compress_ratio = getattr(text_config, "indexer_compress_ratio", 4)
         config.qwen3_8_next_indexer_n_heads = getattr(text_config, "indexer_n_heads", 4)
         config.qwen3_8_next_indexer_head_dim = getattr(text_config, "indexer_head_dim", 128)
         config.qwen3_8_next_indexer_kv_heads = getattr(text_config, "indexer_kv_heads", 1)

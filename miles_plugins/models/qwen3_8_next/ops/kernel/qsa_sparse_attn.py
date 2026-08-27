@@ -15,15 +15,28 @@ from torch import Tensor
 
 @triton.jit(do_not_specialize=["T", "TOPK"])
 def _qsa_fwd_kernel(
-    Q, K, V, IDX, O, LSE,
-    stride_qt, stride_qh, stride_kt, stride_kh, stride_vt, stride_vh,
-    stride_it, stride_ot, stride_oh,
-    T, TOPK,
+    Q,
+    K,
+    V,
+    IDX,
+    OUT,
+    LSE,
+    stride_qt,
+    stride_qh,
+    stride_kt,
+    stride_kh,
+    stride_vt,
+    stride_vh,
+    stride_it,
+    stride_ot,
+    stride_oh,
+    T,
+    TOPK,
     scale,
-    GROUP: tl.constexpr,     # query heads per kv head
+    GROUP: tl.constexpr,  # query heads per kv head
     D: tl.constexpr,
-    BQ: tl.constexpr,        # queries per program
-    BK: tl.constexpr,        # selection indices per tile
+    BQ: tl.constexpr,  # queries per program
+    BK: tl.constexpr,  # selection indices per tile
 ):
     pid_t = tl.program_id(0)
     pid_h = tl.program_id(1)  # query head index
@@ -35,7 +48,8 @@ def _qsa_fwd_kernel(
 
     q = tl.load(
         Q + offs_q[:, None] * stride_qt + pid_h * stride_qh + offs_d[None, :],
-        mask=q_mask[:, None], other=0.0,
+        mask=q_mask[:, None],
+        other=0.0,
     ).to(tl.float32)
 
     m_i = tl.full((BQ,), float("-inf"), tl.float32)
@@ -47,14 +61,16 @@ def _qsa_fwd_kernel(
         k_mask = offs_k < TOPK
         idx = tl.load(
             IDX + offs_q[:, None] * stride_it + offs_k[None, :],
-            mask=q_mask[:, None] & k_mask[None, :], other=-1,
+            mask=q_mask[:, None] & k_mask[None, :],
+            other=-1,
         )
         valid = idx >= 0
         idx_safe = tl.where(valid, idx, 0)
 
         k_tile = tl.load(
             K + idx_safe[:, :, None] * stride_kt + kv_head * stride_kh + offs_d[None, None, :],
-            mask=valid[:, :, None], other=0.0,
+            mask=valid[:, :, None],
+            other=0.0,
         ).to(tl.float32)
         scores = tl.sum(q[:, None, :] * k_tile, axis=2) * scale
         scores = tl.where(valid, scores, float("-inf"))
@@ -69,7 +85,8 @@ def _qsa_fwd_kernel(
 
         v_tile = tl.load(
             V + idx_safe[:, :, None] * stride_vt + kv_head * stride_vh + offs_d[None, None, :],
-            mask=valid[:, :, None], other=0.0,
+            mask=valid[:, :, None],
+            other=0.0,
         ).to(tl.float32)
         acc += tl.sum(p[:, :, None] * v_tile, axis=1)
         m_i = m_new
@@ -77,8 +94,9 @@ def _qsa_fwd_kernel(
     l_safe = tl.where(l_i == 0.0, 1.0, l_i)
     out = acc / l_safe[:, None]
     tl.store(
-        O + offs_q[:, None] * stride_ot + pid_h * stride_oh + offs_d[None, :],
-        out, mask=q_mask[:, None],
+        OUT + offs_q[:, None] * stride_ot + pid_h * stride_oh + offs_d[None, :],
+        out,
+        mask=q_mask[:, None],
     )
     lse = tl.where(m_i == float("-inf"), float("-inf"), m_i + tl.log(l_safe))
     tl.store(LSE + pid_h * T + offs_q, lse, mask=q_mask)
@@ -86,10 +104,27 @@ def _qsa_fwd_kernel(
 
 @triton.jit(do_not_specialize=["T", "TOPK"])
 def _qsa_bwd_kernel(
-    Q, K, V, IDX, O, LSE, DO, DQ, DK, DV,
-    stride_qt, stride_qh, stride_kt, stride_kh, stride_vt, stride_vh,
-    stride_it, stride_ot, stride_oh,
-    T, TOPK,
+    Q,
+    K,
+    V,
+    IDX,
+    OUT,
+    LSE,
+    DO,
+    DQ,
+    DK,
+    DV,
+    stride_qt,
+    stride_qh,
+    stride_kt,
+    stride_kh,
+    stride_vt,
+    stride_vh,
+    stride_it,
+    stride_ot,
+    stride_oh,
+    T,
+    TOPK,
     scale,
     GROUP: tl.constexpr,
     D: tl.constexpr,
@@ -104,12 +139,15 @@ def _qsa_bwd_kernel(
     offs_d = tl.arange(0, D)
     q_mask = offs_q < T
 
-    q = tl.load(Q + offs_q[:, None] * stride_qt + pid_h * stride_qh + offs_d[None, :],
-                mask=q_mask[:, None], other=0.0).to(tl.float32)
-    do = tl.load(DO + offs_q[:, None] * stride_ot + pid_h * stride_oh + offs_d[None, :],
-                 mask=q_mask[:, None], other=0.0).to(tl.float32)
-    o = tl.load(O + offs_q[:, None] * stride_ot + pid_h * stride_oh + offs_d[None, :],
-                mask=q_mask[:, None], other=0.0).to(tl.float32)
+    q = tl.load(
+        Q + offs_q[:, None] * stride_qt + pid_h * stride_qh + offs_d[None, :], mask=q_mask[:, None], other=0.0
+    ).to(tl.float32)
+    do = tl.load(
+        DO + offs_q[:, None] * stride_ot + pid_h * stride_oh + offs_d[None, :], mask=q_mask[:, None], other=0.0
+    ).to(tl.float32)
+    o = tl.load(
+        OUT + offs_q[:, None] * stride_ot + pid_h * stride_oh + offs_d[None, :], mask=q_mask[:, None], other=0.0
+    ).to(tl.float32)
     lse = tl.load(LSE + pid_h * T + offs_q, mask=q_mask, other=0.0)
     delta = tl.sum(do * o, axis=1)
 
@@ -117,15 +155,22 @@ def _qsa_bwd_kernel(
     for start in range(0, TOPK, BK):
         offs_k = start + tl.arange(0, BK)
         k_mask = offs_k < TOPK
-        idx = tl.load(IDX + offs_q[:, None] * stride_it + offs_k[None, :],
-                      mask=q_mask[:, None] & k_mask[None, :], other=-1)
+        idx = tl.load(
+            IDX + offs_q[:, None] * stride_it + offs_k[None, :], mask=q_mask[:, None] & k_mask[None, :], other=-1
+        )
         valid = idx >= 0
         idx_safe = tl.where(valid, idx, 0)
 
-        k_tile = tl.load(K + idx_safe[:, :, None] * stride_kt + kv_head * stride_kh + offs_d[None, None, :],
-                         mask=valid[:, :, None], other=0.0).to(tl.float32)
-        v_tile = tl.load(V + idx_safe[:, :, None] * stride_vt + kv_head * stride_vh + offs_d[None, None, :],
-                         mask=valid[:, :, None], other=0.0).to(tl.float32)
+        k_tile = tl.load(
+            K + idx_safe[:, :, None] * stride_kt + kv_head * stride_kh + offs_d[None, None, :],
+            mask=valid[:, :, None],
+            other=0.0,
+        ).to(tl.float32)
+        v_tile = tl.load(
+            V + idx_safe[:, :, None] * stride_vt + kv_head * stride_vh + offs_d[None, None, :],
+            mask=valid[:, :, None],
+            other=0.0,
+        ).to(tl.float32)
 
         scores = tl.sum(q[:, None, :] * k_tile, axis=2) * scale
         lse_safe = tl.where(lse == float("-inf"), 0.0, lse)
@@ -144,8 +189,7 @@ def _qsa_bwd_kernel(
         tl.atomic_add(ptrs_k, dk_c, mask=valid[:, :, None])
         tl.atomic_add(ptrs_v, dv_c, mask=valid[:, :, None])
 
-    tl.store(DQ + offs_q[:, None] * stride_qt + pid_h * stride_qh + offs_d[None, :],
-             dq, mask=q_mask[:, None])
+    tl.store(DQ + offs_q[:, None] * stride_qt + pid_h * stride_qh + offs_d[None, :], dq, mask=q_mask[:, None])
 
 
 class _QSASparseAttn(torch.autograd.Function):
@@ -163,11 +207,28 @@ class _QSASparseAttn(torch.autograd.Function):
         BQ, BK = 32, 64
         grid = (triton.cdiv(T, BQ), Hq)
         _qsa_fwd_kernel[grid](
-            qc, kc, vc, idx, o, lse,
-            qc.stride(0), qc.stride(1), kc.stride(0), kc.stride(1),
-            vc.stride(0), vc.stride(1), idx.stride(0), o.stride(0), o.stride(1),
-            T, topk, scale,
-            GROUP=group, D=D, BQ=BQ, BK=BK,
+            qc,
+            kc,
+            vc,
+            idx,
+            o,
+            lse,
+            qc.stride(0),
+            qc.stride(1),
+            kc.stride(0),
+            kc.stride(1),
+            vc.stride(0),
+            vc.stride(1),
+            idx.stride(0),
+            o.stride(0),
+            o.stride(1),
+            T,
+            topk,
+            scale,
+            GROUP=group,
+            D=D,
+            BQ=BQ,
+            BK=BK,
         )
         ctx.save_for_backward(qc, kc, vc, idx, o, lse)
         ctx.scale = scale
@@ -186,11 +247,32 @@ class _QSASparseAttn(torch.autograd.Function):
         BQ, BK = 32, 64
         grid = (triton.cdiv(T, BQ), Hq)
         _qsa_bwd_kernel[grid](
-            qc, kc, vc, idx, o, lse, do, dq, dk, dv,
-            qc.stride(0), qc.stride(1), kc.stride(0), kc.stride(1),
-            vc.stride(0), vc.stride(1), idx.stride(0), do.stride(0), do.stride(1),
-            T, topk, ctx.scale,
-            GROUP=ctx.group, D=D, BQ=BQ, BK=BK,
+            qc,
+            kc,
+            vc,
+            idx,
+            o,
+            lse,
+            do,
+            dq,
+            dk,
+            dv,
+            qc.stride(0),
+            qc.stride(1),
+            kc.stride(0),
+            kc.stride(1),
+            vc.stride(0),
+            vc.stride(1),
+            idx.stride(0),
+            do.stride(0),
+            do.stride(1),
+            T,
+            topk,
+            ctx.scale,
+            GROUP=ctx.group,
+            D=D,
+            BQ=BQ,
+            BK=BK,
         )
         return dq.to(qc.dtype), dk.to(kc.dtype), dv.to(vc.dtype), None, None
 
@@ -198,4 +280,3 @@ class _QSASparseAttn(torch.autograd.Function):
 def qsa_sparse_attention_triton(q: Tensor, k: Tensor, v: Tensor, indices: Tensor, scale: float) -> Tensor:
     """``q`` [T, Hq, D], ``k``/``v`` [S, Hkv, D], ``indices`` [T, K] int (-1 pad)."""
     return _QSASparseAttn.apply(q, k, v, indices, scale)
-

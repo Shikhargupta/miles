@@ -49,10 +49,7 @@ def train(args: ScriptArgs):
     total_gpus = args.num_nodes * args.num_gpus_per_node
     assert total_gpus == 32, "the parallel config below is shaped for 8 nodes x 4 GPUs"
 
-    ckpt_args = (
-        f"--hf-checkpoint {_MODEL_LOCAL} "
-        f"--ref-load {_TORCH_DIST} "
-    )
+    ckpt_args = f"--hf-checkpoint {_MODEL_LOCAL} " f"--ref-load {_TORCH_DIST} "
     if not args.skip_saving:
         load_save_path = f"{_SAVE_DIR}/{args.run_id}/checkpoints"
         # save-interval 10 < the ~19-cycle TMS disk-resume failure horizon
