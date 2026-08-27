@@ -55,7 +55,6 @@ async def train(args):
     maybe_start_mini_ft_controller(args)
 
     if args.offload_rollout and args.colocate_memory_peak_device != "gpu":
-        # gpu mode never released the weights at init; resuming a never-released TMS region is fatal.
         await rollout_manager.onload_weights.remote()
 
     # always update weight first so that sglang has the loaded weights from training.
@@ -110,8 +109,6 @@ async def train(args):
 
         if args.offload_rollout:
             if args.colocate_memory_peak_device == "gpu":
-                # Overlap the handoff on the GPU so the two host copies
-                # (engine weight mirror, trainer backup) never coexist.
                 await rollout_manager.offload_kv.remote()
                 await actor_model.onload()
                 await rollout_manager.offload_weights.remote()
@@ -144,9 +141,6 @@ async def train(args):
                 os.remove(args.save_trigger_sentinel)
 
         if args.colocate_memory_peak_device == "gpu":
-            # Resume the engine weights while the trainer is still resident; the
-            # trainer's host backup is built only after the engine's host mirror
-            # is gone.
             await actor_model.clear_memory()
             await rollout_manager.onload_weights.remote()
             await offload_train()
