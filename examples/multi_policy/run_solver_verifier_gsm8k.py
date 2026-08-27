@@ -207,16 +207,20 @@ def compute_trainer_id(model_id: str) -> str:
     return f"{model_id}-{ACTOR_ROLE}"
 
 
+def compute_output_base_dir(config: ExecuteTrainConfig) -> Path:
+    return Path(config.output_dir) / "multi_policy_solver_verifier" / config.run_id
+
+
 def compute_events_dir(config: ExecuteTrainConfig) -> Path:
-    return Path(config.output_dir) / "multi_policy_solver_verifier" / config.run_id / "events"
+    return compute_output_base_dir(config) / "events"
 
 
 def compute_rollout_data_path_template(config: ExecuteTrainConfig) -> str:
-    return str(compute_events_dir(config).parent / "rollout_data" / "{rollout_id}.pt")
+    return str(compute_output_base_dir(config) / "rollout_data" / "{rollout_id}.pt")
 
 
 def compute_save_dir(config: ExecuteTrainConfig) -> Path:
-    return compute_events_dir(config).parent / "ckpt"
+    return compute_output_base_dir(config) / "ckpt"
 
 
 def _compute_trainer_config(args: ScriptArgs, model_id: str) -> dict:
