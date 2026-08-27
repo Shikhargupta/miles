@@ -3,12 +3,18 @@
 Assumes an already-running ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1) and a
 converted torch_dist reference checkpoint.
 
+Args:
+    model-name: "Qwen3.8-Flash-Next" (48-layer, 8 nodes x 4 GPUs, TP2 PP8 EP4)
+        or "Qwen3.8-Flash-Next-4layer" (smoke slice, 1 node x 4 GPUs,
+        TP2 PP2 EP2).
+
 Usage (inside the head-node container):
     python scripts/run_qwen3_8_next.py train --num-rollout 5
 """
 
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 import typer
 
@@ -16,12 +22,19 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
+_MODEL_REGISTRY = {
+    "Qwen3.8-Flash-Next": "qwen3.8-flash-next",
+    "Qwen3.8-Flash-Next-4layer": "qwen3.8-flash-next-4layer",
+}
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
+    model_name: Literal["Qwen3.8-Flash-Next", "Qwen3.8-Flash-Next-4layer"] = "Qwen3.8-Flash-Next"
     num_nodes: int = 8
     num_gpus_per_node: int = 4
     run_id: str = "qwen38next-dapo"
+    hf_checkpoint: str | None = None
     model_dir: str = "/root/models"
     ckpt_dir: str = "/root/ckpt"
     data_dir: str = "/root/datasets"
@@ -34,16 +47,19 @@ class ScriptArgs(U.ExecuteTrainConfig):
     skip_saving: bool = True
     extra_args: str = ""
 
+    def __post_init__(self):
+        if self.hf_checkpoint is None:
+            self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
 
-@app.command()
-@U.dataclass_cli
-def train(args: ScriptArgs):
-    total_gpus = args.num_nodes * args.num_gpus_per_node
-    assert total_gpus == 32, "the parallel config below is shaped for 8 nodes x 4 GPUs"
+
+def _train(args: ScriptArgs):
+    shape = (args.num_nodes, args.num_gpus_per_node)
+    assert shape in ((8, 4), (1, 4)), "the parallel configs below are shaped for 8x4 (full) or 1x4 (4layer) GPUs"
+
+    megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
     ckpt_args = (
-        f"--hf-checkpoint {args.model_dir}/Qwen3.8-Flash-Next "
-        f"--ref-load {args.ckpt_dir}/qwen3.8-flash-next_torch_dist "
+        f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.ckpt_dir}/{megatron_model_type}_torch_dist "
     )
     if not args.skip_saving:
         load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
@@ -69,13 +85,29 @@ def train(args: ScriptArgs):
         '--apply-chat-template-kwargs \'{"thinking_mode":"thinking"}\' '
     )
 
+    if shape == (8, 4):
+        parallel_args = (
+            "--tensor-model-parallel-size 2 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 8 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 4 "
+            "--expert-tensor-parallel-size 1 "
+        )
+        engine_args = "--rollout-num-gpus-per-engine 8 " "--sglang-tp-size 8 " "--sglang-ep-size 8 "
+    else:
+        parallel_args = (
+            "--tensor-model-parallel-size 2 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 2 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 2 "
+            "--expert-tensor-parallel-size 1 "
+        )
+        engine_args = "--rollout-num-gpus-per-engine 4 " "--sglang-tp-size 4 " "--sglang-ep-size 4 "
+
     perf_args = (
-        "--tensor-model-parallel-size 2 "
-        "--sequence-parallel "
-        "--pipeline-model-parallel-size 8 "
-        "--context-parallel-size 1 "
-        "--expert-model-parallel-size 4 "
-        "--expert-tensor-parallel-size 1 "
+        f"{parallel_args}"
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -102,10 +134,8 @@ def train(args: ScriptArgs):
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 8 "
-        "--sglang-tp-size 8 "
+        f"{engine_args}"
         "--sglang-dp-size 1 "
-        "--sglang-ep-size 8 "
         "--sglang-linear-attn-prefill-backend flashinfer "
         "--sglang-moe-runner-backend triton "
         "--sglang-chunked-prefill-size 8192 "
@@ -164,10 +194,16 @@ def train(args: ScriptArgs):
         train_args=train_args,
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type="qwen3.8-flash-next",
+        megatron_model_type=megatron_model_type,
         extra_env_vars=extra_env_vars,
         megatron_path=args.megatron_path,
     )
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    _train(args)
 
 
 if __name__ == "__main__":
