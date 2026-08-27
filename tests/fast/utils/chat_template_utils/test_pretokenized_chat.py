@@ -69,7 +69,7 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         _load_fixed(TITOTokenizerType.QWEN38_SMALL),
         True,
         frozenset({"tool", "user"}),
-        {"preserve_thinking": True},
+        {"preserve_thinking": True, "reasoning_effort": "xhigh"},
     ),
     ("qwen3_thinking_2507_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
     ("qwen3_next_thinking_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),

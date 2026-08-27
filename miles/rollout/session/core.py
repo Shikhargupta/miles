@@ -189,21 +189,14 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # Serve the adapter being trained instead of the base weights.
     if is_lora_enabled(args):
         request_body["lora_path"] = LORA_ADAPTER_NAME
+    # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
+    # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
     request_ctk = request_body.get("chat_template_kwargs")
     if request_ctk is not None and not isinstance(request_ctk, dict):
         raise MessageValidationError("chat_template_kwargs must be an object")
-    effective_request_ctk = {
-        key: request_body[key]
-        for key in tito_tokenizer.top_level_chat_template_kwargs
-        if request_body.get(key) is not None
-    }
     if request_ctk:
-        # Match SGLang: explicit nested template kwargs override their
-        # top-level OpenAI-compatible aliases.
-        effective_request_ctk.update(request_ctk)
-    if effective_request_ctk:
         try:
-            tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(effective_request_ctk)
+            tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
         except ValueError as e:
             raise MessageValidationError(str(e)) from e
     if tito_tokenizer.chat_template_kwargs:

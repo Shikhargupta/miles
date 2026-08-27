@@ -62,11 +62,6 @@ class _MockTITOTokenizer(TITOTokenizer):
         return list(pretokenized_token_ids)
 
 
-class _PrefixSensitiveMockTITOTokenizer(_MockTITOTokenizer):
-    def session_chat_template_config(self) -> tuple[tuple[str, Any], ...]:
-        return (("mode", self.chat_template_kwargs.get("mode", "default")),)
-
-
 def _make_mock_tito(tito_cls, allowed_append_roles: list[str]) -> TITOTokenizer:
     configured_tito_cls = type(
         f"_Configured{tito_cls.__name__}",
@@ -76,12 +71,9 @@ def _make_mock_tito(tito_cls, allowed_append_roles: list[str]) -> TITOTokenizer:
     return configured_tito_cls(tokenizer=None, assistant_start_str="<|im_start|>assistant")
 
 
-def _make_registry(
-    allowed_append_roles: list[str],
-    tito_cls: type[TITOTokenizer] = _MockTITOTokenizer,
-) -> SessionRegistryV2:
+def _make_registry(allowed_append_roles: list[str]) -> SessionRegistryV2:
     args = SimpleNamespace()
-    mock_tito = _make_mock_tito(tito_cls, allowed_append_roles)
+    mock_tito = _make_mock_tito(_MockTITOTokenizer, allowed_append_roles)
     return SessionRegistryV2(args, tokenizer=None, tito_tokenizer=mock_tito)
 
 
@@ -202,20 +194,6 @@ class TestSingleUserTurnPretokenized:
         messages = [SYS_MSG, USER_MSG]
         result = prepare_pretokenized(session, messages, tools=None, tito_tokenizer=registry.tito_tokenizer)
         assert result == _MOCK_FIRST_TURN_TOKENS
-
-    def test_prefix_sensitive_template_config_is_pinned_after_first_render(self):
-        registry = _make_registry(
-            allowed_append_roles=["tool", "user", "assistant"],
-            tito_cls=_PrefixSensitiveMockTITOTokenizer,
-        )
-        session = registry.get_session(registry.create_session())
-        low = registry.tito_tokenizer.clone_with_chat_template_kwargs({"mode": "low"})
-        medium = registry.tito_tokenizer.clone_with_chat_template_kwargs({"mode": "medium"})
-
-        assert prepare_pretokenized(session, [USER_MSG], tools=None, tito_tokenizer=low) == _MOCK_FIRST_TURN_TOKENS
-        assert session.chat_template_config == (("mode", "low"),)
-        with pytest.raises(MessageValidationError, match="configuration cannot change within a session"):
-            prepare_pretokenized(session, [USER_MSG], tools=None, tito_tokenizer=medium)
 
     def test_two_turn_trajectory(self, registry: SessionRegistryV2):
         """Full 2-turn: user -> assistant(tool_call) -> tool -> final answer."""

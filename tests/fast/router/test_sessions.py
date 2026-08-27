@@ -7,17 +7,15 @@ import socket
 import uuid
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
 import requests
 from fastapi.responses import JSONResponse
 
-from miles.rollout.session.core import prepare_chat_request
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
-from miles.utils.chat_template_utils.tito_tokenizer import Qwen38SmallTITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
@@ -235,41 +233,6 @@ class TestSessionProxy:
         override_payload = router_env.backend.request_log[-1]
         assert override_payload["chat_template_kwargs"] == {"enable_thinking": True}
         assert override_payload["input_ids"] != default_payload["input_ids"]
-
-    def test_qwen38small_top_level_reasoning_effort_reaches_local_renderer(self):
-        tokenizer = MagicMock()
-        tokenizer.encode.return_value = [198]
-        tokenizer.convert_tokens_to_ids.return_value = 151645
-        tito = Qwen38SmallTITOTokenizer(tokenizer)
-
-        request_body, _, request_tito = prepare_chat_request(
-            json.dumps(
-                {
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "reasoning_effort": "low",
-                }
-            ).encode(),
-            SimpleNamespace(),
-            tito,
-        )
-
-        assert request_tito.chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "low"}
-        assert request_body["chat_template_kwargs"] == request_tito.chat_template_kwargs
-
-        request_body, _, request_tito = prepare_chat_request(
-            json.dumps(
-                {
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "reasoning_effort": "low",
-                    "chat_template_kwargs": {"reasoning_effort": "medium"},
-                }
-            ).encode(),
-            SimpleNamespace(),
-            tito,
-        )
-
-        assert request_tito.chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "medium"}
-        assert request_body["chat_template_kwargs"] == request_tito.chat_template_kwargs
 
     def test_chat_upstream_null_message_returns_502(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]

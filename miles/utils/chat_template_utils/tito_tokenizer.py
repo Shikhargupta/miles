@@ -84,7 +84,6 @@ class TITOTokenizer:
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
     chat_template_kwarg_aliases: frozenset[str] = frozenset()
-    top_level_chat_template_kwargs: frozenset[str] = frozenset()
 
     # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
@@ -127,10 +126,6 @@ class TITOTokenizer:
             ),
             assistant_start_str=self._assistant_start_str,
         )
-
-    def session_chat_template_config(self) -> tuple[tuple[str, Any], ...] | None:
-        """Return render settings that must stay fixed after a session prefix is tokenized."""
-        return None
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -325,20 +320,12 @@ class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
     """Qwen3.8 reasoning-effort template with the Qwen3 token boundary."""
 
     tool_call_parser = "qwen3_coder"
-    top_level_chat_template_kwargs = frozenset({"reasoning_effort"})
 
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.8_small_and_flash_next_fixed.jinja",
-        extra_kwargs={"preserve_thinking": True},
+        extra_kwargs={"preserve_thinking": True, "reasoning_effort": "xhigh"},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
-
-    def session_chat_template_config(self) -> tuple[tuple[str, Any], ...]:
-        enable_thinking = self.chat_template_kwargs.get("enable_thinking", True)
-        config = (("enable_thinking", enable_thinking),)
-        if enable_thinking is True:
-            config += (("reasoning_effort", self.chat_template_kwargs.get("reasoning_effort", "xhigh")),)
-        return config
 
 
 class QwenNextTITOTokenizer(Qwen3TITOTokenizer):

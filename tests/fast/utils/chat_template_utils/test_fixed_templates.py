@@ -27,8 +27,14 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.QWEN3: ("qwen3_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.QWEN35: ("qwen3.5_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.QWEN36: ("qwen3.6_fixed.jinja", {"preserve_thinking": True}),
-    TITOTokenizerType.QWEN38_SMALL: ("qwen3.8_small_and_flash_next_fixed.jinja", {"preserve_thinking": True}),
-    TITOTokenizerType.QWEN4_EXP: ("qwen3.8_small_and_flash_next_fixed.jinja", {"preserve_thinking": True}),
+    TITOTokenizerType.QWEN38_SMALL: (
+        "qwen3.8_small_and_flash_next_fixed.jinja",
+        {"preserve_thinking": True, "reasoning_effort": "xhigh"},
+    ),
+    TITOTokenizerType.QWEN4_EXP: (
+        "qwen3.8_small_and_flash_next_fixed.jinja",
+        {"preserve_thinking": True, "reasoning_effort": "xhigh"},
+    ),
     TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),
@@ -110,9 +116,16 @@ def test_kwargs_are_copied_not_shared(monkeypatch):
     assert Qwen3TITOTokenizer.FIXED_TEMPLATE.extra_kwargs == {"clear_thinking": False}
 
 
-def test_registered_kwargs_cannot_be_overridden():
+@pytest.mark.parametrize(
+    ("tokenizer_cls", "chat_template_kwargs"),
+    [
+        (Qwen3TITOTokenizer, {"clear_thinking": True}),
+        (Qwen38SmallTITOTokenizer, {"reasoning_effort": "low"}),
+    ],
+)
+def test_registered_kwargs_cannot_be_overridden(tokenizer_cls, chat_template_kwargs):
     with pytest.raises(ValueError, match="conflicts with the value registered"):
-        Qwen3TITOTokenizer(object(), chat_template_kwargs={"clear_thinking": True})
+        tokenizer_cls(object(), chat_template_kwargs=chat_template_kwargs)
 
 
 @pytest.mark.parametrize(

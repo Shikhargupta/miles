@@ -53,20 +53,6 @@ def assert_pretokenized_prefix(
         )
 
 
-def validate_session_chat_template_config(
-    established: tuple[tuple[str, Any], ...] | None,
-    tito_tokenizer: TITOTokenizer,
-) -> tuple[tuple[str, Any], ...] | None:
-    """Reject a renderer mode that would change an already-tokenized session prefix."""
-    requested = tito_tokenizer.session_chat_template_config()
-    if established is not None and requested != established:
-        raise MessageValidationError(
-            "chat template configuration cannot change within a session: "
-            f"established={dict(established)}, requested={dict(requested or ())}"
-        )
-    return requested
-
-
 @dataclass
 class LinearTrajectory:
     """State for a linear trajectory.
@@ -91,7 +77,6 @@ class LinearTrajectory:
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
-    chat_template_config: tuple[tuple[str, Any], ...] | None = None
 
     @property
     def token_ids(self) -> list[int]:
@@ -122,42 +107,37 @@ class LinearTrajectory:
         Must be called under ``self.lock``.
         """
         matcher = message_matcher if message_matcher is not None else strict_message_matches
-        requested_template_config = validate_session_chat_template_config(self.chat_template_config, tito_tokenizer)
 
         # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
         #    first turn rolls back to the empty checkpoint, clearing token_ids.
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages, matcher)
 
         if not self.token_ids:
-            prompt_token_ids = tito_tokenizer.apply_chat_template(
+            return tito_tokenizer.apply_chat_template(
                 request_messages,
                 tools=tools,
                 add_generation_prompt=True,
                 tokenize=True,
             )
-        else:
-            # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
-            #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
-            try:
-                assert_messages_append_only_with_allowed_role(
-                    self.messages, request_messages, tito_tokenizer.allowed_append_roles, message_matcher=matcher
-                )
-            except ValueError as e:
-                raise MessageValidationError(
-                    f"{e}; the selected TITO fixed template does not support appending this role"
-                ) from e
 
-            effective_messages = self.messages + request_messages[len(self.messages) :]
-            prompt_token_ids = tito_tokenizer.merge_tokens(
-                old_messages=self.messages,
-                new_messages=effective_messages,
-                pretokenized_token_ids=self.token_ids,
-                tools=tools,
+        # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
+        #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
+        try:
+            assert_messages_append_only_with_allowed_role(
+                self.messages, request_messages, tito_tokenizer.allowed_append_roles, message_matcher=matcher
             )
+        except ValueError as e:
+            raise MessageValidationError(
+                f"{e}; the selected TITO fixed template does not support appending this role"
+            ) from e
 
-        if self.chat_template_config is None:
-            self.chat_template_config = requested_template_config
-        return prompt_token_ids
+        effective_messages = self.messages + request_messages[len(self.messages) :]
+        return tito_tokenizer.merge_tokens(
+            old_messages=self.messages,
+            new_messages=effective_messages,
+            pretokenized_token_ids=self.token_ids,
+            tools=tools,
+        )
 
     def update_pretokenized_state(
         self,

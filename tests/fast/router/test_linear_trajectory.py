@@ -56,19 +56,11 @@ class _MockTITOTokenizer(TITOTokenizer):
         return list(pretokenized_token_ids)
 
 
-class _PrefixSensitiveMockTITOTokenizer(_MockTITOTokenizer):
-    def session_chat_template_config(self) -> tuple[tuple[str, Any], ...]:
-        return (("mode", self.chat_template_kwargs.get("mode", "default")),)
-
-
-def _make_registry(
-    allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES,
-    tito_cls: type[TITOTokenizer] = _MockTITOTokenizer,
-) -> SessionRegistry:
+def _make_registry(allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES) -> SessionRegistry:
     args = SimpleNamespace()
     configured_mock_type = type(
         "_ConfiguredMockTITOTokenizer",
-        (tito_cls,),
+        (_MockTITOTokenizer,),
         {"FIXED_TEMPLATE": FixedTemplate(allowed_append_roles=allowed_append_roles)},
     )
     mock_tito = configured_mock_type(tokenizer=None, assistant_start_str="<|im_start|>assistant")
@@ -186,17 +178,6 @@ class TestSingleUserTurnPretokenized:
         messages = [SYS_MSG, USER_MSG]
         result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
         assert result == _MOCK_FIRST_TURN_TOKENS
-
-    def test_prefix_sensitive_template_config_is_pinned_after_first_render(self):
-        registry = _make_registry(tito_cls=_PrefixSensitiveMockTITOTokenizer)
-        session = registry.get_session(registry.create_session())
-        low = registry.tito_tokenizer.clone_with_chat_template_kwargs({"mode": "low"})
-        medium = registry.tito_tokenizer.clone_with_chat_template_kwargs({"mode": "medium"})
-
-        assert session.prepare_pretokenized([USER_MSG], tito_tokenizer=low) == _MOCK_FIRST_TURN_TOKENS
-        assert session.chat_template_config == (("mode", "low"),)
-        with pytest.raises(MessageValidationError, match="configuration cannot change within a session"):
-            session.prepare_pretokenized([USER_MSG], tito_tokenizer=medium)
 
     def test_two_turn_trajectory(self, registry: SessionRegistry):
         """Full 2-turn: user -> assistant(tool_call) -> tool -> final answer."""

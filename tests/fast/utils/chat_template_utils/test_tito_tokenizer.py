@@ -235,29 +235,6 @@ class TestConfig:
         assert default_tito._assistant_start_str is None
         assert default_tito.trailing_token_ids == frozenset()
 
-    def test_qwen38small_normalizes_prefix_sensitive_template_config(self):
-        tokenizer = MagicMock()
-        tokenizer.encode.return_value = [198]
-        tokenizer.convert_tokens_to_ids.return_value = 151645
-
-        default = Qwen38SmallTITOTokenizer(tokenizer)
-        low = default.clone_with_chat_template_kwargs({"reasoning_effort": "low"})
-        disabled_low = default.clone_with_chat_template_kwargs({"enable_thinking": False, "reasoning_effort": "low"})
-        disabled_medium = default.clone_with_chat_template_kwargs(
-            {"enable_thinking": False, "reasoning_effort": "medium"}
-        )
-
-        assert default.session_chat_template_config() == (
-            ("enable_thinking", True),
-            ("reasoning_effort", "xhigh"),
-        )
-        assert low.session_chat_template_config() == (
-            ("enable_thinking", True),
-            ("reasoning_effort", "low"),
-        )
-        assert disabled_low.session_chat_template_config() == (("enable_thinking", False),)
-        assert disabled_medium.session_chat_template_config() == disabled_low.session_chat_template_config()
-
     @pytest.mark.parametrize(
         "chat_template_kwargs, expected",
         [
