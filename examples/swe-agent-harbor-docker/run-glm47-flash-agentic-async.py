@@ -177,8 +177,7 @@ def execute(args: ScriptArgs):
     rollout_gpus = args.rollout_num_gpus
     assert args.num_nodes == 1, f"single-node recipe, got num_nodes={args.num_nodes}"
     assert train_gpus + rollout_gpus <= args.num_gpus_per_node, (
-        f"train ({train_gpus}) + rollout ({rollout_gpus}) GPUs exceed "
-        f"num_gpus_per_node ({args.num_gpus_per_node})"
+        f"train ({train_gpus}) + rollout ({rollout_gpus}) GPUs exceed " f"num_gpus_per_node ({args.num_gpus_per_node})"
     )
     print(f"Disagg split: {train_gpus} GPUs training, {rollout_gpus} GPUs inference")
 
