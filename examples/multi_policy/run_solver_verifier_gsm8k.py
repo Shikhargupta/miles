@@ -121,8 +121,10 @@ def build_train_args(
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--reward-key reward_value "
         "--log-reward-category outcome "
-        # retract (default) can deadlock flush_cache in fully_async under load
-        "--pause-generation-mode in_place "
+        # retract recomputes retracted requests' KV under the new weights and flushes
+        # the prefix cache on every update; in_place skips that flush, so radix-cached
+        # prefixes from pre-update weights would keep serving later requests.
+        "--pause-generation-mode retract "
     )
 
     eval_args = (
