@@ -71,37 +71,21 @@ def _validate_impl(args: Namespace) -> None:
         )
 
 
-# DeepSeek-V4 weights follow Megatron's names, so one checkpoint serves both --dsv4-impl
-# values. Checkpoints written before that switch used the plugin's own spellings and would
-# load into a silently half-initialized model, so refuse them by name.
-_SUPERSEDED_WEIGHT_NAMES = (
-    "self_attention.wq_a.weight",
-    "self_attention.wo_a.weight",
-    "hc_attn_fn",
-    "hc_head_params.hc_head_fn",
-)
-
-
 def assert_checkpoint_is_current(load_dir: str) -> None:
-    """Reject DeepSeek-V4 checkpoints written before the attention weights were renamed."""
+    """Reject DeepSeek-V4 checkpoints from before the weights took Megatron's names."""
     from pathlib import Path
 
     from torch.distributed.checkpoint import FileSystemReader
 
-    iteration_file = Path(load_dir) / "latest_checkpointed_iteration.txt"
-    step = iteration_file.read_text().strip() if iteration_file.is_file() else None
-    directory = Path(load_dir) / step if step else Path(load_dir)
-    if not directory.is_dir():
+    path = Path(load_dir)
+    step_file = path / "latest_checkpointed_iteration.txt"
+    if step_file.is_file():
+        path = path / step_file.read_text().strip()
+    if not path.is_dir():
         return
 
-    metadata = FileSystemReader(directory).read_metadata()
-    stale = [key for key in metadata.state_dict_metadata if any(name in key for name in _SUPERSEDED_WEIGHT_NAMES)]
-    if stale:
+    if any("self_attention.wq_a." in key for key in FileSystemReader(path).read_metadata().state_dict_metadata):
         raise ValueError(
-            f"{load_dir} is a DeepSeek-V4 checkpoint from before the attention weights were renamed "
-            f"to Megatron's names (found {stale[0]!r}); loading it would leave the attention layers "
-            f"uninitialized. Re-convert from the HuggingFace checkpoint, or ask your coding agent: "
-            f'"remap the DeepSeek-V4 checkpoint at {load_dir} from the old attention weight names '
-            f"to the current ones (see _RENAMED_ATTENTION_WEIGHT in "
-            f'miles_plugins/models/deepseek_v4/arguments.py)."'
+            f"{load_dir} was written before the DeepSeek-V4 weights took Megatron's names and "
+            "would load half-initialized. Re-convert it from the HuggingFace checkpoint."
         )
