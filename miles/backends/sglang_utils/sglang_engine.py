@@ -74,7 +74,8 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
-    server_args.host = server_args.host.strip("[]")
+    if server_args.host.strip("[]") != server_args.host:
+        server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
@@ -92,7 +93,8 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
 
 def _launch_sglang_server(server_args: ServerArgs, bundle_indices: list[int]):
     """Host the Ray HTTP server in a same-job child actor. Returns (actor, scheduler_actors)."""
-    server_args.host = server_args.host.strip("[]")
+    if server_args.host.strip("[]") != server_args.host:
+        server_args.host = server_args.host.strip("[]")
     placement_group = ray.util.get_current_placement_group()
     assert placement_group is not None
     http_actor = (
