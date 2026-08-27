@@ -15,10 +15,7 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.rollout.generate_utils.weight_version_partition import (
-    lock_weight_version_extra_key,
-    observe_weight_version,
-)
+from miles.rollout.generate_utils.weight_version_partition import lock_weight_version_extra_key, observe_weight_version
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
