@@ -162,11 +162,19 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
 
         self.rows_per_shard = getattr(config, "qwen3_8_next_ngram_rows_per_shard", None)
         if self.rows_per_shard is None:
-            raise ValueError(
-                "config.qwen3_8_next_ngram_rows_per_shard is unset (the bridge reads "
-                "it from the checkpoint); deriving it from ngram_vocab_size_base "
-                "drifts 12 rows/shard and misaligns the whole table."
+            hf = getattr(config, "qwen3_8_next_hf_checkpoint", None)
+            if hf is None:
+                raise ValueError(
+                    "PLE shard height unknown: neither qwen3_8_next_ngram_rows_per_shard "
+                    "nor qwen3_8_next_hf_checkpoint is set on the config; deriving it "
+                    "from ngram_vocab_size_base drifts 12 rows/shard."
+                )
+            name = (
+                f"model.language_model.layers.{layer_number - 1}.ple.ple_embedding" ".ngram_embedding.shard_0.weight"
             )
+            index = _weight_map(hf)
+            _, _, shape = _safetensors_slice(f"{hf}/{index[name]}", name, {})
+            self.rows_per_shard = int(shape[0])
         self.row_start = self.shard_ids[0] * self.rows_per_shard
         self.row_end = (self.shard_ids[-1] + 1) * self.rows_per_shard
 
