@@ -29,6 +29,12 @@ class RewardWindowMeans(NamedTuple):
     final: float
 
 
+class EvalScoreBounds(NamedTuple):
+    initial_max: float
+    peak_min: float
+    min_growth: float | None = None
+
+
 TRAIN_REWARD_BOUNDS = {
     SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.01),
     VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.01),
@@ -42,6 +48,7 @@ def execute(
     *,
     wandb_args: str,
     train_reward_bounds: dict[str, TrainRewardBounds] | None = None,
+    eval_score_bounds: dict[str, EvalScoreBounds] | None = None,
 ) -> None:
     events_dir = compute_events_dir(args)
     megatron_config = compute_megatron_config(args)
@@ -57,6 +64,8 @@ def execute(
         model_ids=[trainer["model_id"] for trainer in megatron_config["trainers"]],
         dataset_name=EVAL_DATASET_NAME,
     )
+    if eval_score_bounds is not None:
+        assert_every_policy_eval_score_learned(events_dir, bounds=eval_score_bounds, dataset_name=EVAL_DATASET_NAME)
 
 
 def assert_every_rank_trained_with_its_own_policy_args(
@@ -148,6 +157,44 @@ def assert_every_policy_reported_eval_points(events_dir: Path, *, model_ids: lis
             f"policy {model_id!r} logged no {eval_key} point under {events_dir}, but every run evaluates at least "
             f"once, so held-out eval never actually ran for this policy"
         )
+
+
+def assert_every_policy_eval_score_learned(
+    events_dir: Path, *, bounds: dict[str, EvalScoreBounds], dataset_name: str
+) -> None:
+    for model_id, model_bounds in bounds.items():
+        scores = _read_eval_score_series(events_dir, model_id=model_id, dataset_name=dataset_name)
+        assert scores, (
+            f"policy {model_id!r} logged no eval/{dataset_name}/{model_id} point under {events_dir}, so its "
+            f"held-out learning cannot be checked"
+        )
+
+        first = scores[0]
+        peak = max(scores)
+        assert first <= model_bounds.initial_max, (
+            f"policy {model_id!r} starts at eval score {first}, above {model_bounds.initial_max}; a run that "
+            f"starts already solved cannot show that training moved it"
+        )
+        assert peak >= model_bounds.peak_min, (
+            f"policy {model_id!r} peaks at eval score {peak}, below {model_bounds.peak_min}; training never "
+            f"reached the expected held-out accuracy"
+        )
+        if model_bounds.min_growth is not None:
+            assert peak - first >= model_bounds.min_growth, (
+                f"policy {model_id!r} eval score grew by {peak - first}, below {model_bounds.min_growth}; "
+                f"its first point was {first} and its best point was {peak}"
+            )
+
+
+def _read_eval_score_series(events_dir: Path, *, model_id: str, dataset_name: str) -> list[float]:
+    eval_key = f"eval/{dataset_name}/{model_id}"
+    version_key = f"{eval_key}/weight_version/max"
+    points = [
+        (event.metrics.get(version_key, 0), event.metrics[eval_key])
+        for event in read_events(events_dir)
+        if isinstance(event, MetricEvent) and eval_key in event.metrics
+    ]
+    return [score for _, score in sorted(points)]
 
 
 def _compute_reward_window_means(rewards: list[float]) -> RewardWindowMeans:
