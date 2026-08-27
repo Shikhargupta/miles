@@ -3,7 +3,6 @@ import math
 import os
 
 import typer
-
 from examples.infra_features.split_deployment.run_solver_verifier_gsm8k_split import (
     build_deployment_train_args,
     compute_deployment_identities,
@@ -18,9 +17,7 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     launch_train,
     prepare,
 )
-from tests.e2e.conftest_multi_policy import (
-    assert_every_rank_trained_with_its_own_policy_args,
-)
+from tests.e2e.conftest_multi_policy import assert_every_rank_trained_with_its_own_policy_args
 from tests.e2e.deploy.conftest_deploy.common.utils import assert_the_cluster_can_deploy_runs
 from tests.e2e.deploy.conftest_deploy.split.split_deployment import RunDeployment, run_split_training_into
 

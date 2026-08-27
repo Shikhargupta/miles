@@ -123,12 +123,10 @@ def assert_every_policy_eval_score_learned(
 
         first = scores[0]
         peak = max(scores)
-        assert first <= model_bounds.initial_max, (
-            f"policy {model_id!r}: first eval score {first} > {model_bounds.initial_max} (starts already solved)"
-        )
-        assert peak >= model_bounds.peak_min, (
-            f"policy {model_id!r}: peak eval score {peak} < {model_bounds.peak_min}"
-        )
+        assert (
+            first <= model_bounds.initial_max
+        ), f"policy {model_id!r}: first eval score {first} > {model_bounds.initial_max} (starts already solved)"
+        assert peak >= model_bounds.peak_min, f"policy {model_id!r}: peak eval score {peak} < {model_bounds.peak_min}"
         if model_bounds.min_growth is not None:
             assert peak - first >= model_bounds.min_growth, (
                 f"policy {model_id!r}: eval growth {peak - first} < {model_bounds.min_growth} "
