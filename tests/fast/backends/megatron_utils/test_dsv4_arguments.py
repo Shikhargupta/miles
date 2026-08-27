@@ -32,7 +32,11 @@ def test_only_the_dsv4_spec_triggers_normalization():
 
 
 def test_impl_selects_the_attention_variant():
-    miles = _parse()
+    default = _parse()
+    normalize_dsv4_args(default)
+    assert default.experimental_attention_variant == "dsv4_hybrid"
+
+    miles = _parse("--dsv4-impl", "miles")
     normalize_dsv4_args(miles)
     assert miles.experimental_attention_variant == "dsv4"
 
@@ -47,7 +51,7 @@ def test_impl_selects_the_attention_variant():
     [
         (("--dsv4-impl", "megatron", "--tensor-model-parallel-size", "8"), "tensor-model-parallel-size 1"),
         (("--dsv4-impl", "megatron", "--dsa-kernel-backend", "tilelang"), "does not support"),
-        (("--dsa-kernel-backend", "cudnn"), "ignores cuDNN"),
+        (("--dsv4-impl", "miles", "--dsa-kernel-backend", "cudnn"), "ignores cuDNN"),
     ],
     ids=["megatron-needs-tp1", "megatron-rejects-tilelang", "miles-rejects-cudnn"],
 )
