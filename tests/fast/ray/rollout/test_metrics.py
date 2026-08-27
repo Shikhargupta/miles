@@ -179,6 +179,45 @@ class TestComputeSpecMetrics:
             "spec_accept_length": pytest.approx(8 / 3),
         }
 
+    def test_v2_counts_metrics_detached_from_fully_async_aborted_group(self):
+        args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
+        sample = self._member("sid-1", self._spec_info(2, 4, 2, 6))
+        detached = self._member("sid-2", self._spec_info(3, 6, 1, 2)).metadata[SESSION_ROLLOUT_METRICS_KEY]
+
+        out = _compute_spec_metrics(args, [sample], [detached])
+
+        assert out == {
+            "spec_accept_rate": pytest.approx(5 / 10),
+            "spec_accept_length": pytest.approx(8 / 3),
+        }
+
+    def test_rollout_log_combines_detached_session_metrics(self, monkeypatch):
+        args = make_args(
+            advantage_estimator="ppo",
+            log_passrate=False,
+            sglang_speculative_algorithm="EAGLE",
+            use_session_server="v2",
+        )
+        sample = make_sample()
+        sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
+            "session_id": "sid-1",
+            "metrics": self._spec_info(2, 4, 2, 6),
+        }
+        detached = {
+            "session_id": "sid-2",
+            "metrics": self._spec_info(3, 6, 1, 2),
+        }
+        logged = {}
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, metrics, **_kwargs: logged.update(metrics),
+        )
+
+        log_rollout_data(0, args, [sample], None, 1.0, session_rollout_metrics=[detached])
+
+        assert logged["rollout/spec_accept_rate"] == pytest.approx(5 / 10)
+        assert logged["rollout/spec_accept_length"] == pytest.approx(8 / 3)
+
 
 class TestTitoMismatchMetrics:
     def test_no_tito_metadata_emits_no_tito_keys(self):

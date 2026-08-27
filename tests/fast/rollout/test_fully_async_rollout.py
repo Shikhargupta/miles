@@ -13,6 +13,7 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.types import Sample
 
 N_SAMPLES_PER_PROMPT = 2
@@ -192,6 +193,11 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
 
 async def test_aborted_group_recycled(monkeypatch):
     aborted = make_group(1, status=Sample.Status.ABORTED)
+    carrier = {
+        "session_id": "sid-1",
+        "metrics": {"spec_info": Sample.SpecInfo(1, 2, 1, 3).to_dict()},
+    }
+    aborted[0].metadata[SESSION_ROLLOUT_METRICS_KEY] = carrier
     data_source = FakeDataSource(scripted=[aborted])
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source)
@@ -203,6 +209,7 @@ async def test_aborted_group_recycled(monkeypatch):
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
     assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert output.session_rollout_metrics == [carrier]
 
 
 async def test_stale_group_recycled(monkeypatch):

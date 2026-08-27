@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
@@ -79,6 +80,9 @@ class DataBuffer(ABC):
     def get_metrics(self) -> dict[str, float]:
         """Report fully-qualified metrics since the previous call (window counters reset here)."""
 
+    def pop_session_rollout_metrics(self) -> list[dict]:
+        return []
+
 
 class DefaultDataBuffer(DataBuffer):
     """FIFO buffer of finished groups, filtering out what training should not see.
@@ -121,10 +125,16 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
         self._metric_consumed_staleness: list[int] = []
+        self._session_rollout_metrics: list[dict] = []
 
     async def put(self, input: DataBufferInput) -> None:
         # filters at receiving sample: abort filter, dynamic filter
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
+            self._session_rollout_metrics.extend(
+                sample.metadata[SESSION_ROLLOUT_METRICS_KEY]
+                for sample in iter_samples(input.group)
+                if SESSION_ROLLOUT_METRICS_KEY in sample.metadata
+            )
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group)
             return
@@ -182,6 +192,11 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_gatherer = MetricGatherer()
         self._metric_consumed_staleness = []
         self._metric_aborted_groups = self._metric_stale_groups = 0
+        return metrics
+
+    def pop_session_rollout_metrics(self) -> list[dict]:
+        metrics = self._session_rollout_metrics
+        self._session_rollout_metrics = []
         return metrics
 
     @staticmethod

@@ -195,7 +195,11 @@ class FullyAsyncRolloutFn:
         if self._sample_filter is not None:
             self._sample_filter(args, data)
 
-        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics())
+        return RolloutFnTrainOutput(
+            samples=data,
+            metrics=self._output.get_metrics(),
+            session_rollout_metrics=self._output.pop_session_rollout_metrics(),
+        )
 
     def _recycle(self, prompt_group: list[Sample]) -> None:
         for sample in prompt_group:
