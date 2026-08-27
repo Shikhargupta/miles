@@ -1253,31 +1253,6 @@ class TestSessionServerPauseGenerationMode:
         miles_validate_args(self._parse(["--use-session-server", "--pause-generation-mode", mode]))
 
 
-class TestInPlacePauseRadixCacheDefault:
-    def _parse(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
-
-    def test_in_place_defaults_radix_cache_off(self):
-        """in_place cannot flush the prefix cache on weight updates, so stale-KV reuse must be prevented."""
-        args = self._parse(["--pause-generation-mode", "in_place"])
-        miles_validate_args(args)
-        assert args.sglang_disable_radix_cache is True
-
-    def test_retract_keeps_radix_cache_on(self):
-        """retract flushes on every update, so the radix cache stays usable."""
-        args = self._parse(["--pause-generation-mode", "retract"])
-        miles_validate_args(args)
-        assert args.sglang_disable_radix_cache is False
-
-    def test_in_place_with_explicit_disable_stays_disabled(self):
-        """An explicit --sglang-disable-radix-cache passes through unchanged."""
-        args = self._parse(["--pause-generation-mode", "in_place", "--sglang-disable-radix-cache"])
-        miles_validate_args(args)
-        assert args.sglang_disable_radix_cache is True
-
-
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

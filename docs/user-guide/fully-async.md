@@ -91,11 +91,7 @@ the driver's step schedule:
    `--pause-generation-mode` flag decides how in-flight requests survive that pause: the
    default `retract` returns them to the waiting queue and recomputes their KV cache,
    while `in_place` freezes them and resumes on the existing cache. Passing `abort`
-   would kill them outright, which is why fully async rejects it. Because `in_place`
-   keeps paused requests' KV, the prefix cache cannot be flushed on updates, so miles
-   defaults `--sglang-disable-radix-cache` in this mode: otherwise prefixes cached
-   under pre-update weights would keep being reused by later requests, silently mixing
-   old-policy KV into new-policy rollouts.
+   would kill them outright, which is why fully async rejects it.
 
 Because generation spans those weight updates, the samples in one group can carry
 different weight versions. The gap between a group's oldest weight version and the

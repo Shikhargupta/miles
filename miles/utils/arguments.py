@@ -3663,16 +3663,6 @@ def miles_validate_args(args):
             "the baseline snapshot is seeded from its safetensors bytes."
         )
 
-    if args.pause_generation_mode == "in_place" and not args.sglang_disable_radix_cache:
-        args.sglang_disable_radix_cache = True
-        logger.info(
-            "pause-generation-mode=in_place: defaulting --sglang-disable-radix-cache. In-place weight "
-            "updates cannot flush the prefix cache (paused requests keep their KV, so the engine-side "
-            "flush would fail), which leaves KV computed under pre-update weights in the radix tree. "
-            "Later requests silently reuse those stale prefixes, so rollouts mix old-policy KV into "
-            "new-policy generations and the recorded rollout log probs drift away from the trainer."
-        )
-
     if args.colocate:
         if args.offload_train is None:
             args.offload_train = True
