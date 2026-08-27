@@ -397,6 +397,15 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
     # Single-node smoke-test configs
     if actor_num_nodes == 1:
+        if args.dsv4_impl == "megatron":
+            # The plugin rejects TP>1; the TP ranks go to DP instead.
+            return (
+                "--tensor-model-parallel-size 1 "
+                "--pipeline-model-parallel-size 1 "
+                "--context-parallel-size 1 "
+                f"--expert-model-parallel-size {actor_num_gpus_per_node} "
+                "--expert-tensor-parallel-size 1 "
+            )
         return (
             f"--tensor-model-parallel-size {actor_num_gpus_per_node} "
             "--sequence-parallel "
