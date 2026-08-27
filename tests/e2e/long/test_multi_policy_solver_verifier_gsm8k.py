@@ -8,27 +8,19 @@ from tests.e2e.conftest_multi_policy import TrainRewardBounds, execute
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=15000,
+    est_time=36000,
     suite="stage-c-4-gpu-h200",
     labels=["long"],
-    disabled=(
-        "the recipe was realigned with the single-policy GSM8K baseline (nonzero-std dynamic filter, 32x8 "
-        "groups, response length 1024) and its acceptance has not been recalibrated against a run of that "
-        "recipe yet. The historical stall around solver=99 verifier=80 is fixed: since the rollout-disposal "
-        "and executor-teardown fixes, 100-rollout runs complete and the Ray job succeeds. What remains open "
-        "is the learning gate: with the dynamic filter on, rollout/raw_reward is computed over accepted "
-        "nonzero-std groups only, whose mean is pinned near .5 by construction, so growth on that metric no "
-        "longer measures learning -- the per-policy held-out eval curves (eval/gsm8k/solver) do. Re-enable "
-        "by running this recipe once, then gating on the observed eval trajectory."
-    ),
 )
 
 NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "250"))
 
-# TODO: tighten these weak bounds once the e2e run has been observed.
+# Calibrated against a full 250-rollout run of this recipe: solver raw_reward
+# rose .490 -> .562 (eval/gsm8k/solver .473 -> .564) and verifier .541 -> .656
+# (eval .569 -> .821); thresholds sit at roughly one third of the observed growth.
 TRAIN_REWARD_BOUNDS = {
-    SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.3, min_growth=None),
-    VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.1, min_growth=None),
+    SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.55, final_min=0.52, min_growth=0.02),
+    VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.62, final_min=0.58, min_growth=0.04),
 }
 
 

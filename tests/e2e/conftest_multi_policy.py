@@ -21,7 +21,7 @@ from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 class TrainRewardBounds(NamedTuple):
     initial_max: float
     final_min: float
-    min_growth: float = 0.0
+    min_growth: float | None = None
 
 
 class RewardWindowMeans(NamedTuple):
@@ -129,10 +129,11 @@ def assert_every_policy_reported_reward_in_bounds(events_dir: Path, *, bounds: d
             f"policy {model_id!r} ends at training reward {final}, below {model_bounds.final_min}; either its "
             f"reward function never fires, or training destroyed the model"
         )
-        assert final - initial >= model_bounds.min_growth, (
-            f"policy {model_id!r} raw reward grew by {final - initial}, below {model_bounds.min_growth}; "
-            f"its first three-step mean was {initial} and its final-window mean was {final}"
-        )
+        if model_bounds.min_growth is not None:
+            assert final - initial >= model_bounds.min_growth, (
+                f"policy {model_id!r} raw reward grew by {final - initial}, below {model_bounds.min_growth}; "
+                f"its first three-step mean was {initial} and its final-window mean was {final}"
+            )
 
 
 def assert_every_policy_reported_eval_points(events_dir: Path, *, model_ids: list[str], dataset_name: str) -> None:
