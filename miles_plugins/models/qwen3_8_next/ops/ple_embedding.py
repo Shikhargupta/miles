@@ -1,29 +1,10 @@
-"""Frozen, host-resident, TP-row-sharded PLE n-gram table.
+"""Frozen, host-resident, TP-row-sharded PLE n-gram table (51.2B params, 102.4GB bf16).
 
-51.2 B parameters / 102.4 GB bf16 -- 28.4% of the model -- and every token reads
-exactly 16 rows of it, 0.000005% of the table. Three consequences follow, and the
-third is the one that matters for changing TP or PP later.
-
-**Frozen.** Dense training would want 102.4 GB of gradient plus 614 GB of Adam
-state and master weights, and all-reducing a 102 GB gradient every step would
-swamp the compute. Freezing is also free for train/inference consistency: a frozen
-table is bitwise identical between training and rollout, so it contributes exactly
-zero to the logprob gap. (Full-parameter training of it wants row-sharded sparse
-gradients, DLRM-style, which is its own project.)
-
-**Host-resident.** Matches sglang's ``ple_offload_embedding=True``: pinned CPU
-memory read by a kernel through a raw host pointer, never staged to HBM. On GB300
-the Grace-Blackwell NVLink-C2C link makes that far cheaper than the PCIe hop the
-pattern was designed around.
-
-**Not a checkpointed parameter.** Registered non-persistent and loaded straight
-from the HF safetensors at init. This is what keeps resharding cheap: torch_dist
-reshards by splitting each parameter's shards, and re-splitting a row-sharded 51 B
-table on every TP change is the single hardest thing in this model to reshard --
-for content that never changes. Reading from the HF layout instead makes TP size
-pure arithmetic (which of the 128 fixed shards does my row range cover), keeps the
-torch_dist checkpoint at 257.6 GB instead of 360 GB, and means train->rollout
-weight sync never has to carry it.
+Frozen (bitwise identical to rollout => zero logprob-gap contribution),
+host-resident in pinned CPU memory (matches sglang ple_offload_embedding), and
+deliberately NOT a checkpointed parameter: loaded from the HF safetensors'
+128 fixed shards, so changing TP is pure shard arithmetic and torch_dist never
+reshards or carries it.
 """
 
 import json
@@ -69,10 +50,8 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
 
     def __init__(self, config: TransformerConfig, layer_number: int, tp_group=None):
         super().__init__(config)
-        # Megatron numbers transformer layers from 1; the checkpoint indexes them
-        # from 0. Getting this wrong does not fail at the table (every shard has the
-        # same shape) -- it only fails here, on the metadata lookup, which is one
-        # reason the metadata is loaded eagerly.
+        # Trap: Megatron numbers layers from 1, the checkpoint from 0; a mixup
+        # only fails at the metadata lookup (all table shards share one shape).
         self.layer_number = layer_number
         self.hf_layer_index = layer_number - 1
         heads = self._num_heads(config)
@@ -96,34 +75,25 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
             range(tp_rank * self.shards_per_rank, (tp_rank + 1) * self.shards_per_rank)
         )
 
-        # Shard height comes from the checkpoint, not the config: the 320,001,446
-        # hashed rows are rounded up to 128 x 2,500,012, so the last shard carries
-        # padding that no arithmetic on the config would predict.
+        # Trap: shard height must come from the checkpoint (320,001,446 rows pad
+        # to 128 x 2,500,012); config arithmetic drifts 12 rows/shard and
+        # misaligns the whole table.
         self.rows_per_shard = getattr(config, "qwen3_8_next_ngram_rows_per_shard", None)
         if self.rows_per_shard is None:
             hf = getattr(config, "qwen3_8_next_hf_checkpoint", None)
             if hf is not None:
                 self.rows_per_shard = self._shard_height_from_hf(hf, layer_number - 1)
         if self.rows_per_shard is None:
-            # Last resort, and known to be slightly wrong: each hash head's vocab is
-            # a distinct prime just above ngram_vocab_size_base (20000003, 20000023,
-            # ...), so the real total is 320,001,446 rather than 16 x 20,000,000, and
-            # this rounds to 2,500,000 per shard instead of 2,500,012. That
-            # 12-row-per-shard drift misaligns the whole table. Only reachable when
-            # initialising from scratch with no checkpoint to read.
+            # Known-wrong last resort (per-head vocabs are distinct primes above
+            # the base): only reachable with no checkpoint to read. Warned above.
             total = heads * config.qwen3_8_next_ngram_vocab_size_base
             self.rows_per_shard = -(-total // self.num_shards)
         self.row_start = self.shard_ids[0] * self.rows_per_shard
         self.row_end = (self.shard_ids[-1] + 1) * self.rows_per_shard
 
-        # A plain attribute, deliberately NOT register_buffer. A registered buffer
-        # follows the module through .cuda(), and Megatron moves the model to the
-        # device after construction -- which silently relocated this 25.6 GB/rank
-        # table to HBM and defeated the entire host-resident design. It fit, so
-        # nothing failed; the only symptom was a numpy() call refusing a cuda
-        # tensor. Nothing is lost by not registering it: it is excluded from
-        # state_dict anyway (that is the point -- it must never enter the torch_dist
-        # checkpoint or need resharding) and its loading is managed here.
+        # Trap: deliberately NOT register_buffer -- Megatron's post-construction
+        # .cuda() would silently relocate the 25.6GB/rank table to HBM and defeat
+        # the host-resident design (the gather kernel reads a raw host pointer).
         self.table = torch.empty(
             (self.row_end - self.row_start, self.embedding_dim),
             dtype=torch.bfloat16,
@@ -131,18 +101,12 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
             pin_memory=True,
         )
         self._loaded = False
-        # Path to load from, stashed on the config by the spec. Loading is lazy: the
-        # weight converter builds the model but never runs a forward, and reading
-        # 102 GB it is not going to save would be pure waste.
+        # Lazy: the weight converter builds the model without a forward; reading
+        # 102GB it will not use is pure waste.
         self._hf_checkpoint = getattr(config, "qwen3_8_next_hf_checkpoint", None)
 
-        # Integer hash metadata: 35 int64 values total. Non-persistent for the same
-        # reason as the table -- it comes from the HF checkpoint, not from training --
-        # but loaded eagerly rather than lazily, because compute_ngram_ids is called
-        # from outside this module (the model wrapper hashes the input tokens) and so
-        # can run before any forward of the embedding would have triggered the table
-        # load. mbridge walks buffers as well as parameters, so leaving these
-        # persistent also made it demand mappings for them.
+        # Hash metadata: eager (compute_ngram_ids runs before any forward here)
+        # and non-persistent (mbridge demands mappings for persistent buffers).
         self.register_buffer(
             "layer_multipliers", torch.zeros(self.ngram_size, dtype=torch.long), persistent=False
         )
@@ -159,12 +123,7 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
 
     @staticmethod
     def _shard_height_from_hf(hf_checkpoint: str, hf_layer_index: int) -> int | None:
-        """Read shard 0's row count out of the safetensors header.
-
-        Preferred over deriving it: the config's ngram_vocab_size_base is a base, not
-        the actual per-head vocab, so arithmetic on it is off by a few rows per shard
-        and silently misaligns every subsequent shard.
-        """
+        """Shard 0's row count from the safetensors header (see the trap in __init__)."""
         name = (
             f"model.language_model.layers.{hf_layer_index}.ple.ple_embedding"
             ".ngram_embedding.shard_0.weight"

@@ -12,18 +12,25 @@ handed to a replacement ``core_attention`` through the module instance. Same sha
 of solution as the PLE side channel, and for the same reason: the value is needed
 at a point in the call stack that does not carry it.
 
-The selection is exact, not approximate: ``qsa_sparse_attention`` masks attention
+The selection is exact, not approximate: the triton kernel attends exactly
 to precisely the selected positions, so this matches the model spec rather than
 falling back to dense and quietly changing the logits.
 """
 
 import torch
+from megatron.core.parallel_state import (
+    get_tensor_model_parallel_group,
+    get_tensor_model_parallel_world_size,
+)
+from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.module import MegatronModule
 from torch import Tensor
 
+from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import (
+    qsa_sparse_attention_triton,
+)
 from miles_plugins.models.qwen3_8_next.ops.qsa_indexer import Qwen38NextQSAIndexer
-from miles_plugins.models.qwen3_8_next.ops.sparse_attn import qsa_sparse_attention
 
 
 class Qwen38NextQSACoreAttention(MegatronModule):
@@ -50,8 +57,6 @@ class Qwen38NextQSACoreAttention(MegatronModule):
                 "Qwen38NextAttention.forward sets it before delegating; reaching here "
                 "means core_attention was called out of band."
             )
-        cu_seqlens = getattr(self._owner, "_qsa_cu_seqlens", None)
-
         # Two layouts reach here. With packed_seq_params.qkv_format == 'thd' -- which
         # is what miles always feeds, since the linear-attention layers require
         # cu_seqlens -- Megatron has already squeezed the dummy batch dim away and
@@ -59,22 +64,9 @@ class Qwen38NextQSACoreAttention(MegatronModule):
         # Without packing it is [s, b, np, hn]. Handle both explicitly instead of
         # unpacking four names and failing on the layout that actually occurs.
         if query.dim() == 3:
-            from miles_plugins.models.qwen3_8_next.ops.backend import use_triton
-
-            if use_triton("QSA"):
-                from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import (
-                    qsa_sparse_attention_triton,
-                )
-
-                return qsa_sparse_attention_triton(
-                    query, key, value, selection, self.softmax_scale
-                ).reshape(query.shape[0], -1)
-            return qsa_sparse_attention(
-                query, key, value, selection,
-                scale=self.softmax_scale,
-                cu_seqlens=cu_seqlens,
-                compress_ratio=self.compress_ratio,
-            )
+            return qsa_sparse_attention_triton(
+                query, key, value, selection, self.softmax_scale
+            ).reshape(query.shape[0], -1)
 
         if query.dim() != 4:
             raise RuntimeError(
@@ -84,11 +76,8 @@ class Qwen38NextQSACoreAttention(MegatronModule):
 
         s, b, hq, d = query.shape
         out = [
-            qsa_sparse_attention(
-                query[:, i], key[:, i], value[:, i], selection,
-                scale=self.softmax_scale,
-                cu_seqlens=cu_seqlens,
-                compress_ratio=self.compress_ratio,
+            qsa_sparse_attention_triton(
+                query[:, i], key[:, i], value[:, i], selection, self.softmax_scale
             )
             for i in range(b)
         ]
@@ -134,15 +123,12 @@ class Qwen38NextAttention(SelfAttention):
         # activations.
         indexer_states = hidden_states
         if getattr(self.config, "sequence_parallel", False):
-            from megatron.core import parallel_state as _ps
-            from megatron.core import tensor_parallel as _tp
-
-            if _ps.get_tensor_model_parallel_world_size() > 1:
+            if get_tensor_model_parallel_world_size() > 1:
                 with torch.no_grad():
-                    indexer_states = _tp.gather_from_sequence_parallel_region(
+                    indexer_states = gather_from_sequence_parallel_region(
                         hidden_states,
                         tensor_parallel_output_grad=False,
-                        group=_ps.get_tensor_model_parallel_group(),
+                        group=get_tensor_model_parallel_group(),
                     )
         seq = indexer_states.shape[0]
         if packed is not None:

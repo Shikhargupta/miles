@@ -12,8 +12,9 @@ import sys
 import torch
 
 sys.path.insert(0, "/data/home/zzeng/repos/miles-qwen4exp")
+sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 
-from miles_plugins.models.qwen3_8_next.ops.hc import (
+from reference_ops import (
     grouped_gemma_rmsnorm,
     hc_combine,
     hc_inject_gate,

@@ -25,58 +25,18 @@ sqrt's gradient at zero.
 
 Both ``norm_key``/``norm_query``/``norm_conv`` are per-stream Gemma-style RMSNorms
 over the widened ``[.., n*C]`` vector -- the same operator the hyper-connections
-use -- so this reuses ``ops.grouped_gemma_rmsnorm`` rather than defining a second
-one that could drift from it.
+use -- implemented in kernel/ple_triton.py (fused with the gate and conv).
 """
 
-import math
 
 import torch
-import torch.nn.functional as F
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.hc import grouped_gemma_rmsnorm
+from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
 from miles_plugins.models.qwen3_8_next.ops.ple_embedding import Qwen38NextFrozenNGramEmbedding
-
-
-def causal_depthwise_conv(
-    x: Tensor, weight: Tensor, dilation: int, cu_seqlens: Tensor | None = None
-) -> Tensor:
-    """Causal depthwise 1-D conv over the channel dim of ``[T, channels]``.
-
-    ``weight`` is ``[channels, 1, kernel]``, one filter per channel, so this is
-    ``groups=channels``. Left-padded by ``(kernel - 1) * dilation`` to stay causal.
-
-    With ``cu_seqlens`` (packed THD, which is how miles feeds training batches),
-    each sequence is convolved independently so the kernel never reaches across a
-    document boundary -- the same reason the n-gram hash resets at EOS.
-
-    A fused triton kernel would avoid the per-sequence Python loop and the
-    transposes; correctness first, and this is not on the critical path for a
-    single layer out of 48.
-    """
-    channels, _, kernel = weight.shape
-    pad = (kernel - 1) * dilation
-
-    def _conv(seq: Tensor) -> Tensor:
-        # [t, channels] -> [1, channels, t] for grouped conv1d
-        h = seq.transpose(0, 1).unsqueeze(0)
-        h = F.pad(h, (pad, 0))
-        h = F.conv1d(h, weight, groups=channels, dilation=dilation)
-        return h.squeeze(0).transpose(0, 1)
-
-    if cu_seqlens is None:
-        return _conv(x)
-
-    out = torch.empty_like(x)
-    bounds = cu_seqlens.tolist()
-    for lo, hi in zip(bounds[:-1], bounds[1:]):
-        if hi > lo:
-            out[lo:hi] = _conv(x[lo:hi])
-    return out
 
 
 class Qwen38NextPLE(MegatronModule):
@@ -97,8 +57,7 @@ class Qwen38NextPLE(MegatronModule):
             config, layer_number=layer_number, tp_group=tp_group
         )
 
-        # Duplicated rather than TP-sharded: these are small next to the table, and
-        # keeping them replicated avoids a second reduction on top of the table's.
+        # Replicated, not TP-sharded: avoids a second reduction on top of the table's.
         self.key_proj = TELinear(
             self.embed_dim, wide, config=config, init_method=config.init_method,
             bias=False, skip_bias_add=False, skip_weight_param_allocation=False,
@@ -131,9 +90,7 @@ class Qwen38NextPLE(MegatronModule):
         Returns the increment rather than the updated state so the caller keeps
         ownership of the residual, matching how the HC modules are structured.
         """
-        # 2D only, and enforced: every reshape below derives its token count from
-        # hc_state.shape[0], which a 3D input would silently make wrong instead of
-        # raising (the element counts happen to match at batch 1).
+        # Trap: 3D input would reshape silently-wrong at batch 1; enforce 2D.
         if hc_state.dim() != 2 or ngram_ids.dim() != 2:
             raise RuntimeError(
                 "PLE takes a flat token axis: expected hc_state [T, n*C] and ngram_ids "
@@ -148,7 +105,6 @@ class Qwen38NextPLE(MegatronModule):
         key, _ = self.key_proj(embeddings)
         value, _ = self.value_proj(embeddings)
 
-
         tokens = hc_state.shape[0]
         if hc_state.shape[-1] != self.n * self.hidden_size:
             raise RuntimeError(
@@ -156,42 +112,9 @@ class Qwen38NextPLE(MegatronModule):
                 f"{self.n * self.hidden_size}, got {hc_state.shape[-1]}"
             )
 
-        from miles_plugins.models.qwen3_8_next.ops.backend import use_triton
-
-        if use_triton("PLE"):
-            from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import (
-                ple_gate_conv_triton,
-            )
-
-            return ple_gate_conv_triton(
-                hc_state, key, value,
-                self.norm_key, self.norm_query, self.norm_conv,
-                self.conv1d_weight, self.n, self.norm_eps,
-                self.conv_dilation, cu_seqlens,
-            )
-
-        key_normed = grouped_gemma_rmsnorm(key, self.norm_key, self.n, self.norm_eps)
-        query_normed = grouped_gemma_rmsnorm(hc_state, self.norm_query, self.n, self.norm_eps)
-        key_normed = key_normed.reshape(tokens, self.n, self.hidden_size)
-        query_normed = query_normed.reshape(tokens, self.n, self.hidden_size)
-
-        score = (key_normed * query_normed).sum(dim=-1, keepdim=True) / math.sqrt(
-            self.hidden_size
+        return ple_gate_conv_triton(
+            hc_state, key, value,
+            self.norm_key, self.norm_query, self.norm_conv,
+            self.conv1d_weight, self.n, self.norm_eps,
+            self.conv_dilation, cu_seqlens,
         )
-        gate = torch.sigmoid(score.abs().clamp_min(1e-6).sqrt() * score.sign())
-        gated = (gate * value.unsqueeze(-2)).flatten(-2)
-
-        gated_normed = grouped_gemma_rmsnorm(gated, self.norm_conv, self.n, self.norm_eps)
-        conv_out = causal_depthwise_conv(
-            gated_normed.to(self.conv1d_weight.dtype),
-            self.conv1d_weight,
-            self.conv_dilation,
-            cu_seqlens,
-        )
-        # O = U + SiLU(DWConv(RMSNorm(U))). The activation is part of the short
-        # conv, not of the conv operator: sglang's _short_conv returns
-        # F.silu(conv_output) on both its prefill and decode paths. Omitting it left
-        # the PLE increment ~88% wrong while every weight and every other
-        # intermediate in the layer was exact.
-        conv_out = F.silu(conv_out)
-        return (gated.to(conv_out.dtype) + conv_out).to(hc_state.dtype)

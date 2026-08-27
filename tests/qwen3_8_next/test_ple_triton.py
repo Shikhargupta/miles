@@ -13,9 +13,10 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, "/data/home/zzeng/repos/miles-qwen4exp")
+sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 
-from miles_plugins.models.qwen3_8_next.ops.hc import grouped_gemma_rmsnorm
-from miles_plugins.models.qwen3_8_next.ops.ple import causal_depthwise_conv
+from reference_ops import grouped_gemma_rmsnorm
+from reference_ops import causal_depthwise_conv
 from miles_plugins.models.qwen3_8_next.ops.kernel.ple_triton import ple_gate_conv_triton
 
 

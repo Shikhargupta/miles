@@ -6,7 +6,7 @@ conv that reaches into the future.
 """
 import torch
 
-from miles_plugins.models.qwen3_8_next.ops.hc import grouped_gemma_rmsnorm, hc_mix
+from reference_ops import grouped_gemma_rmsnorm, hc_mix
 from miles_plugins.models.qwen3_8_next.ops.ple_hash import ngram_hash_ids
 from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, causal_depthwise_conv
 from miles_plugins.models.qwen3_8_next.ops.ple_embedding import Qwen38NextFrozenNGramEmbedding

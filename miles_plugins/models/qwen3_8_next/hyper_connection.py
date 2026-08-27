@@ -43,23 +43,23 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from megatron.core.parallel_state import (
+    get_tensor_model_parallel_group,
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+)
+from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
+from megatron.core.tensor_parallel.random import is_checkpointing
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.hc import (
-    grouped_gemma_rmsnorm,
-    hc_combine,
-    hc_inject_gate,
-    hc_mix,
+from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
+    hc_combine_triton,
+    hc_mix_inject_triton,
 )
-
-
-def _hc_backend() -> str:
-    """Backend switch, shared policy in ops/backend.py (HC_BACKEND env)."""
-    from miles_plugins.models.qwen3_8_next.ops.backend import backend
-
-    return backend("HC")
+from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE
+from miles_plugins.models.qwen3_8_next.ops.ple_context import PLEContextError, current_ple_batch
 
 
 class Qwen38NextHyperConnection(MegatronModule):
@@ -74,7 +74,7 @@ class Qwen38NextHyperConnection(MegatronModule):
     fp32 the way Megatron's mHC keeps its ``hc_*`` params. That is deliberate:
     the goal is train/inference consistency against sglang, which holds these in
     bf16, and the fp32 work that actually matters (the norm reduction) happens
-    inside ``grouped_gemma_rmsnorm`` regardless of storage dtype.
+    inside the triton kernels regardless of storage dtype.
     """
 
     def __init__(
@@ -117,21 +117,6 @@ class Qwen38NextHyperConnection(MegatronModule):
             if use_combine:
                 torch.nn.init.xavier_uniform_(self.block_inject_weight)
 
-    def mix(self, hidden_states: Tensor) -> Tuple[Tensor, Tensor]:
-        """``[s,b,n*C]`` -> ``(aggregated [s,b,C], normed [s,b,n*C])``."""
-        # `normed` comes back in the fp32 accumulation dtype on purpose and is
-        # threaded to the inject gate unrounded; only `aggregated` is cast back.
-        normed = grouped_gemma_rmsnorm(hidden_states, self.hc_norm_weight, self.n, self.norm_eps)
-        aggregated = hc_mix(
-            normed,
-            self.input_mix_weight_down,
-            self.input_mix_weight_up,
-            self.n,
-            self.hidden_size,
-            out_dtype=hidden_states.dtype,
-        )
-        return aggregated, normed
-
     def forward(
         self,
         hidden_states: Tensor,
@@ -152,23 +137,15 @@ class Qwen38NextHyperConnection(MegatronModule):
                 "run without 'mhc' in --recompute-modules."
             )
         assert self.use_combine, "per-layer HC needs the inject weight; use the Mixer for read-only"
-        if _hc_backend() == "triton":
-            from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
-                hc_mix_inject_triton,
-            )
-
-            aggregated, h_post = hc_mix_inject_triton(
-                hidden_states,
-                self.hc_norm_weight,
-                self.input_mix_weight_down,
-                self.input_mix_weight_up,
-                self.block_inject_weight,
-                self.n,
-                self.norm_eps,
-            )
-            return aggregated, None, h_post, hidden_states
-        aggregated, normed = self.mix(hidden_states)
-        h_post = hc_inject_gate(normed, self.block_inject_weight, self.n)
+        aggregated, h_post = hc_mix_inject_triton(
+            hidden_states,
+            self.hc_norm_weight,
+            self.input_mix_weight_down,
+            self.input_mix_weight_up,
+            self.block_inject_weight,
+            self.n,
+            self.norm_eps,
+        )
         return aggregated, None, h_post, hidden_states
 
     def fused_h_res_h_post_bda(
@@ -196,13 +173,7 @@ class Qwen38NextHyperConnection(MegatronModule):
             x = x + bias.view(*([1] * (x.dim() - 1)), -1)
         if dropout_prob > 0.0 and training:
             x = F.dropout(x, p=dropout_prob)
-        if _hc_backend() == "triton":
-            from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
-                hc_combine_triton,
-            )
-
-            return hc_combine_triton(original_residual, x, h_post, self.n)
-        return hc_combine(original_residual, x, h_post, self.n, self.hidden_size)
+        return hc_combine_triton(original_residual, x, h_post, self.n)
 
 
 class Qwen38NextHCHeadContraction(MegatronModule):
@@ -220,7 +191,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
 
     sglang builds this from the *same* ``GatedResidual`` class as the per-layer
     hyper-connections, only with ``use_combine=False`` (no inject weight), which
-    is why it shares ``ops.grouped_gemma_rmsnorm`` / ``ops.hc_mix`` with
+    is why it shares the mix kernels with
     ``Qwen38NextHyperConnection`` rather than reimplementing the gate.
 
     Parameters are replicated across tensor-parallel ranks -- the contraction
@@ -252,30 +223,16 @@ class Qwen38NextHCHeadContraction(MegatronModule):
             torch.nn.init.xavier_uniform_(self.input_mix_weight_up)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
-        if _hc_backend() == "triton":
-            from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
-                hc_mix_inject_triton,
-            )
-
-            mixed, _ = hc_mix_inject_triton(
-                hidden_states,
-                self.hc_norm_weight,
-                self.input_mix_weight_down,
-                self.input_mix_weight_up,
-                None,
-                self.n,
-                self.norm_eps,
-            )
-            return mixed
-        normed = grouped_gemma_rmsnorm(hidden_states, self.hc_norm_weight, self.n, self.norm_eps)
-        return hc_mix(
-            normed,
+        mixed, _ = hc_mix_inject_triton(
+            hidden_states,
+            self.hc_norm_weight,
             self.input_mix_weight_down,
             self.input_mix_weight_up,
+            None,
             self.n,
-            self.hidden_size,
-            out_dtype=hidden_states.dtype,
+            self.norm_eps,
         )
+        return mixed
 
 class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
     """Attention-site hyper-connection for the one layer that carries PLE.
@@ -294,16 +251,13 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
 
     def __init__(self, config: TransformerConfig, layer_number: int, **kwargs):
         super().__init__(config, layer_number, **kwargs)
-        from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE
-
         # Without a TP group the table is not row-sharded at all: every rank would
         # hold all 320 M rows, i.e. 102 GB of pinned host memory per rank instead of
         # 25.6 GB at TP4.
-        from megatron.core import parallel_state
 
         tp_group = None
         try:
-            tp_group = parallel_state.get_tensor_model_parallel_group()
+            tp_group = get_tensor_model_parallel_group()
         except AssertionError:
             pass  # not initialised (shape audits); falls back to unsharded
         self.ple = Qwen38NextPLE(config, layer_number=layer_number, tp_group=tp_group)
@@ -324,17 +278,12 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         1F1B's backward order; interleaved VPP would need a smarter key, and this
         model rejects VPP in the spec anyway.
         """
-        from megatron.core.tensor_parallel.random import is_checkpointing
-
-        from miles_plugins.models.qwen3_8_next.ops.ple_context import current_ple_batch
 
         if not hasattr(self, "_ple_recompute_fifo"):
             self._ple_recompute_fifo = []
 
         if is_checkpointing() and torch.is_grad_enabled():
             if not self._ple_recompute_fifo:
-                from miles_plugins.models.qwen3_8_next.ops.ple_context import PLEContextError
-
                 raise PLEContextError(
                     "PLE recompute ran with no queued n-gram batch; the checkpointed "
                     "original pass did not enqueue (or the recompute order diverged "
@@ -385,7 +334,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         mhc_recompute_manager=None,
         output_slot=None,
     ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
-        from miles_plugins.models.qwen3_8_next.ops.ple_context import current_ple_batch
 
         ngram_ids, cu_seqlens = self._resolve_ple_batch()
 
@@ -398,17 +346,14 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         # gradients would inflate them by tp.
         sp_size = 1
         if getattr(self.config, "sequence_parallel", False):
-            from megatron.core import parallel_state as _ps
-            from megatron.core import tensor_parallel as _tp
-
-            sp_size = _ps.get_tensor_model_parallel_world_size()
+            sp_size = get_tensor_model_parallel_world_size()
         if sp_size > 1:
-            sp_rank = _ps.get_tensor_model_parallel_rank()
+            sp_rank = get_tensor_model_parallel_rank()
             local_seq = hidden_states.shape[0]
-            full = _tp.gather_from_sequence_parallel_region(
+            full = gather_from_sequence_parallel_region(
                 hidden_states,
                 tensor_parallel_output_grad=False,
-                group=_ps.get_tensor_model_parallel_group(),
+                group=get_tensor_model_parallel_group(),
             )
             updated = self._apply_ple(full, ngram_ids, cu_seqlens)
             hidden_states = updated[sp_rank * local_seq : (sp_rank + 1) * local_seq]

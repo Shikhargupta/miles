@@ -21,6 +21,8 @@ import torch
 import triton
 import triton.language as tl
 
+from miles_plugins.models.qwen3_8_next.ops.backend import register_warmup
+
 from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
     _grouped_rmsnorm_bwd_kernel,
     _grouped_rmsnorm_fwd_kernel,
@@ -384,3 +386,23 @@ def ple_gate_conv_triton(hc_state, key, value, norm_key_w, norm_query_w, norm_co
         norm_key_w, norm_query_w, norm_conv_w, conv1d_weight,
         n, eps, dilation, cu_seqlens,
     )
+
+
+# --- warmup (registered with ops.backend; called once at model build) ----------
+
+
+@register_warmup("PLE")
+def _warmup_ple(*, hidden_size: int, hc_count: int, ple_conv_kernel: int, ple_conv_dilation: int, **_):
+    """Tiny fwd+bwd through the PLE gate+conv kernels at the real constexprs."""
+    n, C, K, dil = hc_count, hidden_size, ple_conv_kernel, ple_conv_dilation
+    dt = torch.bfloat16
+    T = 8
+    x = torch.randn(T, n * C, device="cuda", dtype=dt, requires_grad=True)
+    wk = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
+    wq = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
+    wc = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
+    cw = torch.randn(n * C, 1, K, device="cuda", dtype=dt, requires_grad=True)
+    cu = torch.tensor([0, T], dtype=torch.int32, device="cuda")
+    inc = ple_gate_conv_triton(x, x * 0.1, x[:, :C] * 0.1, wk, wq, wc, cw, n, 1e-6, dil, cu)
+    inc.sum().backward()
+    torch.cuda.synchronize()

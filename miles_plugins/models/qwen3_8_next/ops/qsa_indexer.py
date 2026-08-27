@@ -36,12 +36,16 @@ projections and norms via the scores, exactly as in V4's ``V4IndexerFunction``.
 import math
 
 import torch
+
+
+def _indexer_acc_dtype(x):
+    return x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
+
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from miles_plugins.models.qwen3_8_next.ops.hc import _acc_dtype
 
 
 def gemma_rmsnorm_last_dim(x: Tensor, weight: Tensor, eps: float) -> Tensor:
@@ -51,7 +55,7 @@ def gemma_rmsnorm_last_dim(x: Tensor, weight: Tensor, eps: float) -> Tensor:
     a widened ``[.., n*C]`` vector, this one reduces over a single head's
     ``head_dim``. Same scale convention, different grouping.
     """
-    acc = _acc_dtype(x)
+    acc = _indexer_acc_dtype(x)
     xa = x.to(acc)
     var = xa.pow(2).mean(dim=-1, keepdim=True)
     return ((xa * torch.rsqrt(var + eps)) * (1.0 + weight.to(acc))).to(x.dtype)

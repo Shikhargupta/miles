@@ -30,6 +30,8 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+from miles_plugins.models.qwen3_8_next.ops.backend import register_warmup
+
 # ---------------------------------------------------------------------------
 # grouped Gemma RMSNorm: one program per (token, stream)
 # ---------------------------------------------------------------------------
@@ -389,3 +391,22 @@ def hc_combine_triton(residual, block_output, h_post, n: int):
     hp2d = h_post.reshape(-1, n)
     out = _HCCombine.apply(r2d, y2d, hp2d, n)
     return out.reshape(*lead, -1)
+
+
+# --- warmup (registered with ops.backend; called once at model build) ----------
+
+
+@register_warmup("HC")
+def _warmup_hc(*, hidden_size: int, hc_count: int, hc_lowrank: int, **_):
+    """Tiny fwd+bwd through every HC kernel at the real (n, C, R) constexprs."""
+    n, C, R = hc_count, hidden_size, hc_lowrank
+    dt = torch.bfloat16
+    T = 8
+    x = torch.randn(T, n * C, device="cuda", dtype=dt, requires_grad=True)
+    wn = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
+    wd = torch.randn(R, n * C, device="cuda", dtype=dt, requires_grad=True)
+    wu = torch.randn(n * C, R, device="cuda", dtype=dt, requires_grad=True)
+    wi = torch.randn(n, n * C, device="cuda", dtype=dt, requires_grad=True)
+    m, hp = hc_mix_inject_triton(x, wn, wd, wu, wi, n, 1e-6)
+    hc_combine_triton(x, m, hp, n).sum().backward()
+    torch.cuda.synchronize()

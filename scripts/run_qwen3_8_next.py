@@ -155,6 +155,14 @@ def train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
+        # Disk backup is REQUIRED, not optional: with the CPU target, sleep()'s
+        # host backup (~80GB/rank x4) on top of c001's ~700GB baseline broke the
+        # 944GB physical ceiling and the KERNEL OOM killer SIGKILLed a trainer
+        # (run 34, silent death right after sleep; ray's 0.98 monitor was too
+        # slow for the seconds-scale spike). The disk path's earlier "slowness"
+        # (runs 32/33) was confounded by post-restart cold JIT caches.
+        "--offload-train-target disk "
+        "--offload-train-disk-dir /tmp/zz_train_offload "
         "--sglang-mem-fraction-static 0.7 "
         "--colocate "
         # hf model_type is qwen4_exp and the bridge registers that alias; the

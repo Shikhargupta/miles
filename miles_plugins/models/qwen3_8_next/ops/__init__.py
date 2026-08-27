@@ -1,43 +1,32 @@
-"""Qwen3.8-Next ops: the map.
+"""Qwen3.8-Next ops: the map. Training is triton-only.
 
-Every hand-written op family has a parity-verified torch reference and a triton
-kernel set validated against it; ``ops/backend.py`` is the single switch
-(``{QSA,HC,PLE}_BACKEND`` env, defaults listed there).
+    family  kernels                       test (oracle lives with the test)
+    ------  ----------------------------  ------------------------------------
+    QSA     kernel/qsa_sparse_attn.py     tests/.../test_qsa_triton.py
+    HC      kernel/hc_triton.py           tests/.../test_hc_triton.py
+    PLE     kernel/ple_triton.py          tests/.../test_ple_triton.py
 
-    family  torch reference          triton kernels               test
-    ------  -----------------------  ---------------------------  -------------------------------
-    QSA     sparse_attn.py           kernel/qsa_sparse_attn.py    tests/.../test_qsa_triton.py
-    HC      hc.py                    kernel/hc_triton.py          tests/.../test_hc_triton.py
-    PLE     ple.py (gate+conv path)  kernel/ple_triton.py         tests/.../test_ple_triton.py
+Torch reference implementations moved to tests/qwen3_8_next/reference_ops.py
+(sglang-parity-verified oracles, compared against by the tests above).
+``backend.py`` holds the kernel warmup registry the model provider drives.
 
-Supporting modules (no triton counterpart by design):
+Supporting modules:
     attention.py      QSA wrapper: SP gather for the indexer, selection + tail
-                      merge, backend dispatch into the kernels above.
-    qsa_indexer.py    indexer projections + topk -- cuBLAS GEMMs and cub topk,
-                      nothing to hand-write.
-    ple_embedding.py  frozen n-gram table (TP-sharded gather;
-                      kernel/ple_gather.py holds its triton gather).
+                      merge, kernel dispatch.
+    qsa_indexer.py    indexer projections + topk (cuBLAS / cub).
+    ple.py            PLE module: projections + the fused gate/conv kernel.
+    ple_embedding.py  frozen n-gram table (kernel/ple_gather.py gathers rows).
     ple_hash.py       n-gram hashing, pure int ops.
     ple_context.py    side channel handing token ids to the PLE layer.
 
-Parity debugging is fully out of the production tree: dump points are
-injected on demand via the dumper's source patcher (assets under
-scripts/qwen3_8_next/debug/), never inline here.
+Parity debugging is fully out of the production tree: dump points are injected
+on demand via the dumper source patcher (scripts/qwen3_8_next/debug/).
 
-``hc`` and ``ple_hash`` are deliberately free of Megatron imports so they can be
-unit-tested against sglang without pulling megatron.core (and with it Transformer
-Engine, whose prebuilt extension is sensitive to the torch build). The modules that
-do subclass ``MegatronModule`` -- ``ple``, ``ple_embedding``, ``qsa_indexer`` -- are
-imported on demand, not here, so importing this package stays cheap and side-effect
-free.
+``ple_hash`` stays Megatron-import-free so it unit-tests against sglang without
+pulling megatron.core; MegatronModule subclasses import on demand, keeping this
+package import cheap and side-effect free.
 """
 
-from miles_plugins.models.qwen3_8_next.ops.hc import (
-    grouped_gemma_rmsnorm,
-    hc_combine,
-    hc_inject_gate,
-    hc_mix,
-)
 from miles_plugins.models.qwen3_8_next.ops.ple_hash import (
     build_ngram_contexts,
     ngram_hash_ids,
@@ -45,10 +34,6 @@ from miles_plugins.models.qwen3_8_next.ops.ple_hash import (
 )
 
 __all__ = [
-    "grouped_gemma_rmsnorm",
-    "hc_combine",
-    "hc_inject_gate",
-    "hc_mix",
     "build_ngram_contexts",
     "ngram_hash_ids",
     "shift_right_ignore_eos",

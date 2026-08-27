@@ -18,6 +18,8 @@ runs, same as embedding backward everywhere; dq is per-query and deterministic.
 import torch
 import triton
 import triton.language as tl
+
+from miles_plugins.models.qwen3_8_next.ops.backend import register_warmup
 from torch import Tensor
 
 
@@ -210,3 +212,20 @@ class _QSASparseAttn(torch.autograd.Function):
 def qsa_sparse_attention_triton(q: Tensor, k: Tensor, v: Tensor, indices: Tensor, scale: float) -> Tensor:
     """``q`` [T, Hq, D], ``k``/``v`` [S, Hkv, D], ``indices`` [T, K] int (-1 pad)."""
     return _QSASparseAttn.apply(q, k, v, indices, scale)
+
+
+# --- warmup (registered with ops.backend; called once at model build) ----------
+
+
+@register_warmup("QSA")
+def _warmup_qsa(*, qsa_head_dim: int = 256, qsa_q_heads: int = 12, qsa_kv_heads: int = 1, **_):
+    """Tiny fwd+bwd so the bwd kernel (first hit inside 1F1B otherwise) is built."""
+    T, K = 8, 4
+    q = torch.randn(T, qsa_q_heads, qsa_head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    k = torch.randn(T, qsa_kv_heads, qsa_head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    v = torch.randn(T, qsa_kv_heads, qsa_head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    idx = torch.arange(T, device="cuda").unsqueeze(-1).expand(T, K).contiguous().to(torch.int32)
+    idx = torch.where(idx <= torch.arange(T, device="cuda").unsqueeze(-1), idx, -1)
+    out = qsa_sparse_attention_triton(q, k, v, idx, qsa_head_dim**-0.5)
+    out.sum().backward()
+    torch.cuda.synchronize()
