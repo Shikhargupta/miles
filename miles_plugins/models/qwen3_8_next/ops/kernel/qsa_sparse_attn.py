@@ -4,22 +4,12 @@ Semantics match sglang's ``_sparse_gqa_prefill`` (qsa/sparse_attn.py): each quer
 attends exactly the token indices in its selection row (``-1`` = unused). The
 selection rows are produced torch-side (indexer top-k expansion + the query's own
 partial-block tail), so the kernel itself needs no causal or segment logic -- the
-indices are already causal and segment-confined by construction.
-
-Flash-style online softmax over gathered keys; nothing of size [T, S] is ever
-materialized, which is the entire point: the torch fallback's masked SDPA peaks at
-~3.2 GB per layer at 8k tokens, this peaks at the K/V gather tiles.
-
-The backward recomputes probabilities per (query-block, index-tile) and scatters
-dk/dv with atomic adds -- gradients are therefore not bit-deterministic across
-runs, same as embedding backward everywhere; dq is per-query and deterministic.
 """
 
 import torch
 import triton
 import triton.language as tl
 
-from miles_plugins.models.qwen3_8_next.ops.backend import register_warmup
 from torch import Tensor
 
 
@@ -70,7 +60,6 @@ def _qsa_fwd_kernel(
         scores = tl.where(valid, scores, float("-inf"))
 
         m_new = tl.maximum(m_i, tl.max(scores, axis=1))
-        # keep -inf rows stable (queries with no valid index in any tile)
         m_use = tl.where(m_new == float("-inf"), 0.0, m_new)
         p = tl.exp(scores - m_use[:, None])
         p = tl.where(valid, p, 0.0)
@@ -122,7 +111,6 @@ def _qsa_bwd_kernel(
     o = tl.load(O + offs_q[:, None] * stride_ot + pid_h * stride_oh + offs_d[None, :],
                 mask=q_mask[:, None], other=0.0).to(tl.float32)
     lse = tl.load(LSE + pid_h * T + offs_q, mask=q_mask, other=0.0)
-    # delta = sum(do * o) per query (standard flash backward)
     delta = tl.sum(do * o, axis=1)
 
     dq = tl.zeros((BQ, D), tl.float32)
@@ -149,7 +137,6 @@ def _qsa_bwd_kernel(
 
         dq += tl.sum(ds[:, :, None] * k_tile, axis=1)
 
-        # dk/dv scatter with atomics: several queries select the same key.
         dk_c = ds[:, :, None] * q[:, None, :]
         dv_c = p[:, :, None] * do[:, None, :]
         ptrs_k = DK + idx_safe[:, :, None] * stride_kt + kv_head * stride_kh + offs_d[None, None, :]
@@ -194,7 +181,6 @@ class _QSASparseAttn(torch.autograd.Function):
         topk = idx.shape[1]
         do = grad_out.contiguous()
         dq = torch.empty(T, Hq, D, device=qc.device, dtype=torch.float32)
-        # fp32 atomics targets, cast down at the end
         dk = torch.zeros(kc.shape, device=kc.device, dtype=torch.float32)
         dv = torch.zeros(vc.shape, device=vc.device, dtype=torch.float32)
         BQ, BK = 32, 64
@@ -213,19 +199,3 @@ def qsa_sparse_attention_triton(q: Tensor, k: Tensor, v: Tensor, indices: Tensor
     """``q`` [T, Hq, D], ``k``/``v`` [S, Hkv, D], ``indices`` [T, K] int (-1 pad)."""
     return _QSASparseAttn.apply(q, k, v, indices, scale)
 
-
-# --- warmup (registered with ops.backend; called once at model build) ----------
-
-
-@register_warmup("QSA")
-def _warmup_qsa(*, qsa_head_dim: int = 256, qsa_q_heads: int = 12, qsa_kv_heads: int = 1, **_):
-    """Tiny fwd+bwd so the bwd kernel (first hit inside 1F1B otherwise) is built."""
-    T, K = 8, 4
-    q = torch.randn(T, qsa_q_heads, qsa_head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    k = torch.randn(T, qsa_kv_heads, qsa_head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    v = torch.randn(T, qsa_kv_heads, qsa_head_dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    idx = torch.arange(T, device="cuda").unsqueeze(-1).expand(T, K).contiguous().to(torch.int32)
-    idx = torch.where(idx <= torch.arange(T, device="cuda").unsqueeze(-1), idx, -1)
-    out = qsa_sparse_attention_triton(q, k, v, idx, qsa_head_dim**-0.5)
-    out.sum().backward()
-    torch.cuda.synchronize()

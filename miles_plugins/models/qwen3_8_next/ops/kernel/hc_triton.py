@@ -4,37 +4,12 @@ Numerical contract: bit-for-bit the same *policy* as the torch reference in
 ``ops/hc.py`` -- every reduction and elementwise step in fp32, one cast onto
 the output dtype at the end. The torch path is the parity-verified reference;
 this module exists because in real training the torch path is slow twice over:
-
-  * autograd stores every fp32 intermediate of the norm->gate->mix chain
-    (several ``[T, n*C]`` fp32 tensors per HC site, 96 sites in a 48-layer
-    model). Here backward *recomputes* the normed tensor from the bf16 input
-    and a saved ``[T, n]`` rstd instead;
-  * the chain launches ~15 elementwise kernels per site; here the norm, the
-    gate-multiply-mean and the combine are one kernel each.
-
-The two low-rank projections (``n*C <-> lowrank``, 10240 <-> 320) and the
-inject projection (``n*C -> n``) deliberately stay as torch fp32 matmuls:
-they are tiny, cuBLAS-bound, and their backward is two more tiny matmuls --
-a triton dot loop would only add another kernel to keep correct.
-
-Weight gradients are returned in the weight's own dtype (bf16), matching what
-plain autograd produces through the ``weight.to(fp32)`` cast node; Megatron
-accumulates them into fp32 main_grad either way.
-
-Layout contract: all entry points take the flattened token dim first --
-``x [T, n*C]`` -- callers flatten ``[s, b, ...]`` themselves.
 """
 
 import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-
-from miles_plugins.models.qwen3_8_next.ops.backend import register_warmup
-
-# ---------------------------------------------------------------------------
-# grouped Gemma RMSNorm: one program per (token, stream)
-# ---------------------------------------------------------------------------
 
 
 @triton.jit(do_not_specialize=["T"])
@@ -77,8 +52,6 @@ def _grouped_rmsnorm_bwd_kernel(
     C: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    # y = x * rstd * (1 + w); rstd depends on x within the stream.
-    # g := dy * (1 + w);  dx = rstd * g - x * rstd^3 * sum(g * x) / C
     pid = tl.program_id(0)
     t = pid // N
     c = pid % N
@@ -95,11 +68,6 @@ def _grouped_rmsnorm_bwd_kernel(
     dot = tl.sum(g * x, axis=0)
     dx = rstd * g - x * (rstd * rstd * rstd) * (dot / C)
     tl.store(dx_ptr + base + offs, dx.to(dx_ptr.dtype.element_ty), mask=mask)
-
-
-# ---------------------------------------------------------------------------
-# gate-multiply-mean: mixed[t, h] = mean_c gate[t, c*C+h] * normed[t, c*C+h]
-# ---------------------------------------------------------------------------
 
 
 @triton.jit(do_not_specialize=["T"])
@@ -151,11 +119,6 @@ def _gate_mul_mean_bwd_kernel(
         nrm = tl.load(normed_ptr + base + offs, mask=mask, other=0.0)
         tl.store(dgate_ptr + base + offs, dm * nrm, mask=mask)
         tl.store(dnormed_ptr + base + offs, dm * g, mask=mask)
-
-
-# ---------------------------------------------------------------------------
-# combine: out[t, c*C+h] = residual[t, c*C+h] + h_post[t, c] * y[t, h]
-# ---------------------------------------------------------------------------
 
 
 @triton.jit(do_not_specialize=["T"])
@@ -211,11 +174,6 @@ def _combine_bwd_kernel(
     tl.store(dy_ptr + t * C + offs, dy.to(dy_ptr.dtype.element_ty), mask=mask)
 
 
-# ---------------------------------------------------------------------------
-# host-side helpers
-# ---------------------------------------------------------------------------
-
-
 def _block_c(C: int) -> int:
     return triton.next_power_of_2(C)
 
@@ -240,12 +198,7 @@ def _gate_chain_fwd(normed, w_down, w_up, n):
 
 
 class _HCMixInject(torch.autograd.Function):
-    """Fused mix + inject gate.
-
-    Returns ``(aggregated [T, C] in x dtype, h_post [T, n] fp32)``; when
-    ``w_inject`` is None (head contraction) h_post is a dummy empty tensor.
-    Backward recomputes normed / z1 / gate from the saved bf16 input + rstd.
-    """
+    """Fused mix + inject gate."""
 
     @staticmethod
     def forward(ctx, x2d, weight, w_down, w_up, w_inject, n, eps):
@@ -272,7 +225,6 @@ class _HCMixInject(torch.autograd.Function):
         n, eps = ctx.n, ctx.eps
         T, W = x2d.shape
         C = W // n
-        # recompute the fp32 chain
         normed, _ = _norm_fwd(x2d, weight, n, eps)
         gate, z1 = _gate_chain_fwd(normed, w_down, w_up, n)
         s1 = F.silu(z1)
@@ -285,11 +237,9 @@ class _HCMixInject(torch.autograd.Function):
                 dmixed, gate, normed, dgate, dnormed, T, N=n, C=C, BLOCK_C=_block_c(C)
             )
 
-        # gate = sigmoid(z2), z2 = s1 @ w_up^T
         dz2 = dgate * gate * (1.0 - gate)
         dw_up = dz2.t() @ s1
         ds1 = dz2 @ w_up.float()
-        # silu'(z) = sigmoid(z) * (1 + z * (1 - sigmoid(z)))
         sig_z1 = torch.sigmoid(z1)
         dz1 = ds1 * sig_z1 * (1.0 + z1 * (1.0 - sig_z1))
         dz1 = dz1 / n  # z1 = (N @ w_down^T) / n
@@ -298,7 +248,6 @@ class _HCMixInject(torch.autograd.Function):
 
         dw_inject = None
         if w_inject is not None and dh_post is not None and dh_post.numel() > 0:
-            # h_post = 2 sigmoid(u), u = (N @ w_inject^T) / n
             u = F.linear(normed, w_inject.float()) / n
             sig_u = torch.sigmoid(u)
             du = dh_post.float() * 2.0 * sig_u * (1.0 - sig_u)
@@ -306,9 +255,6 @@ class _HCMixInject(torch.autograd.Function):
             dw_inject = (du.t() @ normed).to(w_inject.dtype)
             dnormed += du @ w_inject.float()
 
-        # dweight: y_c = x_hat_c * (1 + w_c) with x_hat = x * rstd.
-        # Rebuild x_hat from x and the saved rstd (dividing normed by 1+w
-        # would blow up on any weight element at exactly -1).
         x_hat = (x2d.float().view(T, n, C) * rstd.unsqueeze(-1)).view(T, W)
         dweight = (dnormed * x_hat).sum(dim=0).to(weight.dtype)
 
@@ -359,21 +305,11 @@ class _HCCombine(torch.autograd.Function):
             _combine_bwd_kernel[(T,)](
                 dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=_block_c(C)
             )
-        # d(residual) = dout unchanged (identity residual path)
         return dout, dy, dh_post.to(ctx.h_post_dtype), None
 
 
-# ---------------------------------------------------------------------------
-# public entry points, mirroring ops/hc.py signatures
-# ---------------------------------------------------------------------------
-
-
 def hc_mix_inject_triton(x, weight, w_down, w_up, w_inject, n: int, eps: float):
-    """Fused (grouped_gemma_rmsnorm -> hc_mix, hc_inject_gate).
-
-    ``x``: [..., n*C]. Returns ``(aggregated [..., C], h_post [..., n] fp32)``.
-    ``w_inject=None`` skips the inject gate (head contraction).
-    """
+    """Fused (grouped_gemma_rmsnorm -> hc_mix, hc_inject_gate)."""
     lead = x.shape[:-1]
     x2d = x.reshape(-1, x.shape[-1]).contiguous()
     mixed, h_post = _HCMixInject.apply(x2d, weight, w_down, w_up, w_inject, n, eps)
@@ -392,21 +328,3 @@ def hc_combine_triton(residual, block_output, h_post, n: int):
     out = _HCCombine.apply(r2d, y2d, hp2d, n)
     return out.reshape(*lead, -1)
 
-
-# --- warmup (registered with ops.backend; called once at model build) ----------
-
-
-@register_warmup("HC")
-def _warmup_hc(*, hidden_size: int, hc_count: int, hc_lowrank: int, **_):
-    """Tiny fwd+bwd through every HC kernel at the real (n, C, R) constexprs."""
-    n, C, R = hc_count, hidden_size, hc_lowrank
-    dt = torch.bfloat16
-    T = 8
-    x = torch.randn(T, n * C, device="cuda", dtype=dt, requires_grad=True)
-    wn = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
-    wd = torch.randn(R, n * C, device="cuda", dtype=dt, requires_grad=True)
-    wu = torch.randn(n * C, R, device="cuda", dtype=dt, requires_grad=True)
-    wi = torch.randn(n, n * C, device="cuda", dtype=dt, requires_grad=True)
-    m, hp = hc_mix_inject_triton(x, wn, wd, wu, wi, n, 1e-6)
-    hc_combine_triton(x, m, hp, n).sum().backward()
-    torch.cuda.synchronize()

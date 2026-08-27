@@ -4,15 +4,6 @@ Same numerical policy as the torch reference in ops/ple.py (which the sglang
 parity runs verified): fp32 for every reduction and elementwise step, one cast
 onto the output dtype. The kernels fuse
 
-    gate chain : norm_k(key), norm_q(hc_state), per-stream dot, sigmoid(sign*sqrt),
-                 gated = gate * value                      -> ONE kernel
-    conv chain : grouped rmsnorm (reused from hc_triton), causal depthwise
-                 dilated conv per segment + SiLU + residual add -> two kernels
-
-and the backward recomputes the fp32 intermediates from saved rstds instead of
-letting autograd store several [T, n*C] fp32 tensors.
-
-The two TELinear projections that feed `key`/`value` stay outside: cuBLAS GEMMs.
 """
 
 import math
@@ -21,7 +12,6 @@ import torch
 import triton
 import triton.language as tl
 
-from miles_plugins.models.qwen3_8_next.ops.backend import register_warmup
 
 from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
     _grouped_rmsnorm_bwd_kernel,
@@ -29,10 +19,6 @@ from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
     _block_c,
     _norm_fwd,
 )
-
-# ---------------------------------------------------------------------------
-# gate chain: one program per (token, stream)
-# ---------------------------------------------------------------------------
 
 
 @triton.jit(do_not_specialize=["T"])
@@ -129,25 +115,20 @@ def _ple_gate_bwd_kernel(
     kn = k * rk * (1.0 + wk)
     qn = q * rq * (1.0 + wq)
 
-    # gated = g * v
     dgate = tl.sum(dg_out * v, axis=0)
     tl.store(dvalue_ptr + (t * N + c) * C + offs, dg_out * g, mask=mask)
 
-    # gate = sigmoid(u), u = sign(s) * sqrt(max(|s|, 1e-6))
     score = tl.sum(kn * qn, axis=0) / sqrtC
     mag = tl.maximum(tl.abs(score), 1e-6)
     du = dgate * g * (1.0 - g)
-    # d u / d s = 1/(2 sqrt(|s|)) for |s| > 1e-6 (sign cancels), else 0
     ds = tl.where(tl.abs(score) > 1e-6, du / (2.0 * tl.sqrt(mag)), 0.0)
 
     dkn = qn * (ds / sqrtC)
     dqn = kn * (ds / sqrtC)
 
-    # store dweight partials (host reduces over tokens): dW = dnormed * x_hat
     tl.store(dwk_partial_ptr + base + offs, dkn * (k * rk), mask=mask)
     tl.store(dwq_partial_ptr + base + offs, dqn * (q * rq), mask=mask)
 
-    # rmsnorm backward for each side
     gk = dkn * (1.0 + wk)
     dotk = tl.sum(gk * k, axis=0)
     dk = rk * gk - k * (rk * rk * rk) * (dotk / C)
@@ -157,13 +138,6 @@ def _ple_gate_bwd_kernel(
 
     tl.store(dkey_ptr + base + offs, dk.to(dkey_ptr.dtype.element_ty), mask=mask)
     tl.store(dquery_ptr + base + offs, dq.to(dquery_ptr.dtype.element_ty), mask=mask)
-
-
-# ---------------------------------------------------------------------------
-# segment-aware causal depthwise dilated conv (+ SiLU + residual add)
-# out[t, ch] = gated[t, ch] + silu( sum_j w[ch, j] * normed[t - (K-1-j)*d, ch] )
-#   taps outside the token's segment contribute zero (left-pad semantics).
-# ---------------------------------------------------------------------------
 
 
 @triton.jit(do_not_specialize=["T", "W"])
@@ -231,12 +205,10 @@ def _ple_conv_bwd_kernel(
     do = tl.load(dout_ptr + t * W + offs, mask=mask, other=0.0).to(tl.float32)
     tl.store(dgated_add_ptr + t * W + offs, do, mask=mask)
 
-    # silu'(x) = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
     cv = tl.load(conv_ptr + t * W + offs, mask=mask, other=0.0)
     sig = tl.sigmoid(cv)
     dconv = do * sig * (1.0 + cv * (1.0 - sig))
 
-    # dweight[ch, j] += dconv[t, ch] * normed[t - (K-1-j)*d, ch]
     for j in tl.static_range(K):
         src = t - (K - 1 - j) * DIL
         if src >= 0:
@@ -244,7 +216,6 @@ def _ple_conv_bwd_kernel(
             x = tl.load(normed_ptr + src * W + offs, mask=mask & ok, other=0.0)
             tl.atomic_add(dconvw_ptr + offs * K + j, dconv * x, mask=mask & ok)
 
-    # dnormed[t, ch] = sum_j w[ch, j] * dconv[t + (K-1-j)*d, ch] (within segment)
     acc = tl.zeros([BLOCK_W], dtype=tl.float32)
     for j in tl.static_range(K):
         dst = t + (K - 1 - j) * DIL
@@ -256,11 +227,6 @@ def _ple_conv_bwd_kernel(
             sig2 = tl.sigmoid(cv2)
             acc += wgt * do2 * sig2 * (1.0 + cv2 * (1.0 - sig2))
     tl.store(dnormed_ptr + t * W + offs, acc, mask=mask)
-
-
-# ---------------------------------------------------------------------------
-# host side
-# ---------------------------------------------------------------------------
 
 
 def _seg_bounds(T: int, cu_seqlens, device):
@@ -321,7 +287,6 @@ class _PLEGateConv(torch.autograd.Function):
         dev = hc_state.device
         dout = dout.contiguous()
 
-        # recompute the fp32 gated / normed tensors
         gated = torch.empty(T, W, dtype=torch.float32, device=dev)
         _g = torch.empty(T, n, dtype=torch.float32, device=dev)
         _rk = torch.empty(T, n, dtype=torch.float32, device=dev)
@@ -344,7 +309,6 @@ class _PLEGateConv(torch.autograd.Function):
                 T, W, K=Kk, DIL=dilation, BLOCK_W=BW,
             )
 
-        # rmsnorm (norm_conv) backward: dgated += bwd(dnormed); dwc from partials
         x_hat = (gated.view(T, n, C) * rstdc.unsqueeze(-1)).view(T, W)
         dwc = (dnormed * x_hat).sum(dim=0).to(wc.dtype)
         dgated_norm = torch.empty(T, W, dtype=torch.float32, device=dev)
@@ -376,33 +340,10 @@ class _PLEGateConv(torch.autograd.Function):
 
 def ple_gate_conv_triton(hc_state, key, value, norm_key_w, norm_query_w, norm_conv_w,
                          conv1d_weight, n: int, eps: float, dilation: int, cu_seqlens):
-    """Full PLE increment (gate chain + norm + causal conv + SiLU + residual).
-
-    Shapes: hc_state/key [T, n*C], value [T, C], conv1d_weight [n*C, 1, K].
-    Returns increment [T, n*C] in hc_state's dtype.
-    """
+    """Full PLE increment (gate chain + norm + causal conv + SiLU + residual)."""
     return _PLEGateConv.apply(
         hc_state.contiguous(), key.contiguous(), value.contiguous(),
         norm_key_w, norm_query_w, norm_conv_w, conv1d_weight,
         n, eps, dilation, cu_seqlens,
     )
 
-
-# --- warmup (registered with ops.backend; called once at model build) ----------
-
-
-@register_warmup("PLE")
-def _warmup_ple(*, hidden_size: int, hc_count: int, ple_conv_kernel: int, ple_conv_dilation: int, **_):
-    """Tiny fwd+bwd through the PLE gate+conv kernels at the real constexprs."""
-    n, C, K, dil = hc_count, hidden_size, ple_conv_kernel, ple_conv_dilation
-    dt = torch.bfloat16
-    T = 8
-    x = torch.randn(T, n * C, device="cuda", dtype=dt, requires_grad=True)
-    wk = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
-    wq = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
-    wc = torch.zeros(n * C, device="cuda", dtype=dt, requires_grad=True)
-    cw = torch.randn(n * C, 1, K, device="cuda", dtype=dt, requires_grad=True)
-    cu = torch.tensor([0, T], dtype=torch.int32, device="cuda")
-    inc = ple_gate_conv_triton(x, x * 0.1, x[:, :C] * 0.1, wk, wq, wc, cw, n, 1e-6, dil, cu)
-    inc.sum().backward()
-    torch.cuda.synchronize()

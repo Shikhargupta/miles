@@ -55,7 +55,18 @@ def train(args: ScriptArgs):
     )
     if not args.skip_saving:
         load_save_path = f"{_SAVE_DIR}/{args.run_id}/checkpoints"
-        ckpt_args += f"--load {load_save_path} --save {load_save_path} --save-interval 20 "
+        # save-interval 10 < the ~19-cycle TMS disk-resume failure horizon
+        # (DiskBackend::open_slot_file_ abort, see progress notes): every crash
+        # has a checkpoint behind it and each restart resets the cycle count,
+        # so long runs chain through the bug until it is fixed in TMS.
+        # Params-only checkpoints: saving optimizer state stages ~80GB/rank of
+        # host anon memory and the spike kernel-OOMed c001 twice at the save
+        # (runs 100g/100h). Losing Adam moments across a crash-resume is fine
+        # for this bring-up (constant lr 1e-6; moments rebuild in a few steps).
+        ckpt_args += (
+            f"--load {load_save_path} --save {load_save_path} --save-interval 10 "
+            "--no-save-optim --no-save-rng --no-load-optim --no-load-rng "
+        )
 
     rollout_args = (
         "--label-key label "

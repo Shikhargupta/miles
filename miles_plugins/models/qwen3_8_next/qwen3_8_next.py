@@ -1,43 +1,7 @@
-"""Qwen3.8-Next transformer block spec for Megatron.
-
-Usage: ``--spec miles_plugins.models.qwen3_8_next.qwen3_8_next get_qwen3_8_next_spec``
-
-Built on ``get_qwen3_5_spec``'s approach, because sglang's model is literally
-``Qwen4ExpModel(Qwen3_5ForCausalLM)``: a **uniform GPT decoder block** where the
-``linear_attention`` layers get their ``self_attention`` submodule swapped for a
-gated-delta-net wrapper. Notably *not* ``megatron.core.models.hybrid``, whose
-``HyperConnectionHybridLayer`` hardcodes ``HyperConnectionModule`` and would give
-us no way in.
-
-Three edits on top of what Qwen3.5 builds:
-
-1. ``config.enable_hyper_connections`` (set by the bridge) already makes
-   ``get_gpt_decoder_block_spec`` emit ``HyperConnectionTransformerLayer`` and
-   populate the two HC ModuleSpec slots with ``HyperConnectionModule``. Swap both
-   for ``Qwen38NextHyperConnection``, whose gating is the low-rank per-feature
-   read gate and identity residual mixing that this model actually uses.
-
-2. Drop every block layernorm. Qwen3.8-Next's checkpoint has **zero**
-   ``input_layernorm`` and **zero** ``post_attention_layernorm`` tensors, and no
-   final norm either -- each HC's ``hc_norm`` is the pre-block norm, and the
-   final mixer's is the final norm. Qwen3.5 leaves TE's fused
-   ``LayerNormColumnParallelLinear`` in ``linear_qkv`` (which is where its
-   ``linear_qkv.layer_norm_weight`` comes from) and gives MoE layers a real
-   ``pre_mlp_layernorm``; both would end up with no source tensor to load, and a
-   layernorm sitting at its init value in front of an already-normed input is a
-   silent correctness bug rather than a load error.
-
-3. Fill ``TransformerBlockSubmodules.hc_head_contraction`` with
-   ``Qwen38NextHCHeadContraction``. ``TransformerBlock``'s built-in contraction is
-   DeepSeek-V4's -- one projection to a per-stream scalar, a sum over streams, and
-   a single RMS across the whole ``n*C`` vector -- whereas Qwen3.8-Next's is the
-   same low-rank gated mean as its per-layer HC with a per-stream RMS. That slot
-   is new (radixark/Megatron-LM, "mhc: allow a model to supply its own output
-   contraction") and is opt-in, so leaving it unset keeps DeepSeek-V4 on the old
-   path with its parameter names intact.
-
-Everything runs on Transformer Engine (``use_transformer_engine=True``), so the
-attention and MLP linears stay TE modules and fp8 remains reachable.
+"""Qwen3.8-Next block spec: uniform GPT decoder (like qwen3_5, NOT models.hybrid),
+HC ModuleSpec slots -> Qwen38NextHyperConnection, hc_head_contraction filled.
+Trap: every block layernorm is dropped -- the checkpoint has none (each HC's
+hc_norm is the pre-block norm); a leftover TE fused norm silently corrupts.
 """
 
 import copy
@@ -151,10 +115,6 @@ def _apply_qwen3_8_next_config(config, text_config) -> None:
     )
     config.qwen3_8_next_split_ngram_parts = getattr(text_config, "split_ngram_parts", 128)
     config.qwen3_8_next_ple_conv_kernel_size = getattr(text_config, "ple_conv_kernel_size", 4)
-    # The PLE short conv's dilation is the n-gram size, not a config field of its
-    # own: sglang sets short_conv_dilation = ple_embedding.ngram_size, and this
-    # checkpoint has no ple_conv_dilation key at all, so a literal default here
-    # would silently be right only for ngram_size == 3.
     config.qwen3_8_next_ple_conv_dilation = getattr(
         text_config, "ple_conv_dilation", None
     ) or config.qwen3_8_next_ngram_size
@@ -169,38 +129,13 @@ def _apply_qwen3_8_next_config(config, text_config) -> None:
 
 def get_qwen3_8_next_spec(args, config, vp_stage=None):
     """Transformer block spec for Qwen3.8-Next."""
-    # transformers 5.12 does not know model_type qwen4_exp (nor the nested
-    # qwen4_exp_text), and the checkpoint carries no remote code, so a bare
-    # AutoConfig raises before anything else runs. load_hf_config registers miles'
-    # aliases first. Registering explicitly as well because the converter builds the
-    # model through this spec *before* it constructs mbridge's AutoBridge, which
-    # calls AutoConfig itself -- relying on that ordering silently would be fragile.
     register_hf_config_aliases()
     hf_config = load_hf_config(args.hf_checkpoint)
     text_config = _get_text_config(hf_config)
 
-    # Megatron has no CLI flag for the hyper-connection fields, and the converter
-    # builds its TransformerConfig from argparse rather than from the bridge, so
-    # derive them here from the checkpoint's own config. Idempotent with
-    # Qwen38NextBridge._build_config, which sets the same values on the paths that
-    # do go through the bridge.
     _apply_qwen3_8_next_config(config, text_config)
-    # The PLE table is not a checkpointed parameter; it is read from the HF
-    # safetensors on first use, so the module needs to know where from.
     config.qwen3_8_next_hf_checkpoint = args.hf_checkpoint
 
-    # Pipeline parallelism does account for the widened hidden state: with
-    # enable_hyper_connections set, schedules.get_tensor_shapes multiplies
-    # hidden_size by num_residual_streams for exactly the boundaries that carry it
-    # (a stage receives wide unless it is the first, and sends wide unless it is the
-    # last), which lines up with input_expand living on pre_process and the
-    # contraction on has_final_layernorm_in_this_stage.
-    #
-    # Interleaved PP is a different story. That path applies the widened dimension
-    # to every intermediate communication uniformly and carries its own note that
-    # "proper VPP support may need more complex logic". A wrong P2P buffer width
-    # there is a shape crash at best and silently transposed data at worst, so
-    # refuse it rather than find out during a training run.
     if getattr(config, "virtual_pipeline_model_parallel_size", None):
         raise NotImplementedError(
             "Qwen3.8-Next + interleaved pipeline parallelism is unverified: "
@@ -209,7 +144,6 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
             "simplified. Run with --num-layers-per-virtual-pipeline-stage unset."
         )
 
-    # Always take the MoE path for MoE checkpoints, matching Qwen3.5.
     if not args.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
@@ -225,10 +159,6 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
 
     layer_types = _layer_types(text_config)
 
-    # PLE hashes the input token ids, which only exist on the stage that holds the
-    # embedding. With 48 layers and PP <= 8 the first stage always covers layer 1, so
-    # this holds today -- but it holds by arithmetic, not by construction, and a
-    # future uneven split would break it by silently having no ids to hash.
     ple_here = [i for i in config.qwen3_8_next_ple_layer_ids
                 if offset <= i < offset + num_layers_to_build]
     if ple_here and offset > 0:
@@ -242,9 +172,6 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
         global_layer_id = layer_id + offset
         layer_spec = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
 
-        # Qwen3.8-Next's gating, in the slots enable_hyper_connections opened.
-        # PLE lives on one layer only (index 1; ple_layer_ids is 1-based), and its
-        # increment is injected by that layer's attention-site HC.
         with_ple = global_layer_id in config.qwen3_8_next_ple_layer_ids
         layer_spec.submodules.self_attention_hyper_connection = _hc_spec(
             config, with_ple=with_ple
@@ -257,10 +184,6 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
                 params={"args": args},
             )
         else:
-            # Full-attention layers carry a QSA indexer, so they need Qwen3.8-Next's
-            # attention rather than Megatron's plain SelfAttention. Keep the
-            # submodules the block spec already built (linear_qkv swapped to a plain
-            # TEColumnParallelLinear below, core_attention, linear_proj, QK norms).
             layer_spec.submodules.self_attention = ModuleSpec(
                 module=Qwen38NextAttention,
                 params=dict(layer_spec.submodules.self_attention.params or {}),
@@ -272,12 +195,6 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
 
     transformer_layer_spec.hc_head_contraction = ModuleSpec(module=Qwen38NextHCHeadContraction)
 
-    # No final norm either: the checkpoint has no model.language_model.norm.weight,
-    # because the contraction's own hc_norm is it. IdentityOp is deliberate rather
-    # than post_layer_norm=False -- has_final_layernorm_in_this_stage() gates the
-    # contraction on `submodules.layer_norm and post_process and post_layer_norm`,
-    # so switching the norm off would switch the contraction off with it. IdentityOp
-    # keeps the gate truthy while allocating nothing.
     transformer_layer_spec.layer_norm = IdentityOp
 
     return transformer_layer_spec

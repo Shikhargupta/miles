@@ -1,41 +1,7 @@
-"""Qwen3.8-Next Hyper-Connection modules for Megatron.
+"""Qwen3.8-Next hyper-connections for Megatron's HC ModuleSpec slots.
 
-Megatron's ``HyperConnectionModule`` (megatron/core/transformer/hyper_connection.py)
-implements the mHC formulation DeepSeek-V4 uses:
-
-    h_pre  : [s, b, n]     per-stream scalar read gate, from a single projection
-    h_post : [s, b, n]     per-stream scalar write gate, 2*sigmoid
-    h_res  : [s, b, n, n]  doubly-stochastic residual mixing matrix (Sinkhorn)
-    aggregate: sum_j h_pre_j * x_j
-
-Qwen3.8-Next differs in exactly two ways (see sglang's ``GatedResidual``, the
-authority, which sglang instantiates for the attention HC, the MLP HC and the
-model-level final mixer alike):
-
-  * the read gate is **per-stream per-feature**, produced by a low-rank
-    two-matrix MLP with a SiLU in the middle, and the aggregation is a **mean**
-    over streams rather than a weighted sum;
-  * there is **no residual mixing** -- ``h_res`` is the identity, so the
-    write-back is just ``X_c += a_c * y``.
-
-Everything else about Megatron's structure already matches: the block widens the
-hidden state at the input, each layer reads one working vector and writes the
-block output back to every stream, and MTP consumes the pre-contraction
-``[s, b, n*C]`` state. So only the gating needs reimplementing, and it drops
-into the existing ``TransformerLayerSubmodules.self_attention_hyper_connection``
-/ ``mlp_hyper_connection`` ModuleSpec slots -- no Megatron core changes.
-
-Contract that ``HyperConnectionTransformerLayer`` expects:
-
-    hidden_states, h_res, h_post, residual = hc(hidden_states,
-                                                mhc_recompute_manager=...)
-    out = hc.fused_h_res_h_post_bda(h_res, residual, h_post,
-                                    layer_output_with_bias, dropout_prob,
-                                    training, fused, manager=...)
-
-The layer never inspects ``h_res``/``h_post``, it only threads them from the
-first call to the second, so returning ``None`` for ``h_res`` is safe and lets
-``fused_h_res_h_post_bda`` skip the identity bmm entirely.
+Differs from Megatron's mHC (DeepSeek-V4): per-stream per-feature low-rank read
+gate with a MEAN over streams, and identity residual mixing (h_res is None).
 """
 
 import os
@@ -58,24 +24,12 @@ from miles_plugins.models.qwen3_8_next.ops.kernel.hc_triton import (
     hc_combine_triton,
     hc_mix_inject_triton,
 )
-from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE
-from miles_plugins.models.qwen3_8_next.ops.ple_context import PLEContextError, current_ple_batch
+from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch
 
 
 class Qwen38NextHyperConnection(MegatronModule):
-    """Per-layer hyper-connection: fills the attention and MLP HC spec slots.
-
-    Parameters are replicated across tensor-parallel ranks -- the gating runs on
-    the full hidden dimension, like a layernorm -- so they carry the
-    ``sequence_parallel`` flag when sequence parallelism is on, which is what
-    tells Megatron to reduce their gradients over the right group.
-
-    Weights stay in ``config.params_dtype`` (bf16) instead of being promoted to
-    fp32 the way Megatron's mHC keeps its ``hc_*`` params. That is deliberate:
-    the goal is train/inference consistency against sglang, which holds these in
-    bf16, and the fp32 work that actually matters (the norm reduction) happens
-    inside the triton kernels regardless of storage dtype.
-    """
+    """Per-layer HC filling the attention/MLP spec slots. Params replicated across TP
+    (sequence_parallel attr set); kept bf16 to match sglang."""
 
     def __init__(
         self,
@@ -95,8 +49,6 @@ class Qwen38NextHyperConnection(MegatronModule):
         wide = self.n * self.hidden_size
         dtype = config.params_dtype
 
-        # Names mirror the checkpoint (model.language_model.layers.{i}.
-        # {attn,mlp}_hyper_connection.*) so the bridge mapping stays obvious.
         self.hc_norm_weight = torch.nn.Parameter(torch.zeros(wide, dtype=dtype))
         self.input_mix_weight_down = torch.nn.Parameter(torch.empty(lowrank, wide, dtype=dtype))
         self.input_mix_weight_up = torch.nn.Parameter(torch.empty(wide, lowrank, dtype=dtype))
@@ -123,14 +75,7 @@ class Qwen38NextHyperConnection(MegatronModule):
         mhc_recompute_manager=None,
         output_slot=None,
     ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
-        """Returns ``(aggregated, h_res=None, h_post, residual)``.
-
-        ``h_post`` is computed here rather than in the combine step because it
-        depends on the same normed tensor as the read gate. Recomputing the norm
-        later would cost an extra pass and risk drifting from sglang, which also
-        reuses one normed tensor for both (its ``mix`` returns it alongside the
-        raw residual).
-        """
+        """Returns (aggregated, h_res=None, h_post, residual)."""
         if mhc_recompute_manager is not None or output_slot is not None:
             raise NotImplementedError(
                 "Qwen38NextHyperConnection does not support the mHC recompute arena yet; "
@@ -177,30 +122,8 @@ class Qwen38NextHyperConnection(MegatronModule):
 
 
 class Qwen38NextHCHeadContraction(MegatronModule):
-    """Model-level mHC output contraction ``[s, b, n*C] -> [s, b, C]``.
-
-    Fills ``TransformerBlockSubmodules.hc_head_contraction``, so
-    ``TransformerBlock`` calls this instead of its built-in
-    ``learned_output_contract``. The two are genuinely different functions and
-    not interchangeable:
-
-                        DeepSeek-V4 built-in        Qwen3.8-Next
-        RMS             once over all n*C           per stream
-        gate            one projection -> [s,b,n]   low-rank W_up SiLU(W_down)
-        reduction       sum over streams            mean over streams
-
-    sglang builds this from the *same* ``GatedResidual`` class as the per-layer
-    hyper-connections, only with ``use_combine=False`` (no inject weight), which
-    is why it shares the mix kernels with
-    ``Qwen38NextHyperConnection`` rather than reimplementing the gate.
-
-    Parameters are replicated across tensor-parallel ranks -- the contraction
-    runs on the full hidden dimension -- and stay in ``config.params_dtype``
-    (bf16) to match sglang, which holds the mixer in bf16. ``ops`` does every
-    reduction in fp32 regardless of storage dtype, so this costs no accuracy:
-    measured against a float64 reference it sits exactly on the bf16 rounding
-    floor.
-    """
+    """Model-level output contraction [s,b,n*C]->[s,b,C]: same gated mean as the
+    per-layer HC (per-stream RMS) -- NOT interchangeable with DSv4's built-in."""
 
     def __init__(self, config: TransformerConfig, hc_count: Optional[int] = None):
         super().__init__(config)
@@ -235,25 +158,11 @@ class Qwen38NextHCHeadContraction(MegatronModule):
         return mixed
 
 class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
-    """Attention-site hyper-connection for the one layer that carries PLE.
-
-    PLE's increment goes onto the widened residual *before* the read gate sees it
-    (the design has ``X = X + PLE(X)`` then the HC mix), and it is the HC's own
-    ``hc_state`` that PLE uses as its query. Doing it here rather than in the layer
-    keeps the injection at exactly the right point without needing a second
-    extension point in Megatron: the attention HC slot is already pluggable, and
-    this is the first thing that slot's forward does.
-
-    Returning the updated residual as the 4th tuple element matters -- that is what
-    ``fused_h_res_h_post_bda`` later adds the block output to, so the increment has
-    to be part of the residual, not just of the mix input.
-    """
+    """Attention-site HC for the PLE layer: applies the PLE increment (full-seq
+    under SP) before the read."""
 
     def __init__(self, config: TransformerConfig, layer_number: int, **kwargs):
         super().__init__(config, layer_number, **kwargs)
-        # Without a TP group the table is not row-sharded at all: every rank would
-        # hold all 320 M rows, i.e. 102 GB of pinned host memory per rank instead of
-        # 25.6 GB at TP4.
 
         tp_group = None
         try:
@@ -261,7 +170,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         except AssertionError:
             pass  # not initialised (shape audits); falls back to unsharded
         self.ple = Qwen38NextPLE(config, layer_number=layer_number, tp_group=tp_group)
-
 
 
     def _resolve_ple_batch(self):
@@ -284,7 +192,7 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
 
         if is_checkpointing() and torch.is_grad_enabled():
             if not self._ple_recompute_fifo:
-                raise PLEContextError(
+                raise RuntimeError(
                     "PLE recompute ran with no queued n-gram batch; the checkpointed "
                     "original pass did not enqueue (or the recompute order diverged "
                     "from FIFO, e.g. interleaved VPP)."
@@ -298,14 +206,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
 
     def _apply_ple(self, hidden_states, ngram_ids, cu_seqlens):
 
-        # The two sides disagree on layout and, at batch 1, agree on element count,
-        # so a bare reshape inside the PLE silently mixes them up: the HC state is
-        # Megatron's [S, B, H] while ngram ids are built per token in HF's [B, S, h]
-        # order. Flatten both to one explicit [S*B, ...] token axis -- transposing
-        # the ids first so token s*B+b lines up in both -- and assert, so any future
-        # layout change fails here rather than broadcasting into a wrong-but-running
-        # [S, S, H] tensor (which is how this surfaced: the GDN downstream reported
-        # "batch size is expected to be 1 rather than 621").
         seq, batch = hidden_states.shape[0], hidden_states.shape[1]
         if ngram_ids.dim() == 3:
             if ngram_ids.shape[:2] != (batch, seq):
@@ -319,9 +219,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
 
         increment = self.ple(flat_state, flat_ids, cu_seqlens)
 
-        # Debug hook for the sglang parity comparison, off unless the dumper is
-        # enabled. Named to match what the sglang side dumps at the same two points
-        # inside _prepare_qwen4_exp_attn.
         assert increment.shape == flat_state.shape, (
             f"PLE increment {tuple(increment.shape)} != state {tuple(flat_state.shape)}"
         )
@@ -337,13 +234,6 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
 
         ngram_ids, cu_seqlens = self._resolve_ple_batch()
 
-        # Under sequence parallelism this layer sees only its [T/tp] shard of the
-        # sequence, but the PLE is not shard-local math: the n-gram ids cover the
-        # full pack and the short conv must not break at shard boundaries. Do what
-        # the GDN wrapper does -- gather the full sequence, compute, keep the local
-        # shard of the result. The gather's backward is a split (not
-        # reduce-scatter): the computation is duplicated across ranks, so summing
-        # gradients would inflate them by tp.
         sp_size = 1
         if getattr(self.config, "sequence_parallel", False):
             sp_size = get_tensor_model_parallel_world_size()
