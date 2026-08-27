@@ -4,9 +4,11 @@ Deliberately narrower than run_deepseek_v4.py: one model, one cluster, the paths
 this project actually uses. The heavy lifting (ray job submit, env plumbing) stays
 in miles.utils.external_utils.command_utils.execute_train.
 
-Assumes an ALREADY RUNNING ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1): on slurm the
-per-node containers and `ray start` are handled by scripts/qwen3_8_next/e2e_up.sh,
-not by this script.
+Assumes an ALREADY RUNNING ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1): start a
+per-node container on the slurm allocation, `ray start --head` on one node and
+`ray start --address` on the rest (fabric IPs via `getent hosts $(hostname)`,
+node-local TRITON/INDUCTOR cache dirs), then run this script in the head
+container.
 
 Usage (inside the head-node container):
     python scripts/run_qwen3_8_next.py train --num-rollout 5

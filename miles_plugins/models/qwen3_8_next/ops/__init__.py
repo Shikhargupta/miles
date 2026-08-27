@@ -20,7 +20,7 @@ Supporting modules:
     ple_context.py    side channel handing token ids to the PLE layer.
 
 Parity debugging is fully out of the production tree: dump points are injected
-on demand via the dumper source patcher (scripts/qwen3_8_next/debug/).
+on demand via the sglang dumper's source patcher when needed.
 
 ``ple_hash`` stays Megatron-import-free so it unit-tests against sglang without
 pulling megatron.core; MegatronModule subclasses import on demand, keeping this
