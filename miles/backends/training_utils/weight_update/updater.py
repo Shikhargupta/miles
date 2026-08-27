@@ -83,6 +83,7 @@ class WeightUpdater:
             self.parallel_state,
             self._hf_weight_iterator.placement,
         )
+        assert self.protocol.is_sender is not None, "connect() must set is_sender"
 
     def is_rollout_engines_fresh(self) -> bool:
         return self.protocol.is_fresh()

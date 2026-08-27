@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import torch
 from ray.actor import ActorHandle
@@ -28,9 +28,8 @@ class WeightTransferProtocol(ABC):
         self.args = args
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale = False
-        self.is_sender = False
+        self.is_sender: bool | None = None
         self.is_lora_sender = False
-        self.dst: Any = None
 
     @abstractmethod
     def connect(
