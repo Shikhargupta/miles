@@ -17,7 +17,7 @@ the Harbor task.
 | File | Purpose |
 | --- | --- |
 | `run.py` | Validated synchronous GLM-4.7-Flash launcher. |
-| `run-glm47-flash-agentic-async.py` | Disaggregated fully asynchronous launcher. |
+| `run-glm47-flash-agentic-async.py` | Disaggregated fully asynchronous launcher; training and one SGLang engine on disjoint GPUs of a single node (default 4 + 2). |
 | `run_glm52_lora_tb2_daytona.py` | Multi-node GLM-5.2 744B-A40B LoRA launcher (bf16 trainer, fp8 rollout). |
 | `swe_agent_function.py` | Sends each rollout to the Harbor agent server. |
 | `generate.py` | Builds rewards, metrics, and training samples. |
