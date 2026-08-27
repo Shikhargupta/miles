@@ -81,6 +81,8 @@ def make_args(**overrides) -> Namespace:
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
+        use_session_server=False,
+        sglang_speculative_algorithm=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         eval_num_gpus=0,
@@ -487,9 +489,21 @@ class MissingSessionMetricsBuffer(data_buffer.DataBuffer):
         return {}
 
 
-def test_custom_buffer_must_implement_session_rollout_metrics_contract():
-    with pytest.raises(TypeError, match="pop_session_rollout_metrics"):
-        MissingSessionMetricsBuffer()
+def test_custom_buffer_without_session_metrics_supports_unaffected_modes():
+    assert MissingSessionMetricsBuffer().pop_session_rollout_metrics() == []
+
+
+async def test_v2_speculative_custom_buffer_must_implement_session_metrics(monkeypatch):
+    path = f"{__name__}.MissingSessionMetricsBuffer"
+    args = make_args(
+        custom_async_data_buffer_path=path,
+        use_session_server="v2",
+        sglang_speculative_algorithm="EAGLE",
+    )
+    fn = make_fn(monkeypatch, args, FakeDataSource())
+
+    with pytest.raises(TypeError, match="pop_session_rollout_metrics for v2 speculative rollout"):
+        await fn(RolloutFnTrainInput(rollout_id=0))
 
 
 async def test_custom_data_buffer_path_replaces_default(monkeypatch):

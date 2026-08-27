@@ -81,9 +81,12 @@ class DataBuffer(ABC):
     def get_metrics(self) -> dict[str, float]:
         """Report fully-qualified metrics since the previous call (window counters reset here)."""
 
-    @abstractmethod
     def pop_session_rollout_metrics(self) -> list[dict]:
-        """Return and reset session metrics detached from discarded aborted groups."""
+        """Return and reset session metrics detached from discarded aborted groups.
+
+        Custom buffers only need to override this for v2 speculative rollout.
+        """
+        return []
 
 
 class DefaultDataBuffer(DataBuffer):

@@ -80,6 +80,15 @@ class FullyAsyncRolloutFn:
             return await self._call_eval(input)
         if self._worker is None:
             buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
+            if (
+                self.args.use_session_server == "v2"
+                and self.args.sglang_speculative_algorithm is not None
+                and buffer_cls.pop_session_rollout_metrics is DataBuffer.pop_session_rollout_metrics
+            ):
+                raise TypeError(
+                    f"{buffer_cls.__module__}.{buffer_cls.__qualname__} must implement "
+                    "DataBuffer.pop_session_rollout_metrics for v2 speculative rollout"
+                )
             self._output = buffer_cls(
                 DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
             )
