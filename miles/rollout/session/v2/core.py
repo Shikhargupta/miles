@@ -1,13 +1,13 @@
 import json
-from miles.rollout.generate_utils.weight_version_partition import (
-    format_weight_version_extra_key,
-    observe_weight_version,
-)
 import logging
 import time
 
 from starlette.responses import Response
 
+from miles.rollout.generate_utils.weight_version_partition import (
+    format_weight_version_extra_key,
+    observe_weight_version,
+)
 from miles.rollout.session.core import (
     JSON_MEDIA_TYPE,
     ProxyRequest,

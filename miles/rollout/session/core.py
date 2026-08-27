@@ -9,10 +9,6 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 """
 
 import json
-from miles.rollout.generate_utils.weight_version_partition import (
-    format_weight_version_extra_key,
-    observe_weight_version,
-)
 import logging
 import time
 from dataclasses import dataclass
@@ -20,6 +16,10 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.weight_version_partition import (
+    format_weight_version_extra_key,
+    observe_weight_version,
+)
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
