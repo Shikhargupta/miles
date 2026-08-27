@@ -111,7 +111,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_gpus_per_node: int = field(init=False)
     rollout_num_gpus: int = field(init=False)
     enable_mtp: bool = False
-    dsv4_impl: Literal["miles", "megatron"] = "miles"
+    dsv4_impl: Literal["miles", "megatron"] = "megatron"
     # None lets Megatron resolve it: tilelang for --dsv4-impl miles, cuDNN for megatron.
     dsa_kernel_backend: Literal["none", "tilelang", "cudnn"] | None = None
     optimizer_offload: bool = True
@@ -553,7 +553,7 @@ def _train(args: ScriptArgs):
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
-        "--micro-batch-size 1 "
+        "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {4096 if args.dsv4_impl == 'megatron' else 2048} "
     )
 
@@ -660,7 +660,7 @@ def _train(args: ScriptArgs):
         f"--dsv4-impl {args.dsv4_impl} "
         f"{f'--dsa-kernel-backend {args.dsa_kernel_backend} ' if args.dsa_kernel_backend else ''}"
         "--model-name deepseekv4 "  # for mbridge load
-        "--qkv-format bshd "
+        f"--qkv-format {'thd' if args.dsv4_impl == 'megatron' else 'bshd'} "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "

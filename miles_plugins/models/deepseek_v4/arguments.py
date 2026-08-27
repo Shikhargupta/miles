@@ -26,7 +26,7 @@ def add_dsv4_arguments(parser: ArgumentParser) -> ArgumentParser:
         "--dsv4-impl",
         type=str,
         choices=["miles", "megatron"],
-        default="miles",
+        default="megatron",
         help=(
             "Which DeepSeek-V4 attention implementation to train with. 'miles' is the plugin path "
             "(BSHD, sparse context parallelism, tilelang kernels, miles' hyper-connections) and is "
