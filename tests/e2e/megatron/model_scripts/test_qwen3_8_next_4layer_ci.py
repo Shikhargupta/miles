@@ -49,6 +49,7 @@ def prepare(args: ScriptArgs):
         dir_dst=args.ckpt_dir,
         hf_checkpoint=args.hf_checkpoint,
         megatron_path=args.megatron_path,
+        extra_args="--tensor-model-parallel-size 2 --pipeline-model-parallel-size 1",
     )
 
 
