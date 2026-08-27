@@ -1,7 +1,8 @@
 """Data buffer between fully-async rollout production and training consumption.
 
-``DataBuffer`` is the contract (put / get / get_metrics); ``DefaultDataBuffer``
-is the built-in implementation, replaceable via ``--custom-async-data-buffer-path``.
+``DataBuffer`` is the contract (put / get / get_metrics /
+pop_session_rollout_metrics); ``DefaultDataBuffer`` is the built-in implementation,
+replaceable via ``--custom-async-data-buffer-path``.
 Every group-level decision lives here — what to keep, what to hand to
 ``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
 ``--rollout-sample-filter-path`` stays outside: it runs on the assembled batch.
@@ -60,9 +61,9 @@ class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
     The producer puts each finished group as it completes; the consumer gets one
-    group at a time; get_metrics is collected once per training step. Storage,
-    ordering, and filtering are invisible to callers — an implementation is free
-    to reject a group on put, on get, or not at all.
+    group at a time; get_metrics and pop_session_rollout_metrics are collected once
+    per training step. Storage, ordering, and filtering are invisible to callers —
+    an implementation is free to reject a group on put, on get, or not at all.
     """
 
     @abstractmethod
@@ -80,8 +81,9 @@ class DataBuffer(ABC):
     def get_metrics(self) -> dict[str, float]:
         """Report fully-qualified metrics since the previous call (window counters reset here)."""
 
+    @abstractmethod
     def pop_session_rollout_metrics(self) -> list[dict]:
-        return []
+        """Return and reset session metrics detached from discarded aborted groups."""
 
 
 class DefaultDataBuffer(DataBuffer):

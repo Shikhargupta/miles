@@ -476,6 +476,22 @@ class RecordingBuffer(data_buffer.DefaultDataBuffer):
         RecordingBuffer.constructed_with = input
 
 
+class MissingSessionMetricsBuffer(data_buffer.DataBuffer):
+    async def put(self, input):
+        return None
+
+    async def get(self, **context):
+        raise NotImplementedError
+
+    def get_metrics(self):
+        return {}
+
+
+def test_custom_buffer_must_implement_session_rollout_metrics_contract():
+    with pytest.raises(TypeError, match="pop_session_rollout_metrics"):
+        MissingSessionMetricsBuffer()
+
+
 async def test_custom_data_buffer_path_replaces_default(monkeypatch):
     path = f"{__name__}.RecordingBuffer"
     args = make_args(custom_async_data_buffer_path=path, async_unused_samples_handler="retry")
