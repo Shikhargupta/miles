@@ -81,7 +81,6 @@ def execute(args: ScriptArgs):
         f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
         "--rollout-temperature 1 "
         "--global-batch-size 32 "
-        "--max-seq-len 65536 "
     )
 
     perf_args = (
