@@ -28,6 +28,7 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.QWEN35: ("qwen3.5_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.QWEN36: ("qwen3.6_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.QWEN38_SMALL: ("qwen3.8_small_fixed.jinja", {"preserve_thinking": True}),
+    TITOTokenizerType.QWEN4_EXP: ("qwen3.8_small_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),

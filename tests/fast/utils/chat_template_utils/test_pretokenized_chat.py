@@ -307,6 +307,7 @@ _APPEND_ROLE_FAMILIES = [
     (TITOTokenizerType.QWEN35, None),
     (TITOTokenizerType.QWEN36, None),
     (TITOTokenizerType.QWEN38_SMALL, None),
+    (TITOTokenizerType.QWEN4_EXP, None),
     (TITOTokenizerType.QWENNEXT, None),
     (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
     (TITOTokenizerType.KIMI25, None),
@@ -347,7 +348,13 @@ def test_appends_are_append_only_on_family_template(family, hf_model_id, shape):
 
     base = apply_chat_template_from_str(template, history, add_generation_prompt=False, **kwargs)
     if (
-        family in (TITOTokenizerType.QWEN35, TITOTokenizerType.QWEN36, TITOTokenizerType.QWEN38_SMALL)
+        family
+        in (
+            TITOTokenizerType.QWEN35,
+            TITOTokenizerType.QWEN36,
+            TITOTokenizerType.QWEN38_SMALL,
+            TITOTokenizerType.QWEN4_EXP,
+        )
         and shape == "system"
     ):
         with pytest.raises(ValueError, match="System message must be at the beginning"):
