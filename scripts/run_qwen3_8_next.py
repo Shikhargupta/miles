@@ -190,6 +190,7 @@ def _train(args: ScriptArgs):
         "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
         "QSA_BACKEND": "triton",
         "PYTHONFAULTHANDLER": "1",
+        "TORCHINDUCTOR_COMPILE_THREADS": "1",
         "TRITON_CACHE_DIR": "/tmp/triton_cache",
         "TORCHINDUCTOR_CACHE_DIR": "/tmp/inductor_cache",
     }
