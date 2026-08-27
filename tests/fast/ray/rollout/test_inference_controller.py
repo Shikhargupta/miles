@@ -21,6 +21,7 @@ from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
@@ -130,6 +131,14 @@ class _RecordingServer:
         self.cells_timeouts.append(timeout)
 
 
+class _RecordingRemoteMethod:
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    async def remote(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((args, kwargs))
+
+
 class _FakeUpdatableCell:
     def __init__(self, workers_hash: str):
         self.meta = SimpleNamespace(workers_hash=workers_hash)
@@ -169,6 +178,7 @@ class _FakeWorkerProvider(BaseWorkerProvider):
     ) -> None:
         self._cell_infos = cell_infos
         self._pools = pool_ids or []
+        self._worker_manager_handle = SimpleNamespace(inject_fault=_RecordingRemoteMethod())
         self.watched_pool_ids: list[str] | None = None
         self.initialized = False
         self.stop_watch_calls = 0
@@ -298,6 +308,44 @@ class TestHealthCheckerActiveness:
         await controller.prepare_eval()
 
         assert srv.health_checker_activeness.get().active
+
+
+class TestRolloutFaultInjectionWindow:
+    @pytest.mark.asyncio
+    async def test_fault_injection_reaches_a_serving_rollout_cell(self) -> None:
+        """A serving rollout cell accepts a fault through the Ray worker manager."""
+        cell_id = "inference-engine-0-0-0"
+        server = _RecordingServer(server_cells={cell_id: object()})
+        provider = _FakeWorkerProvider([])
+        controller = _make_controller({"default": server}, engine_provider=provider)
+
+        await controller.inject_fault_between_weight_updates(
+            cell_id=cell_id,
+            mode=FailureMode.SIGKILL,
+            sub_index=0,
+        )
+
+        assert provider._worker_manager_handle.inject_fault.calls == [
+            ((cell_id,), {"mode": "sigkill", "worker_in_cell_index": 0})
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fault_injection_refuses_an_offloaded_rollout_cell(self) -> None:
+        """Colocate must not kill rollout processes while trainer ranks own the shared GPUs."""
+        cell_id = "inference-engine-0-0-0"
+        server = _RecordingServer(server_cells={cell_id: object()})
+        server.health_checker_activeness.bump_active(False)
+        provider = _FakeWorkerProvider([])
+        controller = _make_controller({"default": server}, engine_provider=provider)
+
+        with pytest.raises(RuntimeError, match="is offloaded; refusing fault injection"):
+            await controller.inject_fault_between_weight_updates(
+                cell_id=cell_id,
+                mode=FailureMode.SIGKILL,
+                sub_index=0,
+            )
+
+        assert provider._worker_manager_handle.inject_fault.calls == []
 
 
 class TestReconcile:
