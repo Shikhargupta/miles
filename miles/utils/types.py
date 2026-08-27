@@ -88,6 +88,16 @@ class Sample:
         spec_verify_ct: int = 0
         completion_tokens: int = 0
 
+        @property
+        def spec_accept_rate(self) -> float:
+            if self.spec_num_proposed_drafts == 0:
+                return 0.0
+            return self.spec_num_correct_drafts / self.spec_num_proposed_drafts
+
+        @property
+        def spec_accept_length(self) -> float:
+            return self.completion_tokens / self.spec_verify_ct if self.spec_verify_ct > 0 else 0.0
+
         def add(self, meta_info: dict):
             spec_verify_ct = meta_info.get("spec_verify_ct") or 0
             if spec_verify_ct <= 0:
