@@ -9,6 +9,10 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 """
 
 import json
+from miles.rollout.generate_utils.weight_version_partition import (
+    format_weight_version_extra_key,
+    observe_weight_version,
+)
 import logging
 import time
 from dataclasses import dataclass
@@ -412,6 +416,12 @@ class SessionCore:
             # prepare_pretokenized applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            if "extra_key" not in request_body:
+                if session.weight_version_extra_key is None:
+                    session.weight_version_extra_key = format_weight_version_extra_key(
+                        self.registry.latest_weight_version
+                    )
+                request_body["extra_key"] = session.weight_version_extra_key
 
             proxy_body = json.dumps(request_body).encode()
             expected_num_assistant = session.num_assistant
@@ -428,7 +438,10 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, _, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        self.registry.latest_weight_version = observe_weight_version(
+            self.registry.latest_weight_version, choice.get("meta_info") or {}
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:

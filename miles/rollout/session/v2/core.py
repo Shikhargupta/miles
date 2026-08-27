@@ -1,4 +1,8 @@
 import json
+from miles.rollout.generate_utils.weight_version_partition import (
+    format_weight_version_extra_key,
+    observe_weight_version,
+)
 import logging
 import time
 
@@ -163,6 +167,12 @@ class SessionCoreV2(SessionCore):
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
+            if "extra_key" not in request_body:
+                if session.weight_version_extra_key is None:
+                    session.weight_version_extra_key = format_weight_version_extra_key(
+                        self.registry.latest_weight_version
+                    )
+                request_body["extra_key"] = session.weight_version_extra_key
 
             proxy_body = json.dumps(request_body).encode()
             attach_parent = session.active_leaf
@@ -180,6 +190,9 @@ class SessionCoreV2(SessionCore):
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        self.registry.latest_weight_version = observe_weight_version(
+            self.registry.latest_weight_version, choice.get("meta_info") or {}
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:

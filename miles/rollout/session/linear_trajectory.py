@@ -77,6 +77,7 @@ class LinearTrajectory:
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
+    weight_version_extra_key: str | None = None
 
     @property
     def token_ids(self) -> list[int]:
@@ -310,6 +311,7 @@ class SessionRegistry:
         self.message_matcher: SessionMessageMatcher = (
             message_matcher if message_matcher is not None else strict_message_matches
         )
+        self.latest_weight_version: int | None = None
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
