@@ -32,6 +32,11 @@ from miles.utils.processing_utils import (
     load_processor,
     load_tokenizer,
 )
+from miles.rollout.generate_utils.weight_version_partition import (
+    WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY,
+    format_weight_version_extra_key,
+    observe_weight_version,
+)
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
@@ -98,6 +103,8 @@ class GenerateState(metaclass=SingletonMeta):
         if getattr(args, "sglang_enable_deterministic_inference", False):
             sampling_seed_base = args.rollout_seed
             self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.n_samples_per_prompt)]
+
+        self.latest_weight_version: int | None = None
 
         # dp rank balancing
         self.dp_counts = [0] * (args.sglang_dp_size or 1)
@@ -199,6 +206,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     elif lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
+    if "extra_key" not in payload:
+        if (extra_key := sample.metadata.get(WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY)) is None:
+            extra_key = format_weight_version_extra_key(state.latest_weight_version)
+            sample.metadata[WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY] = extra_key
+        payload["extra_key"] = extra_key
+
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
@@ -226,6 +239,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     headers = compute_routing_headers(args, sample)
 
     output = await post(url, payload, headers=headers)
+    state.latest_weight_version = observe_weight_version(state.latest_weight_version, output["meta_info"])
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
