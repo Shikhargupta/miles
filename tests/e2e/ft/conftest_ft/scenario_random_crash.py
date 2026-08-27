@@ -87,7 +87,7 @@ def run_ci(
 
     config = command_utils.default_config()
     test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
-    dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}")
+    dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
         ft_mode.ft_components,
