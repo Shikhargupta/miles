@@ -12,11 +12,11 @@ import pytest
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
+from miles.rollout.generate_utils.weight_version_partition import WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
-from miles.rollout.generate_utils.weight_version_partition import WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY
 from miles.utils.types import Sample
 
 register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=[])
@@ -734,6 +734,7 @@ class TestAgentNoRecords:
             make_args,
             with_session_server,
         )
+
         from miles.utils.http_utils import find_available_port
         from miles.utils.misc import SingletonMeta
         from miles.utils.test_utils.mock_sglang_server import with_mock_server

@@ -10,9 +10,9 @@ from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
+from miles.rollout.generate_utils.weight_version_partition import WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
-from miles.rollout.generate_utils.weight_version_partition import WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY
 from miles.utils.types import Sample
 
 _ = generation_env
