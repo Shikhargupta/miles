@@ -13,7 +13,6 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
-from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.types import Sample
 
 N_SAMPLES_PER_PROMPT = 2
@@ -81,8 +80,6 @@ def make_args(**overrides) -> Namespace:
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
-        use_session_server=False,
-        sglang_speculative_algorithm=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         eval_num_gpus=0,
@@ -195,11 +192,6 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
 
 async def test_aborted_group_recycled(monkeypatch):
     aborted = make_group(1, status=Sample.Status.ABORTED)
-    carrier = {
-        "session_id": "sid-1",
-        "metrics": {"spec_info": Sample.SpecInfo(1, 2, 1, 3).to_dict()},
-    }
-    aborted[0].metadata[SESSION_ROLLOUT_METRICS_KEY] = carrier
     data_source = FakeDataSource(scripted=[aborted])
     args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source)
@@ -211,7 +203,6 @@ async def test_aborted_group_recycled(monkeypatch):
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
     assert output.samples[0][0].group_index != 1
     assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
-    assert output.session_rollout_metrics == [carrier]
 
 
 async def test_stale_group_recycled(monkeypatch):
@@ -476,34 +467,6 @@ class RecordingBuffer(data_buffer.DefaultDataBuffer):
     def __init__(self, input):
         super().__init__(input)
         RecordingBuffer.constructed_with = input
-
-
-class MissingSessionMetricsBuffer(data_buffer.DataBuffer):
-    async def put(self, input):
-        return None
-
-    async def get(self, **context):
-        raise NotImplementedError
-
-    def get_metrics(self):
-        return {}
-
-
-def test_custom_buffer_without_session_metrics_supports_unaffected_modes():
-    assert MissingSessionMetricsBuffer().pop_session_rollout_metrics() == []
-
-
-async def test_v2_speculative_custom_buffer_must_implement_session_metrics(monkeypatch):
-    path = f"{__name__}.MissingSessionMetricsBuffer"
-    args = make_args(
-        custom_async_data_buffer_path=path,
-        use_session_server="v2",
-        sglang_speculative_algorithm="EAGLE",
-    )
-    fn = make_fn(monkeypatch, args, FakeDataSource())
-
-    with pytest.raises(TypeError, match="pop_session_rollout_metrics for v2 speculative rollout"):
-        await fn(RolloutFnTrainInput(rollout_id=0))
 
 
 async def test_custom_data_buffer_path_replaces_default(monkeypatch):

@@ -142,8 +142,8 @@ class TestComputeSpecMetrics:
         }
 
     @staticmethod
-    def _member(session_id, metrics, *, rollout_id=0):
-        sample = Sample(group_index=0, index=rollout_id, rollout_id=rollout_id)
+    def _member(session_id, metrics, *, group_index=0, rollout_id=0):
+        sample = Sample(group_index=group_index, index=rollout_id, rollout_id=rollout_id)
         sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
             "session_id": session_id,
             "metrics": metrics,
@@ -161,13 +161,13 @@ class TestComputeSpecMetrics:
             }
         }
 
-    def test_v2_counts_single_owner_metrics_once_per_compacted_rollout(self):
+    def test_v2_deduplicates_shared_metrics_by_rollout_identity(self):
         args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
         session_1_metrics = self._spec_info(2, 4, 2, 6)
         samples = [
             self._member("sid-1", session_1_metrics, rollout_id=10),
-            Sample(group_index=0, index=10, rollout_id=10),
-            self._member("sid-2", self._spec_info(3, 6, 1, 2), rollout_id=11),
+            self._member("sid-1", session_1_metrics, rollout_id=10),
+            self._member("sid-2", self._spec_info(3, 6, 1, 2), group_index=1, rollout_id=10),
         ]
         for sample in samples:
             sample.spec_info = Sample.SpecInfo(100, 100, 1, 100)
@@ -178,45 +178,7 @@ class TestComputeSpecMetrics:
             "spec_accept_rate": pytest.approx(5 / 10),
             "spec_accept_length": pytest.approx(8 / 3),
         }
-
-    def test_v2_counts_metrics_detached_from_fully_async_aborted_group(self):
-        args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
-        sample = self._member("sid-1", self._spec_info(2, 4, 2, 6))
-        detached = self._member("sid-2", self._spec_info(3, 6, 1, 2)).metadata[SESSION_ROLLOUT_METRICS_KEY]
-
-        out = _compute_spec_metrics(args, [sample], [detached])
-
-        assert out == {
-            "spec_accept_rate": pytest.approx(5 / 10),
-            "spec_accept_length": pytest.approx(8 / 3),
-        }
-
-    def test_rollout_log_combines_detached_session_metrics(self, monkeypatch):
-        args = make_args(
-            advantage_estimator="ppo",
-            log_passrate=False,
-            sglang_speculative_algorithm="EAGLE",
-            use_session_server="v2",
-        )
-        sample = make_sample()
-        sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
-            "session_id": "sid-1",
-            "metrics": self._spec_info(2, 4, 2, 6),
-        }
-        detached = {
-            "session_id": "sid-2",
-            "metrics": self._spec_info(3, 6, 1, 2),
-        }
-        logged = {}
-        monkeypatch.setattr(
-            "miles.ray.rollout.metrics.tracking.log",
-            lambda _args, metrics, **_kwargs: logged.update(metrics),
-        )
-
-        log_rollout_data(0, args, [sample], None, 1.0, session_rollout_metrics=[detached])
-
-        assert logged["rollout/spec_accept_rate"] == pytest.approx(5 / 10)
-        assert logged["rollout/spec_accept_length"] == pytest.approx(8 / 3)
+        assert _compute_spec_metrics(args, samples[1:]) == out
 
 
 class TestTitoMismatchMetrics:

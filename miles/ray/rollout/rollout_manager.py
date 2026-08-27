@@ -151,16 +151,9 @@ class RolloutManager:
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
-            data, metadata, metrics, session_rollout_metrics = await self._get_rollout_data(rollout_id=rollout_id)
+            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
-        log_rollout_data(
-            rollout_id,
-            self.args,
-            data,
-            metrics,
-            time.time() - start_time,
-            session_rollout_metrics=session_rollout_metrics,
-        )
+        log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = convert_samples_to_train_data(
             self.args,
             data,
@@ -251,7 +244,6 @@ class RolloutManager:
         if self.args.load_debug_rollout_data is not None:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
-            session_rollout_metrics = None
         else:
             if not self.use_legacy_rollout_v1:
                 data = await asyncio.to_thread(
@@ -264,7 +256,6 @@ class RolloutManager:
                     call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
                 )
             metrics = data.metrics
-            session_rollout_metrics = data.session_rollout_metrics
             data = data.samples
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self.train_parallel_config
@@ -276,9 +267,8 @@ class RolloutManager:
                     self.args, generated=generated_data, injected=data, rollout_id=rollout_id
                 )
                 metrics = None
-                session_rollout_metrics = None
 
-        return data, metadata, metrics, session_rollout_metrics
+        return data, metadata, metrics
 
     # -------------------------- checkpointing -----------------------------
 

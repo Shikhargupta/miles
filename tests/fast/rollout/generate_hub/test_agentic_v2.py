@@ -87,7 +87,7 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("input_rollout_id", "expected_rollout_id"), [(None, 7), (11, 11)])
-async def test_success_assigns_shared_rollout_id_and_single_metrics_owner(
+async def test_success_assigns_shared_rollout_id_and_metrics_carrier(
     monkeypatch, input_rollout_id, expected_rollout_id
 ):
     leaves = [
@@ -102,8 +102,7 @@ async def test_success_assigns_shared_rollout_id_and_single_metrics_owner(
     output = await agentic_tool_call.generate(generate_input)
 
     assert [sample.rollout_id for sample in output.samples] == [expected_rollout_id] * 2
-    assert output.samples[0].metadata[SESSION_ROLLOUT_METRICS_KEY]["metrics"] is not None
-    assert SESSION_ROLLOUT_METRICS_KEY not in output.samples[1].metadata
+    assert all(sample.metadata[SESSION_ROLLOUT_METRICS_KEY]["metrics"] is not None for sample in output.samples)
     validate_compact_rollout_ids([[output.samples]])
 
 
@@ -144,10 +143,7 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
     assert len(output.samples) == 1
     assert output.samples[0] is not generate_input.sample
     assert output.samples[0].status == Sample.Status.ABORTED
-    assert output.samples[0].metadata[SESSION_ROLLOUT_METRICS_KEY] == {
-        "session_id": "sid-1",
-        "metrics": {"spec_info": spec_info},
-    }
+    assert SESSION_ROLLOUT_METRICS_KEY not in output.samples[0].metadata
 
 
 @pytest.mark.asyncio
@@ -165,7 +161,7 @@ async def test_transport_collection_error_has_no_metrics_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_v2_replaces_stale_metrics_with_single_authoritative_owner(monkeypatch):
+async def test_v2_replaces_stale_metrics_with_shared_authoritative_carrier(monkeypatch):
     stale = {"session_id": "stale", "metrics": {"agent": "plant"}}
     leaves = [
         Sample(metadata={SESSION_ROLLOUT_METRICS_KEY: stale}),
@@ -183,8 +179,7 @@ async def test_v2_replaces_stale_metrics_with_single_authoritative_owner(monkeyp
     output = await agentic_tool_call.generate(_generate_input())
 
     expected = {"session_id": "sid-1", "metrics": {"spec_info": spec_info}}
-    assert output.samples[0].metadata[SESSION_ROLLOUT_METRICS_KEY] == expected
-    assert SESSION_ROLLOUT_METRICS_KEY not in output.samples[1].metadata
+    assert [sample.metadata[SESSION_ROLLOUT_METRICS_KEY] for sample in output.samples] == [expected, expected]
 
 
 @pytest.mark.asyncio

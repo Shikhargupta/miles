@@ -71,15 +71,7 @@ def log_eval_skip(rollout_id, args, reason: str):
     tracking.log(args, log_dict, step_key="eval/step")
 
 
-def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time, session_rollout_metrics=None):
-    session_spec_metrics = (
-        _compute_spec_metrics(args, samples, session_rollout_metrics) if session_rollout_metrics else None
-    )
-    if session_spec_metrics:
-        rollout_extra_metrics = {
-            **(rollout_extra_metrics or {}),
-            **dict_add_prefix(session_spec_metrics, "rollout/"),
-        }
+def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
         if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
@@ -89,10 +81,7 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
         return
 
     log_dict = {**(rollout_extra_metrics or {})}
-    rollout_metrics = _compute_metrics_from_samples(args, samples)
-    if session_spec_metrics is not None:
-        rollout_metrics |= session_spec_metrics
-    log_dict |= dict_add_prefix(rollout_metrics, "rollout/")
+    log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
     log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
     if args.log_passrate:
         log_dict |= dict_add_prefix(
@@ -240,19 +229,16 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     return log_dict
 
 
-def _compute_spec_metrics(args, all_samples: list[Sample], session_rollout_metrics: list[dict] | None = None):
+def _compute_spec_metrics(args, all_samples: list[Sample]):
     if args.sglang_speculative_algorithm is None:
         return {}
     if args.use_session_server == "v2":
-        # NOTE: Successful v2 sessions store one carrier on sample 0; siblings
-        # and failed collects omit it. Owners must survive until metrics collection.
-        carriers = [
-            sample.metadata[SESSION_ROLLOUT_METRICS_KEY]
-            for sample in all_samples
+        carriers = {
+            _rollout_key(sample, position): sample.metadata[SESSION_ROLLOUT_METRICS_KEY]
+            for position, sample in enumerate(all_samples)
             if SESSION_ROLLOUT_METRICS_KEY in sample.metadata
-        ]
-        carriers.extend(session_rollout_metrics or [])
-        spec_infos = [Sample.SpecInfo(**carrier["metrics"]["spec_info"]) for carrier in carriers]
+        }
+        spec_infos = [Sample.SpecInfo(**carrier["metrics"]["spec_info"]) for carrier in carriers.values()]
     else:
         spec_infos = [sample.spec_info for sample in all_samples]
     num_correct_drafts = sum(info.spec_num_correct_drafts for info in spec_infos)

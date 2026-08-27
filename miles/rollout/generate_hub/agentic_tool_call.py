@@ -126,14 +126,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
         if use_v2:
-            sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = session_rollout_metrics
+            sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
         return GenerateFnOutput(samples=[sample] if use_v2 else sample)
 
     samples = result.samples
     if use_v2:
         for sample in samples:
-            sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
-        samples[0].metadata[SESSION_ROLLOUT_METRICS_KEY] = session_rollout_metrics
+            sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = session_rollout_metrics
     if use_v2 and len(samples) > 1:
         # FIXME: handle sample index issues.
         rollout_id = input.sample.rollout_id if input.sample.rollout_id is not None else input.sample.index
