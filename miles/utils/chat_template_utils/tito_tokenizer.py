@@ -328,7 +328,7 @@ class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
     top_level_chat_template_kwargs = frozenset({"reasoning_effort"})
 
     FIXED_TEMPLATE = FixedTemplate(
-        template="qwen3.8_small_fixed.jinja",
+        template="qwen3.8_small_and_flash_next_fixed.jinja",
         extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
