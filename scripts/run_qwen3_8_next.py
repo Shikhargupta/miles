@@ -54,7 +54,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def _train(args: ScriptArgs):
     shape = (args.num_nodes, args.num_gpus_per_node)
-    assert shape in ((8, 4), (1, 4)), "the parallel configs below are shaped for 8x4 (full) or 1x4 (4layer) GPUs"
+    assert shape in (
+        (8, 4),
+        (1, 4),
+        (1, 8),
+    ), "the parallel configs below are shaped for 8x4 (full) or 1x4 / 1x8 (4layer)"
 
     megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
@@ -101,7 +105,7 @@ def _train(args: ScriptArgs):
             "--sequence-parallel "
             "--pipeline-model-parallel-size 2 "
             "--context-parallel-size 1 "
-            "--expert-model-parallel-size 2 "
+            f"--expert-model-parallel-size {2 if shape == (1, 4) else 4} "
             "--expert-tensor-parallel-size 1 "
         )
         engine_args = "--rollout-num-gpus-per-engine 4 " "--sglang-tp-size 4 " "--sglang-ep-size 4 "

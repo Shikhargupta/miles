@@ -10,7 +10,7 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=1800,
-    suite="stage-c-4-gpu-h200",
+    suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
 )
 
@@ -27,8 +27,8 @@ def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="Qwen3.8-Flash-Next-4layer",
         num_nodes=1,
-        num_gpus_per_node=4,
-        num_rollout=2,
+        num_gpus_per_node=8,
+        num_rollout=5,
         rollout_max_response_len=512,
         enable_r3=True,
         skip_saving=True,
