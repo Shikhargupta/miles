@@ -48,6 +48,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
 
     sample.tokens = prompt_tokens_ids.copy()
+    lock_weight_version_extra_key(sample)
 
     for _turn in range(args.generate_max_turns):
         # ----------------------- Call inference endpoint -------------------------

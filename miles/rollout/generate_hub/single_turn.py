@@ -19,6 +19,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     sample = input.sample
     sampling_params = input.sampling_params
     assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
+    lock_weight_version_extra_key(sample)
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
     prompt_ids = compute_prompt_ids_from_sample(input.state, sample)

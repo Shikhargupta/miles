@@ -15,7 +15,11 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.rollout.generate_utils.weight_version_partition import lock_weight_version_extra_key, observe_weight_version
+from miles.rollout.generate_utils.weight_version_partition import (
+    WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY,
+    lock_weight_version_extra_key,
+    observe_weight_version,
+)
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
@@ -150,6 +154,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     assert (
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
+    lock_weight_version_extra_key(sample)
 
     if state.processor and (
         isinstance(sample.prompt, (list, tuple))
@@ -201,7 +206,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if "extra_key" not in payload:
-        payload["extra_key"] = lock_weight_version_extra_key(sample)
+        payload["extra_key"] = sample.metadata[WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY]
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
