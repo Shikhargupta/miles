@@ -1,8 +1,9 @@
 """Validate and profile a conversational SFT dataset with the training tokenizer.
 
-The command reads JSONL or Parquet through Polars, renders every conversation
-through Miles' real SFT loss-mask implementation, rejects malformed or overlong
-rows, and prints token-length quantiles used to choose the training budget.
+The command streams JSONL row by row (so heterogeneous nested tool schemas are
+valid), reads Parquet through Polars, renders every conversation through Miles'
+real SFT loss-mask implementation, rejects malformed or overlong rows, and
+prints token-length quantiles used to choose the training budget.
 
 Example:
   python scripts/tools/validate_sft_dataset.py \
@@ -13,6 +14,7 @@ Example:
 
 import json
 import sys
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -91,11 +93,33 @@ class RowStats:
     response_span_tokens: int
 
 
-def _read_dataset(path: Path) -> pl.DataFrame:
+def _iter_jsonl(path: Path) -> Iterator[tuple[int, dict[str, object] | None, str | None]]:
+    row_index = 0
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                yield row_index, None, f"line {line_number}: invalid JSON: {error}"
+            else:
+                if isinstance(value, dict):
+                    yield row_index, value, None
+                else:
+                    yield row_index, None, f"line {line_number}: row must be a JSON object"
+            row_index += 1
+
+
+def _iter_dataset(path: Path) -> Iterator[tuple[int, dict[str, object] | None, str | None]]:
     if path.suffix == ".parquet":
-        return pl.read_parquet(path)
+        frame = pl.read_parquet(path)
+        for row_index, row in enumerate(frame.iter_rows(named=True)):
+            yield row_index, row, None
+        return
     if path.suffix in {".jsonl", ".ndjson"}:
-        return pl.read_ndjson(path)
+        yield from _iter_jsonl(path)
+        return
     raise ValueError(f"Unsupported dataset extension {path.suffix!r}; expected .jsonl, .ndjson, or .parquet")
 
 
@@ -168,7 +192,9 @@ def _validate_row(
     return RowStats(total_tokens=len(token_ids), loss_tokens=loss_tokens, response_span_tokens=response_span)
 
 
-def _quantiles(values: list[int]) -> dict[str, float | int]:
+def _quantiles(values: list[int]) -> dict[str, float | int | None]:
+    if not values:
+        return {name: None for name in ("min", "p50", "p90", "p95", "p99", "max")}
     series = pl.Series("value", values)
     return {
         "min": series.min(),
@@ -180,13 +206,28 @@ def _quantiles(values: list[int]) -> dict[str, float | int]:
     }
 
 
-def _summary(dataset: Path, frame: pl.DataFrame, stats: list[RowStats], max_seq_len: int) -> dict[str, object]:
+def _summary(
+    dataset: Path,
+    *,
+    rows_seen: int,
+    schema: dict[str, set[str]],
+    stats: list[RowStats],
+    max_seq_len: int,
+    error_count: int,
+) -> dict[str, object]:
+    total_token_values = [item.total_tokens for item in stats]
+    length_thresholds = (8192, 16384, 32768, 65536, 131072, 262144)
     return {
         "dataset": str(dataset.resolve()),
-        "rows": frame.height,
+        "rows_seen": rows_seen,
+        "validated_rows": len(stats),
+        "error_count": error_count,
         "max_seq_len": max_seq_len,
-        "schema": {name: str(dtype) for name, dtype in frame.schema.items()},
-        "total_tokens": _quantiles([item.total_tokens for item in stats]),
+        "schema": {name: sorted(types) for name, types in sorted(schema.items())},
+        "rows_above_token_threshold": {
+            str(threshold): sum(value > threshold for value in total_token_values) for threshold in length_thresholds
+        },
+        "total_tokens": _quantiles(total_token_values),
         "loss_tokens": _quantiles([item.loss_tokens for item in stats]),
         "response_span_tokens": _quantiles([item.response_span_tokens for item in stats]),
         "totals": asdict(
@@ -206,9 +247,6 @@ def main() -> None:
     if args.max_errors <= 0:
         raise ValueError("max_errors must be positive")
 
-    frame = _read_dataset(args.dataset)
-    if frame.is_empty():
-        raise ValueError("dataset is empty")
     tokenizer = load_tokenizer(
         str(args.model),
         chat_template_path=str(args.chat_template_path) if args.chat_template_path is not None else None,
@@ -218,7 +256,19 @@ def main() -> None:
 
     stats: list[RowStats] = []
     errors: list[str] = []
-    for row_index, row in enumerate(frame.iter_rows(named=True)):
+    schema: dict[str, set[str]] = {}
+    rows_seen = 0
+    for row_index, row, read_error in _iter_dataset(args.dataset):
+        rows_seen += 1
+        if read_error is not None:
+            errors.append(f"row {row_index}: {read_error}")
+            if len(errors) >= args.max_errors:
+                break
+            continue
+
+        assert row is not None
+        for key, value in row.items():
+            schema.setdefault(key, set()).add(type(value).__name__)
         try:
             stats.append(
                 _validate_row(
@@ -234,12 +284,27 @@ def main() -> None:
             if len(errors) >= args.max_errors:
                 break
 
+    if rows_seen == 0:
+        raise ValueError("dataset is empty")
+    print(
+        json.dumps(
+            _summary(
+                args.dataset,
+                rows_seen=rows_seen,
+                schema=schema,
+                stats=stats,
+                max_seq_len=args.max_seq_len,
+                error_count=len(errors),
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     if errors:
         print("SFT dataset validation failed:", file=sys.stderr)
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         raise SystemExit(1)
-    print(json.dumps(_summary(args.dataset, frame, stats, args.max_seq_len), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

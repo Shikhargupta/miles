@@ -70,11 +70,14 @@ assistant turn. The launcher renders those messages with the model tokenizer
 and trains only the assistant-token positions.
 
 Validate every row with the same tokenizer and loss-mask code used by training:
+JSONL is streamed row by row so tool definitions may use heterogeneous nested
+schemas. Set `--tools-key` when the conversations include tool definitions.
 
 ```bash
 python scripts/tools/validate_sft_dataset.py \
    --dataset /root/datasets/train.parquet \
    --model /root/models/Qwen3.6-35B-A3B \
+   --tools-key tools \
    --max-seq-len 65536
 ```
 
