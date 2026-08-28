@@ -78,7 +78,7 @@ def save_debug_trajectory_data(args, samples: list[Sample], rollout_id, evaluati
     rows = trajectory_rows(samples)
     if not rows:
         return  # no conversations: no file (the dashboard keys off its presence)
-    path = Path(path_template.format(rollout_id=("eval_" if evaluation else "") + str(rollout_id)))
+    path = Path(path_template.format(rollout_id=_compute_dump_stem(rollout_id, evaluation=evaluation)))
     logger.info(f"Save trajectory dump to {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -103,18 +103,25 @@ def load_debug_rollout_data(args, rollout_id: int) -> tuple[list[Sample], dict]:
 def save_debug_rollout_data(args, data, rollout_id, evaluation: bool, metadata: dict | None = None) -> None:
     # TODO to be refactored (originally Buffer._set_data)
     if (path_template := args.save_debug_rollout_data) is not None:
-        path = Path(path_template.format(rollout_id=("eval_" if evaluation else "") + str(rollout_id)))
+        path = Path(path_template.format(rollout_id=_compute_dump_stem(rollout_id, evaluation=evaluation)))
         logger.info(f"Save debug rollout data to {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
 
         samples = [sample for info in data.values() for sample in info["samples"]] if evaluation else list(data)
         save_debug_trajectory_data(args, samples, rollout_id, evaluation)
-        stem = ("eval_" if evaluation else "") + str(rollout_id)
+        stem = _compute_dump_stem(rollout_id, evaluation=evaluation)
         save_dashboard_columns(samples, path.parent.parent / "dashboard_columns" / f"rollout_{stem}.parquet")
 
         # TODO may improve the format
         dump_data = dict(samples=[sample.to_dict() for sample in samples])
         torch.save(dict(rollout_id=rollout_id, metadata=metadata or {}, **dump_data), path)
+
+
+def _compute_dump_stem(rollout_id, *, evaluation: bool) -> str:
+    ans = str(rollout_id)
+    if evaluation:
+        ans = f"eval_{ans}"
+    return ans
 
 
 class RolloutDataInjectionUtil:
@@ -177,6 +184,7 @@ class RolloutDataInjectionUtil:
     @classmethod
     def _response_tokens(cls, sample: Sample) -> list[int]:
         return sample.tokens[len(sample.tokens) - sample.response_length :]
+
 
 
 def _load_rollout_data_file(path: Path) -> tuple[list[Sample], dict]:
