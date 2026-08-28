@@ -1,3 +1,6 @@
+import contextlib
+import dataclasses
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -44,6 +47,45 @@ def test_the_dump_directory_exists_when_it_is_resolved(tmp_path: Path, monkeypat
     monkeypatch.setenv("MILES_SCRIPT_RUN_ID", "run-a")
 
     assert Path(resolve_dump_dir("scenario_x")).is_dir()
+
+
+def test_each_comparison_side_can_transform_its_config_before_the_context_and_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A side-specific release has to be shared by its target context and the launch it drives."""
+    requests: list[RunSideRequest] = []
+    contexts: list[command_utils.ExecuteTrainConfig] = []
+    mode = FTTestMode(
+        model_name="demo", model_hf_repo="demo/demo", megatron_model_type="demo", num_cells=1, parallel_args=""
+    )
+
+    @contextlib.contextmanager
+    def target_context(_mode: FTTestMode, _dump_dir: str, config: command_utils.ExecuteTrainConfig) -> Iterator[None]:
+        contexts.append(config)
+        yield
+
+    monkeypatch.setattr(app_module, "resolve_dump_dir", lambda _test_name: str(tmp_path / "comparison"))
+    monkeypatch.setattr(app_module, "prepare", lambda _mode: None)
+    monkeypatch.setattr(
+        command_utils, "default_config", lambda: command_utils.ExecuteTrainConfig(run_id="shared-release")
+    )
+
+    run_pipeline(
+        test_name="scenario_x",
+        build_baseline_args=lambda *_args: "",
+        build_target_args=lambda *_args: "",
+        compare_fn=lambda *_args: None,
+        phases=None,
+        mode=None,
+        target_side_context=target_context,
+        config_for_side=lambda side, config: dataclasses.replace(config, run_id=f"{config.run_id}-{side}"),
+        run_side=requests.append,
+        resolve_mode_fn=lambda _mode: mode,
+    )
+
+    assert [request.config.run_id for request in requests] == ["shared-release-baseline", "shared-release-target"]
+    assert len(contexts) == 1
+    assert contexts[0] is requests[1].config
 
 
 def test_each_comparison_side_releases_its_resources_before_the_next_side_starts(
