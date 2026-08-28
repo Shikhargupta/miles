@@ -284,6 +284,7 @@ def compute_log_probs(
     *,
     true_on_policy_mode: bool = False,
     vocab_size: int | None = None,
+    debug_unified_grad_fused_logprob: bool = False,
 ):
     if true_on_policy_mode:
         full_logits = _gather_true_on_policy_full_logits(logits, process_group, vocab_size=vocab_size)
@@ -296,6 +297,14 @@ def compute_log_probs(
     # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
+
+    if debug_unified_grad_fused_logprob and not torch.is_grad_enabled():
+        with torch.enable_grad():
+            log_probs = -fused_vocab_parallel_cross_entropy(
+                logits.detach().requires_grad_(True), tokens, process_group
+            )
+        return log_probs.detach()
+
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
 
 
@@ -941,6 +950,7 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    debug_unified_grad_fused_logprob: bool = False,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -970,7 +980,12 @@ def calculate_log_probs_and_entropy(
             logits_chunks = logits.chunk(num_chunks, dim=0)
             log_probs = []
             for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.to(torch.float32, copy=True), tokens_chunk, tp_group)
+                log_prob = compute_log_probs(
+                    logits_chunk.to(torch.float32, copy=True),
+                    tokens_chunk,
+                    tp_group,
+                    debug_unified_grad_fused_logprob=debug_unified_grad_fused_logprob,
+                )
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
@@ -980,7 +995,12 @@ def calculate_log_probs_and_entropy(
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.to(torch.float32, copy=True), tokens, tp_group)
+            log_prob = compute_log_probs(
+                logits.to(torch.float32, copy=True),
+                tokens,
+                tp_group,
+                debug_unified_grad_fused_logprob=debug_unified_grad_fused_logprob,
+            )
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
