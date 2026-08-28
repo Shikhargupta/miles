@@ -9,6 +9,7 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     build_train_args,
     compute_events_dir,
     compute_megatron_config,
+    compute_rollout_data_path_template,
     compute_sglang_config,
     compute_trainer_id,
 )
@@ -82,6 +83,7 @@ class TestBuildTrainArgs:
             "--sglang-enable-metrics": None,
             "--ci-test": None,
             "--save-debug-event-data": str(compute_events_dir(args)),
+            "--save-debug-rollout-data": compute_rollout_data_path_template(args),
             "--attention-dropout": "0.0",
             "--hidden-dropout": "0.0",
             "--accumulate-allreduce-grads-in-fp32": None,
