@@ -49,6 +49,11 @@ def _build_glm5_next_bridge():
             from miles_plugins.models.glm5_next.glm5_next import _apply_glm5_next_config
 
             _apply_glm5_next_config(provider, text_config)
+            # GLM-5.3 encodes ``head_dim=0`` to denote NoPE, while the actual
+            # attention channel width lives in qk_nope_head_dim (256). The
+            # regular mbridge launcher supplies this as --kv-channels; mirror
+            # that resolution here so TE never receives a zero head width.
+            provider.kv_channels = int(text_config.qk_nope_head_dim)
             # The parent GLM-5 bridge selects Megatron's global experimental
             # DSA dispatcher. GLM-5.3 is hybrid KDA/DSA and its custom spec
             # replaces attention per layer, so the global dispatcher must stay
