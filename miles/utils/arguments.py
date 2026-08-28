@@ -64,7 +64,7 @@ def _resolve_rollout_functions(args) -> None:
         if args.colocate:
             assert "weight" not in args.offload_rollout_level, (
                 "--fully-async --colocate keeps the engine weights resident for the IPC weight update: "
-                "pass --offload-rollout-level kv_cache"
+                "drop weight from --offload-rollout-level"
             )
             assert args.train_backend != "fsdp", (
                 "--fully-async --colocate needs the megatron IPC weight updater; the FSDP updater still "
@@ -193,11 +193,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--offload-rollout-level",
                 type=str,
                 nargs="+",
-                default=["kv_cache", "weight"],
+                default=None,
                 help=(
                     "Specifies what to offload during rollout when offload-rollout is set. "
-                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight'. "
-                    "Example: --offload-rollout-level kv_cache weight"
+                    "Possible values: 'kv_cache', 'weight'. Default: both 'kv_cache' and 'weight', "
+                    "or only 'kv_cache' under --fully-async --colocate, whose IPC weight update needs "
+                    "the engine weights resident. Example: --offload-rollout-level kv_cache weight"
                 ),
             )
             parser.add_argument(
@@ -3359,6 +3360,8 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+    if args.offload_rollout_level is None:
+        args.offload_rollout_level = ["kv_cache"] if driver_owns_generation_pause(args) else ["kv_cache", "weight"]
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True

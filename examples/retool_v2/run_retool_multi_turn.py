@@ -31,8 +31,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
-        if self.fully_async:
-            self.rollout_num_gpus_per_engine = 1
+        self.rollout_num_gpus_per_engine = min(self.rollout_num_gpus_per_engine, self.num_gpus_per_node)
         if self.use_sft_model:
             self.hf_checkpoint = "/root/font-info/qwen3-4b-sft"
             self.ref_load = "/root/font-info/qwen3-4b-sft_torch_dist"
@@ -124,9 +123,7 @@ def execute(args: ScriptArgs):
             "--eval-top-p 1 "
         )
 
-    async_args = ""
-    if args.fully_async:
-        async_args = "--fully-async --pause-generation-mode retract --offload-rollout-level kv_cache "
+    async_args = "--fully-async " if args.fully_async else ""
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -152,7 +149,7 @@ def execute(args: ScriptArgs):
     )
 
     perf_args = (
-        f"--tensor-model-parallel-size {1 if args.fully_async else 2} "
+        f"--tensor-model-parallel-size {args.rollout_num_gpus_per_engine} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "

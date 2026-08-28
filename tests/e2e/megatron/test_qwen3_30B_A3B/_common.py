@@ -214,8 +214,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     if case.fully_async:
         misc_args += "--fully-async "
-        if case.colocate:
-            misc_args += "--offload-rollout-level kv_cache --pause-generation-mode retract "
 
     if case.use_mooncake:
         misc_args += U.get_mooncake_object_store_args()

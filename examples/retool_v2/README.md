@@ -38,16 +38,16 @@ training set and the aime-2024 eval set, downloads the checkpoint, and converts 
 python examples/retool_v2/run_retool_multi_turn.py --fully-async --num-gpus-per-node 1
 ```
 
-`--fully-async` switches the run to `train_async.py` and shares the GPU between the
-rollout engines and the trainer:
+`--fully-async` switches the run to `train_async.py`, where the rollout engines keep
+generating between training steps and share the GPUs with the trainer:
 
 | | default | `--fully-async` |
 |---|---|---|
 | driver | `train.py` | `train_async.py` |
 | rollout | one batch per training step | a producer that keeps generating between steps |
-| tensor parallel | 2 | 1 |
-| GPUs per engine | 2 | 1 |
-| minimum GPUs | 8 | 1 |
+| minimum GPUs | 2 | 1 |
+
+Tensor parallel and GPUs per engine are `min(2, --num-gpus-per-node)` in both modes.
 
 The engines keep their weights resident so the weight update stays a CUDA IPC handover;
 only the KV cache and the CUDA graphs move aside for training. See

@@ -120,7 +120,7 @@ Per step the driver hands the GPUs over and back:
 | # | Step | Who |
 |---|---|---|
 | 1 | Drain `--rollout-batch-size` groups from the buffer; the engines keep generating meanwhile | driver |
-| 2 | `pause_generation` in `retract` mode; running requests return to the waiting queue | driver |
+| 2 | `pause_generation` in `retract` mode; running requests return to the waiting queue and re-prefill later, which is why `in_place` (keep the cache) is rejected here | driver |
 | 3 | Release the KV cache and the CUDA graphs; the engine **weights stay resident** | driver |
 | 4 | Train, then update weights over CUDA IPC | actor |
 | 5 | Put the trainer back to sleep | actor |
@@ -138,23 +138,13 @@ The driver owns that whole window, so the weight updater skips the
 path. Requests that arrive while the engines are paused block inside SGLang's tokenizer
 manager until step 7; the rollout HTTP client sets no timeout, so they simply wait.
 
-Compared with the other two modes this is a small delta: against synchronous colocate it
-adds only steps 2 and 7, and against disaggregated fully async only steps 3, 5 and 6.
-
-### Why `retract`
-
-Colocation has to give the KV cache back to the trainer, so `in_place`, which promises
-to keep the cache and resume the frozen requests on it, cannot hold. `retract` is
-defined as a re-prefill and is therefore the only consistent choice; the combination
-with `--pause-generation-mode in_place` is rejected.
-
 ### What is not supported
 
 | Combination | Why |
 |---|---|
-| `--offload-rollout-level weight` | The colocated update hands weights over through CUDA IPC, so the engines must keep them resident. Pass `--offload-rollout-level kv_cache` |
+| `--offload-rollout-level weight` | The colocated update hands weights over through CUDA IPC, so the engines must keep them resident. The default drops `weight` here; an explicit `weight` is rejected |
 | `--train-backend fsdp` | The FSDP updater still pauses and resumes generation on its own |
-| `--pause-generation-mode in_place` | See above |
+| `--pause-generation-mode in_place` | Step 2 releases the cache that `in_place` promises to keep |
 
 Generation stops for the whole train window, so no samples are produced there. That is
 the same gap as the pause window in the disaggregated mode, and `--max-weight-staleness`
@@ -166,8 +156,6 @@ and the weight-version bookkeeping are unchanged.
   python3 train_async.py ...
     --fully-async
 +   --colocate
-+   --offload-rollout-level kv_cache
-+   --pause-generation-mode retract
 +   --num-gpus-per-node 1
 -   --rollout-num-gpus 4
 ```

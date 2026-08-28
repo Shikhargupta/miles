@@ -37,9 +37,6 @@ def execute():
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.8 "
         "--global-batch-size 32 "
-        # The engines keep their weights resident for the colocated IPC update.
-        "--offload-rollout-level kv_cache "
-        "--pause-generation-mode retract "
     )
 
     perf_args = (
