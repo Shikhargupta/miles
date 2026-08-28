@@ -69,7 +69,10 @@ class TestPerLaunchExitFile:
         _write(theirs, OrchestratorStatus.EXITED, exit_code=7)
 
         assert (
-            observer._compute_run_outcome(state=OrchestratorState.read(mine), phase="Running", missing_polls=0) is None
+            observer._compute_run_outcome(
+                state=OrchestratorState.read(mine), phase="Running", missing_polls=0, dead_polls=0
+            )
+            is None
         )
 
     def test_a_verdict_written_before_the_launcher_looked_is_returned_at_once(self, tmp_path):
@@ -78,7 +81,7 @@ class TestPerLaunchExitFile:
         _write(state_file, OrchestratorStatus.EXITED, exit_code=4)
 
         outcome = observer._compute_run_outcome(
-            state=OrchestratorState.read(state_file), phase="Running", missing_polls=0
+            state=OrchestratorState.read(state_file), phase="Running", missing_polls=0, dead_polls=0
         )
 
         assert outcome.exit_code == 4
