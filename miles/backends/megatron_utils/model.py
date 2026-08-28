@@ -18,7 +18,7 @@ from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
 from megatron.core.optimizer.muon import get_megatron_muon_optimizer
-from megatron.core.optimizer.optimizer import MegatronOptimizer
+from megatron.core.optimizer.optimizer import ChainedOptimizer, MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
@@ -122,6 +122,33 @@ def _is_muon_optimizer(optimizer: str | None) -> bool:
     return optimizer is not None and "muon" in optimizer.lower()
 
 
+def _prune_empty_chained_optimizers(optimizer: MegatronOptimizer) -> MegatronOptimizer:
+    """Drop optimizer children created for parameter classes with no trainable weights.
+
+    Megatron constructs both dense and expert optimizer children for MoE models.
+    Expert-only LoRA leaves the dense child with ``optimizer=None``.  Runtime
+    stepping tolerates that stub, but ``ChainedOptimizer.state_dict()`` does
+    not, so the first periodic checkpoint crashes after the adapter shards are
+    written.  Rebuilding the chain without empty children keeps the optimizer
+    topology aligned with the parameters that can actually receive updates.
+    """
+    children = getattr(optimizer, "chained_optimizers", None)
+    if children is None:
+        return optimizer
+
+    kept = [child for child in children if getattr(child, "optimizer", object()) is not None]
+    if len(kept) == len(children):
+        return optimizer
+    if not kept:
+        raise RuntimeError("Megatron constructed no optimizer for any trainable parameter")
+
+    logger.warning(
+        "Dropping %d empty optimizer child(ren) before scheduler/checkpoint setup",
+        len(children) - len(kept),
+    )
+    return ChainedOptimizer(kept)
+
+
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -200,6 +227,8 @@ def setup_model_and_optimizer(
             model_chunks=model,
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
+
+    optimizer = _prune_empty_chained_optimizers(optimizer)
 
     if args.stream_optimizer_state_to_disk:
         from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming

@@ -31,7 +31,8 @@ class _DummyOptimizer:
 
 
 class _DummyChainedOptimizer:
-    pass
+    def __init__(self, chained_optimizers):
+        self.chained_optimizers = chained_optimizers
 
 
 class _DummyDistributedOptimizer:
@@ -141,6 +142,26 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
     stack.enter_context(patch("miles.backends.megatron_utils.model.clear_memory"))
     stack.enter_context(patch("miles.backends.megatron_utils.model.check_peak_gpu_memory_after_load"))
     stack.enter_context(patch("miles.backends.megatron_utils.model.check_model_hashes"))
+
+
+class _OptimizerChild:
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+        self.config = None
+        self.model_chunks = []
+
+
+def test_prune_empty_chained_optimizers_removes_expert_lora_dense_stub():
+    from miles.backends.megatron_utils.model import _prune_empty_chained_optimizers
+
+    empty_dense = _OptimizerChild(None)
+    live_expert = _OptimizerChild(object())
+    optimizer = _DummyChainedOptimizer([empty_dense, live_expert])
+
+    result = _prune_empty_chained_optimizers(optimizer)
+
+    assert isinstance(result, _DummyChainedOptimizer)
+    assert result.chained_optimizers == [live_expert]
 
 
 def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
