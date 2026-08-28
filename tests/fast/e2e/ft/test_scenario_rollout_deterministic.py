@@ -13,6 +13,7 @@ def test_rollout_deterministic_uses_the_shared_deterministic_recipe_without_true
 
     assert "--sglang-enable-deterministic-inference " in args
     assert "--sglang-attention-backend flashinfer " in args
+    assert '"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"' in args
     assert "--deterministic-mode " in args
     assert "--context-parallel-size " not in args
     assert "--true-on-policy-mode" not in args
