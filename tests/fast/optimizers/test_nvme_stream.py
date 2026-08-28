@@ -42,6 +42,35 @@ def test_disk_buffer_leaves_no_file_behind(tmp_path):
     assert os.listdir(tmp_path) == []
 
 
+def test_disk_buffer_is_recognized_as_already_managed(tmp_path):
+    """Megatron's checkpoint adoption reallocates non-pinned CPU state; ours must be exempt."""
+    buf = nvme_stream._disk_backed_like(torch.zeros(32, 8), str(tmp_path))
+
+    assert nvme_stream._is_disk_backed(buf)
+    assert not nvme_stream._is_disk_backed(torch.zeros(32, 8))
+
+
+def test_flush_mapping_covers_the_buffer_and_repeats_cheaply(tmp_path):
+    """Checkpointing fsyncs its own files behind the kernel's writeback of ours."""
+    buf = nvme_stream._disk_backed_like(torch.zeros(1024, 256), str(tmp_path))
+    nbytes = buf.numel() * buf.element_size()
+    buf.fill_(1.0)
+
+    assert nvme_stream._flush_mapping(buf) == nbytes
+    # Already clean, so the repeat is the cheap case the checkpoint hook relies on.
+    assert nvme_stream._flush_mapping(buf) == nbytes
+
+
+def test_reserve_sizes_the_file(tmp_path):
+    path = tmp_path / "f.bin"
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        nvme_stream._reserve(fd, 4096)
+        assert os.fstat(fd).st_size == 4096
+    finally:
+        os.close(fd)
+
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_disk_buffer_preserves_dtype(tmp_path, dtype):
     src = torch.zeros(16, 4, dtype=dtype)

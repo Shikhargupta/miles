@@ -29,6 +29,7 @@ rest alone. Those buffers are unlinked once mapped, so they show up in ``df``, n
 """
 
 import atexit
+import ctypes
 import errno
 import json
 import logging
@@ -74,14 +75,23 @@ def _resize(tensor: torch.Tensor, numel: int) -> None:
     tensor.untyped_storage().resize_(numel * tensor.element_size())
 
 
-def _allocate_file(path: str, nbytes: int) -> int:
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+def _reserve(fd: int, nbytes: int) -> None:
+    """Reserve blocks up front, so a full filesystem fails here as ENOSPC.
+
+    Sizing a file with ftruncate alone leaves it sparse: the mapping succeeds and the
+    process dies on SIGBUS at first touch instead, with nothing to point at.
+    """
     try:
         os.posix_fallocate(fd, 0, nbytes)
     except OSError as e:
         if e.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL):
             raise
         os.ftruncate(fd, nbytes)
+
+
+def _allocate_file(path: str, nbytes: int) -> int:
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    _reserve(fd, nbytes)
     return fd
 
 
@@ -98,10 +108,38 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
 def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
     nbytes = max(tensor.numel() * tensor.element_size(), 1)
     fd, path = tempfile.mkstemp(dir=directory, suffix=".bin")
-    os.close(fd)
+    try:
+        _reserve(fd, nbytes)
+    finally:
+        os.close(fd)
     storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=nbytes)
     os.unlink(path)
-    return torch.empty(0, dtype=tensor.dtype).set_(storage, 0, tensor.shape)
+    buffer = torch.empty(0, dtype=tensor.dtype).set_(storage, 0, tensor.shape)
+    buffer._miles_disk_backed = True
+    return buffer
+
+
+def _is_disk_backed(tensor: torch.Tensor) -> bool:
+    return getattr(tensor, "_miles_disk_backed", False)
+
+
+_MS_SYNC = 4
+_libc = ctypes.CDLL(None, use_errno=True)
+
+
+def _flush_mapping(tensor: torch.Tensor) -> int:
+    """msync one file-backed buffer, returning the bytes it covered.
+
+    Checkpointing calls os.fsync on its own files, which waits on the kernel's writeback
+    queue -- and our mappings are rewritten every step, so that queue is carrying gigabytes
+    of our dirty pages by then. Flushing them here keeps that cost attributable and cheap
+    to repeat: msync over an already-clean mapping returns immediately.
+    """
+    storage = tensor.untyped_storage()
+    nbytes = storage.nbytes()
+    if _libc.msync(ctypes.c_void_p(storage.data_ptr()), ctypes.c_size_t(nbytes), _MS_SYNC) != 0:
+        raise OSError(ctypes.get_errno(), "msync of optimizer state mapping failed")
+    return nbytes
 
 
 def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -> list[list[_Entry]]:
@@ -501,6 +539,11 @@ def setup_muon_state_on_disk(args) -> None:
         _disk_bytes = 0
 
         def _new_cpu_buffer(self, tensor: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+            # adopt_cpu_optimizer_state reallocates every non-pinned CPU tensor it finds in
+            # optimizer.state, and ours never report pinned, so each checkpoint would otherwise
+            # copy the whole state into fresh mappings.
+            if _is_disk_backed(tensor):
+                return tensor
             buffer = _disk_backed_like(tensor, self.state_dir)
             self._disk_bytes += buffer.numel() * buffer.element_size()
             return buffer
@@ -508,6 +551,15 @@ def setup_muon_state_on_disk(args) -> None:
         def step(self) -> None:  # type: ignore[override]
             super().step()
             logger.info(f"Muon disk state step: {self._disk_bytes / 1024**3:.2f} GB file-backed")
+
+        def synchronize_for_checkpoint(self) -> None:  # type: ignore[override]
+            # After super(), because it offloads the master weights and so can add mappings.
+            super().synchronize_for_checkpoint()
+            flushed = 0
+            for state in self._cpu_state.values():
+                flushed += sum(_flush_mapping(t) for t in state.values() if _is_disk_backed(t))
+            flushed += sum(_flush_mapping(t) for t in self._cpu_master.values() if _is_disk_backed(t))
+            logger.info(f"Muon disk state flushed before checkpoint: {flushed / 1024**3:.2f} GB")
 
     # optimizer.py imported the name directly, so rebinding only the defining module is a no-op.
     defining_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader

@@ -206,7 +206,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "--offload-optimizer-states and --optimizer-cpu-offload.\n"
                     "dist_muon: the disk backend for --chunked-optimizer-state-offload, so pass that "
                     "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
-                    "Adam-only."
+                    "Adam-only. This bounds host residency, not the GPU restore window -- for that "
+                    "set --optimizer-state-offload-chunk-size-mb, which Megatron warns about at 0."
                 ),
             )
             parser.add_argument(
