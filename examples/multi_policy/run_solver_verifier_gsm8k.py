@@ -121,8 +121,7 @@ def build_train_args(
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--reward-key reward_value "
         "--log-reward-category outcome "
-        # retract (default) can deadlock flush_cache in fully_async under load
-        "--pause-generation-mode in_place "
+        "--pause-generation-mode retract "
     )
 
     eval_args = (
