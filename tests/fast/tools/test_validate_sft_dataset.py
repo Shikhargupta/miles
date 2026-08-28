@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from scripts.tools.validate_sft_dataset import RowStats, _iter_dataset, _summary
+from miles.utils.sft_dataset_utils import RowStats, iter_sft_dataset, summarize_sft_dataset
 
 
 def test_jsonl_reader_accepts_heterogeneous_nested_tool_schemas(tmp_path: Path) -> None:
@@ -37,7 +37,7 @@ def test_jsonl_reader_accepts_heterogeneous_nested_tool_schemas(tmp_path: Path) 
     dataset = tmp_path / "heterogeneous.jsonl"
     dataset.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
 
-    results = list(_iter_dataset(dataset))
+    results = list(iter_sft_dataset(dataset))
 
     assert [result[0] for result in results] == [0, 1]
     assert [result[1] for result in results] == rows
@@ -48,7 +48,7 @@ def test_jsonl_reader_reports_invalid_rows_and_continues(tmp_path: Path) -> None
     dataset = tmp_path / "invalid.jsonl"
     dataset.write_text('{"messages": []}\nnot-json\n{"messages": []}\n', encoding="utf-8")
 
-    results = list(_iter_dataset(dataset))
+    results = list(iter_sft_dataset(dataset))
 
     assert results[0] == (0, {"messages": []}, None)
     assert results[1][0:2] == (1, None)
@@ -57,7 +57,7 @@ def test_jsonl_reader_reports_invalid_rows_and_continues(tmp_path: Path) -> None
 
 
 def test_summary_counts_rows_above_training_thresholds(tmp_path: Path) -> None:
-    summary = _summary(
+    summary = summarize_sft_dataset(
         tmp_path / "dataset.jsonl",
         rows_seen=3,
         schema={"messages": {"list"}},
