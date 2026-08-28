@@ -49,6 +49,11 @@ def _build_glm5_next_bridge():
             from miles_plugins.models.glm5_next.glm5_next import _apply_glm5_next_config
 
             _apply_glm5_next_config(provider, text_config)
+            # The parent GLM-5 bridge selects Megatron's global experimental
+            # DSA dispatcher. GLM-5.3 is hybrid KDA/DSA and its custom spec
+            # replaces attention per layer, so the global dispatcher must stay
+            # disabled or get_gpt_decoder_block_spec rejects the configuration.
+            provider.experimental_attention_variant = None
 
             def glm5_next_layer_spec(config, vp_stage=None):
                 from megatron.training.global_vars import get_args
