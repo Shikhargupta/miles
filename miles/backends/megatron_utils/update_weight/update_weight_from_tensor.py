@@ -18,6 +18,7 @@ from miles.backends.megatron_utils.lora_utils import (
     lora_base_cpu_backup_enabled,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.arguments import driver_owns_generation_pause
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -102,6 +103,7 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.is_lora = is_lora
+        self._driver_owns_generation_pause = driver_owns_generation_pause(args)
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args,
             model=model,
@@ -253,9 +255,10 @@ class UpdateWeightFromTensor:
         )
 
         if rank == 0:
-            mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            if not self._driver_owns_generation_pause:
+                mode = self.args.pause_generation_mode
+                ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
             if not skip_base_sync:
                 begin_weight_update(self.rollout_engines, weight_update_selector(self.args))
         dist.barrier(group=get_gloo_group())
@@ -317,7 +320,8 @@ class UpdateWeightFromTensor:
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
                 end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            if not self._driver_owns_generation_pause:
+                ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
