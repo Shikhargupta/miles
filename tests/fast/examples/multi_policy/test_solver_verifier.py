@@ -342,7 +342,7 @@ class TestTheLauncherLeavesThePromptAsMessages:
         """--apply-chat-template renders the messages into one templated string at dataset build time.
         This example quotes the question into a second prompt, which a string carrying special tokens
         cannot be used for, and a list prompt is chat templated at generation anyway. Getting this wrong
-        costs an 8-GPU run to notice."""
+        costs a 4-GPU run to notice."""
         source = (
             Path(__file__).resolve().parents[4] / "examples/multi_policy/run_solver_verifier_gsm8k.py"
         ).read_text()

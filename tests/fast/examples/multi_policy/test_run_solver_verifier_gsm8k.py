@@ -37,7 +37,7 @@ def flags(args: ScriptArgs) -> dict[str, str | None]:
 
 class TestBuildTrainArgs:
     def test_the_recipe_is_exactly_these_flags_and_values(self, flags, args):
-        """A flag silently dropped from an 80-line recipe surfaces as an 8-gpu run that hangs, not as a red test."""
+        """A flag silently dropped from an 80-line recipe surfaces as a 4-gpu run that hangs, not as a red test."""
         solver_path = args.model_path_of_model_id[LEADER_MODEL_ID]
 
         assert {flag: value for flag, value in flags.items() if flag not in CONFIG_FLAGS} == {

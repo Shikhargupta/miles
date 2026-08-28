@@ -9,7 +9,7 @@ from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=7000,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-4-gpu-h200",
     labels=["long"],
     disabled=(
         "the run stops producing rollouts around solver=99 verifier=80 and never resumes, then dies on the "
