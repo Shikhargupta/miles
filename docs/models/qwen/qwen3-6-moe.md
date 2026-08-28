@@ -83,9 +83,13 @@ cd /root/miles
 python scripts/run_qwen3_sft.py \
    --model-name Qwen3.6-35B-A3B \
    --prompt-data /root/datasets/train.parquet \
-   --checkpoint-dir /root/shared_data/qwen36-sft/checkpoints \
-   --trace-dir /scratch/qwen36-sft/traces
+   --run-id YYMMDD-8hex \
+   --checkpoint-dir /path/to/persistent-storage/qwen36-sft/YYMMDD-8hex/checkpoints \
+   --trace-dir /path/to/local-scratch/YYMMDD-8hex/traces
 ```
+
+Keep checkpoints on storage that survives machine or pod replacement. Details
+dumps and traces can use high-throughput node-local scratch storage.
 
 The Qwen3.6 recipe uses `TP=1, EP=8, CP=1, PP=1, expert-TP=1`, Qwen3 loss
 masking, CPU-offloaded precision-aware Adam, full activation recomputation,
