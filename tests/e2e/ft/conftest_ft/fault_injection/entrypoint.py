@@ -28,6 +28,7 @@ class FaultInjectorHandle:
         mean_interval_seconds_of_cell_type: dict[str, float],
         cell_fault_forms: CellFaultForms,
         get_virtual_cells: Callable[[], list[dict]] | None = None,
+        injection_enabled: Callable[[], bool] | None = None,
         poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
         quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
     ) -> None:
@@ -45,6 +46,7 @@ class FaultInjectorHandle:
                 event_log=self.event_log,
                 cell_fault_forms=cell_fault_forms,
                 get_virtual_cells=get_virtual_cells,
+                injection_enabled=injection_enabled,
                 poll_interval_seconds=poll_interval_seconds,
                 quiescent_polls_required=quiescent_polls_required,
             )
@@ -80,6 +82,7 @@ def spawn_fault_injector(
     mean_interval_seconds_of_cell_type: dict[str, float],
     cell_fault_forms: CellFaultForms,
     get_virtual_cells: Callable[[], list[dict]] | None = None,
+    injection_enabled: Callable[[], bool] | None = None,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
     quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
 ) -> FaultInjectorHandle:
@@ -89,6 +92,7 @@ def spawn_fault_injector(
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=cell_fault_forms,
         get_virtual_cells=get_virtual_cells,
+        injection_enabled=injection_enabled,
         poll_interval_seconds=poll_interval_seconds,
         quiescent_polls_required=quiescent_polls_required,
     )

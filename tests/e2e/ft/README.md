@@ -321,7 +321,8 @@ Regime (both sides):
 Injection (target side only):
   1. Rollout cells, seed 42, exponential mean CRASH_INTERVAL_SECONDS (30s)
   2. Forms drawn per (cluster backend, cell type), as in the soaks
-  3. Stop the injector with a 5s timeout, then re-use the soak's rollout witnesses: >= 2
+  3. Stop accepting faults after six completed rollouts, leaving the final two rollouts for recovery
+  4. Stop the injector with a 5s timeout, then re-use the soak's rollout witnesses: >= 2
      accepted rollout injections, each paired with one completed recovery cycle
 
 Assertions:
@@ -339,6 +340,7 @@ Assertions:
 - **Why `--rollout-health-check-interval 1`**: healthy generation can finish between two five-second polls; the short scenario needs at least one fresh Serving observation before its lock-protected injection attempt.
 - **Why this scenario polls the fault window every 0.2 seconds**: colocated generation windows are only a few seconds long, so the generic two-second scheduler cadence can miss every Serving observation in an eight-rollout run.
 - **Why this scenario uses one quiescent poll**: colocate exposes Serving only between train phases; the injection endpoint takes the inference-controller lock and atomically rejects inactive servers, so the generic 120-second stable-serving gate is redundant for this scenario.
+- **Why the final two rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 5, so teardown cannot race a newly accepted replacement.
 - **Why Ray checks Serving again inside the injection lock**: the lock excludes weight-update and offload transitions, while the Serving check also rejects the subsequent colocated trainer phase after `offload()` has released the lock.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
 - **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
