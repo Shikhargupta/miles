@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(args):
-    assert not args.colocate, "Colocation is not supported for async training."
+    assert (
+        not args.colocate or args.fully_async
+    ), "Colocation is only supported for async training with --fully-async."
     validate_async_off_policy_correction(args)
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()

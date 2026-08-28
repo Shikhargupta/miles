@@ -56,7 +56,19 @@ def _resolve_rollout_functions(args) -> None:
         assert (
             args.rollout_function_path is None
         ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
-        assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
+        if args.colocate:
+            assert "weight" not in args.offload_rollout_level, (
+                "--fully-async --colocate keeps the engine weights resident for the IPC weight update: "
+                "pass --offload-rollout-level kv_cache"
+            )
+            assert args.train_backend != "fsdp", (
+                "--fully-async --colocate needs the megatron IPC weight updater; the FSDP updater still "
+                "pauses and resumes generation on its own"
+            )
+            assert args.pause_generation_mode != "in_place", (
+                "--fully-async --colocate releases the KV cache to make room for training, so the "
+                "in_place promise to keep it cannot hold: use --pause-generation-mode retract"
+            )
         assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
         assert args.pause_generation_mode != "abort", (
             "--fully-async cannot use --pause-generation-mode abort: generation is always in flight, "
