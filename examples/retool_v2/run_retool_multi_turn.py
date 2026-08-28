@@ -165,6 +165,7 @@ def execute(args: ScriptArgs):
     misc_args = (
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
