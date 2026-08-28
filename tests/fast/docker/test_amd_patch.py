@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=10, suite="stage-a-cpu")
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 import subprocess
 from pathlib import Path
