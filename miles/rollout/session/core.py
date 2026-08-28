@@ -222,6 +222,7 @@ def log_weight_versions(session_id: str, record: SessionRecord, num_assistant: i
                 "session_id": session_id,
                 "num_assistant": num_assistant,
                 "rid": meta_info.get("id"),
+                "extra_key": record.request.get("extra_key"),
                 "weight_version": meta_info.get("weight_version"),
                 "weight_versions": meta_info.get("weight_versions"),
                 "prefill_weight_versions": meta_info.get("prefill_weight_versions"),
