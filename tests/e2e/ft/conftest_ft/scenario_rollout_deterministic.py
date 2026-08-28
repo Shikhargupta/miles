@@ -28,8 +28,10 @@ from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_inject
 TEST_NAME: str = "rollout_deterministic"
 NUM_ROLLOUTS: int = 8
 SEED: int = 42
-CRASH_INTERVAL_SECONDS: float = 120.0
-HEALTH_CHECK_INTERVAL_SECONDS: float = 5.0
+CRASH_INTERVAL_SECONDS: float = 30.0
+QUIESCENT_POLLS_REQUIRED: int = 1
+POLL_INTERVAL_SECONDS: float = 0.2
+HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
 MIN_TRAINED_ROLLOUTS: int = 2
 FIRST_ROLLOUT_TIMEOUT_SECONDS: float = 3600.0
 FIRST_ROLLOUT_POLL_SECONDS: float = 5.0
@@ -83,6 +85,8 @@ def _inject_rollout_faults(
             seed=SEED,
             mean_interval_seconds_of_cell_type={ROLLOUT_CELL_TYPE: CRASH_INTERVAL_SECONDS},
             cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
+            poll_interval_seconds=POLL_INTERVAL_SECONDS,
+            quiescent_polls_required=QUIESCENT_POLLS_REQUIRED,
         )
 
     arming = threading.Thread(target=arm_once_generation_is_under_way, daemon=True, name="ft-rollout-injector-arm")
