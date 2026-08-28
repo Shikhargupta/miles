@@ -5,7 +5,7 @@ import os
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.utils import object_store
-from miles.utils.arguments import driver_owns_generation_pause, parse_args, validate_async_off_policy_correction
+from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
@@ -46,8 +46,7 @@ async def train(args):
 
     maybe_start_mini_ft_controller(args)
 
-    colocate_rollout = driver_owns_generation_pause(args)
-    if colocate_rollout:
+    if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
     # always update weight first so that sglang has the loaded weights from training.
@@ -61,7 +60,7 @@ async def train(args):
             skip_list=args.check_weight_update_skip_list,
         )
 
-    if colocate_rollout:
+    if args.offload_rollout:
         await rollout_manager.onload_kv.remote()
 
     eval_dispatcher = EvalDispatcher(args, actor_model, rollout_manager)
@@ -76,30 +75,29 @@ async def train(args):
         if args.use_critic and args.offload_train:
             await model.offload()
 
-    async def hand_gpus_to_trainer():
-        await rollout_manager.pause_generation.remote(mode=args.pause_generation_mode)
-        await rollout_manager.offload_kv.remote()
-
-    async def hand_gpus_back_to_rollout():
+    async def offload_train():
+        if args.use_critic:
+            return
         if args.offload_train:
             await actor_model.offload()
-        await rollout_manager.onload_kv.remote()
-        await rollout_manager.continue_generation.remote()
+        else:
+            await actor_model.clear_memory()
 
     # async train loop.
-    rollout_data_next_future = None if colocate_rollout else rollout_manager.generate.remote(args.start_rollout_id)
+    rollout_data_next_future = None if args.colocate else rollout_manager.generate.remote(args.start_rollout_id)
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        if colocate_rollout:
-            rollout_data_curr_ref = await rollout_manager.generate.remote(rollout_id)
-            await hand_gpus_to_trainer()
-        else:
-            # Sync the last generation
-            if rollout_data_next_future is not None:
-                rollout_data_curr_ref = await rollout_data_next_future
+        # Sync the last generation
+        if rollout_data_next_future is not None:
+            rollout_data_curr_ref = await rollout_data_next_future
 
+        if args.colocate:
+            rollout_data_curr_ref = await rollout_manager.generate.remote(rollout_id)
+            await rollout_manager.pause_generation.remote(mode=args.pause_generation_mode)
+            if args.offload_rollout:
+                await rollout_manager.offload_by_level.remote()
+        elif rollout_id + 1 < args.num_rollout:
             # Start the next rollout early.
-            if rollout_id + 1 < args.num_rollout:
-                rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+            rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
@@ -125,14 +123,17 @@ async def train(args):
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
+        if args.colocate:
+            await offload_train()
         if (rollout_id + 1) % args.update_weights_interval == 0:
             # sync generate before update weights to prevent update weight in the middle of generation
             rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
             rollout_data_next_future = None
             await actor_model.update_weights(rollout_id=rollout_id)
-
-        if colocate_rollout:
-            await hand_gpus_back_to_rollout()
+        if args.colocate:
+            if args.offload_rollout:
+                await rollout_manager.onload_kv.remote()
+            await rollout_manager.continue_generation.remote()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)

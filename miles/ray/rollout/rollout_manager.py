@@ -298,8 +298,8 @@ class RolloutManager:
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
 
-    async def offload_kv(self):
-        await self.offload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+    async def offload_by_level(self):
+        await self.offload(tags=rollout_offload_tags(self.args))
 
     # -------------------------- generation pause -----------------------------
 
@@ -458,3 +458,12 @@ class EnginesAndLock:
     has_new_engines: bool
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
+
+
+def rollout_offload_tags(args) -> list[str]:
+    tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+    if "kv_cache" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+    if "weight" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+    return tags

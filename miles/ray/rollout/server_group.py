@@ -251,32 +251,25 @@ class ServerGroup:
     def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
-        return [
-            engine.actor_handle.release_memory_occupation.remote(tags=tags)
-            for engine in self.engines
-            if engine.is_allocated
-        ]
+        return self._call_allocated_engines("release_memory_occupation", tags=tags)
 
     def onload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
+        return self._call_allocated_engines("resume_memory_occupation", tags=tags)
+
+    def pause_generation(self, mode: str):
+        return self._call_allocated_engines("pause_generation", mode=mode)
+
+    def continue_generation(self):
+        return self._call_allocated_engines("continue_generation")
+
+    def _call_allocated_engines(self, method_name: str, **kwargs):
         return [
-            engine.actor_handle.resume_memory_occupation.remote(tags=tags)
+            getattr(engine.actor_handle, method_name).remote(**kwargs)
             for engine in self.engines
             if engine.is_allocated
         ]
-
-    def pause_generation(self, mode: str):
-        if not self.needs_offload:
-            return []
-        return [
-            engine.actor_handle.pause_generation.remote(mode=mode) for engine in self.engines if engine.is_allocated
-        ]
-
-    def continue_generation(self):
-        if not self.needs_offload:
-            return []
-        return [engine.actor_handle.continue_generation.remote() for engine in self.engines if engine.is_allocated]
 
     def onload_weights_from_disk(self):
         """Reload weights from ``model_path`` for non-updatable groups."""

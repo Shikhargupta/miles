@@ -103,7 +103,6 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.is_lora = is_lora
-        self._driver_owns_generation_pause = driver_owns_generation_pause(args)
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args,
             model=model,
@@ -255,7 +254,7 @@ class UpdateWeightFromTensor:
         )
 
         if rank == 0:
-            if not self._driver_owns_generation_pause:
+            if not driver_owns_generation_pause(self.args):
                 mode = self.args.pause_generation_mode
                 ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
@@ -320,7 +319,7 @@ class UpdateWeightFromTensor:
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
                 end_weight_update(self.rollout_engines)
-            if not self._driver_owns_generation_pause:
+            if not driver_owns_generation_pause(self.args):
                 ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 

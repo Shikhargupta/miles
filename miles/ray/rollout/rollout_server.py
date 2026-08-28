@@ -266,28 +266,16 @@ class RolloutServer:
         await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.offload(tags=tags))
-        return await asyncio.gather(*handles)
+        return await asyncio.gather(*[h for g in self.server_groups for h in g.offload(tags=tags)])
 
     async def onload(self, tags: list[str] | None = None):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.onload(tags))
-        return await asyncio.gather(*handles)
+        return await asyncio.gather(*[h for g in self.server_groups for h in g.onload(tags)])
 
     async def pause_generation(self, mode: str):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.pause_generation(mode=mode))
-        return await asyncio.gather(*handles)
+        return await asyncio.gather(*[h for g in self.server_groups for h in g.pause_generation(mode=mode)])
 
     async def continue_generation(self):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.continue_generation())
-        return await asyncio.gather(*handles)
+        return await asyncio.gather(*[h for g in self.server_groups for h in g.continue_generation()])
 
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
