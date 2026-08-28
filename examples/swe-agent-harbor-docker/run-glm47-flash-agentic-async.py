@@ -247,6 +247,7 @@ def execute(args: ScriptArgs):
         f"--sglang-max-running-requests {sglang_decode_max_bs} "
         f"--sglang-chunked-prefill-size {args.max_tokens_per_gpu} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        "--sglang-enable-prefill-weight-versions "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "

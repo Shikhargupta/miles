@@ -206,6 +206,29 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     return request_body, client_stream, tito_tokenizer
 
 
+def log_weight_versions(session_id: str, record: SessionRecord, num_assistant: int) -> None:
+    meta_info = record.response["choices"][0].get("meta_info", {})
+    logger.info(
+        "weight_versions_record %s",
+        json.dumps(
+            {
+                "timestamp": record.timestamp,
+                "request_timestamp": record.request_timestamp,
+                "session_id": session_id,
+                "num_assistant": num_assistant,
+                "rid": meta_info.get("id"),
+                "weight_version": meta_info.get("weight_version"),
+                "weight_versions": meta_info.get("weight_versions"),
+                "prefill_weight_versions": meta_info.get("prefill_weight_versions"),
+                "prompt_tokens": meta_info.get("prompt_tokens"),
+                "cached_tokens": meta_info.get("cached_tokens"),
+                "completion_tokens": meta_info.get("completion_tokens"),
+                "finish_reason": meta_info.get("finish_reason"),
+            }
+        ),
+    )
+
+
 def extract_completion(result: dict) -> tuple:
     """Decode and validate the backend chat response — shared verbatim by the
     v1 and v2 cores. Returns ``(response, choice, assistant_message,
@@ -439,6 +462,7 @@ class SessionCore:
                 response=response,
             )
             session.append_record(record)
+            log_weight_versions(session_id, record, session.num_assistant)
         # --- lock released ---
 
         return _chat_client_response(result, response, client_stream)

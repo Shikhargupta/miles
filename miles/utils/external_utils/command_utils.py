@@ -195,6 +195,7 @@ def execute_train(
     runtime_env_vars = {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
+        "RAY_DEDUP_LOGS": "0",
         # If setting this in FSDP, the computation communication overlapping may have issues
         **(
             {}

@@ -12,6 +12,7 @@ from miles.rollout.session.core import (
     _render_json,
     _samples_response,
     extract_completion,
+    log_weight_versions,
     prepare_chat_request,
     proxy_result_to_response,
 )
@@ -195,6 +196,7 @@ class SessionCoreV2(SessionCore):
                 request=request_body,
                 response=response,
             )
+            log_weight_versions(session_id, record, len(session.active_records()))
             commit_generation(
                 session,
                 parent=attach_parent,
