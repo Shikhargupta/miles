@@ -21,6 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prompt_data: str = "/root/dapo-math-17k/dapo-math-17k.jsonl"
     generate_max_turns: int = 16
     rollout_num_gpus_per_engine: int = 2
+    fully_async: bool = False
     extra_args: str = ""
 
     # resolved in __post_init__, not set by user
@@ -30,6 +31,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        if self.fully_async:
+            self.rollout_num_gpus_per_engine = 1
         if self.use_sft_model:
             self.hf_checkpoint = "/root/font-info/qwen3-4b-sft"
             self.ref_load = "/root/font-info/qwen3-4b-sft_torch_dist"
@@ -121,6 +124,10 @@ def execute(args: ScriptArgs):
             "--eval-top-p 1 "
         )
 
+    async_args = ""
+    if args.fully_async:
+        async_args = "--fully-async --pause-generation-mode retract --offload-rollout-level kv_cache "
+
     grpo_args = (
         "--advantage-estimator grpo "
         "--use-kl-loss "
@@ -145,7 +152,7 @@ def execute(args: ScriptArgs):
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 2 "
+        f"--tensor-model-parallel-size {1 if args.fully_async else 2} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -184,6 +191,7 @@ def execute(args: ScriptArgs):
         f"{sglang_args} "
         f"{misc_args} "
         f"{custom_args} "
+        f"{async_args} "
         f"{args.extra_args} "
     )
 
@@ -192,6 +200,7 @@ def execute(args: ScriptArgs):
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=megatron_model_type,
+        train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
             "PYTHONPATH": "/root/Megatron-LM/:/root/miles",
         },

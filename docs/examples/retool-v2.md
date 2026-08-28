@@ -34,3 +34,25 @@ python examples/retool_v2/run_retool_multi_turn.py
 The launch script prepares everything it needs on its own: it downloads the dapo-math-17k
 training set and the aime-2024 eval set, downloads the checkpoint, and converts it to
 `torch_dist` before training starts.
+
+### Single GPU, fully async and colocated
+
+```bash
+python examples/retool_v2/run_retool_multi_turn.py --fully-async --num-gpus-per-node 1
+```
+
+`--fully-async` switches the run to `train_async.py` and shares the GPU between the
+rollout engines and the trainer:
+
+| | default | `--fully-async` |
+|---|---|---|
+| driver | `train.py` | `train_async.py` |
+| rollout | one batch per training step | a producer that keeps generating between steps |
+| tensor parallel | 2 | 1 |
+| GPUs per engine | 2 | 1 |
+| minimum GPUs | 8 | 1 |
+
+The engines keep their weights resident so the weight update stays a CUDA IPC handover;
+only the KV cache and the CUDA graphs move aside for training. See
+[fully async](https://github.com/radixark/miles/blob/main/docs/user-guide/fully-async.md)
+for the per-step timeline.
