@@ -62,6 +62,8 @@ def _explicit_node_order(args, num_gpus):
             "explicit node placement does not account for requested GPUs: "
             f"nodes={node_ips} gpus_per_node={args.num_gpus_per_node} requested={num_gpus}"
         )
+    if not ray.is_initialized():
+        ray.init(address="auto", ignore_reinit_error=True)
     missing = [node_ip for node_ip in node_ips if f"node:{node_ip}" not in ray.cluster_resources()]
     if missing:
         raise RuntimeError(f"explicit placement nodes are absent from Ray: {missing}")
