@@ -1,5 +1,6 @@
 import copy
 import logging
+import os
 import socket
 
 import ray
@@ -48,12 +49,42 @@ def sort_key(x):
     return (node_ip_parts, gpu_id)
 
 
-def _create_placement_group(num_gpus, is_rdt: bool = False):
+def _explicit_node_order(args, num_gpus):
+    raw = args.train_env_vars.get("MILES_EXPLICIT_PLACEMENT_NODE_IPS", "")
+    if not raw:
+        return None
+    node_ips = [value.strip() for value in raw.split(",") if value.strip()]
+    if not node_ips or len(node_ips) != len(set(node_ips)):
+        raise RuntimeError("MILES_EXPLICIT_PLACEMENT_NODE_IPS must contain distinct node IPs")
+    expected_gpus = len(node_ips) * args.num_gpus_per_node
+    if expected_gpus != num_gpus:
+        raise RuntimeError(
+            "explicit node placement does not account for requested GPUs: "
+            f"nodes={node_ips} gpus_per_node={args.num_gpus_per_node} requested={num_gpus}"
+        )
+    missing = [node_ip for node_ip in node_ips if f"node:{node_ip}" not in ray.cluster_resources()]
+    if missing:
+        raise RuntimeError(f"explicit placement nodes are absent from Ray: {missing}")
+    return node_ips
+
+
+def _placement_bundles(args, num_gpus):
+    node_ips = _explicit_node_order(args, num_gpus)
+    if node_ips is None:
+        return None, [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
+    return node_ips, [
+        {"GPU": 1, "CPU": 1, f"node:{node_ip}": 0.001}
+        for node_ip in node_ips
+        for _ in range(args.num_gpus_per_node)
+    ]
+
+
+def _create_placement_group(args, num_gpus, is_rdt: bool = False):
     """Create a placement group with the specified number of GPUs."""
     if num_gpus == 0:
         return None, [], []
 
-    bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
+    node_ips, bundles = _placement_bundles(args, num_gpus)
     pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 
@@ -74,7 +105,18 @@ def _create_placement_group(num_gpus, is_rdt: bool = False):
         ray.kill(actor)
 
     bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
-    if is_rdt:
+    if node_ips is not None:
+        node_order = {node_ip: index for index, node_ip in enumerate(node_ips)}
+        observed = {node_ip: 0 for node_ip in node_ips}
+        for _, node_ip, _ in bundle_infos:
+            if node_ip not in observed:
+                raise RuntimeError(f"placement group used unexpected node {node_ip}; expected {node_ips}")
+            observed[node_ip] += 1
+        expected = {node_ip: args.num_gpus_per_node for node_ip in node_ips}
+        if observed != expected:
+            raise RuntimeError(f"explicit placement GPU counts mismatch: expected={expected} observed={observed}")
+        sorted_bundle_infos = sorted(bundle_infos, key=lambda item: (node_order[item[1]], item[2]))
+    elif is_rdt:
         # Give the trainer the node PACK filled, so rollout bundles land where GPUs
         # are still free: RayEngine STRICT_PACKs its SchedulerActors onto the engine
         # actor's node and deadlocks if nothing there is unreserved.
@@ -121,7 +163,7 @@ def create_placement_groups(args):
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
     pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(
-        num_gpus, is_rdt=args.update_weight_transfer_mode == "rdt"
+        args, num_gpus, is_rdt=args.update_weight_transfer_mode == "rdt"
     )
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
@@ -199,8 +241,19 @@ async def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
+    host_ip = os.environ.get("MILES_HOST_IP")
+    pin_options = (
+        {"resources": {f"node:{host_ip}": 0.001}}
+        if host_ip and args.pin_rollout_manager_to_head
+        else compute_ray_pin_head_options()
+        if args.pin_rollout_manager_to_head
+        else {}
+    )
     rollout_manager = RolloutManager.options(
-        num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
+        num_cpus=1,
+        num_gpus=0,
+        runtime_env={"env_vars": {"MILES_HOST_IP": host_ip}} if host_ip else {},
+        **pin_options,
     ).remote(args, pg)
 
     # calculate num_rollout from num_epoch

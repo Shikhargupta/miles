@@ -788,6 +788,21 @@ def train(
             ft_test_action_executor=ft_test_action_executor,
         )
 
+        if (
+            train_step_outcome == TrainStepOutcome.NORMAL
+            and args.custom_megatron_after_train_step_hook_path
+        ):
+            from miles.utils.misc import load_function
+
+            custom_after_train_step_hook = load_function(args.custom_megatron_after_train_step_hook_path)
+            loss_dict = custom_after_train_step_hook(
+                args,
+                rollout_id,
+                step_id,
+                loss_dict,
+                grad_norm=grad_norm,
+            )
+
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
             # forward passes will use the forward pre-hook / `param_sync_func` in

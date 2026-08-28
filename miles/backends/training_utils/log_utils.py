@@ -462,18 +462,56 @@ def aggregate_train_losses(
         return {}
 
     keys = losses_reduced[0]["keys"]
+    if any(log_dict["keys"] != keys for log_dict in losses_reduced[1:]):
+        raise RuntimeError("metric keys differ across training micro-batches")
+    stacked = torch.stack([log_dict["values"] for log_dict in losses_reduced])
+    assert len(keys) + 1 == stacked.size(1), f"Expected {len(keys) + 1} values, got {stacked.size(1)}"
 
-    values = None
-    for log_dict in losses_reduced:
-        if values is None:
-            values = log_dict["values"].clone()
+    counts = stacked[:, 0].sum().reshape(1)
+    values = torch.empty_like(stacked[0, 1:])
+    extrema_present = any(
+        key.startswith(("dsv4_min__", "dsv4_max__")) for key in keys
+    )
+    scored_count_key = "dsv4_sum__mis_scored_token_count"
+    if extrema_present and scored_count_key not in keys:
+        raise RuntimeError("tail extrema require a scored-token count metric")
+    scored_rows = (
+        stacked[:, keys.index(scored_count_key) + 1] > 0
+        if extrema_present
+        else None
+    )
+    reduction_by_index = []
+    for index, key in enumerate(keys):
+        if key.startswith("dsv4_min__"):
+            reduction = "min"
+            candidates = stacked[:, index + 1]
+            values[index] = torch.where(
+                scored_rows, candidates, torch.full_like(candidates, float("inf"))
+            ).min()
+        elif key.startswith("dsv4_max__"):
+            reduction = "max"
+            candidates = stacked[:, index + 1]
+            values[index] = torch.where(
+                scored_rows, candidates, torch.full_like(candidates, float("-inf"))
+            ).max()
         else:
-            values += log_dict["values"]
-
-    assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
+            reduction = "sum"
+            values[index] = stacked[:, index + 1].sum()
+        reduction_by_index.append(reduction)
 
     for group in parallel_state.effective_dp_cp.groups_inner_to_outer:
-        MultiPGUtil.all_reduce(values, [group], op=dist.ReduceOp.SUM)
+        MultiPGUtil.all_reduce(counts, [group], op=dist.ReduceOp.SUM)
+        for reduction, op in (
+            ("sum", dist.ReduceOp.SUM),
+            ("min", dist.ReduceOp.MIN),
+            ("max", dist.ReduceOp.MAX),
+        ):
+            indices = [i for i, value in enumerate(reduction_by_index) if value == reduction]
+            if not indices:
+                continue
+            selected = values[indices].contiguous()
+            MultiPGUtil.all_reduce(selected, [group], op=op)
+            values[indices] = selected
 
     loss_reduced = {}
     values = values.tolist()
@@ -481,11 +519,22 @@ def aggregate_train_losses(
         num_samples_or_tokens = num_rollouts
         cp_factor = 1
     else:
-        num_samples_or_tokens = values[0]
+        num_samples_or_tokens = counts.item()
         cp_factor = parallel_state.cp.size
 
-    for key, value in zip(keys, values[1:], strict=False):
-        loss_reduced[key] = value * cp_factor / num_samples_or_tokens
+    for key, value in zip(keys, values, strict=True):
+        output_key = key
+        exact_reduction = False
+        for prefix in ("dsv4_sum__", "dsv4_min__", "dsv4_max__"):
+            if output_key.startswith(prefix):
+                output_key = output_key.removeprefix(prefix)
+                exact_reduction = True
+                break
+        if output_key in loss_reduced:
+            raise RuntimeError(f"metric reducer output collision: {output_key}")
+        loss_reduced[output_key] = (
+            value if exact_reduction else value * cp_factor / num_samples_or_tokens
+        )
 
     return loss_reduced
 

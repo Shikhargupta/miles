@@ -258,10 +258,6 @@ class DistBucketedWeightUpdateMixin:
                 "(no lora_A/lora_B names found). Check weight iterator."
             )
 
-        if self._lora_loaded:
-            ray.get(
-                [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
-            )
         self._update_lora_weight_implementation(accumulated_named_tensors)
         self._lora_loaded = True
 

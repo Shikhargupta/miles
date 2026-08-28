@@ -2447,6 +2447,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
             )
+            parser.add_argument(
+                "--custom-megatron-after-train-step-hook-path",
+                type=str,
+                default=None,
+            )
             return parser
 
         def add_mtp_training_arguments(parser):
@@ -3572,6 +3577,10 @@ def validate_skip_actor_forward_only(args) -> None:
             (
                 "--custom-megatron-before-train-step-hook-path",
                 args.custom_megatron_before_train_step_hook_path is not None,
+            ),
+            (
+                "--custom-megatron-after-train-step-hook-path",
+                args.custom_megatron_after_train_step_hook_path is not None,
             ),
             ("--custom-model-provider-path", args.custom_model_provider_path is not None),
             (
