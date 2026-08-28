@@ -323,6 +323,7 @@ class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
 
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.8_small_and_flash_next_fixed.jinja",
+        # FIXME: Pin reasoning effort to xhigh until request-argument precedence is unified.
         extra_kwargs={"preserve_thinking": True, "reasoning_effort": "xhigh"},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
