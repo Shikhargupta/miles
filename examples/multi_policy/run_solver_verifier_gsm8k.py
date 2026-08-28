@@ -35,13 +35,6 @@ SHARED_TRAINER_OVERRIDES = dict(
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_rollout: int = 3
     num_gpus_per_node: int = 4
-    rollout_batch_size: int = 32
-    n_samples_per_prompt: int = 8
-    global_batch_size: int = 256
-    rollout_max_response_len: int = 1024
-    rollout_temperature: float = 1.0
-    dynamic_sampling_filter: bool = True
-    eval_interval: int | None = 20
     solver_model_name: str = "Qwen2.5-0.5B-Instruct"
     verifier_model_name: str = "Qwen3-0.6B"
     solver_megatron_model_type: str = "qwen2.5-0.5B"
@@ -114,29 +107,26 @@ def build_train_args(
         "--label-key label "
         "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "
-        f"--rollout-batch-size {args.rollout_batch_size} "
-        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
-        f"--rollout-max-response-len {args.rollout_max_response_len} "
-        f"--rollout-temperature {args.rollout_temperature} "
-        f"--global-batch-size {args.global_batch_size} "
+        "--rollout-batch-size 32 "
+        "--n-samples-per-prompt 8 "
+        "--rollout-max-response-len 1024 "
+        "--rollout-temperature 1 "
+        "--global-batch-size 256 "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--reward-key reward_value "
         "--log-reward-category outcome "
         # retract (default) can deadlock flush_cache in fully_async under load
         "--pause-generation-mode in_place "
     )
-    if args.dynamic_sampling_filter:
-        rollout_args += "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
 
-    eval_args = ""
-    if args.eval_interval is not None:
-        eval_args = (
-            f"--eval-interval {args.eval_interval} "
-            f"--eval-prompt-data {EVAL_DATASET_NAME} {args.data_dir}/gsm8k/test.parquet "
-            "--n-samples-per-eval-prompt 1 "
-            f"--eval-max-response-len {args.rollout_max_response_len} "
-            "--eval-top-k 1 "
-            "--custom-eval-rollout-log-function-path examples.multi_policy.solver_verifier.split_eval_data_by_policy "
-        )
+    eval_args = (
+        "--eval-interval 20 "
+        f"--eval-prompt-data {EVAL_DATASET_NAME} {args.data_dir}/gsm8k/test.parquet "
+        "--n-samples-per-eval-prompt 1 "
+        "--eval-max-response-len 1024 "
+        "--eval-top-k 1 "
+        "--custom-eval-rollout-log-function-path examples.multi_policy.solver_verifier.split_eval_data_by_policy "
+    )
 
     perf_args = (
         "--tensor-model-parallel-size 1 "

@@ -13,17 +13,7 @@ NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "3"))
 
 
 if __name__ == "__main__":
-    args = dataclasses.replace(
-        command_utils.default_config(ScriptArgs),
-        num_rollout=NUM_ROLLOUT,
-        rollout_batch_size=8,
-        n_samples_per_prompt=4,
-        global_batch_size=32,
-        rollout_max_response_len=250,
-        rollout_temperature=0.8,
-        dynamic_sampling_filter=False,
-        eval_interval=None,
-    )
+    args = dataclasses.replace(command_utils.default_config(ScriptArgs), num_rollout=NUM_ROLLOUT)
     prepare(args)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
