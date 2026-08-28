@@ -145,7 +145,11 @@ def build_train_args(
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test " f"--save-debug-event-data {events_dir} "
+    ci_args = (
+        "--ci-test "
+        f"--save-debug-event-data {events_dir} "
+        f"--save-debug-rollout-data {compute_rollout_data_path_template(args)} "
+    )
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -199,6 +203,10 @@ def compute_trainer_id(model_id: str) -> str:
 
 def compute_events_dir(config: ExecuteTrainConfig) -> Path:
     return Path(config.output_dir) / "multi_policy_solver_verifier" / config.run_id / "events"
+
+
+def compute_rollout_data_path_template(config: ExecuteTrainConfig) -> str:
+    return str(compute_events_dir(config).parent / "rollout_data" / "{rollout_id}.pt")
 
 
 def _compute_trainer_config(args: ScriptArgs, model_id: str) -> dict:
