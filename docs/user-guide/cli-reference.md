@@ -144,7 +144,7 @@ Sections mirror the launch-script argument groups.
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
 | `--rollout-num-gpus-per-engine` | int | `1` | TP size of each SGLang engine. |
-| `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and defaults `--sglang-cuda-graph-backend-prefill=disabled`. |
+| `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and defaults `--sglang-cuda-graph-backend-prefill=disabled`. Also valid with `--fully-async`, which then requires `--offload-rollout-level kv_cache`, `--pause-generation-mode retract` and the megatron backend. |
 
 ### Model and checkpoints
 

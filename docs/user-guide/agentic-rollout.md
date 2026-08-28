@@ -147,7 +147,7 @@ Whether a replayed message counts as "the same" as the stored one is decided by
 
 The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
 for each selected tree leaf. Both versions reject `--pause-generation-mode=abort`
-and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause.
+and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause. Under `--colocate` the KV cache is released for the trainer, so use `retract` there instead.
 
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
 metadata passed to your agent so an external environment can stop early.

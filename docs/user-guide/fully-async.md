@@ -46,6 +46,7 @@ Starting from a working run, the rest of this page covers what you can change:
 | To change | See |
 |---|---|
 | How much generation stays in flight | [Arguments: Scheduling options](#arguments-scheduling-options) |
+| Whether the engines and the trainer share GPUs | [Colocate](#colocate) |
 | How deep the buffer is, how stale a group may be, which groups reach training, or the buffer implementation itself | [Arguments: Buffer options](#arguments-buffer-options) |
 | Where eval runs and where it gets its weights | [Evaluation](#evaluation) |
 | Which numbers tell you where the bottleneck is, or where the metrics are logged | [Metrics](#metrics) |
@@ -107,6 +108,73 @@ Three flags control how much generation stays in flight:
 | `--rollout-batch-size` | Groups the trainer consumes per step. It is also the default in-flight cap, so raising it widens both the batch and the concurrency unless `--async-max-concurrent-samples` is set |
 | `--async-max-concurrent-samples` | In-flight cap in trajectories rather than groups, floored to `value // n_samples_per_prompt` groups. Use it to decouple generation concurrency from batch size |
 | `--rollout-submission-granularity` | Sets when a finished unit frees a submission slot. Under `--fully-async` the default is `sample`, which frees each slot as its own sample completes; `group` holds the slot until the whole group returns |
+
+## Colocate
+
+`--fully-async --colocate` puts the engines and the trainer on the same GPUs, down to a
+single one. Generation still runs continuously between training steps, but the two now
+take turns on the device instead of holding separate GPUs.
+
+Per step the driver hands the GPUs over and back:
+
+| # | Step | Who |
+|---|---|---|
+| 1 | Drain `--rollout-batch-size` groups from the buffer; the engines keep generating meanwhile | driver |
+| 2 | `pause_generation` in `retract` mode; running requests return to the waiting queue | driver |
+| 3 | Release the KV cache and the CUDA graphs; the engine **weights stay resident** | driver |
+| 4 | Train, then update weights over CUDA IPC | actor |
+| 5 | Put the trainer back to sleep | actor |
+| 6 | Restore the KV cache and the CUDA graphs | driver |
+| 7 | `continue_generation`; the retracted requests re-prefill and carry on | driver |
+
+Two orderings are load-bearing. Generation must be paused before the KV cache is
+released, because that is the only state in which SGLang accepts a release behind a
+non-empty waiting queue — and the retract pause is exactly what fills that queue. The
+KV cache must be back before `continue_generation`, or the scheduler starts allocating
+from a cache that is still unmapped.
+
+The driver owns that whole window, so the weight updater skips the
+`pause_generation` / `flush_cache` / `continue_generation` it performs on every other
+path. Requests that arrive while the engines are paused block inside SGLang's tokenizer
+manager until step 7; the rollout HTTP client sets no timeout, so they simply wait.
+
+Compared with the other two modes this is a small delta: against synchronous colocate it
+adds only steps 2 and 7, and against disaggregated fully async only steps 3, 5 and 6.
+
+### Why `retract`
+
+Colocation has to give the KV cache back to the trainer, so `in_place`, which promises
+to keep the cache and resume the frozen requests on it, cannot hold. `retract` is
+defined as a re-prefill and is therefore the only consistent choice; the combination
+with `--pause-generation-mode in_place` is rejected.
+
+### What is not supported
+
+| Combination | Why |
+|---|---|
+| `--offload-rollout-level weight` | The colocated update hands weights over through CUDA IPC, so the engines must keep them resident. Pass `--offload-rollout-level kv_cache` |
+| `--train-backend fsdp` | The FSDP updater still pauses and resumes generation on its own |
+| `--pause-generation-mode in_place` | See above |
+
+Generation stops for the whole train window, so no samples are produced there. That is
+the same gap as the pause window in the disaggregated mode, and `--max-weight-staleness`
+and the weight-version bookkeeping are unchanged.
+
+### Launch
+
+```diff
+  python3 train_async.py ...
+    --fully-async
++   --colocate
++   --offload-rollout-level kv_cache
++   --pause-generation-mode retract
++   --num-gpus-per-node 1
+-   --rollout-num-gpus 4
+```
+
+[`examples/retool_v2`](https://github.com/radixark/miles/blob/main/examples/retool_v2)
+runs a multi-turn tool-call recipe this way on one GPU:
+`python examples/retool_v2/run_retool_multi_turn.py --fully-async --num-gpus-per-node 1`.
 
 ## Data path
 

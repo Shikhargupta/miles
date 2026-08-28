@@ -192,4 +192,7 @@ Common entries:
 
 Under `--colocate` the actor and the engines share the same GPUs and take turns, so
 `--rollout-num-gpus` is ignored; see
-[Training Backends](/user-guide/training-backend#3-choosing-the-gpu-layout).
+[Training Backends](/user-guide/training-backend#3-choosing-the-gpu-layout). It combines
+with `--fully-async`, where the engines keep generating between steps and only hand the
+KV cache over for the training window; see
+[Fully Async RL](/user-guide/fully-async#colocate).
