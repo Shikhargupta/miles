@@ -28,6 +28,7 @@ from miles.ray.specs.inference import (
     spec_inference_controller,
     spec_session_server,
     specs_inference_engine,
+    specs_inference_registration_reporter,
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
@@ -716,6 +717,12 @@ class TestSpecInferenceController:
         spec = spec_inference_controller(self._args(tmp_path))
 
         assert load_function(spec.worker_class) is InferenceController
+
+    def test_the_registration_reporter_declares_the_platform_reads_it_performs(self, tmp_path):
+        """The reporter watches engine pods, so its release has to bind it to an account allowed to read them."""
+        (spec,) = specs_inference_registration_reporter(self._args(tmp_path, deploy_component="inference"))
+
+        assert spec.needs_platform_read_permission is True
 
     def test_the_worker_name_is_stable(self):
         """The driver looks the controller up by name, so this name is part of the release's contract."""

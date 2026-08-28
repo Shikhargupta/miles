@@ -1,5 +1,5 @@
-{{- if .Values.run.orchestrator.command }}
 {{- $name := .Values.run.objectNames.orchestrator }}
+{{- if or .Values.run.orchestrator.command (include "miles-run.accountUsedByAWorker" (dict "context" . "name" $name)) }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
