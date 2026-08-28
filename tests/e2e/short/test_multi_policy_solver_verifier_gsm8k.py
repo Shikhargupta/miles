@@ -22,6 +22,7 @@ if __name__ == "__main__":
         rollout_max_response_len=250,
         rollout_temperature=0.8,
         dynamic_sampling_filter=False,
+        eval_interval=None,
     )
     prepare(args)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):

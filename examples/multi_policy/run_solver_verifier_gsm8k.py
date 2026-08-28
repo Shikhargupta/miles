@@ -13,6 +13,7 @@ SOLVER_MODEL_ID: str = "solver"
 VERIFIER_MODEL_ID: str = "verifier"
 MODEL_IDS: list[str] = [SOLVER_MODEL_ID, VERIFIER_MODEL_ID]
 LEADER_MODEL_ID: str = MODEL_IDS[0]
+EVAL_DATASET_NAME: str = "gsm8k"
 TRAIN_SCRIPT: str = "train_multi_policy.py"
 TRAIN_EXTRA_ENV_VARS: dict[str, str] = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
 
@@ -40,6 +41,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     rollout_max_response_len: int = 1024
     rollout_temperature: float = 1.0
     dynamic_sampling_filter: bool = True
+    eval_interval: int | None = 20
     solver_model_name: str = "Qwen2.5-0.5B-Instruct"
     verifier_model_name: str = "Qwen3-0.6B"
     solver_megatron_model_type: str = "qwen2.5-0.5B"
@@ -125,6 +127,17 @@ def build_train_args(
     if args.dynamic_sampling_filter:
         rollout_args += "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
 
+    eval_args = ""
+    if args.eval_interval is not None:
+        eval_args = (
+            f"--eval-interval {args.eval_interval} "
+            f"--eval-prompt-data {EVAL_DATASET_NAME} {args.data_dir}/gsm8k/test.parquet "
+            "--n-samples-per-eval-prompt 1 "
+            f"--eval-max-response-len {args.rollout_max_response_len} "
+            "--eval-top-k 1 "
+            "--custom-eval-rollout-log-function-path examples.multi_policy.solver_verifier.split_eval_data_by_policy "
+        )
+
     perf_args = (
         "--tensor-model-parallel-size 1 "
         "--sequence-parallel "
@@ -163,6 +176,7 @@ def build_train_args(
         f"{optimizer_args} "
         f"{grpo_args} "
         f"{wandb_args if wandb_args is not None else command_utils.get_default_wandb_args(__file__)} "
+        f"{eval_args} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{ci_args} "
