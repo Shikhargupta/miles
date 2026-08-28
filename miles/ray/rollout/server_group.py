@@ -266,6 +266,18 @@ class ServerGroup:
             if engine.is_allocated
         ]
 
+    def pause_generation(self, mode: str):
+        if not self.needs_offload:
+            return []
+        return [
+            engine.actor_handle.pause_generation.remote(mode=mode) for engine in self.engines if engine.is_allocated
+        ]
+
+    def continue_generation(self):
+        if not self.needs_offload:
+            return []
+        return [engine.actor_handle.continue_generation.remote() for engine in self.engines if engine.is_allocated]
+
     def onload_weights_from_disk(self):
         """Reload weights from ``model_path`` for non-updatable groups."""
         if not self.needs_offload or not self.model_path:

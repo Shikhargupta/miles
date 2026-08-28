@@ -298,6 +298,19 @@ class RolloutManager:
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
 
+    async def offload_kv(self):
+        await self.offload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+
+    # -------------------------- generation pause -----------------------------
+
+    async def pause_generation(self, mode: str):
+        for srv in self.servers.values():
+            await srv.pause_generation(mode=mode)
+
+    async def continue_generation(self):
+        for srv in self.servers.values():
+            await srv.continue_generation()
+
     # -------------------------- engine management -----------------------------
 
     async def get_updatable_engines_and_lock(self):

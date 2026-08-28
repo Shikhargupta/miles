@@ -277,6 +277,18 @@ class RolloutServer:
             handles.extend(g.onload(tags))
         return await asyncio.gather(*handles)
 
+    async def pause_generation(self, mode: str):
+        handles = []
+        for g in self.server_groups:
+            handles.extend(g.pause_generation(mode=mode))
+        return await asyncio.gather(*handles)
+
+    async def continue_generation(self):
+        handles = []
+        for g in self.server_groups:
+            handles.extend(g.continue_generation())
+        return await asyncio.gather(*handles)
+
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
