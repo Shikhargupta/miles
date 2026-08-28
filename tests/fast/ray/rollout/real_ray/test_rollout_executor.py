@@ -738,7 +738,7 @@ class _RecordingMetricChecker:
         self.disposed = True
 
 
-class _RecordingRolloutFn:
+class _RecordingDisposableRolloutFn:
     def __init__(self) -> None:
         self.disposed = False
 
@@ -795,7 +795,7 @@ class TestLifecycle:
         executor._metric_checker = checker
         eval_fn = _RecordingCheckpointEvalFn()
         executor.eval_generate_rollout = eval_fn
-        train_fn = _RecordingRolloutFn()
+        train_fn = _RecordingDisposableRolloutFn()
         executor.generate_rollout = train_fn
         executor.use_experimental_refactor = True
 

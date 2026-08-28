@@ -7,6 +7,7 @@ from typing import Any
 
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
@@ -50,6 +51,12 @@ def _make_fixture() -> _Fixture:
     worker_manager = _RecordingWorkerManagerHandle()
     provider = _RecordingEngineProvider(worker_manager=worker_manager)
     controller = InferenceController(SimpleNamespace(), engine_provider=provider, router_providers=[])
+    controller.servers = {
+        "actor": SimpleNamespace(
+            server_cells={"engine-0-2": SimpleNamespace()},
+            health_checker_activeness=ActivenessTracker(active=True),
+        )
+    }
     return _Fixture(
         provider=provider,
         controller=controller,
