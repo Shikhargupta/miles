@@ -40,6 +40,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-function-path miles.rollout.sft_rollout.generate_rollout
   --prompt-data /root/datasets/openhermes2_5.parquet
   --input-key messages
+  --tool-key tools
+  --metadata-key metadata
   --rollout-shuffle
   --num-epoch 3
   --rollout-batch-size 128
