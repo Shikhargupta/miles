@@ -408,6 +408,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable recompute loss function to save memory during training.",
             )
             parser.add_argument(
+                "--keep-logits-in-model-precision",
+                action="store_true",
+                help=(
+                    "Keep the final Megatron pipeline output in the model dtype instead of "
+                    "upcasting the full logits tensor to fp32. Loss implementations must "
+                    "upcast locally where fp32 numerics are required."
+                ),
+            )
+            parser.add_argument(
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(

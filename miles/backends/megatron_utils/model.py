@@ -62,6 +62,13 @@ def _has_loadable_ckpt(load_dir: str | None) -> bool:
     return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
 
 
+def _model_output_kwargs(args: Namespace) -> dict[str, bool]:
+    """Return opt-in output precision controls for Megatron's model wrapper."""
+    if getattr(args, "keep_logits_in_model_precision", False):
+        return {"fp32_output": False}
+    return {}
+
+
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
 
 
@@ -340,6 +347,7 @@ def forward_only(
             loss_mask=batch["full_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+            **_model_output_kwargs(args),
         )
 
         return output_tensor, partial(
@@ -538,6 +546,12 @@ def train_one_step(
 
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
+
+            if model_output_kwargs := _model_output_kwargs(args):
+                # Megatron's mixed-precision wrapper otherwise upcasts the entire
+                # last-stage output. The loss path performs its own chunked fp32
+                # conversion where higher-precision softmax numerics are needed.
+                forward_kwargs.update(model_output_kwargs)
 
             output_tensor = model(**forward_kwargs)
 

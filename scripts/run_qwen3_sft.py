@@ -67,6 +67,8 @@ class _Recipe:
     moe_token_dispatcher_type: str | None = None
     enable_observability: bool = False
     log_probs_chunk_size: int = -1
+    keep_logits_in_model_precision: bool = False
+    recompute_loss_function: bool = False
 
 
 _RECIPES: dict[str, _Recipe] = {
@@ -87,6 +89,8 @@ _RECIPES: dict[str, _Recipe] = {
         moe_token_dispatcher_type="flex",
         enable_observability=True,
         log_probs_chunk_size=4096,
+        keep_logits_in_model_precision=True,
+        recompute_loss_function=True,
     ),
 }
 
@@ -232,6 +236,10 @@ def execute(args: ScriptArgs) -> None:
     )
     if args.effective_log_probs_chunk_size > 0:
         perf_args += f"--log-probs-chunk-size {args.effective_log_probs_chunk_size} "
+    if args.recipe.keep_logits_in_model_precision:
+        perf_args += "--keep-logits-in-model-precision "
+    if args.recipe.recompute_loss_function:
+        perf_args += "--recompute-loss-function "
 
     optimizer_args = (
         "--optimizer adam "

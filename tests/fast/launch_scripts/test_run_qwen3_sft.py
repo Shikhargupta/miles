@@ -49,6 +49,8 @@ def test_qwen36_sft_profile_pins_model_data_and_observability(monkeypatch, tmp_p
         "--expert-model-parallel-size 8",
         "--context-parallel-size 1",
         "--max-tokens-per-gpu 262144",
+        "--keep-logits-in-model-precision",
+        "--recompute-loss-function",
         "--enable-mtp-training",
         "--moe-token-dispatcher-type flex",
         "--observe-training-entropy",
