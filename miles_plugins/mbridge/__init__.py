@@ -1,3 +1,32 @@
+import torch
+from mbridge.models.ext.deepseek_v3 import dequant_fp8_safetensor_io
+
+
+def _patch_fp8_safe_open_device() -> None:
+    """Load FP8 shards on each distributed rank's current CUDA device.
+
+    mbridge's FP8 safetensor loader passes the unqualified device string
+    ``cuda``.  safetensors resolves that to cuda:0 even after a worker selects
+    a different local device, then the Triton dequantizer rejects the foreign
+    pointer on ranks 1+.  Keep the upstream loader intact and qualify only that
+    ambiguous CUDA argument at the Miles integration boundary.
+    """
+
+    safe_open = dequant_fp8_safetensor_io.safe_open
+    if getattr(safe_open, "_miles_current_cuda_device", False):
+        return
+
+    def safe_open_on_current_device(*args, **kwargs):
+        if kwargs.get("device") == "cuda" and torch.cuda.is_available():
+            kwargs["device"] = f"cuda:{torch.cuda.current_device()}"
+        return safe_open(*args, **kwargs)
+
+    safe_open_on_current_device._miles_current_cuda_device = True
+    dequant_fp8_safetensor_io.safe_open = safe_open_on_current_device
+
+
+_patch_fp8_safe_open_device()
+
 from .deepseek_v32 import DeepseekV32Bridge
 from .deepseekv4 import DeepseekV4Bridge
 from .glm4 import GLM4Bridge
