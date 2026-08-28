@@ -13,6 +13,7 @@ SOLVER_MODEL_ID: str = "solver"
 VERIFIER_MODEL_ID: str = "verifier"
 MODEL_IDS: list[str] = [SOLVER_MODEL_ID, VERIFIER_MODEL_ID]
 LEADER_MODEL_ID: str = MODEL_IDS[0]
+EVAL_DATASET_NAME: str = "gsm8k"
 TRAIN_SCRIPT: str = "train_multi_policy.py"
 TRAIN_EXTRA_ENV_VARS: dict[str, str] = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
 
@@ -106,15 +107,25 @@ def build_train_args(
         "--label-key label "
         "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 4 "
-        "--rollout-max-response-len 250 "
-        "--rollout-temperature 0.8 "
-        "--global-batch-size 32 "
+        "--rollout-batch-size 32 "
+        "--n-samples-per-prompt 8 "
+        "--rollout-max-response-len 1024 "
+        "--rollout-temperature 1 "
+        "--global-batch-size 256 "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--reward-key reward_value "
         "--log-reward-category outcome "
         # retract (default) can deadlock flush_cache in fully_async under load
         "--pause-generation-mode in_place "
+    )
+
+    eval_args = (
+        "--eval-interval 20 "
+        f"--eval-prompt-data {EVAL_DATASET_NAME} {args.data_dir}/gsm8k/test.parquet "
+        "--n-samples-per-eval-prompt 1 "
+        "--eval-max-response-len 1024 "
+        "--eval-top-k 1 "
+        "--custom-eval-rollout-log-function-path examples.multi_policy.solver_verifier.split_eval_data_by_policy "
     )
 
     perf_args = (
@@ -155,6 +166,7 @@ def build_train_args(
         f"{optimizer_args} "
         f"{grpo_args} "
         f"{wandb_args if wandb_args is not None else command_utils.get_default_wandb_args(__file__)} "
+        f"{eval_args} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{ci_args} "
