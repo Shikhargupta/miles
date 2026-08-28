@@ -34,6 +34,12 @@ SHARED_TRAINER_OVERRIDES = dict(
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_rollout: int = 3
     num_gpus_per_node: int = 8
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 256
+    rollout_max_response_len: int = 1024
+    rollout_temperature: float = 1.0
+    dynamic_sampling_filter: bool = True
     solver_model_name: str = "Qwen2.5-0.5B-Instruct"
     verifier_model_name: str = "Qwen3-0.6B"
     solver_megatron_model_type: str = "qwen2.5-0.5B"
@@ -106,16 +112,18 @@ def build_train_args(
         "--label-key label "
         "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 4 "
-        "--rollout-max-response-len 250 "
-        "--rollout-temperature 0.8 "
-        "--global-batch-size 32 "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
+        f"--rollout-temperature {args.rollout_temperature} "
+        f"--global-batch-size {args.global_batch_size} "
         "--reward-key reward_value "
         "--log-reward-category outcome "
         # retract (default) can deadlock flush_cache in fully_async under load
         "--pause-generation-mode in_place "
     )
+    if args.dynamic_sampling_filter:
+        rollout_args += "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
 
     perf_args = (
         "--tensor-model-parallel-size 1 "
