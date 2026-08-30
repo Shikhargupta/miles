@@ -7,6 +7,8 @@ import logging
 import random
 from argparse import Namespace
 
+import httpx
+
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
@@ -19,6 +21,7 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 _SESSION_REQUEST_TIMEOUT = 120
+_SAMPLE_COLLECTION_TRANSPORT_ATTEMPTS = 2
 
 
 class OpenAIEndpointTracer:
@@ -76,12 +79,32 @@ class OpenAIEndpointTracer:
         if agent_metadata is not None:
             body["metadata"] = agent_metadata
         try:
-            # Timeouts and transport errors propagate after cleanup, for `generate` to handle.
-            payload = await post_bytes_no_retry(
-                f"{self.base_url}/samples",
-                body,
-                timeout=_SESSION_REQUEST_TIMEOUT,
-            )
+            # Sample assembly is read-only and deterministic. A pooled HTTP/1.1
+            # connection can occasionally be closed by the peer immediately
+            # before reuse, which surfaces as ReadError before a response is
+            # received. Retry that transport-only case once within the original
+            # total deadline. HTTP/validation errors and timeouts still fail
+            # immediately, and cleanup runs only after the final outcome.
+            deadline = asyncio.get_running_loop().time() + _SESSION_REQUEST_TIMEOUT
+            for attempt in range(1, _SAMPLE_COLLECTION_TRANSPORT_ATTEMPTS + 1):
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError("sample collection exceeded its total timeout")
+                try:
+                    payload = await post_bytes_no_retry(
+                        f"{self.base_url}/samples",
+                        body,
+                        timeout=remaining,
+                    )
+                    break
+                except httpx.TransportError:
+                    if attempt >= _SAMPLE_COLLECTION_TRANSPORT_ATTEMPTS:
+                        raise
+                    logger.warning(
+                        "Transient transport failure collecting session %s; retrying once",
+                        self.session_id,
+                        exc_info=True,
+                    )
         finally:
             try:
                 await asyncio.wait_for(

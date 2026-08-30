@@ -4,14 +4,15 @@ The sample-assembly and TITO multi-turn merge tests live in
 tests/fast/rollout/session/test_samples.py (assembly) and
 test_samples_codec.py (wire codec), next to the functions.
 The collect_samples tests here lock the client's HTTP behavior deltas vs the
-old collect_records path: single POST with no retries, non-2xx raises with the
-body text, timeout raises (instead of silently ABORTing), and the session
-DELETE is attempted on every path.
+old collect_records path: a single retry for transient transport failures,
+non-2xx raises with the body text, timeout raises (instead of silently
+ABORTing), and the session DELETE is attempted on every path.
 """
 
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import miles.utils.http_utils as http_utils
@@ -158,6 +159,36 @@ async def test_collect_samples_single_post_then_delete(monkeypatch):
     (sample,) = result.samples
     assert sample.tokens == [1, 2, 10] and sample.status == Sample.Status.COMPLETED
     assert result.session_metadata == {"max_trim_tokens": 1}
+
+
+@pytest.mark.asyncio
+async def test_collect_samples_retries_one_transport_failure_then_deletes(monkeypatch):
+    calls: list[str] = []
+    outcomes = [httpx.ReadError("stale pooled connection"), _computed_reply_payload()]
+
+    async def fake_post_bytes(url, payload, *, timeout):
+        calls.append(f"POST {url}")
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def fake_post(url, payload, action="post"):
+        assert action == "delete"
+        calls.append(f"DELETE {url}")
+        return {}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    result = await _tracer().collect_samples(Sample(), max_seq_len=7)
+
+    assert len(result.samples) == 1
+    assert calls == [
+        "POST http://127.0.0.1:12345/sessions/sid-1/samples",
+        "POST http://127.0.0.1:12345/sessions/sid-1/samples",
+        "DELETE http://127.0.0.1:12345/sessions/sid-1",
+    ]
 
 
 @pytest.mark.asyncio
